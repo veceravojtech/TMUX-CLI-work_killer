@@ -1,0 +1,62 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+tmux-cli
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+coverage.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# Node.js dependencies (for TypeScript/MCP components)
+node_modules/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Node.js specific
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.env
+.env.local
+.cache/
+.nyc_output/
+
+# BMAD output (keep framework, ignore outputs)
+_bmad-output/planning-artifacts/*
+_bmad-output/implementation-artifacts/*
+!_bmad-output/planning-artifacts/.gitkeep
+!_bmad-output/implementation-artifacts/.gitkeep
+
+.claude
