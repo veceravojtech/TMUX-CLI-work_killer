@@ -48,6 +48,22 @@ func (m *mockExecutor) KillWindow(sessionID, windowID string) error {
 	return nil
 }
 
+func (m *mockExecutor) SetWindowOption(sessionID, windowID, optionName, value string) error {
+	return nil
+}
+
+func (m *mockExecutor) GetWindowOption(sessionID, windowID, optionName string) (string, error) {
+	return "", nil
+}
+
+func (m *mockExecutor) CaptureWindowOutput(sessionID, windowID string) (string, error) {
+	return "", nil
+}
+
+func (m *mockExecutor) SendMessageWithFeedback(sessionID, windowID, message string) (string, error) {
+	return "", nil
+}
+
 func TestTmuxExecutor_Interface_HasSendMessage(t *testing.T) {
 	// This test verifies that SendMessage is part of the TmuxExecutor interface
 	// It will fail until SendMessage is added to the interface definition

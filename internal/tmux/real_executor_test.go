@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -674,4 +675,197 @@ func TestRealTmuxExecutor_KillWindow_DoubleKillIdempotency(t *testing.T) {
 	// Kill same window second time (idempotent)
 	err = executor.KillWindow(sessionID, windowID)
 	assert.NoError(t, err, "Second kill should be idempotent (no error)")
+}
+
+// ============================================================================
+// Window UUID User-Option Tests - Tech Spec: Persistent Window UUID System
+// ============================================================================
+
+// TestRealTmuxExecutor_SetWindowOption_Success tests setting window user-option
+func TestRealTmuxExecutor_SetWindowOption_Success(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	executor := NewTmuxExecutor()
+
+	sessionID := "test-set-window-option"
+	_ = executor.KillSession(sessionID)
+	defer executor.KillSession(sessionID)
+
+	// Create session
+	err := executor.CreateSession(sessionID, "/tmp")
+	require.NoError(t, err)
+
+	// Get default window ID
+	windows, err := executor.ListWindows(sessionID)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(windows), 1)
+	windowID := windows[0].TmuxWindowID
+
+	// Set window option
+	testUUID := "550e8400-e29b-41d4-a716-446655440000"
+	err = executor.SetWindowOption(sessionID, windowID, "window-uuid", testUUID)
+	assert.NoError(t, err, "SetWindowOption should succeed")
+}
+
+// TestRealTmuxExecutor_GetWindowOption_Success tests getting window user-option
+func TestRealTmuxExecutor_GetWindowOption_Success(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	executor := NewTmuxExecutor()
+
+	sessionID := "test-get-window-option"
+	_ = executor.KillSession(sessionID)
+	defer executor.KillSession(sessionID)
+
+	// Create session
+	err := executor.CreateSession(sessionID, "/tmp")
+	require.NoError(t, err)
+
+	// Get default window ID
+	windows, err := executor.ListWindows(sessionID)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(windows), 1)
+	windowID := windows[0].TmuxWindowID
+
+	// Set window option first
+	testUUID := "550e8400-e29b-41d4-a716-446655440000"
+	err = executor.SetWindowOption(sessionID, windowID, "window-uuid", testUUID)
+	require.NoError(t, err)
+
+	// Get window option
+	value, err := executor.GetWindowOption(sessionID, windowID, "window-uuid")
+	assert.NoError(t, err, "GetWindowOption should succeed")
+	assert.Equal(t, testUUID, value, "Retrieved value should match set value")
+}
+
+// TestRealTmuxExecutor_GetWindowOption_NotSet tests error when option not set
+func TestRealTmuxExecutor_GetWindowOption_NotSet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	executor := NewTmuxExecutor()
+
+	sessionID := "test-get-option-notset"
+	_ = executor.KillSession(sessionID)
+	defer executor.KillSession(sessionID)
+
+	// Create session
+	err := executor.CreateSession(sessionID, "/tmp")
+	require.NoError(t, err)
+
+	// Get default window ID
+	windows, err := executor.ListWindows(sessionID)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(windows), 1)
+	windowID := windows[0].TmuxWindowID
+
+	// Try to get option that was never set
+	value, err := executor.GetWindowOption(sessionID, windowID, "window-uuid")
+	assert.Error(t, err, "GetWindowOption should error when option not set")
+	assert.Empty(t, value, "Value should be empty on error")
+}
+
+// TestRealTmuxExecutor_SetWindowOption_SessionNotFound tests error for invalid session
+func TestRealTmuxExecutor_SetWindowOption_SessionNotFound(t *testing.T) {
+	executor := NewTmuxExecutor()
+
+	// Try to set option in non-existent session
+	err := executor.SetWindowOption("nonexistent-session-99999", "@0", "window-uuid", "test-value")
+
+	assert.Error(t, err, "SetWindowOption should error for non-existent session")
+}
+
+// TestRealTmuxExecutor_GetWindowOption_SessionNotFound tests error for invalid session
+func TestRealTmuxExecutor_GetWindowOption_SessionNotFound(t *testing.T) {
+	executor := NewTmuxExecutor()
+
+	// Try to get option from non-existent session
+	value, err := executor.GetWindowOption("nonexistent-session-99999", "@0", "window-uuid")
+
+	assert.Error(t, err, "GetWindowOption should error for non-existent session")
+	assert.Empty(t, value, "Value should be empty on error")
+}
+
+// TestRealTmuxExecutor_CaptureWindowOutput_Success verifies capturing pane output
+func TestRealTmuxExecutor_CaptureWindowOutput_Success(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	executor := NewTmuxExecutor()
+
+	// Create a session for testing
+	sessionID := "test-capture-success"
+	testDir := "/tmp"
+
+	// Clean up any existing session
+	_ = executor.KillSession(sessionID)
+	defer executor.KillSession(sessionID)
+
+	// Create session
+	err := executor.CreateSession(sessionID, testDir)
+	require.NoError(t, err, "Failed to create test session")
+
+	// Get the default window ID
+	windows, err := executor.ListWindows(sessionID)
+	require.NoError(t, err)
+	require.NotEmpty(t, windows)
+	windowID := windows[0].TmuxWindowID
+
+	// Send a command that produces known output
+	testMessage := "echo 'TEST_OUTPUT_12345'"
+	err = executor.SendMessage(sessionID, windowID, testMessage)
+	require.NoError(t, err)
+
+	// Wait for command to execute
+	time.Sleep(100 * time.Millisecond)
+
+	// Capture the output
+	output, err := executor.CaptureWindowOutput(sessionID, windowID)
+
+	assert.NoError(t, err, "CaptureWindowOutput should succeed")
+	assert.Contains(t, output, "TEST_OUTPUT_12345", "Output should contain the echoed text")
+}
+
+// TestRealTmuxExecutor_CaptureWindowOutput_SessionNotFound verifies error for non-existent session
+func TestRealTmuxExecutor_CaptureWindowOutput_SessionNotFound(t *testing.T) {
+	executor := NewTmuxExecutor()
+
+	// Try to capture from non-existent session
+	output, err := executor.CaptureWindowOutput("nonexistent-session-99999", "@0")
+
+	assert.Error(t, err, "CaptureWindowOutput should error for non-existent session")
+	assert.Empty(t, output, "Output should be empty on error")
+}
+
+// TestRealTmuxExecutor_CaptureWindowOutput_InvalidWindow verifies error for invalid window
+func TestRealTmuxExecutor_CaptureWindowOutput_InvalidWindow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	executor := NewTmuxExecutor()
+
+	// Create a session for testing
+	sessionID := "test-capture-invalidwindow"
+	testDir := "/tmp"
+
+	// Clean up any existing session
+	_ = executor.KillSession(sessionID)
+	defer executor.KillSession(sessionID)
+
+	// Create session
+	err := executor.CreateSession(sessionID, testDir)
+	require.NoError(t, err, "Failed to create test session")
+
+	// Try to capture from non-existent window
+	output, err := executor.CaptureWindowOutput(sessionID, "@99")
+
+	assert.Error(t, err, "CaptureWindowOutput should error for non-existent window")
+	assert.Empty(t, output, "Output should be empty on error")
 }

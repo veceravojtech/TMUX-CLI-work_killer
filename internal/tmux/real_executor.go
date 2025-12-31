@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // RealTmuxExecutor is the production implementation that executes actual tmux commands
@@ -15,12 +16,19 @@ func NewTmuxExecutor() *RealTmuxExecutor {
 }
 
 // CreateSession creates a new detached tmux session with the given ID and working directory
-// Command: tmux new-session -d -s <id> -c <path>
+// Command: tmux new-session -d -s <id> -c <path> -n supervisor <init-command>
 // -d: detached mode (don't attach immediately)
 // -s: session name (our UUID)
 // -c: working directory (project path)
+// -n: name for the first window (supervisor)
+// The supervisor window exports TMUX_WINDOW_UUID then exec's into an interactive shell
 func (e *RealTmuxExecutor) CreateSession(id, path string) error {
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", id, "-c", path)
+	// Create a command that exports TMUX_WINDOW_UUID and exec's into an interactive shell
+	// Using exec ensures the shell inherits the exported environment variable
+	// The command: zsh -c 'export TMUX_WINDOW_UUID="$(tmux show-options -wv @window-uuid 2>/dev/null || echo "")"; exec zsh'
+	initCommand := `zsh -c 'export TMUX_WINDOW_UUID="$(tmux show-options -wv @` + WindowUUIDOption + ` 2>/dev/null || echo "")"; exec zsh'`
+
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", id, "-c", path, "-n", "supervisor", initCommand)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Check if tmux not found
@@ -143,11 +151,12 @@ func (e *RealTmuxExecutor) CreateWindow(sessionID, name, command string) (string
 }
 
 // ListWindows returns all windows in a session with their metadata.
-// Command: tmux list-windows -t <sessionID> -F "#{window_id}|#{window_name}|#{pane_pid}"
+// Command: tmux list-windows -t <sessionID> -F "#{window_id}|#{window_name}|#{pane_pid}|#{pane_current_command}"
 // The pane_pid field is used to determine if the window is running (pid > 0)
+// The pane_current_command field captures the currently running command for recovery
 func (e *RealTmuxExecutor) ListWindows(sessionID string) ([]WindowInfo, error) {
-	// Format: window_id|window_name|pane_pid (e.g., "@0|editor|12345")
-	cmd := exec.Command("tmux", "list-windows", "-t", sessionID, "-F", "#{window_id}|#{window_name}|#{pane_pid}")
+	// Format: window_id|window_name|pane_pid|pane_current_command (e.g., "@0|editor|12345|vim")
+	cmd := exec.Command("tmux", "list-windows", "-t", sessionID, "-F", "#{window_id}|#{window_name}|#{pane_pid}|#{pane_current_command}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Check if tmux not found
@@ -165,15 +174,16 @@ func (e *RealTmuxExecutor) ListWindows(sessionID string) ([]WindowInfo, error) {
 
 	windows := make([]WindowInfo, 0, len(lines))
 	for _, line := range lines {
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) != 3 {
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) != 4 {
 			continue // Skip malformed lines
 		}
 
 		windows = append(windows, WindowInfo{
-			TmuxWindowID: parts[0],
-			Name:         parts[1],
-			Running:      parts[2] != "", // If pane_pid is not empty, window is running
+			TmuxWindowID:   parts[0],
+			Name:           parts[1],
+			Running:        parts[2] != "", // If pane_pid is not empty, window is running
+			CurrentCommand: parts[3],       // Command running in the pane
 		})
 	}
 
@@ -254,4 +264,101 @@ func (e *RealTmuxExecutor) KillWindow(sessionID, windowID string) error {
 		return fmt.Errorf("tmux kill-window failed: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	return nil
+}
+
+// SetWindowOption sets a user-defined window option (@option-name)
+// Command: tmux set-option -w -t <sessionID>:<windowID> @<optionName> <value>
+// -w: window-scoped option
+// Returns error if session or window doesn't exist
+func (e *RealTmuxExecutor) SetWindowOption(sessionID, windowID, optionName, value string) error {
+	// Build target: session:window format (e.g., "uuid:@0")
+	target := sessionID + ":" + windowID
+
+	// User-defined options must be prefixed with @
+	optionKey := "@" + optionName
+
+	cmd := exec.Command("tmux", "set-option", "-w", "-t", target, optionKey, value)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check if tmux not found
+		if cmd.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux set-option failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}
+
+// GetWindowOption retrieves a user-defined window option value
+// Command: tmux show-options -wv -t <sessionID>:<windowID> @<optionName>
+// -w: window-scoped option
+// -v: show only value (not option name)
+// Returns error if option is not set or window/session doesn't exist
+func (e *RealTmuxExecutor) GetWindowOption(sessionID, windowID, optionName string) (string, error) {
+	// Build target: session:window format (e.g., "uuid:@0")
+	target := sessionID + ":" + windowID
+
+	// User-defined options must be prefixed with @
+	optionKey := "@" + optionName
+
+	cmd := exec.Command("tmux", "show-options", "-wv", "-t", target, optionKey)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check if tmux not found
+		if cmd.Err == exec.ErrNotFound {
+			return "", ErrTmuxNotFound
+		}
+		// Exit code 1 means option not set or window/session doesn't exist
+		return "", fmt.Errorf("tmux show-options failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+
+	// Return the option value (trimmed)
+	return strings.TrimSpace(string(output)), nil
+}
+
+// CaptureWindowOutput captures the current pane content from a window
+// Command: tmux capture-pane -t <sessionID>:<windowID> -p -S -
+// -p: print to stdout
+// -S -: start from history beginning (captures entire scrollback)
+// Returns the captured text output from the pane
+func (e *RealTmuxExecutor) CaptureWindowOutput(sessionID, windowID string) (string, error) {
+	// Build target: session:window format (e.g., "uuid:@0")
+	target := sessionID + ":" + windowID
+
+	cmd := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check if tmux not found
+		if cmd.Err == exec.ErrNotFound {
+			return "", ErrTmuxNotFound
+		}
+		// Exit code 1 means session/window doesn't exist
+		return "", fmt.Errorf("tmux capture-pane failed (target: %s): %w: %s",
+			target, err, strings.TrimSpace(string(output)))
+	}
+
+	// Return the captured output (preserve whitespace, just return as-is)
+	return string(output), nil
+}
+
+// SendMessageWithFeedback sends a message and waits to capture the output
+// Returns the captured output after a 1-second delay to allow command execution
+// This enables detection of command execution errors in post-command fallback logic
+func (e *RealTmuxExecutor) SendMessageWithFeedback(sessionID, windowID, message string) (string, error) {
+	// Step 1: Send the message
+	err := e.SendMessage(sessionID, windowID, message)
+	if err != nil {
+		return "", fmt.Errorf("send message: %w", err)
+	}
+
+	// Step 2: Wait for command to execute
+	time.Sleep(1 * time.Second)
+
+	// Step 3: Capture the pane output to check for errors
+	output, err := e.CaptureWindowOutput(sessionID, windowID)
+	if err != nil {
+		return "", fmt.Errorf("capture output: %w", err)
+	}
+
+	return output, nil
 }

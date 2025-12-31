@@ -32,7 +32,9 @@ help:
 	@echo "  make build        - Build the tmux-cli binary"
 	@echo "  make test         - Run unit tests quickly (no external deps)"
 	@echo "  make test-tmux    - Run tmux-specific tests (requires tmux 2.0+)"
-	@echo "  make test-all     - Run all tests (unit + tmux + integration)"
+	@echo "  make test-mcp     - Run all MCP tests (unit + integration)"
+	@echo "  make verify-mcp   - Run E2E verification of MCP concurrent servers"
+	@echo "  make test-all     - Run all tests (unit + tmux + integration + MCP)"
 	@echo "  make verify-real  - Build + E2E verification with real tmux (RECOMMENDED)"
 	@echo "  make install      - Install binary to ~/.local/bin"
 	@echo "  make clean        - Remove built binaries and test cache"
@@ -40,6 +42,17 @@ help:
 	@echo "  make lint         - Run linters (fmt, vet)"
 	@echo "  make fmt          - Format code"
 	@echo "  make vet          - Run go vet"
+
+tmux-kill-server:
+	tmux kill-server
+
+start:
+	tmux-cli start
+
+kill:
+	tmux-cli kill
+
+refresh: kill install start
 
 ## build: Build the complete project and generate runnable tmux-cli binary
 build: fmt vet
@@ -67,11 +80,26 @@ test-tmux:
 	$(GOTEST) -v -race -tags=tmux ./...
 	@echo "✓ Tmux tests passed"
 
-## test-all: Run all tests (unit + tmux + integration)
-test-all:
-	@echo "Running all tests..."
+## test-mcp: Run all MCP tests (unit + integration)
+test-mcp:
+	@echo "Running MCP unit tests..."
+	$(GOTEST) -v ./internal/mcp/...
+	@echo ""
+	@echo "Running MCP integration tests..."
+	$(GOTEST) -tags=integration -v ./internal/mcp/...
+	@echo ""
+	@echo "✓ All MCP tests passed"
+
+## verify-mcp: Run E2E verification of MCP concurrent servers
+verify-mcp:
+	@echo "Running MCP E2E verification script..."
+	@./scripts/verify-mcp-execution.sh
+
+## test-all: Run all tests (unit + tmux + integration + MCP)
+test-all: test test-mcp
+	@echo "Running all integration tests..."
 	$(GOTEST) -v -race -tags=tmux,integration ./...
-	@echo "✓ All tests passed"
+	@echo "✓ All test suites passed"
 
 ## test-integration: Run integration tests (requires tmux)
 test-integration:

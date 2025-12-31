@@ -5,7 +5,6 @@
 *.so
 *.dylib
 bin/
-tmux-cli
 
 # Test binary, built with `go test -c`
 *.test
@@ -52,6 +51,7 @@ pnpm-debug.log*
 .env.local
 .cache/
 .nyc_output/
+coverage/
 
 # BMAD output (keep framework, ignore outputs)
 _bmad-output/planning-artifacts/*
@@ -60,3 +60,5 @@ _bmad-output/implementation-artifacts/*
 !_bmad-output/implementation-artifacts/.gitkeep
 
 .claude
+.tmux-session
+/tmux-cli

@@ -35,3 +35,19 @@ func (m *mockStore) List() ([]*Session, error) {
 func (m *mockStore) Move(id string, destination string) error {
 	return nil
 }
+
+func (m *mockStore) FindByPath(path string) (*Session, error) {
+	return nil, nil
+}
+
+func (m *mockStore) WriteSessionFile(projectPath string, sessionID string) error {
+	return nil
+}
+
+func (m *mockStore) ReadSessionFile(projectPath string) (string, error) {
+	return "", nil
+}
+
+func (m *mockStore) DeleteSessionFile(projectPath string) error {
+	return nil
+}

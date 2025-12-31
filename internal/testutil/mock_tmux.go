@@ -67,3 +67,27 @@ func (m *MockTmuxExecutor) KillWindow(sessionID, windowID string) error {
 	args := m.Called(sessionID, windowID)
 	return args.Error(0)
 }
+
+// SetWindowOption mocks setting a user-defined window option
+func (m *MockTmuxExecutor) SetWindowOption(sessionID, windowID, optionName, value string) error {
+	args := m.Called(sessionID, windowID, optionName, value)
+	return args.Error(0)
+}
+
+// GetWindowOption mocks retrieving a user-defined window option
+func (m *MockTmuxExecutor) GetWindowOption(sessionID, windowID, optionName string) (string, error) {
+	args := m.Called(sessionID, windowID, optionName)
+	return args.String(0), args.Error(1)
+}
+
+// CaptureWindowOutput mocks capturing pane output
+func (m *MockTmuxExecutor) CaptureWindowOutput(sessionID, windowID string) (string, error) {
+	args := m.Called(sessionID, windowID)
+	return args.String(0), args.Error(1)
+}
+
+// SendMessageWithFeedback mocks sending message with feedback
+func (m *MockTmuxExecutor) SendMessageWithFeedback(sessionID, windowID, message string) (string, error) {
+	args := m.Called(sessionID, windowID, message)
+	return args.String(0), args.Error(1)
+}

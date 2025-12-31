@@ -18,25 +18,25 @@ func TestWrapCommandForPersistence(t *testing.T) {
 			name:     "simple command with zsh",
 			command:  "ch",
 			shell:    "/bin/zsh",
-			expected: `zsh -ic "ch"`,
+			expected: `zsh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; ch"`,
 		},
 		{
 			name:     "simple command with bash",
 			command:  "exec ch",
 			shell:    "/bin/bash",
-			expected: `bash -ic "exec ch"`,
+			expected: `bash -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; exec ch"`,
 		},
 		{
 			name:     "command with quotes needs escaping",
 			command:  `echo "hello"`,
 			shell:    "/bin/bash",
-			expected: `bash -ic "echo \"hello\""`,
+			expected: `bash -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; echo \"hello\""`,
 		},
 		{
 			name:     "command with multiple quotes",
 			command:  `echo "hello" && echo "world"`,
 			shell:    "/bin/zsh",
-			expected: `zsh -ic "echo \"hello\" && echo \"world\""`,
+			expected: `zsh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; echo \"hello\" && echo \"world\""`,
 		},
 		{
 			name:     "empty command returns empty",
@@ -47,14 +47,14 @@ func TestWrapCommandForPersistence(t *testing.T) {
 		{
 			name:     "fish shell (falls back if not installed)",
 			command:  "ch",
-			shell:    "/usr/bin/fish", // May not exist, will fall back to sh
-			expected: `sh -ic "ch"`,   // Expected fallback
+			shell:    "/usr/bin/fish",                                                                                          // May not exist, will fall back to sh
+			expected: `sh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; ch"`, // Expected fallback
 		},
 		{
 			name:     "sh shell",
 			command:  "sleep 10",
 			shell:    "/bin/sh",
-			expected: `sh -ic "sleep 10"`,
+			expected: `sh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; sleep 10"`,
 		},
 		{
 			name:     "already wrapped command not double-wrapped",
@@ -72,31 +72,31 @@ func TestWrapCommandForPersistence(t *testing.T) {
 			name:     "complex command with pipes",
 			command:  "cat file.txt | grep pattern",
 			shell:    "/bin/bash",
-			expected: `bash -ic "cat file.txt | grep pattern"`,
+			expected: `bash -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; cat file.txt | grep pattern"`,
 		},
 		{
 			name:     "command with -ic flag but not shell wrapper",
 			command:  "myapp -ic config.yaml",
 			shell:    "/bin/zsh",
-			expected: `zsh -ic "myapp -ic config.yaml"`, // Should be wrapped, not detected as already wrapped
+			expected: `zsh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; myapp -ic config.yaml"`, // Should be wrapped, not detected as already wrapped
 		},
 		{
 			name:     "command with dollar sign (variable expansion)",
 			command:  "echo $HOME",
 			shell:    "/bin/bash",
-			expected: `bash -ic "echo \$HOME"`, // Dollar should be escaped
+			expected: `bash -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; echo \$HOME"`, // Dollar should be escaped
 		},
 		{
 			name:     "command with backticks (command substitution)",
 			command:  "echo `date`",
 			shell:    "/bin/bash",
-			expected: "bash -ic \"echo \\`date\\`\"", // Backticks should be escaped
+			expected: "bash -ic \"export TMUX_WINDOW_UUID=\\\"\\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\\\"; echo \\`date\\`\"", // Backticks should be escaped
 		},
 		{
 			name:     "command with backslash",
 			command:  `echo "test\nline"`,
 			shell:    "/bin/bash",
-			expected: `bash -ic "echo \"test\\nline\""`, // Backslash and quotes escaped
+			expected: `bash -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; echo \"test\\nline\""`, // Backslash and quotes escaped
 		},
 	}
 
@@ -120,7 +120,7 @@ func TestWrapCommandForPersistence_NoShellEnv(t *testing.T) {
 	defer os.Setenv("SHELL", originalShell)
 
 	result := WrapCommandForPersistence("ch")
-	expected := `sh -ic "ch"`
+	expected := `sh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; ch"`
 	assert.Equal(t, expected, result)
 }
 
@@ -133,22 +133,22 @@ func TestWrapCommandForPersistence_InvalidShellPath(t *testing.T) {
 		{
 			name:     "non-existent shell",
 			shell:    "/nonexistent/shell",
-			expected: `sh -ic "ch"`,
+			expected: `sh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; ch"`,
 		},
 		{
 			name:     "relative path",
 			shell:    "bin/zsh",
-			expected: `sh -ic "ch"`,
+			expected: `sh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; ch"`,
 		},
 		{
 			name:     "directory instead of executable",
 			shell:    "/tmp",
-			expected: `sh -ic "ch"`,
+			expected: `sh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; ch"`,
 		},
 		{
 			name:     "malformed path",
 			shell:    ";;;invalid;;;",
-			expected: `sh -ic "ch"`,
+			expected: `sh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; ch"`,
 		},
 	}
 
@@ -173,17 +173,17 @@ func TestWrapCommandForPersistence_MultiWordCommands(t *testing.T) {
 		{
 			name:     "command with arguments",
 			command:  "ls -la /tmp",
-			expected: `zsh -ic "ls -la /tmp"`,
+			expected: `zsh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; ls -la /tmp"`,
 		},
 		{
 			name:     "command with options and pipes",
 			command:  "ps aux | grep tmux",
-			expected: `zsh -ic "ps aux | grep tmux"`,
+			expected: `zsh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; ps aux | grep tmux"`,
 		},
 		{
 			name:     "command with environment variables",
 			command:  "PATH=/custom/path mycommand",
-			expected: `zsh -ic "PATH=/custom/path mycommand"`,
+			expected: `zsh -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @window-uuid 2>/dev/null || echo '')\"; PATH=/custom/path mycommand"`,
 		},
 	}
 

@@ -92,6 +92,10 @@ func WrapCommandForPersistence(command string) string {
 	escapedCommand = strings.ReplaceAll(escapedCommand, `$`, `\$`)  // Dollar (variable expansion)
 	escapedCommand = strings.ReplaceAll(escapedCommand, "`", "\\`") // Backticks (command substitution)
 
-	// Wrap command: shell -ic "command"
-	return shellName + ` -ic "` + escapedCommand + `"`
+	// Wrap command with UUID export and interactive shell
+	// 1. Export TMUX_WINDOW_UUID from tmux user-option
+	// 2. Run the user's command
+	// 3. Keep shell alive with -i flag
+	// The tmux show-options command reads the UUID at runtime (2>/dev/null suppresses errors)
+	return shellName + ` -ic "export TMUX_WINDOW_UUID=\"\$(tmux show-options -wv @` + WindowUUIDOption + ` 2>/dev/null || echo '')\"; ` + escapedCommand + `"`
 }

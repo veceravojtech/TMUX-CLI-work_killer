@@ -9,6 +9,7 @@
 **Framework:** Cobra CLI
 **Testing:** testify (github.com/stretchr/testify)
 **Architecture:** Internal package structure with clear separation of concerns
+**TDD:** Always use TDD workflow
 
 ### Package Structure
 ```
@@ -16,14 +17,35 @@ cmd/tmux-cli/          # CLI entry point and command definitions
 internal/
   ├── store/           # Session storage and persistence
   ├── tmux/            # Tmux execution and session management
+  ├── mcp/             # NEW: MCP server integration
   └── testutil/        # Testing utilities and mocks
 ```
+
+### MCP Integration Stack (NEW)
+
+**MCP SDK:** v1.2.0+ (`github.com/modelcontextprotocol/go-sdk`)
+- Installation: `go get github.com/modelcontextprotocol/go-sdk@v1.2.0`
+- **STRICT:** Must be v1.2.0 or later (earlier versions lack critical protocol features)
+- **STRICT:** Use ONLY official SDK from modelcontextprotocol (no forks or alternatives)
+- Requires: Go 1.21+ (compatible with project's Go 1.25.5)
+
+**New Package:** `internal/mcp/` - MCP server integration
+- 8 new files: server.go, tools.go, errors.go, + tests
+- New command: `tmux-cli mcp` (Cobra integration)
 
 ---
 
 ## STRICT Testing Rules
 
 > **WHY THESE RULES EXIST:** To prevent silent failures, infinite retry loops, and incomplete test diagnostics that waste development time.
+
+### Rule 0: ALWAYS USE TDD (STRICT)
+- ✅ **ALWAYS** use test-driven development workflow
+- ❌ **NEVER** implement write code without writing tests first
+
+### Rule 0.5: NEVER USER FALLBACK (STRICT)
+- ✅ **ALWAYS** throw errors when something goes wrong
+- ❌ **NEVER** goes to fallback logic when something fails
 
 ### Rule 1: Full Test Output Required (STRICT)
 - ✅ **ALWAYS** capture complete test output - never truncate or summarize
@@ -43,7 +65,7 @@ go test ./internal/store/... -v 2>&1 | tee test-output.log
 go test ./internal/store/... -v 2>&1 | head -50
 ```
 
-### Rule 1. A : Alway us LSP
+### Rule 1. A : Always us LSP
 - ✅ **ALWAYS** use gopls-lsp for working with Go lang
 
 ### Rule 2: Exit Code Validation (STRICT)
@@ -214,3 +236,240 @@ When implementing new features or fixing bugs:
 If you encounter ambiguity or need clarification on these rules, STOP and ask the human developer (Vojta) rather than making assumptions.
 
 **Remember:** These rules exist to save time and prevent frustrating debugging cycles. Follow them strictly.
+
+## MCP Integration Rules (STRICT)
+
+> **WHY THESE RULES EXIST:** To prevent implementation conflicts when multiple AI agents work on MCP server integration. These patterns ensure consistent code across all MCP components.
+
+### Rule 7: MCP Package & File Naming (STRICT)
+
+- ✅ **ALWAYS** use simple descriptive names: `server.go`, `tools.go`, `errors.go`
+- ❌ **NEVER** include package name in filename: `mcp_server.go`, `mcp_tools.go`
+- ✅ Co-locate tests: `server_test.go` next to `server.go`
+- ✅ Integration tests: `server_integration_test.go` with `// +build tmux,integration` tag
+
+**Correct structure:**
+```
+internal/mcp/
+  ├── server.go                    # MCP server implementation
+  ├── server_test.go               # Unit tests
+  ├── server_integration_test.go   # Integration tests (with build tag)
+  ├── tools.go                     # MCP tool handlers
+  ├── tools_test.go                # Tool unit tests
+  ├── errors.go                    # Error type definitions
+  ├── errors_test.go               # Error handling tests
+  └── mock_store_test.go           # Mock SessionStore
+```
+
+### Rule 8: MCP Function Naming Pattern (STRICT)
+
+- ✅ **ALWAYS** use Resource + Action pattern: `WindowsList`, `WindowsCreate`, `WindowsGet`
+- ❌ **NEVER** use Action + Resource pattern: `ListWindows`, `CreateWindow`
+
+**Examples:**
+```go
+// ✅ CORRECT
+func (s *Server) WindowsList(sessionID string) ([]Window, error)
+func (s *Server) WindowsCreate(sessionID, name string) (*Window, error)
+func (s *Server) WindowsGet(sessionID, windowID string) (*Window, error)
+func (s *Server) WindowsKill(sessionID, windowID string) (bool, error)
+func (s *Server) WindowsCaptureOutput(sessionID, windowID string) (string, error)
+func (s *Server) WindowsSendCommand(sessionID, windowID, command string) (bool, error)
+
+// ❌ WRONG
+func (s *Server) ListWindows(sessionID string)
+func (s *Server) CreateWindow(sessionID, name string)
+```
+
+### Rule 9: MCP Error Handling (STRICT)
+
+- ✅ **ALWAYS** use categorized error types with `%w` wrapping
+- ✅ **ALWAYS** include context (session ID, window ID, directory)
+- ❌ **NEVER** use generic `errors.New()` without category
+- ❌ **NEVER** use fallback logic (always throw categorized errors)
+
+**10 Required Error Categories** (define in `internal/mcp/errors.go`):
+```go
+var (
+    // Session Errors
+    ErrSessionNotFound     = errors.New("session file not detected")
+    ErrSessionNotDetected  = errors.New("session auto-detection failed")
+    
+    // Window Errors
+    ErrWindowNotFound      = errors.New("window not found")
+    ErrWindowCreateFailed  = errors.New("window creation failed")
+    
+    // Tmux Errors
+    ErrTmuxNotRunning      = errors.New("tmux session not running")
+    ErrTmuxCommandFailed   = errors.New("tmux command execution failed")
+    
+    // Validation Errors
+    ErrInvalidSessionID    = errors.New("invalid session ID format")
+    ErrInvalidWindowID     = errors.New("invalid window ID format")
+    
+    // Filesystem Errors
+    ErrWorkingDirNotFound  = errors.New("working directory not accessible")
+    ErrSessionFileCorrupt  = errors.New("session file corrupted")
+)
+```
+
+**Context Wrapping Pattern:**
+```go
+// ✅ CORRECT - Categorized with context
+return nil, fmt.Errorf("%w: session=%s window=%s", ErrWindowNotFound, sessionID, windowID)
+return nil, fmt.Errorf("%w in directory %s", ErrSessionNotFound, s.workingDir)
+return nil, fmt.Errorf("%w: %s", ErrTmuxCommandFailed, err)
+
+// ❌ WRONG - Generic errors
+return nil, errors.New("window not found")
+return nil, fmt.Errorf("session not found")
+```
+
+### Rule 10: MCP Import Organization (STRICT)
+
+- ✅ **ALWAYS** group imports: stdlib → external → internal
+- ✅ Use blank lines between groups
+- ✅ Alphabetize within each group
+
+**Example:**
+```go
+import (
+    // Standard library
+    "errors"
+    "fmt"
+    "os"
+    "path/filepath"
+    
+    // External dependencies
+    "github.com/modelcontextprotocol/go-sdk/server"
+    
+    // Internal packages
+    "github.com/console/tmux-cli/internal/session"
+    "github.com/console/tmux-cli/internal/store"
+    "github.com/console/tmux-cli/internal/tmux"
+)
+```
+
+### Rule 11: MCP Session Detection (STRICT)
+
+- ✅ **ALWAYS** detect session from current working directory
+- ✅ Session file MUST be `.tmux-cli-session.json` in working directory
+- ❌ **NEVER** use directory tree walking, env vars, or config files
+- ❌ **NEVER** traverse parent directories
+
+**Implementation Pattern:**
+```go
+// ✅ CORRECT - Zero-config from working directory
+func NewServer() (*Server, error) {
+    workingDir, err := os.Getwd()
+    if err != nil {
+        return nil, fmt.Errorf("failed to get working directory: %w", err)
+    }
+    
+    // Session file expected at: {workingDir}/.tmux-cli-session.json
+    sessionFile := filepath.Join(workingDir, ".tmux-cli-session.json")
+    
+    // Verify file exists
+    if _, err := os.Stat(sessionFile); err != nil {
+        return nil, fmt.Errorf("%w in directory %s: expected %s",
+            ErrSessionNotFound, workingDir, sessionFile)
+    }
+    
+    // ... rest of initialization ...
+}
+
+// ❌ WRONG - Directory traversal
+// ❌ for dir := workingDir; dir != "/"; dir = filepath.Dir(dir) { ... }
+```
+
+### Rule 12: MCP Direct Internal Calls (STRICT)
+
+- ✅ **ALWAYS** call internal packages directly (session.Manager, store.SessionStore, tmux.Executor)
+- ❌ **NEVER** execute CLI commands as subprocess
+- ❌ **NEVER** use `exec.Command("tmux-cli", ...)`
+
+**Pattern:**
+```go
+// ✅ CORRECT - Direct internal calls
+type Server struct {
+    sessionMgr  *session.Manager
+    executor    tmux.TmuxExecutor
+    store       store.SessionStore
+    workingDir  string
+}
+
+func (s *Server) WindowsList(sessionID string) ([]Window, error) {
+    session, err := s.store.Load(sessionID)
+    if err != nil {
+        return nil, fmt.Errorf("%w: session=%s", ErrSessionNotFound, sessionID)
+    }
+    return session.Windows, nil
+}
+
+// ❌ WRONG - Subprocess execution
+// ❌ cmd := exec.Command("tmux-cli", "session", "list")
+// ❌ output, err := cmd.Output()
+```
+
+### Rule 13: MCP Response Format (STRICT)
+
+- ✅ **ALWAYS** return Go types directly: `([]Window, error)`, `(*Window, error)`, `(string, error)`, `(bool, error)`
+- ✅ Let MCP SDK handle JSON serialization
+- ❌ **NEVER** pre-serialize to JSON strings
+- ❌ **NEVER** return `interface{}`
+
+**Tool Return Signatures:**
+```go
+// ✅ CORRECT - Go types, SDK handles serialization
+windows-list    → ([]Window, error)
+windows-create  → (*Window, error)
+windows-get     → (*Window, error)
+windows-kill    → (bool, error)
+windows-capture → (string, error)
+windows-send    → (bool, error)
+```
+
+### Rule 14: MCP Testing with Build Tags (STRICT)
+
+- ✅ **ALWAYS** use build tags to separate unit tests from integration tests
+- ✅ Unit tests: No build tag (run by default with `go test`)
+- ✅ Integration tests: `// +build tmux,integration` tag (require real tmux)
+- ❌ **NEVER** call real tmux in unit tests (use mocks)
+
+**File Structure:**
+```go
+// server_test.go - Unit tests (no build tag)
+package mcp
+
+import "testing"
+
+func TestServer_WindowsList_Success(t *testing.T) {
+    // Use mock SessionStore
+    mockStore := &MockSessionStore{...}
+    server := &Server{store: mockStore}
+    // ...
+}
+
+// server_integration_test.go - Integration tests
+// +build tmux,integration
+
+package mcp
+
+import "testing"
+
+func TestServer_WindowsList_RealTmux(t *testing.T) {
+    // Uses real tmux.Executor and real session files
+    // ...
+}
+```
+
+**Run commands:**
+```bash
+# Unit tests only (fast, no tmux required)
+go test ./internal/mcp/... -v
+
+# Integration tests (requires tmux)
+go test -tags=tmux,integration ./internal/mcp/... -v
+```
+
+---

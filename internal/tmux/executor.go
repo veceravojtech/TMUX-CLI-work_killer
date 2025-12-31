@@ -33,11 +33,31 @@ type TmuxExecutor interface {
 	// KillWindow kills a window in the specified session
 	// Returns nil if window doesn't exist (idempotent)
 	KillWindow(sessionID, windowID string) error
+
+	// SetWindowOption sets a user-defined window option (@option-name)
+	// Window user-options are prefixed with @ and scoped to the specific window
+	// Returns error if session or window doesn't exist
+	SetWindowOption(sessionID, windowID, optionName, value string) error
+
+	// GetWindowOption retrieves a user-defined window option value
+	// Returns error if option is not set or window/session doesn't exist
+	GetWindowOption(sessionID, windowID, optionName string) (string, error)
+
+	// CaptureWindowOutput captures the current pane content from a window
+	// Returns the captured text output from the pane
+	// Useful for checking command execution results and error messages
+	CaptureWindowOutput(sessionID, windowID string) (string, error)
+
+	// SendMessageWithFeedback sends a message and waits to capture the output
+	// Returns the captured output after a 1-second delay
+	// Useful for detecting command execution errors in the pane
+	SendMessageWithFeedback(sessionID, windowID, message string) (string, error)
 }
 
 // WindowInfo contains metadata about a tmux window
 type WindowInfo struct {
-	TmuxWindowID string // @0, @1, @2...
-	Name         string
-	Running      bool
+	TmuxWindowID   string // @0, @1, @2...
+	Name           string
+	Running        bool
+	CurrentCommand string // The command currently running in the pane (from #{pane_current_command})
 }

@@ -92,9 +92,8 @@ func TestAtomicWrite_Success_JSONIndented(t *testing.T) {
 		ProjectPath: "/tmp/test",
 		Windows: []Window{
 			{
-				TmuxWindowID:    "@0",
-				Name:            "editor",
-				RecoveryCommand: "vim",
+				TmuxWindowID: "@0",
+				Name:         "editor",
 			},
 		},
 	}
@@ -170,14 +169,12 @@ func TestAtomicWrite_WithWindows_PreservesAllData(t *testing.T) {
 		ProjectPath: "/tmp/test",
 		Windows: []Window{
 			{
-				TmuxWindowID:    "@0",
-				Name:            "editor",
-				RecoveryCommand: "vim main.go",
+				TmuxWindowID: "@0",
+				Name:         "editor",
 			},
 			{
-				TmuxWindowID:    "@1",
-				Name:            "tests",
-				RecoveryCommand: "go test -watch",
+				TmuxWindowID: "@1",
+				Name:         "tests",
 			},
 		},
 	}

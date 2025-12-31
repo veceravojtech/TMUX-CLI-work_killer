@@ -6,17 +6,10 @@ package store
 // Implementations must provide atomic file operations to prevent data corruption.
 type SessionStore interface {
 	// Save persists session data to storage using atomic file operations
+	// Writes full session JSON to {session.ProjectPath}/.tmux-session
 	Save(session *Session) error
 
-	// Load retrieves session data from storage by session ID
-	Load(id string) (*Session, error)
-
-	// Delete removes session data from storage by session ID
-	Delete(id string) error
-
-	// List returns all stored sessions
-	List() ([]*Session, error)
-
-	// Move relocates a session file to a destination directory (e.g., "ended" for archival)
-	Move(id string, destination string) error
+	// Load retrieves session data from project path
+	// Reads full session JSON from {projectPath}/.tmux-session
+	Load(projectPath string) (*Session, error)
 }
