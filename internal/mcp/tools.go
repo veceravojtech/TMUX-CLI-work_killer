@@ -382,8 +382,9 @@ func (s *Server) WindowsMessage(receiver, message string) (bool, string, error) 
 	formattedMessage := fmt.Sprintf("New message from: %s\n\n%s\n\nRespond available using: windows-message %s",
 		sender, message, sender)
 
-	// Send message using tmux.Executor (direct internal call)
-	err = s.executor.SendMessage(session.SessionID, receiverWindowID, formattedMessage)
+	// Send message with 1-second delay to ensure complete delivery of formatted multi-line message
+	// Using SendMessageWithDelay instead of SendMessage for windows-message MCP action
+	err = s.executor.SendMessageWithDelay(session.SessionID, receiverWindowID, formattedMessage)
 	if err != nil {
 		// Wrap tmux execution error with categorized error and context (STRICT Rule 9)
 		return false, "", fmt.Errorf("%w: session=%s window=%s: %w",

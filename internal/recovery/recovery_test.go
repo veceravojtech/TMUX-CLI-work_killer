@@ -112,6 +112,11 @@ func (m *MockTmuxExecutor) SendMessage(sessionID, windowID, message string) erro
 	return args.Error(0)
 }
 
+func (m *MockTmuxExecutor) SendMessageWithDelay(sessionID, windowID, message string) error {
+	args := m.Called(sessionID, windowID, message)
+	return args.Error(0)
+}
+
 func (m *MockTmuxExecutor) KillWindow(sessionID, windowID string) error {
 	args := m.Called(sessionID, windowID)
 	return args.Error(0)

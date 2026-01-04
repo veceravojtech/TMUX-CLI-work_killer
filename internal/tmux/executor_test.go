@@ -44,6 +44,10 @@ func (m *mockExecutor) SendMessage(sessionID, windowID, message string) error {
 	return nil
 }
 
+func (m *mockExecutor) SendMessageWithDelay(sessionID, windowID, message string) error {
+	return nil
+}
+
 func (m *mockExecutor) KillWindow(sessionID, windowID string) error {
 	return nil
 }

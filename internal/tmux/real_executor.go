@@ -228,6 +228,44 @@ func (e *RealTmuxExecutor) SendMessage(sessionID, windowID, message string) erro
 	return nil
 }
 
+// SendMessageWithDelay delivers a text message to a specific window with a 1-second delay before pressing Enter.
+// This is specifically designed for windows-message MCP action where formatted multi-line messages
+// need time to be fully delivered before execution.
+// The delay ensures that long formatted messages don't get truncated when sent character-by-character.
+// Command: tmux send-keys -t <sessionID>:<windowID> -l "<message>" && sleep 1 && tmux send-keys -t <sessionID>:<windowID> Enter
+func (e *RealTmuxExecutor) SendMessageWithDelay(sessionID, windowID, message string) error {
+	// Build target: session:window format (e.g., "uuid:@0")
+	target := sessionID + ":" + windowID
+
+	// Step 1: Send the message text with -l (literal) flag
+	cmd1 := exec.Command("tmux", "send-keys", "-t", target, "-l", message)
+	output1, err := cmd1.CombinedOutput()
+	if err != nil {
+		if cmd1.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux send-keys (text) failed (target: %s): %w: %s",
+			target, err, strings.TrimSpace(string(output1)))
+	}
+
+	// Step 2: Wait 1 second for complete message delivery
+	// This ensures formatted multi-line messages in windows-message are fully visible
+	time.Sleep(1 * time.Second)
+
+	// Step 3: Send Enter key to execute the message
+	cmd2 := exec.Command("tmux", "send-keys", "-t", target, "Enter")
+	output2, err := cmd2.CombinedOutput()
+	if err != nil {
+		if cmd2.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux send-keys (Enter) failed (target: %s): %w: %s",
+			target, err, strings.TrimSpace(string(output2)))
+	}
+
+	return nil
+}
+
 // KillWindow terminates a window in a session by ID
 // Command: tmux kill-window -t <sessionID>:<windowID>
 // This operation is idempotent - returns nil if window doesn't exist

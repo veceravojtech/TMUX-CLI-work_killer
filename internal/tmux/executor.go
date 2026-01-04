@@ -30,6 +30,11 @@ type TmuxExecutor interface {
 	// Implements FR35, FR37
 	SendMessage(sessionID, windowID, message string) error
 
+	// SendMessageWithDelay sends a text message with a 1-second delay before pressing Enter
+	// Used specifically for windows-message MCP action where formatted multi-line messages
+	// need time to be fully delivered before execution
+	SendMessageWithDelay(sessionID, windowID, message string) error
+
 	// KillWindow kills a window in the specified session
 	// Returns nil if window doesn't exist (idempotent)
 	KillWindow(sessionID, windowID string) error

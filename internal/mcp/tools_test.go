@@ -1512,7 +1512,7 @@ func TestServer_WindowsMessage_Success(t *testing.T) {
 	// Mock executor to verify formatted message is sent with sender window name
 	mockExecutor := new(testutil.MockTmuxExecutor)
 	expectedMessage := "New message from: supervisor\n\nPlease run the build command.\n\nRespond available using: windows-message supervisor"
-	mockExecutor.On("SendMessage", "sender-session-uuid", "@1", expectedMessage).Return(nil)
+	mockExecutor.On("SendMessageWithDelay", "sender-session-uuid", "@1", expectedMessage).Return(nil)
 
 	server := &Server{
 		store:       mockStore,
@@ -1553,7 +1553,7 @@ func TestServer_WindowsMessage_Success_WithWindowID(t *testing.T) {
 	// Mock executor (sender should be window name "main")
 	mockExecutor := new(testutil.MockTmuxExecutor)
 	expectedMessage := "New message from: main\n\nStatus update\n\nRespond available using: windows-message main"
-	mockExecutor.On("SendMessage", "test-session", "@1", expectedMessage).Return(nil)
+	mockExecutor.On("SendMessageWithDelay", "test-session", "@1", expectedMessage).Return(nil)
 
 	server := &Server{
 		store:       mockStore,
@@ -1696,7 +1696,7 @@ func TestServer_WindowsMessage_Error_SendMessageFailed(t *testing.T) {
 	mockExecutor := new(testutil.MockTmuxExecutor)
 	expectedMessage := "New message from: supervisor\n\ntest message\n\nRespond available using: windows-message supervisor"
 	tmuxError := errors.New("tmux send-keys failed")
-	mockExecutor.On("SendMessage", "test-session", "@1", expectedMessage).Return(tmuxError)
+	mockExecutor.On("SendMessageWithDelay", "test-session", "@1", expectedMessage).Return(tmuxError)
 
 	server := &Server{
 		store:       mockStore,

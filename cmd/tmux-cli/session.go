@@ -160,12 +160,45 @@ Example:
 	RunE: runWindowsCapture,
 }
 
+var windowsMessageCmd = &cobra.Command{
+	Use:   "windows-message",
+	Short: "Send a formatted message to another window",
+	Long: `Send a formatted message to another window with auto-detected sender.
+
+This command enables inter-window AI agent communication with a consistent
+message format that includes sender identification, message body, and reply instructions.
+
+The message is delivered with a 1-second delay to ensure complete delivery of formatted
+multi-line messages.
+
+Window Identifier:
+  - Use window ID (e.g., @0, @1) for direct window access
+  - Use window name (e.g., "supervisor", "bmad-worker") for friendly access
+
+Examples:
+  # Send message from current window to supervisor window
+  tmux-cli windows-message --receiver supervisor --message "Task completed successfully"
+
+  # Send message to worker window using window ID
+  tmux-cli windows-message --receiver @1 --message "Starting new task"
+
+The message will be formatted as:
+  New message from: {sender}
+
+  {message}
+
+  Respond available using: windows-message {sender}`,
+	RunE: runWindowsMessage,
+}
+
 var (
-	projectPath  string
-	windowName   string
-	windowIDFlag string
-	sendWindowID string
-	sendMessage  string
+	projectPath     string
+	windowName      string
+	windowIDFlag    string
+	sendWindowID    string
+	sendMessage     string
+	messageReceiver string
+	messageText     string
 )
 
 func init() {
@@ -195,6 +228,12 @@ func init() {
 	windowsCaptureCmd.Flags().StringVar(&windowIDFlag, "window-id", "", "Tmux window ID (e.g., @0, @1)")
 	windowsCaptureCmd.MarkFlagRequired("window-id")
 
+	// Add flags to windows-message command
+	windowsMessageCmd.Flags().StringVar(&messageReceiver, "receiver", "", "Target window ID or name (e.g., @0, supervisor)")
+	windowsMessageCmd.Flags().StringVar(&messageText, "message", "", "Message text to send")
+	windowsMessageCmd.MarkFlagRequired("receiver")
+	windowsMessageCmd.MarkFlagRequired("message")
+
 	// Add all commands directly to root
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(killCmd)
@@ -208,6 +247,7 @@ func init() {
 	rootCmd.AddCommand(windowsSendCmd)
 	rootCmd.AddCommand(windowsUuidCmd)
 	rootCmd.AddCommand(windowsCaptureCmd)
+	rootCmd.AddCommand(windowsMessageCmd)
 	rootCmd.AddCommand(mcpCmd)
 }
 
@@ -1035,6 +1075,87 @@ func runSessionSend(cmd *cobra.Command, args []string) error {
 	// 7. Success feedback (FR38)
 	fmt.Printf("Message sent to window %s (%s) in session %s\n",
 		resolvedWindowID, windowName, sess.SessionID)
+
+	return nil
+}
+
+func runWindowsMessage(cmd *cobra.Command, args []string) error {
+	// Validate receiver (window identifier) is provided
+	if messageReceiver == "" {
+		return NewUsageError("receiver window identifier is required (use --receiver flag with window ID like @0 or window name like 'supervisor')")
+	}
+
+	// Validate message is not empty
+	if messageText == "" {
+		return NewUsageError("message is required (use --message flag)")
+	}
+
+	// Create dependencies
+	executor := tmux.NewTmuxExecutor()
+	fileStore, err := store.NewFileSessionStore()
+	if err != nil {
+		return fmt.Errorf("initialize session store: %w", err)
+	}
+	recoveryManager := recovery.NewSessionRecoveryManager(fileStore, executor)
+
+	// 1. Load session from current directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+	sess, err := fileStore.Load(cwd)
+	if err != nil {
+		return fmt.Errorf("load session: %w", err)
+	}
+
+	// 2. Check for recovery and trigger if needed
+	err = MaybeRecoverSession(sess, recoveryManager)
+	if err != nil {
+		return err
+	}
+
+	// 3. Auto-detect sender from TMUX_WINDOW_UUID environment variable
+	senderUUID := os.Getenv("TMUX_WINDOW_UUID")
+	sender := sess.SessionID // Default fallback to session ID if UUID not found
+
+	// Find window with matching UUID to get its name
+	if senderUUID != "" {
+		for _, window := range sess.Windows {
+			if window.UUID == senderUUID {
+				sender = window.Name
+				break
+			}
+		}
+	}
+
+	// 4. Resolve receiver window identifier (ID or name) to window ID
+	receiverWindowID, err := ResolveWindowIdentifier(sess, messageReceiver)
+	if err != nil {
+		return fmt.Errorf("resolve receiver window identifier: %w", err)
+	}
+
+	// 5. Get receiver window name for feedback
+	var receiverWindowName string
+	for _, window := range sess.Windows {
+		if window.TmuxWindowID == receiverWindowID {
+			receiverWindowName = window.Name
+			break
+		}
+	}
+
+	// 6. Build formatted message with sender, message body, and reply instructions
+	formattedMessage := fmt.Sprintf("New message from: %s\n\n%s\n\nRespond available using: windows-message %s",
+		sender, messageText, sender)
+
+	// 7. Send message with delay via tmux executor
+	err = executor.SendMessageWithDelay(sess.SessionID, receiverWindowID, formattedMessage)
+	if err != nil {
+		return fmt.Errorf("send message: %w", err)
+	}
+
+	// 8. Success feedback
+	fmt.Printf("Message sent from %s to window %s (%s) in session %s\n",
+		sender, receiverWindowID, receiverWindowName, sess.SessionID)
 
 	return nil
 }

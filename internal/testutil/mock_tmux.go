@@ -62,6 +62,12 @@ func (m *MockTmuxExecutor) SendMessage(sessionID, windowID, message string) erro
 	return args.Error(0)
 }
 
+// SendMessageWithDelay mocks sending a text message with a 1-second delay
+func (m *MockTmuxExecutor) SendMessageWithDelay(sessionID, windowID, message string) error {
+	args := m.Called(sessionID, windowID, message)
+	return args.Error(0)
+}
+
 // KillWindow mocks killing a window in a session
 func (m *MockTmuxExecutor) KillWindow(sessionID, windowID string) error {
 	args := m.Called(sessionID, windowID)
