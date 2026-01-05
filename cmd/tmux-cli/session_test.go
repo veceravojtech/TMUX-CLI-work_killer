@@ -150,29 +150,6 @@ func TestFindWindowByID_EmptySession(t *testing.T) {
 	assert.Nil(t, window)
 }
 
-// TestWindowsGetCmd_Exists verifies the windows-get command is registered
-func TestWindowsGetCmd_Exists(t *testing.T) {
-	cmd, _, err := rootCmd.Find([]string{"windows-get"})
-	assert.NoError(t, err, "windows-get command should be registered")
-	assert.NotNil(t, cmd, "windows-get command should exist")
-	assert.Equal(t, "windows-get", cmd.Use, "command name should be 'windows-get'")
-}
-
-// TestWindowsGetCmd_RequiredFlags verifies required flags exist
-func TestWindowsGetCmd_RequiredFlags(t *testing.T) {
-	cmd, _, err := rootCmd.Find([]string{"windows-get"})
-	assert.NoError(t, err)
-	require.NotNil(t, cmd)
-
-	// Verify --id flag no longer exists (sessions auto-detected via .tmux-session file)
-	idFlag := cmd.Flags().Lookup("id")
-	assert.Nil(t, idFlag, "--id flag should not exist (sessions auto-detected)")
-
-	// Check --window-id flag exists
-	windowIDFlag := cmd.Flags().Lookup("window-id")
-	assert.NotNil(t, windowIDFlag, "--window-id flag should exist")
-}
-
 // TestWindowsKillCmd_Exists verifies the windows-kill command is registered
 func TestWindowsKillCmd_Exists(t *testing.T) {
 	cmd, _, err := rootCmd.Find([]string{"windows-kill"})
@@ -230,4 +207,75 @@ func TestWindowsKill_HappyPath(t *testing.T) {
 	// Note: This requires integration with mock executor and store
 	// Will be implemented in Phase 2.3 (mock verification tests)
 	t.Skip("Requires mock executor integration - see Phase 2.3 tests below")
+}
+
+// ============================================================================
+// Unique Window Names Validation Tests
+// ============================================================================
+
+// TestIsDuplicateWindowName_ExactMatch verifies exact name match detection
+func TestIsDuplicateWindowName_ExactMatch(t *testing.T) {
+	sess := &store.Session{
+		SessionID: "test-session",
+		Windows: []store.Window{
+			{TmuxWindowID: "@0", Name: "supervisor", UUID: "uuid-1"},
+			{TmuxWindowID: "@1", Name: "worker", UUID: "uuid-2"},
+		},
+	}
+
+	// Test exact match
+	isDup, existingName, windowID := isDuplicateWindowName(sess, "supervisor")
+	assert.True(t, isDup, "should detect exact duplicate name")
+	assert.Equal(t, "supervisor", existingName)
+	assert.Equal(t, "@0", windowID)
+}
+
+// TestIsDuplicateWindowName_CaseInsensitive verifies case-insensitive matching
+func TestIsDuplicateWindowName_CaseInsensitive(t *testing.T) {
+	sess := &store.Session{
+		SessionID: "test-session",
+		Windows: []store.Window{
+			{TmuxWindowID: "@0", Name: "hook-test", UUID: "uuid-1"},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		inputName     string
+		shouldMatch   bool
+		expectedFound string
+	}{
+		{"uppercase", "HOOK-TEST", true, "hook-test"},
+		{"mixed case", "Hook-Test", true, "hook-test"},
+		{"different name", "other-window", false, ""},
+		{"partial match", "hook", false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isDup, existingName, windowID := isDuplicateWindowName(sess, tt.inputName)
+			if tt.shouldMatch {
+				assert.True(t, isDup, "should detect case-insensitive duplicate")
+				assert.Equal(t, tt.expectedFound, existingName)
+				assert.Equal(t, "@0", windowID)
+			} else {
+				assert.False(t, isDup, "should not match different name")
+				assert.Equal(t, "", existingName)
+				assert.Equal(t, "", windowID)
+			}
+		})
+	}
+}
+
+// TestIsDuplicateWindowName_EmptySession verifies behavior with no windows
+func TestIsDuplicateWindowName_EmptySession(t *testing.T) {
+	sess := &store.Session{
+		SessionID: "test-session",
+		Windows:   []store.Window{},
+	}
+
+	isDup, existingName, windowID := isDuplicateWindowName(sess, "any-name")
+	assert.False(t, isDup, "empty session should allow any name")
+	assert.Equal(t, "", existingName)
+	assert.Equal(t, "", windowID)
 }

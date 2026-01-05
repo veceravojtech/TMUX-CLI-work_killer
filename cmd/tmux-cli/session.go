@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/console/tmux-cli/internal/recovery"
@@ -76,18 +78,6 @@ If session is killed, shows what windows WILL be recovered.
 Example:
   tmux-cli windows-list --id abc-123`,
 	RunE: runWindowsList,
-}
-
-var windowsGetCmd = &cobra.Command{
-	Use:   "windows-get",
-	Short: "Get details of a specific window",
-	Long: `Get detailed information about a specific window by its tmux window ID.
-
-Shows window ID, name, recovery command, and current status (running or not).
-
-Example:
-  tmux-cli windows-get --id abc-123 --window-id @0`,
-	RunE: runWindowsGet,
 }
 
 var windowsKillCmd = &cobra.Command{
@@ -185,10 +175,29 @@ Examples:
 The message will be formatted as:
   New message from: {sender}
 
-  {message}
-
-  Respond available using: windows-message {sender}`,
+  {message}`,
 	RunE: runWindowsMessage,
+}
+
+var installProjectFilesCmd = &cobra.Command{
+	Use:   "install-project-files",
+	Short: "Install Claude Code hooks and project files",
+	Long: `Install Claude Code hooks and create required project directories.
+
+This command automatically:
+  - Creates .claude/settings.json with hook configuration
+  - Sets executable permissions on hook scripts
+  - Creates required directories (.tmux-cli/logs/)
+
+The hooks integrate tmux-cli with Claude Code for session lifecycle management.
+
+Examples:
+  # Install project files
+  tmux-cli install-project-files
+
+  # Force overwrite existing settings
+  tmux-cli install-project-files --force`,
+	RunE: runInstallProjectFiles,
 }
 
 var (
@@ -199,16 +208,13 @@ var (
 	sendMessage     string
 	messageReceiver string
 	messageText     string
+	forceInstall    bool
 )
 
 func init() {
 	// Add flags to windows-create command
 	windowsCreateCmd.Flags().StringVar(&windowName, "name", "", "Window name (required)")
 	windowsCreateCmd.MarkFlagRequired("name")
-
-	// Add flags to windows-get command
-	windowsGetCmd.Flags().StringVar(&windowIDFlag, "window-id", "", "Tmux window ID (e.g., @0, @1)")
-	windowsGetCmd.MarkFlagRequired("window-id")
 
 	// Add flags to windows-kill command
 	windowsKillCmd.Flags().StringVar(&windowIDFlag, "window-id", "", "Tmux window ID to kill (e.g., @0, @1)")
@@ -234,6 +240,9 @@ func init() {
 	windowsMessageCmd.MarkFlagRequired("receiver")
 	windowsMessageCmd.MarkFlagRequired("message")
 
+	// Add flags to install-project-files command
+	installProjectFilesCmd.Flags().BoolVar(&forceInstall, "force", false, "Overwrite existing .claude/settings.json without prompting")
+
 	// Add all commands directly to root
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(killCmd)
@@ -242,13 +251,13 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(windowsCreateCmd)
 	rootCmd.AddCommand(windowsListCmd)
-	rootCmd.AddCommand(windowsGetCmd)
 	rootCmd.AddCommand(windowsKillCmd)
 	rootCmd.AddCommand(windowsSendCmd)
 	rootCmd.AddCommand(windowsUuidCmd)
 	rootCmd.AddCommand(windowsCaptureCmd)
 	rootCmd.AddCommand(windowsMessageCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(installProjectFilesCmd)
 }
 
 // UsageError represents an error in command usage or arguments
@@ -615,6 +624,17 @@ func determineExitCodeEnhanced(err error) int {
 	}
 }
 
+// isDuplicateWindowName checks if a window with the given name already exists in the session (case-insensitive).
+// Returns (true, existingName, existingWindowID) if duplicate found, otherwise (false, "", "").
+func isDuplicateWindowName(sess *store.Session, name string) (bool, string, string) {
+	for _, w := range sess.Windows {
+		if strings.EqualFold(w.Name, name) {
+			return true, w.Name, w.TmuxWindowID
+		}
+	}
+	return false, "", ""
+}
+
 func runWindowsCreate(cmd *cobra.Command, args []string) error {
 	// 1. Create dependencies
 	executor := tmux.NewTmuxExecutor()
@@ -628,7 +648,7 @@ func runWindowsCreate(cmd *cobra.Command, args []string) error {
 		return NewUsageError("--name flag is required")
 	}
 
-	// 4. Load session to verify it exists and get session object
+	// 3. Load session to verify it exists and get session object
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
@@ -639,6 +659,11 @@ func runWindowsCreate(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("session not found in current directory")
 		}
 		return fmt.Errorf("load session: %w", err)
+	}
+
+	// 4. Validate window name uniqueness (case-insensitive)
+	if isDuplicate, existingName, existingWindowID := isDuplicateWindowName(sess, windowName); isDuplicate {
+		return NewUsageError(fmt.Sprintf("window name %q already exists (found as %q in window %s)", windowName, existingName, existingWindowID))
 	}
 
 	// 5. Check for recovery and trigger if needed (Story 3.3)
@@ -694,8 +719,7 @@ func runWindowsCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		// Post-command failure is not fatal - window is created and UUID is exported
 		// The user can manually run commands in the window
-		// TODO: Add logging when logging infrastructure is available
-		_ = err // Suppress unused variable warning
+		fmt.Fprintf(os.Stderr, "Warning: post-command execution failed for window %s: %v\n", windowID, err)
 	}
 
 	// 11. Append window to session
@@ -844,70 +868,6 @@ func getWindowStatus(executor tmux.TmuxExecutor, sessionID string, windowID stri
 	return "Not found in tmux (may be dead)", nil
 }
 
-func runWindowsGet(cmd *cobra.Command, args []string) error {
-	// 1. Validate window ID format
-	if err := validateWindowID(windowIDFlag); err != nil {
-		return NewUsageError(err.Error())
-	}
-
-	// 2. Create dependencies
-	executor := tmux.NewTmuxExecutor()
-	fileStore, err := store.NewFileSessionStore()
-	if err != nil {
-		return fmt.Errorf("initialize session store: %w", err)
-	}
-
-	// 3. Get session ID from .tmux-session file
-	sessionID, err := GetSessionIDFromFile(fileStore)
-	if err != nil {
-		return err
-	}
-
-	// 4. Load session from store
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-	sess, err := fileStore.Load(cwd)
-	if err != nil {
-		if errors.Is(err, store.ErrSessionNotFound) {
-			return fmt.Errorf("session not found in current directory")
-		}
-		return fmt.Errorf("load session: %w", err)
-	}
-
-	// 5. Check for recovery and trigger if needed (Story 3.3)
-	recoveryManager := recovery.NewSessionRecoveryManager(fileStore, executor)
-	err = MaybeRecoverSession(sess, recoveryManager)
-	if err != nil {
-		return err
-	}
-
-	// 6. Find window in session
-	window, err := findWindowByID(sess, windowIDFlag)
-	if err != nil {
-		return fmt.Errorf("window %s not found in session %s", windowIDFlag, sessionID)
-	}
-
-	// 7. Get window status
-	status, err := getWindowStatus(executor, sess.SessionID, windowIDFlag)
-	if err != nil {
-		// Non-fatal error, show "Unknown" status
-		status = "Unknown"
-	}
-
-	// 8. Display window details
-	fmt.Println("Window Details:")
-	fmt.Println()
-	fmt.Printf("Session ID: %s\n", sess.SessionID)
-	fmt.Printf("Window ID: %s\n", window.TmuxWindowID)
-	fmt.Printf("Name: %s\n", window.Name)
-	fmt.Printf("Recovery Command: zsh\n") // Always uses zsh
-	fmt.Printf("Status: %s\n", status)
-
-	return nil
-}
-
 // runWindowsKill kills a window and removes it from the session file
 //
 // Invariants and Recovery Behavior (Fixed - Tech Spec):
@@ -1006,7 +966,7 @@ func runWindowsKill(cmd *cobra.Command, args []string) error {
 		sess.Windows = originalWindows
 		rollbackErr := fileStore.Save(sess)
 		if rollbackErr != nil {
-			return fmt.Errorf("kill window failed: %w; rollback also failed: %v (manual recovery may be needed)", err, rollbackErr)
+			return fmt.Errorf("kill window failed: %w; rollback also failed: %v\n\nManual recovery steps:\n1. Check if window %s still exists: tmux list-windows -t %s\n2. If window exists, session file is out of sync - re-run this command\n3. If window doesn't exist, manually edit .tmux-session to add it back", err, rollbackErr, windowIDFlag, sess.SessionID)
 		}
 		return fmt.Errorf("kill window %s failed: %w (session file rolled back, window restored)", windowIDFlag, err)
 	}
@@ -1144,8 +1104,8 @@ func runWindowsMessage(cmd *cobra.Command, args []string) error {
 	}
 
 	// 6. Build formatted message with sender, message body, and reply instructions
-	formattedMessage := fmt.Sprintf("New message from: %s\n\n%s\n\nRespond available using: windows-message %s",
-		sender, messageText, sender)
+	formattedMessage := fmt.Sprintf("New message from: %s\n\n%s\n",
+		sender, messageText)
 
 	// 7. Send message with delay via tmux executor
 	err = executor.SendMessageWithDelay(sess.SessionID, receiverWindowID, formattedMessage)
@@ -1266,5 +1226,165 @@ func runWindowsCapture(cmd *cobra.Command, args []string) error {
 
 	// 6. Output the captured content
 	fmt.Print(output)
+	return nil
+}
+
+// ClaudeSettings represents the .claude/settings.json structure
+type ClaudeSettings struct {
+	Hooks HooksConfig `json:"hooks"`
+}
+
+// HooksConfig represents the hooks configuration
+type HooksConfig struct {
+	SessionStart []HookGroup `json:"SessionStart,omitempty"`
+	SessionEnd   []HookGroup `json:"SessionEnd,omitempty"`
+	Stop         []HookGroup `json:"Stop,omitempty"`
+}
+
+// HookGroup represents a group of hooks
+type HookGroup struct {
+	Hooks []Hook `json:"hooks"`
+}
+
+// Hook represents a single hook command
+type Hook struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Timeout int    `json:"timeout"`
+}
+
+func runInstallProjectFiles(cmd *cobra.Command, args []string) error {
+	// 1. Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	// 2. Validate scripts/hooks/ directory exists
+	hooksDir := filepath.Join(cwd, "scripts", "hooks")
+	if _, err := os.Stat(hooksDir); os.IsNotExist(err) {
+		return fmt.Errorf("scripts/hooks/ directory not found in current directory\nThis command must be run from the tmux-cli project root")
+	}
+
+	// 3. Check if .claude/settings.json exists
+	claudeDir := filepath.Join(cwd, ".claude")
+	settingsFile := filepath.Join(claudeDir, "settings.json")
+	settingsExists := false
+	if _, err := os.Stat(settingsFile); err == nil {
+		settingsExists = true
+	}
+
+	// 4. If exists and not --force, prompt user for confirmation
+	if settingsExists && !forceInstall {
+		fmt.Printf("Warning: .claude/settings.json already exists.\n")
+		fmt.Printf("This will overwrite the existing file.\n")
+		fmt.Printf("\nContinue? (y/n): ")
+
+		var response string
+		fmt.Scanln(&response)
+		if response != "y" && response != "Y" {
+			fmt.Println("Installation cancelled")
+			return nil
+		}
+	}
+
+	// 5. Create required directories first (before writing settings that depend on them)
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		return fmt.Errorf("create .claude directory: %w", err)
+	}
+
+	logsDir := filepath.Join(cwd, ".tmux-cli", "logs")
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		return fmt.Errorf("create .tmux-cli/logs directory: %w", err)
+	}
+
+	// 6. Create hook configuration
+	settings := ClaudeSettings{
+		Hooks: HooksConfig{
+			SessionStart: []HookGroup{
+				{
+					Hooks: []Hook{
+						{
+							Type:    "command",
+							Command: `"$CLAUDE_PROJECT_DIR"/scripts/hooks/tmux-session-notify.sh start`,
+							Timeout: 10,
+						},
+					},
+				},
+			},
+			SessionEnd: []HookGroup{
+				{
+					Hooks: []Hook{
+						{
+							Type:    "command",
+							Command: `"$CLAUDE_PROJECT_DIR"/scripts/hooks/tmux-session-notify.sh end`,
+							Timeout: 10,
+						},
+					},
+				},
+			},
+			Stop: []HookGroup{
+				{
+					Hooks: []Hook{
+						{
+							Type:    "command",
+							Command: `"$CLAUDE_PROJECT_DIR"/scripts/hooks/tmux-session-notify.sh stop`,
+							Timeout: 10,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// 7. Marshal to JSON with proper indentation
+	jsonData, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal settings to JSON: %w", err)
+	}
+
+	// 8. Write to .claude/settings.json
+	if err := os.WriteFile(settingsFile, jsonData, 0644); err != nil {
+		return fmt.Errorf("write settings file: %w", err)
+	}
+
+	filesModified := []string{".claude/settings.json"}
+
+	// 9. Set executable permissions on hook scripts
+	hookScripts, err := filepath.Glob(filepath.Join(hooksDir, "*.sh"))
+	if err != nil {
+		return fmt.Errorf("find hook scripts: %w", err)
+	}
+
+	permissionErrors := []string{}
+	for _, script := range hookScripts {
+		if err := os.Chmod(script, 0755); err != nil {
+			relPath, _ := filepath.Rel(cwd, script)
+			permissionErrors = append(permissionErrors, fmt.Sprintf("%s: %v", relPath, err))
+		} else {
+			relPath, _ := filepath.Rel(cwd, script)
+			filesModified = append(filesModified, relPath)
+		}
+	}
+
+	// If any permission setting failed, return error (hooks won't work)
+	if len(permissionErrors) > 0 {
+		return fmt.Errorf("failed to set executable permissions on hook scripts:\n  %s", strings.Join(permissionErrors, "\n  "))
+	}
+
+	// Add logs directory to modified files list (already created in step 5)
+	filesModified = append(filesModified, ".tmux-cli/logs/")
+
+	// 10. Success message
+	fmt.Println("✓ Project files installed successfully")
+	fmt.Println()
+	fmt.Println("Files created/modified:")
+	for _, file := range filesModified {
+		fmt.Printf("  - %s\n", file)
+	}
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  Run 'claude' in this directory to use the configured hooks")
+
 	return nil
 }
