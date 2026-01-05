@@ -32,13 +32,18 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
-# Search for UUID in windows array
-FOUND=$(jq -r --arg uuid "$WINDOW_UUID" '.windows[]?.uuid // empty | select(. == $uuid)' "$SESSION_FILE" 2>/dev/null || echo "")
+# Search for UUID and get window name
+WINDOW_NAME=$(jq -r --arg uuid "$WINDOW_UUID" '.windows[]? | select(.uuid == $uuid) | .name // empty' "$SESSION_FILE" 2>/dev/null || echo "")
 
-if [[ -z "$FOUND" ]]; then
+if [[ -z "$WINDOW_NAME" ]]; then
     # UUID not found in session - unauthorized window
     exit 1
 fi
 
-# Valid window - allow logging
+if [[ "$WINDOW_NAME" == "supervisor" ]]; then
+    # Supervisor window - skip hooks
+    exit 1
+fi
+
+# Valid non-supervisor window - allow logging
 exit 0
