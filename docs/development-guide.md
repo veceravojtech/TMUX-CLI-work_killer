@@ -274,6 +274,150 @@ go test ./path/to/package -v -failfast
 go list -json ./path/to/package
 ```
 
+### Debugging PostCommand Failures
+
+When worker windows fail to start Claude properly, use the PostCommand logs to diagnose the issue.
+
+#### What is PostCommand?
+
+PostCommand is the fallback system that launches Claude in new tmux windows. It tries three commands in sequence:
+
+1. `claude --session-id="$TMUX_WINDOW_UUID"` (preferred - uses window UUID)
+2. `claude --resume "$TMUX_WINDOW_UUID"` (fallback - resumes conversation)
+3. `claude --dangerously-skip-permissions` (final fallback - fresh start)
+
+Each command has an error pattern that triggers the next fallback:
+- Command 1 fails if session ID is "already in use"
+- Command 2 fails if "No conversation found"
+- Command 3 has no error pattern (always succeeds)
+
+#### Log File Location
+
+All PostCommand execution is logged to:
+```
+.tmux-cli/logs/postcommand.log
+```
+
+#### Reading PostCommand Logs
+
+Each log entry contains:
+- **Timestamp**: When the command was attempted
+- **Window ID**: Tmux window identifier (e.g., `@3`)
+- **Session ID**: tmux-cli session UUID
+- **Command Index**: Which fallback command (e.g., `Cmd=2/3` = second of three commands)
+- **Decision**: What happened (`Attempting`, `Output captured`, `SUCCESS`, `Failed`, etc.)
+- **Command**: The actual command executed
+- **Output**: First 200 characters of pane output
+- **Error**: Error message if command failed
+
+#### Example Log Output
+
+```
+[2026-01-05 16:30:12] Window=@3 SessionID=abc123 Cmd=0/3: Starting PostCommand fallback chain
+[2026-01-05 16:30:12] Window=@3 SessionID=abc123 Cmd=1/3: Attempting | Command: claude --session-id="$TMUX_WINDOW_UUID"
+[2026-01-05 16:30:14] Window=@3 SessionID=abc123 Cmd=1/3: Output captured | Command: claude --session-id="$TMUX_WINDOW_UUID" | Output: Error: Session ID abc123 is already in use...
+[2026-01-05 16:30:14] Window=@3 SessionID=abc123 Cmd=1/3: Checking pattern "already in use"
+[2026-01-05 16:30:14] Window=@3 SessionID=abc123 Cmd=1/3: Pattern "already in use" → MATCH
+[2026-01-05 16:30:14] Window=@3 SessionID=abc123 Cmd=1/3: Failed → trying next fallback
+[2026-01-05 16:30:14] Window=@3 SessionID=abc123 Cmd=2/3: Attempting | Command: claude --resume "abc123"
+[2026-01-05 16:30:16] Window=@3 SessionID=abc123 Cmd=2/3: Output captured | Command: claude --resume "abc123" | Output: Error: No conversation found...
+[2026-01-05 16:30:16] Window=@3 SessionID=abc123 Cmd=2/3: Checking pattern "No conversation found"
+[2026-01-05 16:30:16] Window=@3 SessionID=abc123 Cmd=2/3: Pattern "No conversation found" → MATCH
+[2026-01-05 16:30:16] Window=@3 SessionID=abc123 Cmd=2/3: Failed → trying next fallback
+[2026-01-05 16:30:16] Window=@3 SessionID=abc123 Cmd=3/3: Attempting | Command: claude --dangerously-skip-permissions
+[2026-01-05 16:30:18] Window=@3 SessionID=abc123 Cmd=3/3: Output captured | Command: claude --dangerously-skip-permissions | Output: <Claude Code startup messages>
+[2026-01-05 16:30:18] Window=@3 SessionID=abc123 Cmd=3/3: No error pattern to check (final fallback)
+[2026-01-05 16:30:18] Window=@3 SessionID=abc123 Cmd=3/3: SUCCESS
+[2026-01-05 16:30:18] Window=@3 SessionID=abc123 Cmd=0/3: PostCommand chain completed successfully
+```
+
+#### Debugging Workflow
+
+When a worker window is stuck at a shell prompt instead of running Claude:
+
+```bash
+# 1. Check the PostCommand log
+tail -f .tmux-cli/logs/postcommand.log
+
+# 2. Look for the window ID that's stuck (e.g., @3)
+grep "@3" .tmux-cli/logs/postcommand.log
+
+# 3. Find which command failed and why
+grep "@3" .tmux-cli/logs/postcommand.log | grep -E "(Failed|Error|FAILURE)"
+
+# 4. Check the captured output from failed commands
+grep "@3" .tmux-cli/logs/postcommand.log | grep "Output captured"
+```
+
+#### Common Failure Patterns
+
+**Pattern: All three commands show "MATCH" → final FAILURE**
+```
+Cmd=3/3: Pattern "some error" → MATCH
+All fallbacks exhausted → FAILURE
+```
+- **Cause**: Third fallback command is failing but no error pattern is configured
+- **Solution**: Check the actual output captured from command 3
+- **Common Reason**: Claude CLI not installed or not in PATH
+
+**Pattern: Command succeeds but window still at prompt**
+```
+Cmd=3/3: SUCCESS
+PostCommand chain completed successfully
+```
+- **Cause**: Claude started but then exited immediately
+- **Solution**: Check Claude CLI authentication, check for startup errors in window pane
+- **Debug**: Manually run the command in the window to see error output
+
+**Pattern: No log entries for window**
+- **Cause**: PostCommand not configured or disabled
+- **Solution**: Check `.tmux-session` file has `postCommand.enabled: true`
+
+**Pattern: Logs show timeout/no output captured**
+```
+Cmd=1/3: Output captured | Output:
+```
+- **Cause**: Command took longer than 2 seconds to produce output
+- **Solution**: Check if network is slow, Claude CLI is hanging during auth
+
+#### Manual Testing
+
+Test PostCommand execution manually:
+
+```bash
+# 1. Create a new tmux session
+tmux new-session -d -s test-session
+
+# 2. Get the window ID
+tmux list-windows -t test-session -F "#{window_id}"  # e.g., @0
+
+# 3. Send the command
+tmux send-keys -t test-session:@0 "claude --dangerously-skip-permissions" Enter
+
+# 4. Wait 2 seconds and capture output
+sleep 2
+tmux capture-pane -t test-session:@0 -p
+
+# 5. Check for errors
+tmux capture-pane -t test-session:@0 -p | grep -i error
+
+# 6. Cleanup
+tmux kill-session -t test-session
+```
+
+#### Implementation Details
+
+- **Log Location**: `.tmux-cli/logs/postcommand.log` (created automatically)
+- **Timing**: Each command waits 2 seconds to capture output (increased from 1s to give Claude more startup time)
+- **Output Truncation**: Log entries truncate output to first 200 characters for readability
+- **Non-Fatal Logging**: Log write errors are silently suppressed - they never block window creation
+- **Concurrent Writes**: Multiple windows may write to the log concurrently (append-only, acceptable race condition)
+
+**Source Files:**
+- `internal/session/postcommand.go:17-156` - PostCommand execution and logging
+- `internal/tmux/real_executor.go:382-402` - SendMessageWithFeedback (2-second delay)
+- `internal/store/types.go:33-46` - Default PostCommand configuration
+
 ## Project Organization Rules
 
 ### Directory Structure (STRICT)
@@ -350,6 +494,90 @@ Implements kill-window subcommand with idempotent behavior.
 Includes integration tests with real tmux.
 
 Implements: FR18, FR19
+```
+
+## Claude Code Hooks Integration
+
+### Overview
+
+tmux-cli integrates with Claude Code's official hooks system to enable:
+- **Session Validation**: Verify window membership before logging
+- **Activity Logging**: Stream tool usage to window-specific log files
+- **Lifecycle Tracking**: Record session start/end/stop events
+
+### Hook Scripts Location
+
+All hook scripts are in `scripts/hooks/`:
+- `tmux-validate-session.sh` - Validates window UUID exists in `.tmux-session`
+- `tmux-logger.sh` - Logs PostToolUse events to `.tmux-cli/logs/{uuid}.jsonl`
+- `tmux-session-notify.sh` - Logs session lifecycle to `.tmux-cli/logs/sessions.jsonl`
+
+### Configuration
+
+Hooks are configured in `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": {
+      "command": "bash",
+      "args": ["scripts/hooks/tmux-logger.sh"],
+      "timeout": 10000,
+      "stdin": "json"
+    },
+    "SessionStart": {
+      "command": "bash",
+      "args": ["scripts/hooks/tmux-session-notify.sh", "start"],
+      "timeout": 30000,
+      "stdin": "json"
+    }
+  }
+}
+```
+
+### Log Files
+
+Logs are written to `.tmux-cli/logs/`:
+- `{window-uuid}.jsonl` - Window-specific activity logs (JSON Lines)
+- `sessions.jsonl` - Session lifecycle events
+
+### Testing Hooks
+
+```bash
+# 1. Test validation script
+cd /path/to/project
+echo '{"windows":[{"uuid":"test-uuid"}]}' > .tmux-session
+TMUX_WINDOW_UUID=test-uuid scripts/hooks/tmux-validate-session.sh
+echo $?  # Should be 0 (valid)
+
+# 2. Test logger
+echo '{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"pwd"}}' | \
+  TMUX_WINDOW_UUID=test-uuid scripts/hooks/tmux-logger.sh
+
+# 3. Verify log entry
+cat .tmux-cli/logs/test-uuid.jsonl | jq '.'
+```
+
+### Documentation
+
+See detailed hook documentation:
+- `scripts/hooks/README.md` - Hook script details and troubleshooting
+- `.tmux-cli/logs/README.md` - Log format and parsing examples
+
+### Dependencies
+
+**Required for hooks:**
+- Bash 4.0+
+- `jq` (JSON parsing)
+- Claude Code CLI (with hooks support)
+
+**Install jq:**
+```bash
+# Ubuntu/Debian
+sudo apt-get install jq
+
+# macOS
+brew install jq
 ```
 
 ## Questions or Issues?

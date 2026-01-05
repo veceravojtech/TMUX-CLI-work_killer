@@ -62,3 +62,6 @@ _bmad-output/implementation-artifacts/*
 .claude
 .tmux-session
 /tmux-cli
+
+# tmux-cli runtime logs
+.tmux-cli/logs/*

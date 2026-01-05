@@ -380,7 +380,7 @@ func (e *RealTmuxExecutor) CaptureWindowOutput(sessionID, windowID string) (stri
 }
 
 // SendMessageWithFeedback sends a message and waits to capture the output
-// Returns the captured output after a 1-second delay to allow command execution
+// Returns the captured output after a 2-second delay to allow command execution
 // This enables detection of command execution errors in post-command fallback logic
 func (e *RealTmuxExecutor) SendMessageWithFeedback(sessionID, windowID, message string) (string, error) {
 	// Step 1: Send the message
@@ -389,8 +389,8 @@ func (e *RealTmuxExecutor) SendMessageWithFeedback(sessionID, windowID, message 
 		return "", fmt.Errorf("send message: %w", err)
 	}
 
-	// Step 2: Wait for command to execute
-	time.Sleep(1 * time.Second)
+	// Step 2: Wait for command to execute (increased from 1s to 2s for better error capture)
+	time.Sleep(2 * time.Second)
 
 	// Step 3: Capture the pane output to check for errors
 	output, err := e.CaptureWindowOutput(sessionID, windowID)
