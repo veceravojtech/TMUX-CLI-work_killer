@@ -32,6 +32,7 @@ func TestServer_WindowsKill_Success_MultiWindow(t *testing.T) {
 	}
 
 	mockExecutor := &testutil.MockTmuxExecutor{}
+	mockExecutor.On("HasSession", "test-session").Return(true, nil)
 	// Mock ListWindows to return the actual tmux windows
 	tmuxWindows := []tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "main"},
@@ -83,6 +84,7 @@ func TestServer_WindowsKill_Error_LastWindowInSession(t *testing.T) {
 	}
 
 	mockExecutor := &testutil.MockTmuxExecutor{}
+	mockExecutor.On("HasSession", "test-session").Return(true, nil)
 	// Mock ListWindows to return only one window
 	tmuxWindows := []tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "only-window"},
@@ -114,6 +116,7 @@ func TestServer_WindowsKill_Error_TmuxCommandFailed(t *testing.T) {
 	}
 
 	mockExecutor := &testutil.MockTmuxExecutor{}
+	mockExecutor.On("HasSession", "test-session").Return(true, nil)
 	// Mock ListWindows to return both windows
 	tmuxWindows := []tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "main"},

@@ -128,188 +128,6 @@ func TestServer_WindowsList_Error_SessionNotFound(t *testing.T) {
 }
 
 // ========================================
-// WindowsGet Tests
-// ========================================
-
-// TestServer_WindowsGet_Success_FirstWindow verifies that WindowsGet
-// returns the correct window when requesting the first window (index 0).
-func TestServer_WindowsGet_Success_FirstWindow(t *testing.T) {
-	// Arrange: Session with multiple windows
-	mockStore := &mockSessionStore{
-		session: &store.Session{
-			SessionID: "test-session",
-			Windows: []store.Window{
-				{TmuxWindowID: "@0", Name: "main", UUID: "uuid-1"},
-				{TmuxWindowID: "@1", Name: "editor", UUID: "uuid-2"},
-				{TmuxWindowID: "@2", Name: "logs", UUID: "uuid-3"},
-			},
-		},
-	}
-
-	server := &Server{
-		store:       mockStore,
-		workingDir:  "/test/dir",
-		sessionFile: "/test/dir/.tmux-cli-session.json",
-	}
-
-	// Act: Request first window by ID (using @ prefix for window IDs)
-	window, err := server.WindowsGet("@0")
-
-	// Assert
-	require.NoError(t, err)
-	require.NotNil(t, window)
-	assert.Equal(t, "@0", window.TmuxWindowID)
-	assert.Equal(t, "main", window.Name)
-	assert.Equal(t, "uuid-1", window.UUID)
-}
-
-// TestServer_WindowsGet_Success_LastWindow verifies that WindowsGet
-// returns the correct window when requesting the last window.
-func TestServer_WindowsGet_Success_LastWindow(t *testing.T) {
-	// Arrange: Session with multiple windows
-	mockStore := &mockSessionStore{
-		session: &store.Session{
-			SessionID: "test-session",
-			Windows: []store.Window{
-				{TmuxWindowID: "@0", Name: "main", UUID: "uuid-1"},
-				{TmuxWindowID: "@1", Name: "editor", UUID: "uuid-2"},
-				{TmuxWindowID: "@2", Name: "logs", UUID: "uuid-3"},
-			},
-		},
-	}
-
-	server := &Server{
-		store:       mockStore,
-		workingDir:  "/test/dir",
-		sessionFile: "/test/dir/.tmux-cli-session.json",
-	}
-
-	// Act: Request last window by ID
-	window, err := server.WindowsGet("@2")
-
-	// Assert
-	require.NoError(t, err)
-	require.NotNil(t, window)
-	assert.Equal(t, "@2", window.TmuxWindowID)
-	assert.Equal(t, "logs", window.Name)
-	assert.Equal(t, "uuid-3", window.UUID)
-}
-
-// TestServer_WindowsGet_Success_MiddleWindow verifies that WindowsGet
-// correctly finds a window in the middle of the windows array.
-func TestServer_WindowsGet_Success_MiddleWindow(t *testing.T) {
-	// Arrange
-	mockStore := &mockSessionStore{
-		session: &store.Session{
-			SessionID: "test-session",
-			Windows: []store.Window{
-				{TmuxWindowID: "@0", Name: "main", UUID: "uuid-1"},
-				{TmuxWindowID: "@1", Name: "editor", UUID: "uuid-2"},
-				{TmuxWindowID: "@2", Name: "logs", UUID: "uuid-3"},
-			},
-		},
-	}
-
-	server := &Server{
-		store:       mockStore,
-		workingDir:  "/test/dir",
-		sessionFile: "/test/dir/.tmux-cli-session.json",
-	}
-
-	// Act
-	window, err := server.WindowsGet("@1")
-
-	// Assert
-	require.NoError(t, err)
-	require.NotNil(t, window)
-	assert.Equal(t, "@1", window.TmuxWindowID)
-	assert.Equal(t, "editor", window.Name)
-}
-
-// TestServer_WindowsGet_Error_WindowNotFound verifies that WindowsGet
-// returns ErrWindowNotFound with context when the requested window doesn't exist.
-func TestServer_WindowsGet_Error_WindowNotFound(t *testing.T) {
-	// Arrange: Session with 3 windows (IDs: 0, 1, 2)
-	mockStore := &mockSessionStore{
-		session: &store.Session{
-			SessionID: "test-session",
-			Windows: []store.Window{
-				{TmuxWindowID: "@0", Name: "main", UUID: "uuid-1"},
-				{TmuxWindowID: "@1", Name: "editor", UUID: "uuid-2"},
-				{TmuxWindowID: "@2", Name: "logs", UUID: "uuid-3"},
-			},
-		},
-	}
-
-	server := &Server{
-		store:       mockStore,
-		workingDir:  "/test/dir",
-		sessionFile: "/test/dir/.tmux-cli-session.json",
-	}
-
-	// Act: Request non-existent window ID
-	window, err := server.WindowsGet("99")
-
-	// Assert: Error is wrapped with context
-	require.Error(t, err)
-	assert.Nil(t, window)
-	assert.True(t, errors.Is(err, ErrWindowNotFound), "Error should wrap ErrWindowNotFound")
-	assert.Contains(t, err.Error(), "99", "Error should include window ID in context")
-}
-
-// TestServer_WindowsGet_Error_InvalidWindowID_Empty verifies that WindowsGet
-// returns ErrInvalidWindowID when given an empty window ID.
-func TestServer_WindowsGet_Error_InvalidWindowID_Empty(t *testing.T) {
-	// Arrange
-	mockStore := &mockSessionStore{
-		session: &store.Session{
-			SessionID: "test-session",
-			Windows: []store.Window{
-				{TmuxWindowID: "@0", Name: "main", UUID: "uuid-1"},
-			},
-		},
-	}
-
-	server := &Server{
-		store:       mockStore,
-		workingDir:  "/test/dir",
-		sessionFile: "/test/dir/.tmux-cli-session.json",
-	}
-
-	// Act: Request with empty window ID
-	window, err := server.WindowsGet("")
-
-	// Assert
-	require.Error(t, err)
-	assert.Nil(t, window)
-	assert.True(t, errors.Is(err, ErrInvalidWindowID), "Error should wrap ErrInvalidWindowID")
-}
-
-// TestServer_WindowsGet_Error_SessionNotFound verifies that WindowsGet
-// returns ErrSessionNotFound when session file cannot be loaded.
-func TestServer_WindowsGet_Error_SessionNotFound(t *testing.T) {
-	// Arrange: Mock store returns error
-	mockStore := &mockSessionStore{
-		loadError: store.ErrSessionNotFound,
-	}
-
-	server := &Server{
-		store:       mockStore,
-		workingDir:  "/test/dir",
-		sessionFile: "/test/dir/.tmux-cli-session.json",
-	}
-
-	// Act
-	window, err := server.WindowsGet("@0")
-
-	// Assert: Error is wrapped with context
-	require.Error(t, err)
-	assert.Nil(t, window)
-	assert.True(t, errors.Is(err, ErrSessionNotFound), "Error should wrap ErrSessionNotFound")
-	assert.Contains(t, err.Error(), "/test/dir", "Error should include working directory in context")
-}
-
-// ========================================
 // WindowsCapture Tests
 // ========================================
 
@@ -1295,32 +1113,10 @@ func TestServer_WindowsCreate_SpecialCharacters(t *testing.T) {
 	mockExecutor.AssertExpectations(t)
 }
 
-// TestServer_WindowsGet_WithWindowName tests WindowsGet resolves window names to IDs
-func TestServer_WindowsGet_WithWindowName(t *testing.T) {
-	mockStore := &mockSessionStore{
-		session: &store.Session{
-			SessionID: "test-session",
-			Windows: []store.Window{
-				{TmuxWindowID: "@0", Name: "supervisor", UUID: "uuid-1"},
-				{TmuxWindowID: "@1", Name: "bmad-worker", UUID: "uuid-2"},
-			},
-		},
-	}
-
-	server := &Server{
-		store:       mockStore,
-		workingDir:  "/test/dir",
-		sessionFile: "/test/dir/.tmux-cli-session.json",
-	}
-
-	window, err := server.WindowsGet("supervisor")
-	require.NoError(t, err)
-	assert.Equal(t, "@0", window.TmuxWindowID)
-	assert.Equal(t, "supervisor", window.Name)
-}
-
-// TestServer_WindowsGet_WithWindowName_NotFound tests error when window name doesn't exist
-func TestServer_WindowsGet_WithWindowName_NotFound(t *testing.T) {
+// TestServer_WindowsCreate_Error_DuplicateName_ExactMatch verifies that WindowsCreate
+// returns ErrWindowCreateFailed when a window with the exact same name already exists.
+func TestServer_WindowsCreate_Error_DuplicateName_ExactMatch(t *testing.T) {
+	// Arrange
 	mockStore := &mockSessionStore{
 		session: &store.Session{
 			SessionID: "test-session",
@@ -1331,16 +1127,61 @@ func TestServer_WindowsGet_WithWindowName_NotFound(t *testing.T) {
 	}
 
 	server := &Server{
-		store:       mockStore,
-		workingDir:  "/test/dir",
-		sessionFile: "/test/dir/.tmux-cli-session.json",
+		store:      mockStore,
+		workingDir: "/test",
 	}
 
-	window, err := server.WindowsGet("invalid-name")
+	// Act - attempt to create window with duplicate name
+	window, err := server.WindowsCreate("supervisor", "")
+
+	// Assert
 	require.Error(t, err)
 	assert.Nil(t, window)
-	assert.Contains(t, err.Error(), "window name \"invalid-name\" not found")
-	assert.Contains(t, err.Error(), "supervisor")
+	assert.True(t, errors.Is(err, ErrWindowCreateFailed), "Error should wrap ErrWindowCreateFailed")
+	assert.Contains(t, err.Error(), "window name \"supervisor\" already exists")
+	assert.Contains(t, err.Error(), "case-insensitive match")
+}
+
+// TestServer_WindowsCreate_Error_DuplicateName_CaseInsensitive verifies that WindowsCreate
+// returns ErrWindowCreateFailed when a window with the same name (different case) already exists.
+func TestServer_WindowsCreate_Error_DuplicateName_CaseInsensitive(t *testing.T) {
+	// Arrange
+	mockStore := &mockSessionStore{
+		session: &store.Session{
+			SessionID: "test-session",
+			Windows: []store.Window{
+				{TmuxWindowID: "@0", Name: "hook-test", UUID: "uuid-1"},
+			},
+		},
+	}
+
+	server := &Server{
+		store:      mockStore,
+		workingDir: "/test",
+	}
+
+	testCases := []struct {
+		name      string
+		inputName string
+	}{
+		{"uppercase", "HOOK-TEST"},
+		{"mixed case", "Hook-Test"},
+		{"alternate case", "HOOK-test"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Act
+			window, err := server.WindowsCreate(tc.inputName, "")
+
+			// Assert
+			require.Error(t, err)
+			assert.Nil(t, window)
+			assert.True(t, errors.Is(err, ErrWindowCreateFailed), "Error should wrap ErrWindowCreateFailed")
+			assert.Contains(t, err.Error(), "already exists")
+			assert.Contains(t, err.Error(), "hook-test", "should mention existing window name")
+		})
+	}
 }
 
 // TestServer_WindowsCapture_WithWindowName tests WindowsCapture with window names
@@ -1384,6 +1225,7 @@ func TestServer_WindowsKill_WithWindowName(t *testing.T) {
 	}
 
 	mockExecutor := &testutil.MockTmuxExecutor{}
+	mockExecutor.On("HasSession", "test-session").Return(true, nil)
 	mockExecutor.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 		{TmuxWindowID: "@1", Name: "bmad-worker"},
@@ -1434,6 +1276,7 @@ func TestServer_WindowsKill_WindowNotFound_Strict(t *testing.T) {
 	}
 
 	mockExecutor := &testutil.MockTmuxExecutor{}
+	mockExecutor.On("HasSession", "test-session").Return(true, nil)
 	mockExecutor.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 		{TmuxWindowID: "@1", Name: "worker"},
@@ -1470,7 +1313,7 @@ func TestServer_WindowsKill_TmuxNotRunning_Error(t *testing.T) {
 	}
 
 	mockExecutor := &testutil.MockTmuxExecutor{}
-	mockExecutor.On("ListWindows", "test-session").Return([]tmux.WindowInfo(nil), errors.New("tmux not running"))
+	mockExecutor.On("HasSession", "test-session").Return(false, errors.New("tmux not running"))
 
 	server := &Server{
 		store:       mockStore,
@@ -1482,11 +1325,11 @@ func TestServer_WindowsKill_TmuxNotRunning_Error(t *testing.T) {
 	// Act: Try to kill when tmux is not running
 	success, err := server.WindowsKill("supervisor")
 
-	// Assert: Returns error (strict mode - requires tmux to be running)
+	// Assert: Returns error during recovery check (before ListWindows is called)
 	require.Error(t, err)
 	assert.False(t, success)
-	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
-	assert.Contains(t, err.Error(), "tmux session not running")
+	assert.Contains(t, err.Error(), "check recovery needed")
+	assert.Contains(t, err.Error(), "tmux not running")
 	mockExecutor.AssertExpectations(t)
 }
 
@@ -1511,7 +1354,7 @@ func TestServer_WindowsMessage_Success(t *testing.T) {
 
 	// Mock executor to verify formatted message is sent with sender window name
 	mockExecutor := new(testutil.MockTmuxExecutor)
-	expectedMessage := "New message from: supervisor\n\nPlease run the build command.\n\nRespond available using: windows-message supervisor"
+	expectedMessage := "New message from: supervisor\n\nPlease run the build command.\n"
 	mockExecutor.On("SendMessageWithDelay", "sender-session-uuid", "@1", expectedMessage).Return(nil)
 
 	server := &Server{
@@ -1552,7 +1395,7 @@ func TestServer_WindowsMessage_Success_WithWindowID(t *testing.T) {
 
 	// Mock executor (sender should be window name "main")
 	mockExecutor := new(testutil.MockTmuxExecutor)
-	expectedMessage := "New message from: main\n\nStatus update\n\nRespond available using: windows-message main"
+	expectedMessage := "New message from: main\n\nStatus update\n"
 	mockExecutor.On("SendMessageWithDelay", "test-session", "@1", expectedMessage).Return(nil)
 
 	server := &Server{
@@ -1694,7 +1537,7 @@ func TestServer_WindowsMessage_Error_SendMessageFailed(t *testing.T) {
 
 	// Mock executor that returns error (sender should be window name "supervisor")
 	mockExecutor := new(testutil.MockTmuxExecutor)
-	expectedMessage := "New message from: supervisor\n\ntest message\n\nRespond available using: windows-message supervisor"
+	expectedMessage := "New message from: supervisor\n\ntest message\n"
 	tmuxError := errors.New("tmux send-keys failed")
 	mockExecutor.On("SendMessageWithDelay", "test-session", "@1", expectedMessage).Return(tmuxError)
 

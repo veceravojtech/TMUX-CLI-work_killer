@@ -5,8 +5,8 @@
 // It looks for .tmux-cli-session.json in the directory where the MCP server starts.
 // No configuration files, environment variables, or CLI flags are used (zero-config).
 //
-// The server provides six window management operations: windows-list, windows-create,
-// windows-get, windows-kill, windows-capture, and windows-send.
+// The server provides five window management operations: windows-list, windows-create,
+// windows-kill, windows-capture, and windows-send.
 package mcp
 
 import (
@@ -92,16 +92,6 @@ type WindowsListOutput struct {
 	Windows []WindowListItem `json:"windows" jsonschema:"Array of window names (without IDs or UUIDs)"`
 }
 
-// WindowsGetInput defines the input schema for windows-get tool
-type WindowsGetInput struct {
-	WindowID string `json:"windowId" jsonschema:"The tmux window ID to retrieve (e.g. '0' or '1')"`
-}
-
-// WindowsGetOutput defines the output schema for windows-get tool
-type WindowsGetOutput struct {
-	Window *store.Window `json:"window" jsonschema:"Window details including ID, name, UUID, and metadata"`
-}
-
 // WindowsCaptureInput defines the input schema for windows-capture tool
 type WindowsCaptureInput struct {
 	WindowID string `json:"windowId" jsonschema:"Window identifier to capture output from (e.g. '@0' or '@1')"`
@@ -169,21 +159,6 @@ func (s *Server) WindowsListHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	}
 
 	return nil, WindowsListOutput{Windows: windows}, nil
-}
-
-// WindowsGetHandler is the MCP tool handler for windows-get operation.
-// It wraps the WindowsGet() method to match the MCP SDK handler signature.
-func (s *Server) WindowsGetHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsGetInput) (
-	*sdkmcp.CallToolResult,
-	WindowsGetOutput,
-	error,
-) {
-	window, err := s.WindowsGet(input.WindowID)
-	if err != nil {
-		return nil, WindowsGetOutput{}, err
-	}
-
-	return nil, WindowsGetOutput{Window: window}, nil
 }
 
 // WindowsCaptureHandler is the MCP tool handler for windows-capture operation.
@@ -262,8 +237,8 @@ func (s *Server) WindowsKillHandler(ctx context.Context, req *sdkmcp.CallToolReq
 }
 
 // RegisterTools registers all MCP tools with the given SDK server.
-// This includes windows-list (and future: windows-create, windows-get, windows-kill,
-// windows-capture, and windows-send tools).
+// This includes windows-list, windows-create, windows-kill,
+// windows-capture, and windows-send tools.
 //
 // Tool registration uses type-safe handlers with automatic JSON schema
 // generation from Go struct types (MCP SDK v1.2.0+ pattern).
@@ -277,16 +252,6 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.WindowsListHandler)
-
-	// Register windows-get tool (FR2: Get specific window details by ID)
-	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
-		Name:        "windows-get",
-		Description: "Retrieve detailed information about a specific window by its ID, including name, UUID, and metadata",
-		Annotations: &sdkmcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			IdempotentHint: true,
-		},
-	}, s.WindowsGetHandler)
 
 	// Register windows-capture tool (FR5, FR6, FR7: Capture pane output for monitoring and analysis)
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{

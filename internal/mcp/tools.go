@@ -52,65 +52,6 @@ func (s *Server) WindowsList() ([]WindowListItem, error) {
 	return result, nil
 }
 
-// WindowsGet retrieves detailed information about a specific window by its ID or name.
-// Implements FR2: AI assistants can retrieve information about a specific window
-//
-// This method validates the window identifier, loads the session, resolves the identifier
-// to a window ID, and searches for the matching window. It returns detailed window
-// information including ID, name, UUID, and other metadata.
-//
-// Window Identifier Resolution:
-// - If identifier starts with "@" (e.g., "@0", "@1"), it's treated as a window ID
-// - Otherwise, it's treated as a window name and resolved via case-sensitive exact match
-//
-// Examples:
-//
-//	WindowsGet("@0")        // Get window by ID @0
-//	WindowsGet("supervisor") // Get window named "supervisor"
-//
-// Parameters:
-//   - windowIdentifier: Either a window ID (starts with "@") or window name (must be non-empty)
-//
-// Returns:
-//   - *store.Window: Pointer to the window if found
-//   - error: ErrInvalidWindowID if windowIdentifier is empty
-//     ErrSessionNotFound if session file cannot be loaded
-//     ErrWindowNotFound if window ID or name doesn't exist in session
-//
-// Performance: Expected to complete in <10ms, well under NFR-P1 requirement of 2s.
-func (s *Server) WindowsGet(windowIdentifier string) (*store.Window, error) {
-	// Validate window identifier format (STRICT Rule 9)
-	if windowIdentifier == "" {
-		return nil, fmt.Errorf("%w: windowIdentifier cannot be empty", ErrInvalidWindowID)
-	}
-
-	// Load session from working directory using SessionStore (direct internal call per Decision 3)
-	session, err := s.store.Load(s.workingDir)
-	if err != nil {
-		// Use categorized error with context (STRICT Rule 9)
-		return nil, fmt.Errorf("%w in directory %s: expected %s",
-			ErrSessionNotFound, s.workingDir, s.sessionFile)
-	}
-
-	// Resolve window identifier (ID or name) to window ID
-	windowID, err := resolveWindowIdentifier(session, windowIdentifier)
-	if err != nil {
-		// Error already includes proper categorization and context
-		return nil, err
-	}
-
-	// Search for window by TmuxWindowID
-	for i := range session.Windows {
-		if session.Windows[i].TmuxWindowID == windowID {
-			// Return pointer to window - MCP SDK handles JSON serialization (Decision 4)
-			return &session.Windows[i], nil
-		}
-	}
-
-	// Window not found - return categorized error with context (STRICT Rule 9)
-	return nil, fmt.Errorf("%w: windowID=%s", ErrWindowNotFound, windowID)
-}
-
 // WindowsCapture captures the current pane output from a specific window by ID or name.
 // Implements FR5: AI assistants can capture the current pane output from any window
 // Implements FR6: AI assistants can read window output as plain text for parsing and analysis
@@ -331,8 +272,6 @@ func (s *Server) WindowsSend(windowIdentifier, command string) (bool, error) {
 //
 //	{message}
 //
-//	Respond available using: windows-message {session.SessionID}
-//
 // Returns:
 //   - success: true if message was delivered
 //   - sender: auto-detected sender name (session.SessionID)
@@ -379,8 +318,8 @@ func (s *Server) WindowsMessage(receiver, message string) (bool, string, error) 
 	}
 
 	// Build formatted message with sender, message body, and reply instructions (Decision 2)
-	formattedMessage := fmt.Sprintf("New message from: %s\n\n%s\n\nRespond available using: windows-message %s",
-		sender, message, sender)
+	formattedMessage := fmt.Sprintf("New message from: %s\n\n%s\n",
+		sender, message)
 
 	// Send message with 1-second delay to ensure complete delivery of formatted multi-line message
 	// Using SendMessageWithDelay instead of SendMessage for windows-message MCP action
@@ -427,6 +366,13 @@ func (s *Server) WindowsCreate(name, command string) (*store.Window, error) {
 		// Use categorized error with context (STRICT Rule 9)
 		return nil, fmt.Errorf("%w in directory %s: expected %s",
 			ErrSessionNotFound, s.workingDir, s.sessionFile)
+	}
+
+	// Step 2.5: Validate window name uniqueness (case-insensitive)
+	for _, w := range sess.Windows {
+		if strings.EqualFold(w.Name, name) {
+			return nil, fmt.Errorf("%w: window name %q already exists (case-insensitive match with %q)", ErrWindowCreateFailed, name, w.Name)
+		}
 	}
 
 	// Step 3: Check for recovery and trigger if needed (matches CLI line 600-604)
@@ -591,6 +537,13 @@ func (s *Server) WindowsKill(windowIdentifier string) (bool, error) {
 		// Use categorized error with context (STRICT Rule 9)
 		return false, fmt.Errorf("%w in directory %s: expected %s",
 			ErrSessionNotFound, s.workingDir, s.sessionFile)
+	}
+
+	// Check for recovery and trigger if needed (consistent with other MCP operations)
+	recoveryManager := recovery.NewSessionRecoveryManager(s.store, s.executor)
+	err = s.maybeRecoverSession(session, recoveryManager)
+	if err != nil {
+		return false, err
 	}
 
 	// Resolve window name to window ID (no @ prefix allowed anymore)
