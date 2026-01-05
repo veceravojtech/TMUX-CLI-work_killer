@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,14 @@ import (
 	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/spf13/cobra"
 )
+
+// Embedded hook scripts
+//
+//go:embed embedded/tmux-session-notify.sh
+var hookSessionNotify string
+
+//go:embed embedded/tmux-validate-session.sh
+var hookValidateSession string
 
 var startCmd = &cobra.Command{
 	Use:   "start",
@@ -136,20 +145,6 @@ Example:
 	RunE: runWindowsUuid,
 }
 
-var windowsCaptureCmd = &cobra.Command{
-	Use:   "windows-capture",
-	Short: "Capture the current pane output from a window",
-	Long: `Capture the current pane content from a specific window.
-
-This command captures all visible text and scrollback history from the
-window's pane, useful for debugging, logging, or checking command execution results.
-
-Example:
-  tmux-cli windows-capture --window-id @0
-  tmux-cli windows-capture --window-id @1 > output.txt`,
-	RunE: runWindowsCapture,
-}
-
 var windowsMessageCmd = &cobra.Command{
 	Use:   "windows-message",
 	Short: "Send a formatted message to another window",
@@ -230,10 +225,6 @@ func init() {
 	windowsUuidCmd.Flags().StringVar(&windowIDFlag, "window-id", "", "Tmux window ID (e.g., @0, @1)")
 	windowsUuidCmd.MarkFlagRequired("window-id")
 
-	// Add flags to windows-capture command
-	windowsCaptureCmd.Flags().StringVar(&windowIDFlag, "window-id", "", "Tmux window ID (e.g., @0, @1)")
-	windowsCaptureCmd.MarkFlagRequired("window-id")
-
 	// Add flags to windows-message command
 	windowsMessageCmd.Flags().StringVar(&messageReceiver, "receiver", "", "Target window ID or name (e.g., @0, supervisor)")
 	windowsMessageCmd.Flags().StringVar(&messageText, "message", "", "Message text to send")
@@ -254,7 +245,6 @@ func init() {
 	rootCmd.AddCommand(windowsKillCmd)
 	rootCmd.AddCommand(windowsSendCmd)
 	rootCmd.AddCommand(windowsUuidCmd)
-	rootCmd.AddCommand(windowsCaptureCmd)
 	rootCmd.AddCommand(windowsMessageCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(installProjectFilesCmd)
@@ -1186,49 +1176,6 @@ func runWindowsUuid(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWindowsCapture(cmd *cobra.Command, args []string) error {
-	// 1. Validate window ID format
-	if err := validateWindowID(windowIDFlag); err != nil {
-		return NewUsageError(err.Error())
-	}
-
-	// 2. Create dependencies
-	executor := tmux.NewTmuxExecutor()
-	fileStore, err := store.NewFileSessionStore()
-	if err != nil {
-		return fmt.Errorf("initialize session store: %w", err)
-	}
-
-	// 3. Load session from current directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-	sess, err := fileStore.Load(cwd)
-	if err != nil {
-		if errors.Is(err, store.ErrSessionNotFound) {
-			return fmt.Errorf("session not found in current directory")
-		}
-		return fmt.Errorf("load session: %w", err)
-	}
-
-	recoveryManager := recovery.NewSessionRecoveryManager(fileStore, executor)
-	err = MaybeRecoverSession(sess, recoveryManager)
-	if err != nil {
-		return err
-	}
-
-	// 5. Capture the pane output
-	output, err := executor.CaptureWindowOutput(sess.SessionID, windowIDFlag)
-	if err != nil {
-		return fmt.Errorf("capture window output: %w", err)
-	}
-
-	// 6. Output the captured content
-	fmt.Print(output)
-	return nil
-}
-
 // ClaudeSettings represents the .claude/settings.json structure
 type ClaudeSettings struct {
 	Hooks HooksConfig `json:"hooks"`
@@ -1254,27 +1201,21 @@ type Hook struct {
 }
 
 func runInstallProjectFiles(cmd *cobra.Command, args []string) error {
-	// 1. Get current working directory
-	cwd, err := os.Getwd()
+	// 1. Get current working directory (this is the project root)
+	projectRoot, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
 
-	// 2. Validate scripts/hooks/ directory exists
-	hooksDir := filepath.Join(cwd, "scripts", "hooks")
-	if _, err := os.Stat(hooksDir); os.IsNotExist(err) {
-		return fmt.Errorf("scripts/hooks/ directory not found in current directory\nThis command must be run from the tmux-cli project root")
-	}
-
-	// 3. Check if .claude/settings.json exists
-	claudeDir := filepath.Join(cwd, ".claude")
+	// 2. Check if .claude/settings.json exists
+	claudeDir := filepath.Join(projectRoot, ".claude")
 	settingsFile := filepath.Join(claudeDir, "settings.json")
 	settingsExists := false
 	if _, err := os.Stat(settingsFile); err == nil {
 		settingsExists = true
 	}
 
-	// 4. If exists and not --force, prompt user for confirmation
+	// 3. If exists and not --force, prompt user for confirmation
 	if settingsExists && !forceInstall {
 		fmt.Printf("Warning: .claude/settings.json already exists.\n")
 		fmt.Printf("This will overwrite the existing file.\n")
@@ -1288,14 +1229,35 @@ func runInstallProjectFiles(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 5. Create required directories first (before writing settings that depend on them)
+	// 4. Create required directories
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
 		return fmt.Errorf("create .claude directory: %w", err)
 	}
 
-	logsDir := filepath.Join(cwd, ".tmux-cli", "logs")
+	hooksDir := filepath.Join(projectRoot, "scripts", "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		return fmt.Errorf("create scripts/hooks directory: %w", err)
+	}
+
+	logsDir := filepath.Join(projectRoot, ".tmux-cli", "logs")
 	if err := os.MkdirAll(logsDir, 0755); err != nil {
 		return fmt.Errorf("create .tmux-cli/logs directory: %w", err)
+	}
+
+	// 5. Write embedded hook scripts to files
+	hookScripts := map[string]string{
+		"tmux-session-notify.sh":   hookSessionNotify,
+		"tmux-validate-session.sh": hookValidateSession,
+	}
+
+	filesModified := []string{}
+	for filename, content := range hookScripts {
+		scriptPath := filepath.Join(hooksDir, filename)
+		if err := os.WriteFile(scriptPath, []byte(content), 0755); err != nil {
+			return fmt.Errorf("write hook script %s: %w", filename, err)
+		}
+		relPath, _ := filepath.Rel(projectRoot, scriptPath)
+		filesModified = append(filesModified, relPath)
 	}
 
 	// 6. Create hook configuration
@@ -1348,34 +1310,10 @@ func runInstallProjectFiles(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("write settings file: %w", err)
 	}
 
-	filesModified := []string{".claude/settings.json"}
-
-	// 9. Set executable permissions on hook scripts
-	hookScripts, err := filepath.Glob(filepath.Join(hooksDir, "*.sh"))
-	if err != nil {
-		return fmt.Errorf("find hook scripts: %w", err)
-	}
-
-	permissionErrors := []string{}
-	for _, script := range hookScripts {
-		if err := os.Chmod(script, 0755); err != nil {
-			relPath, _ := filepath.Rel(cwd, script)
-			permissionErrors = append(permissionErrors, fmt.Sprintf("%s: %v", relPath, err))
-		} else {
-			relPath, _ := filepath.Rel(cwd, script)
-			filesModified = append(filesModified, relPath)
-		}
-	}
-
-	// If any permission setting failed, return error (hooks won't work)
-	if len(permissionErrors) > 0 {
-		return fmt.Errorf("failed to set executable permissions on hook scripts:\n  %s", strings.Join(permissionErrors, "\n  "))
-	}
-
-	// Add logs directory to modified files list (already created in step 5)
+	filesModified = append(filesModified, ".claude/settings.json")
 	filesModified = append(filesModified, ".tmux-cli/logs/")
 
-	// 10. Success message
+	// 9. Success message
 	fmt.Println("✓ Project files installed successfully")
 	fmt.Println()
 	fmt.Println("Files created/modified:")

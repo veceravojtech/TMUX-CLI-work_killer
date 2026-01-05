@@ -6,7 +6,7 @@
 // No configuration files, environment variables, or CLI flags are used (zero-config).
 //
 // The server provides five window management operations: windows-list, windows-create,
-// windows-kill, windows-capture, and windows-send.
+// windows-kill, windows-send, and windows-message.
 package mcp
 
 import (
@@ -92,16 +92,6 @@ type WindowsListOutput struct {
 	Windows []WindowListItem `json:"windows" jsonschema:"Array of window names (without IDs or UUIDs)"`
 }
 
-// WindowsCaptureInput defines the input schema for windows-capture tool
-type WindowsCaptureInput struct {
-	WindowID string `json:"windowId" jsonschema:"Window identifier to capture output from (e.g. '@0' or '@1')"`
-}
-
-// WindowsCaptureOutput defines the output schema for windows-capture tool
-type WindowsCaptureOutput struct {
-	Output string `json:"output" jsonschema:"Captured pane content as plain text"`
-}
-
 // WindowsSendInput defines the input schema for windows-send tool
 type WindowsSendInput struct {
 	WindowID string `json:"windowId" jsonschema:"Window identifier to send command to (e.g. '@0' or '@1')"`
@@ -159,21 +149,6 @@ func (s *Server) WindowsListHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	}
 
 	return nil, WindowsListOutput{Windows: windows}, nil
-}
-
-// WindowsCaptureHandler is the MCP tool handler for windows-capture operation.
-// It wraps the WindowsCapture() method to match the MCP SDK handler signature.
-func (s *Server) WindowsCaptureHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsCaptureInput) (
-	*sdkmcp.CallToolResult,
-	WindowsCaptureOutput,
-	error,
-) {
-	output, err := s.WindowsCapture(input.WindowID)
-	if err != nil {
-		return nil, WindowsCaptureOutput{}, err
-	}
-
-	return nil, WindowsCaptureOutput{Output: output}, nil
 }
 
 // WindowsSendHandler is the MCP tool handler for windows-send operation.
@@ -238,7 +213,7 @@ func (s *Server) WindowsKillHandler(ctx context.Context, req *sdkmcp.CallToolReq
 
 // RegisterTools registers all MCP tools with the given SDK server.
 // This includes windows-list, windows-create, windows-kill,
-// windows-capture, and windows-send tools.
+// windows-send, and windows-message tools.
 //
 // Tool registration uses type-safe handlers with automatic JSON schema
 // generation from Go struct types (MCP SDK v1.2.0+ pattern).
@@ -252,16 +227,6 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.WindowsListHandler)
-
-	// Register windows-capture tool (FR5, FR6, FR7: Capture pane output for monitoring and analysis)
-	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
-		Name:        "windows-capture",
-		Description: "Capture the current pane output from a specific window as plain text for monitoring, error detection, and analysis",
-		Annotations: &sdkmcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			IdempotentHint: false, // Output may change between calls
-		},
-	}, s.WindowsCaptureHandler)
 
 	// Register windows-send tool (FR8, FR9, FR10: Send commands to windows for remote execution and orchestration)
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{

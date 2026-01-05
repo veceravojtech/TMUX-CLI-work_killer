@@ -1,8 +1,8 @@
 // Package mcp implements the Model Context Protocol server for tmux-cli.
 //
-// The MCP server provides six window management operations that enable
-// AI-assisted tmux control: windows-list, windows-create, windows-get,
-// windows-kill, windows-capture, and windows-send.
+// The MCP server provides five window management operations that enable
+// AI-assisted tmux control: windows-list, windows-create, windows-kill,
+// windows-send, and windows-message.
 //
 // Error Handling:
 // This package defines 10 categorized error types to support AI interpretation:

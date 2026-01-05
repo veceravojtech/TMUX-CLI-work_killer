@@ -263,7 +263,7 @@ internal/mcp/
 
 ### Rule 8: MCP Function Naming Pattern (STRICT)
 
-- ✅ **ALWAYS** use Resource + Action pattern: `WindowsList`, `WindowsCreate`, `WindowsGet`
+- ✅ **ALWAYS** use Resource + Action pattern: `WindowsList`, `WindowsCreate`, `WindowsKill`, `WindowsSend`, `WindowsMessage`
 - ❌ **NEVER** use Action + Resource pattern: `ListWindows`, `CreateWindow`
 
 **Examples:**
@@ -271,10 +271,9 @@ internal/mcp/
 // ✅ CORRECT
 func (s *Server) WindowsList(sessionID string) ([]Window, error)
 func (s *Server) WindowsCreate(sessionID, name string) (*Window, error)
-func (s *Server) WindowsGet(sessionID, windowID string) (*Window, error)
 func (s *Server) WindowsKill(sessionID, windowID string) (bool, error)
-func (s *Server) WindowsCaptureOutput(sessionID, windowID string) (string, error)
-func (s *Server) WindowsSendCommand(sessionID, windowID, command string) (bool, error)
+func (s *Server) WindowsSend(sessionID, windowID, command string) (bool, error)
+func (s *Server) WindowsMessage(receiver, message string) (bool, string, error)
 
 // ❌ WRONG
 func (s *Server) ListWindows(sessionID string)
@@ -423,10 +422,9 @@ func (s *Server) WindowsList(sessionID string) ([]Window, error) {
 // ✅ CORRECT - Go types, SDK handles serialization
 windows-list    → ([]Window, error)
 windows-create  → (*Window, error)
-windows-get     → (*Window, error)
 windows-kill    → (bool, error)
-windows-capture → (string, error)
 windows-send    → (bool, error)
+windows-message → (bool, string, error)
 ```
 
 ### Rule 14: MCP Testing with Build Tags (STRICT)

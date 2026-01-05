@@ -427,113 +427,6 @@ func TestServer_WindowsGet_Integration_InvalidWindowID(t *testing.T) {
 }
 
 // ========================================
-// WindowsCapture Integration Tests
-// ========================================
-
-// TestServer_WindowsCapture_Integration_RealTmux verifies WindowsCapture
-// captures pane output from a real tmux session.
-func TestServer_WindowsCapture_Integration_RealTmux(t *testing.T) {
-	// Arrange: Create temporary directory with real session file
-	tmpDir := t.TempDir()
-	sessionFile := filepath.Join(tmpDir, ".tmux-session")
-
-	// Write real session data
-	sessionData := `{
-		"sessionId": "capture-test",
-		"projectPath": "` + tmpDir + `",
-		"windows": [
-			{"tmuxWindowId": "@0", "name": "test-window", "uuid": "uuid-1"}
-		]
-	}`
-	require.NoError(t, os.WriteFile(sessionFile, []byte(sessionData), 0644))
-
-	// Create server pointing to test directory
-	oldDir, _ := os.Getwd()
-	defer os.Chdir(oldDir)
-	os.Chdir(tmpDir)
-
-	server, err := NewServer()
-	require.NoError(t, err)
-
-	// Act: Call WindowsCapture with timing
-	start := time.Now()
-	output, err := server.WindowsCapture("@0")
-	duration := time.Since(start)
-
-	// Assert: Performance requirement NFR-P1
-	require.NoError(t, err)
-	assert.NotNil(t, output) // Output can be empty string, but should not be nil
-	assert.Less(t, duration, 2*time.Second, "NFR-P1: Must complete in <2s")
-
-	t.Logf("WindowsCapture completed in %v (NFR-P1 requirement: <2s)", duration)
-}
-
-// TestServer_WindowsCapture_Integration_NonExistentWindow verifies WindowsCapture
-// returns proper error when window doesn't exist.
-func TestServer_WindowsCapture_Integration_NonExistentWindow(t *testing.T) {
-	// Arrange
-	tmpDir := t.TempDir()
-	sessionFile := filepath.Join(tmpDir, ".tmux-session")
-
-	sessionData := `{
-		"sessionId": "capture-test",
-		"projectPath": "` + tmpDir + `",
-		"windows": [
-			{"tmuxWindowId": "@0", "name": "test", "uuid": "uuid-1"}
-		]
-	}`
-	require.NoError(t, os.WriteFile(sessionFile, []byte(sessionData), 0644))
-
-	oldDir, _ := os.Getwd()
-	defer os.Chdir(oldDir)
-	os.Chdir(tmpDir)
-
-	server, err := NewServer()
-	require.NoError(t, err)
-
-	// Act: Request non-existent window
-	output, err := server.WindowsCapture("@99")
-
-	// Assert: Should return window not found error
-	require.Error(t, err)
-	assert.Empty(t, output)
-	assert.Contains(t, err.Error(), "window not found", "Error should indicate window not found")
-	assert.Contains(t, err.Error(), "@99", "Error should include requested window ID")
-}
-
-// TestServer_WindowsCapture_Integration_InvalidWindowID verifies WindowsCapture
-// handles invalid window ID correctly.
-func TestServer_WindowsCapture_Integration_InvalidWindowID(t *testing.T) {
-	// Arrange
-	tmpDir := t.TempDir()
-	sessionFile := filepath.Join(tmpDir, ".tmux-session")
-
-	sessionData := `{
-		"sessionId": "test-session",
-		"projectPath": "` + tmpDir + `",
-		"windows": [
-			{"tmuxWindowId": "@0", "name": "main", "uuid": "uuid-1"}
-		]
-	}`
-	require.NoError(t, os.WriteFile(sessionFile, []byte(sessionData), 0644))
-
-	oldDir, _ := os.Getwd()
-	defer os.Chdir(oldDir)
-	os.Chdir(tmpDir)
-
-	server, err := NewServer()
-	require.NoError(t, err)
-
-	// Act: Request with empty window ID
-	output, err := server.WindowsCapture("")
-
-	// Assert: Error indicates invalid window ID
-	require.Error(t, err)
-	assert.Empty(t, output)
-	assert.Contains(t, err.Error(), "invalid window ID", "Error should mention invalid window ID")
-}
-
-// ========================================
 // WindowsSend Integration Tests
 // ========================================
 
@@ -571,12 +464,6 @@ func TestServer_WindowsSend_Integration_RealTmux(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, success, "WindowsSend should return true on success")
 	assert.Less(t, duration, 2*time.Second, "NFR-P1: Must complete in <2s")
-
-	// Verify command executed by capturing output
-	time.Sleep(100 * time.Millisecond) // Give command time to execute
-	output, err := server.WindowsCapture("@0")
-	require.NoError(t, err)
-	assert.Contains(t, output, "test message", "Command should have executed")
 }
 
 // TestServer_WindowsSend_Integration_SequentialCommands verifies WindowsSend
@@ -614,14 +501,6 @@ func TestServer_WindowsSend_Integration_SequentialCommands(t *testing.T) {
 
 	// Verify both commands executed
 	time.Sleep(100 * time.Millisecond)
-
-	output0, err0 := server.WindowsCapture("@0")
-	require.NoError(t, err0)
-	assert.Contains(t, output0, "Window 0 command", "First window should show its command")
-
-	output1, err1Cap := server.WindowsCapture("@1")
-	require.NoError(t, err1Cap)
-	assert.Contains(t, output1, "Window 1 command", "Second window should show its command")
 }
 
 // TestServer_WindowsSend_Integration_NonExistentWindow verifies WindowsSend
@@ -769,11 +648,6 @@ func TestServer_WindowsCreate_Integration_WithCommand(t *testing.T) {
 
 	// Give command time to execute
 	time.Sleep(100 * time.Millisecond)
-
-	// Verify command executed by capturing output
-	output, err := server.WindowsCapture(window.TmuxWindowID)
-	require.NoError(t, err)
-	assert.Contains(t, output, "Hello from new window", "Command should have executed")
 }
 
 // TestServer_WindowsCreate_Integration_ImmediatelyUsable verifies newly
@@ -810,9 +684,6 @@ func TestServer_WindowsCreate_Integration_ImmediatelyUsable(t *testing.T) {
 
 	// Verify command executed
 	time.Sleep(50 * time.Millisecond)
-	output, err := server.WindowsCapture(window.TmuxWindowID)
-	require.NoError(t, err)
-	assert.Contains(t, output, "testing")
 }
 
 // TestServer_WindowsCreate_Integration_InvalidSession verifies error handling

@@ -40,18 +40,8 @@ func TestRunInstallProjectFiles_CreatesSettingsJSON(t *testing.T) {
 	originalDir, _ := os.Getwd()
 	defer os.Chdir(originalDir)
 
-	// Create scripts/hooks directory
-	hooksDir := filepath.Join(tmpDir, "scripts", "hooks")
-	err := os.MkdirAll(hooksDir, 0755)
-	require.NoError(t, err)
-
-	// Create a dummy hook script
-	hookScript := filepath.Join(hooksDir, "tmux-session-notify.sh")
-	err = os.WriteFile(hookScript, []byte("#!/bin/bash\necho test"), 0644)
-	require.NoError(t, err)
-
 	// Change to test directory
-	err = os.Chdir(tmpDir)
+	err := os.Chdir(tmpDir)
 	require.NoError(t, err)
 
 	// Set force flag to avoid interactive prompt
@@ -89,8 +79,8 @@ func TestRunInstallProjectFiles_CreatesSettingsJSON(t *testing.T) {
 	assert.Equal(t, 10, hook.Timeout)
 }
 
-// TestRunInstallProjectFiles_MissingHooksDir verifies error when scripts/hooks/ missing
-func TestRunInstallProjectFiles_MissingHooksDir(t *testing.T) {
+// TestRunInstallProjectFiles_CreatesHooksDirectory verifies scripts/hooks/ is created and populated
+func TestRunInstallProjectFiles_CreatesHooksDirectory(t *testing.T) {
 	// Create temporary test directory without scripts/hooks
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
@@ -99,10 +89,29 @@ func TestRunInstallProjectFiles_MissingHooksDir(t *testing.T) {
 	err := os.Chdir(tmpDir)
 	require.NoError(t, err)
 
-	// Run the install command - should fail
+	// Set force flag to avoid interactive prompt
+	forceInstall = true
+	defer func() { forceInstall = false }()
+
+	// Run the install command - should succeed and create hooks directory
 	err = runInstallProjectFiles(nil, []string{})
-	assert.Error(t, err, "install should fail when scripts/hooks/ missing")
-	assert.Contains(t, err.Error(), "scripts/hooks/ directory not found")
+	assert.NoError(t, err, "install should succeed and create scripts/hooks/")
+
+	// Verify scripts/hooks/ directory was created
+	hooksDir := filepath.Join(tmpDir, "scripts", "hooks")
+	info, err := os.Stat(hooksDir)
+	assert.NoError(t, err, "scripts/hooks/ should be created")
+	assert.True(t, info.IsDir(), "scripts/hooks/ should be a directory")
+
+	// Verify hook scripts were created
+	notifyScript := filepath.Join(hooksDir, "tmux-session-notify.sh")
+	validateScript := filepath.Join(hooksDir, "tmux-validate-session.sh")
+
+	_, err = os.Stat(notifyScript)
+	assert.NoError(t, err, "tmux-session-notify.sh should be created")
+
+	_, err = os.Stat(validateScript)
+	assert.NoError(t, err, "tmux-validate-session.sh should be created")
 }
 
 // TestRunInstallProjectFiles_SetsScriptPermissions verifies hook scripts get executable permissions
@@ -112,21 +121,8 @@ func TestRunInstallProjectFiles_SetsScriptPermissions(t *testing.T) {
 	originalDir, _ := os.Getwd()
 	defer os.Chdir(originalDir)
 
-	// Create scripts/hooks directory
-	hooksDir := filepath.Join(tmpDir, "scripts", "hooks")
-	err := os.MkdirAll(hooksDir, 0755)
-	require.NoError(t, err)
-
-	// Create hook scripts with non-executable permissions
-	scripts := []string{"tmux-session-notify.sh", "tmux-validate-session.sh"}
-	for _, script := range scripts {
-		scriptPath := filepath.Join(hooksDir, script)
-		err = os.WriteFile(scriptPath, []byte("#!/bin/bash\necho test"), 0644)
-		require.NoError(t, err)
-	}
-
 	// Change to test directory
-	err = os.Chdir(tmpDir)
+	err := os.Chdir(tmpDir)
 	require.NoError(t, err)
 
 	// Set force flag
@@ -137,7 +133,9 @@ func TestRunInstallProjectFiles_SetsScriptPermissions(t *testing.T) {
 	err = runInstallProjectFiles(nil, []string{})
 	assert.NoError(t, err)
 
-	// Verify scripts have executable permissions
+	// Verify scripts were created with executable permissions
+	hooksDir := filepath.Join(tmpDir, "scripts", "hooks")
+	scripts := []string{"tmux-session-notify.sh", "tmux-validate-session.sh"}
 	for _, script := range scripts {
 		scriptPath := filepath.Join(hooksDir, script)
 		info, err := os.Stat(scriptPath)
@@ -155,18 +153,8 @@ func TestRunInstallProjectFiles_CreatesLogsDirectory(t *testing.T) {
 	originalDir, _ := os.Getwd()
 	defer os.Chdir(originalDir)
 
-	// Create scripts/hooks directory
-	hooksDir := filepath.Join(tmpDir, "scripts", "hooks")
-	err := os.MkdirAll(hooksDir, 0755)
-	require.NoError(t, err)
-
-	// Create a dummy hook script
-	hookScript := filepath.Join(hooksDir, "tmux-session-notify.sh")
-	err = os.WriteFile(hookScript, []byte("#!/bin/bash\necho test"), 0644)
-	require.NoError(t, err)
-
 	// Change to test directory
-	err = os.Chdir(tmpDir)
+	err := os.Chdir(tmpDir)
 	require.NoError(t, err)
 
 	// Set force flag
@@ -191,19 +179,9 @@ func TestRunInstallProjectFiles_OverwriteExisting(t *testing.T) {
 	originalDir, _ := os.Getwd()
 	defer os.Chdir(originalDir)
 
-	// Create scripts/hooks directory
-	hooksDir := filepath.Join(tmpDir, "scripts", "hooks")
-	err := os.MkdirAll(hooksDir, 0755)
-	require.NoError(t, err)
-
-	// Create a dummy hook script
-	hookScript := filepath.Join(hooksDir, "tmux-session-notify.sh")
-	err = os.WriteFile(hookScript, []byte("#!/bin/bash\necho test"), 0644)
-	require.NoError(t, err)
-
 	// Create existing .claude/settings.json with different content
 	claudeDir := filepath.Join(tmpDir, ".claude")
-	err = os.MkdirAll(claudeDir, 0755)
+	err := os.MkdirAll(claudeDir, 0755)
 	require.NoError(t, err)
 
 	existingSettings := map[string]interface{}{
