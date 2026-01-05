@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -226,6 +227,10 @@ func TestSessionManager_CreateSession_StoreSaveFails(t *testing.T) {
 	mockExec.On("ListWindows", "test-uuid").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
 	}, nil)
+	// Expect supervisor UUID setup
+	mockExec.On("SetWindowOption", "test-uuid", "@0", "window-uuid", "test-uuid").Return(nil)
+	mockExec.On("SendMessage", "test-uuid", "@0", `export TMUX_WINDOW_UUID="test-uuid"`).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-uuid", "@0", `claude --dangerously-skip-permissions --session-id="$TMUX_WINDOW_UUID"`).Return("", nil)
 	mockStore.On("Save", mock.Anything).Return(errors.New("disk full"))
 	// CRITICAL: Should cleanup tmux session when store fails
 	mockExec.On("KillSession", "test-uuid").Return(nil)
@@ -320,6 +325,13 @@ func TestSessionManager_CreateSession_TableDriven(t *testing.T) {
 					mockExec.On("ListWindows", tt.sessionID).Return([]tmux.WindowInfo{
 						{TmuxWindowID: "@0", Name: "supervisor", Running: true},
 					}, nil)
+
+					// Expect supervisor UUID setup
+					mockExec.On("SetWindowOption", tt.sessionID, "@0", "window-uuid", tt.sessionID).Return(nil)
+					mockExec.On("SendMessage", tt.sessionID, "@0", mock.MatchedBy(func(msg string) bool {
+						return msg == fmt.Sprintf(`export TMUX_WINDOW_UUID="%s"`, tt.sessionID)
+					})).Return(nil)
+					mockExec.On("SendMessageWithFeedback", tt.sessionID, "@0", `claude --dangerously-skip-permissions --session-id="$TMUX_WINDOW_UUID"`).Return("", nil)
 
 					// Only setup Save if CreateSession succeeds
 					mockStore.On("Save", mock.Anything).Return(tt.saveErr)
@@ -474,6 +486,11 @@ func TestSessionManager_CreateSession_DefaultsToZsh(t *testing.T) {
 			Running:        true,
 		},
 	}, nil)
+
+	// Expect supervisor UUID setup
+	mockExec.On("SetWindowOption", "test-uuid", "@0", "window-uuid", "test-uuid").Return(nil)
+	mockExec.On("SendMessage", "test-uuid", "@0", `export TMUX_WINDOW_UUID="test-uuid"`).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-uuid", "@0", `claude --dangerously-skip-permissions --session-id="$TMUX_WINDOW_UUID"`).Return("", nil)
 
 	// Verify saved session has window data (recovery defaults to zsh)
 	mockStore.On("Save", mock.MatchedBy(func(s *store.Session) bool {
