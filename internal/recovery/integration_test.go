@@ -7,7 +7,6 @@ package recovery
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -61,9 +60,12 @@ func TestIntegration_RecoverSession_EndToEnd(t *testing.T) {
 
 	// Clean up any existing test session
 	executor.KillSession(testSessionID)
-	os.Remove(filepath.Join(testPath, store.SessionFileName))
+	os.RemoveAll(testPath)
 
-	// Create session and save to store
+	// Create test directory and session
+	err = os.MkdirAll(testPath, 0755)
+	assert.NoError(t, err, "should create test directory")
+
 	err = executor.CreateSession(testSessionID, testPath)
 	assert.NoError(t, err, "should create test session")
 
@@ -102,7 +104,7 @@ func TestIntegration_RecoverSession_EndToEnd(t *testing.T) {
 	assert.True(t, needsRecovery, "should need recovery after killing session")
 
 	// Load session and recover it
-	sessionToRecover, err := sessionStore.Load(testSessionID)
+	sessionToRecover, err := sessionStore.Load(testPath)
 	assert.NoError(t, err, "should load session from store")
 
 	err = recoveryManager.RecoverSession(sessionToRecover)
@@ -137,7 +139,7 @@ func TestIntegration_RecoverSession_EndToEnd(t *testing.T) {
 
 	// Clean up
 	executor.KillSession(testSessionID)
-	os.Remove(filepath.Join(testPath, store.SessionFileName))
+	os.RemoveAll(testPath)
 
 	t.Log("✅ End-to-end recovery workflow completed successfully")
 	t.Log("   - Session killed and detected as needing recovery")

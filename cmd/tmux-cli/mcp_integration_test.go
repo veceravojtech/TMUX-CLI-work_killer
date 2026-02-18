@@ -20,8 +20,8 @@ import (
 func TestMCPCommand_Integration_ServerStarts(t *testing.T) {
 	// Arrange: Create temp directory with session file
 	tempDir := t.TempDir()
-	sessionFile := filepath.Join(tempDir, ".tmux-cli-session.json")
-	sessionData := `{"sessionID":"test-mcp","windows":[]}`
+	sessionFile := filepath.Join(tempDir, ".tmux-session")
+	sessionData := `{"sessionId":"test-mcp","windows":[]}`
 	require.NoError(t, os.WriteFile(sessionFile, []byte(sessionData), 0644))
 
 	// Build binary from project root
@@ -82,7 +82,7 @@ func TestMCPCommand_Integration_SessionNotFound(t *testing.T) {
 	assert.Error(t, err, "Should return error when session file not found")
 	assert.Contains(t, string(output), "session file not detected", "Error message should mention session file")
 	assert.Contains(t, string(output), tempDir, "Error message should include working directory")
-	assert.Contains(t, string(output), ".tmux-cli-session.json", "Error message should mention expected file name")
+	assert.Contains(t, string(output), ".tmux-session", "Error message should mention expected file name")
 }
 
 // TestMCPCommand_Integration_HelpText verifies that the mcp command
@@ -119,8 +119,8 @@ func TestMCPCommand_Integration_HelpText(t *testing.T) {
 func TestMCPCommand_Integration_GracefulShutdown(t *testing.T) {
 	// Arrange: Create temp directory with session file
 	tempDir := t.TempDir()
-	sessionFile := filepath.Join(tempDir, ".tmux-cli-session.json")
-	sessionData := `{"sessionID":"test-shutdown","windows":[]}`
+	sessionFile := filepath.Join(tempDir, ".tmux-session")
+	sessionData := `{"sessionId":"test-shutdown","windows":[]}`
 	require.NoError(t, os.WriteFile(sessionFile, []byte(sessionData), 0644))
 
 	// Build binary from project root

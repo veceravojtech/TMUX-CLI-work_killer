@@ -2,9 +2,7 @@
 name: 'step-03-execute'
 description: 'Execute implementation - iterate through tasks, write code, run tests'
 
-workflow_path: '{project-root}/_bmad/bmm/workflows/bmad-quick-flow/quick-dev'
-thisStepFile: '{workflow_path}/steps/step-03-execute.md'
-nextStepFile: '{workflow_path}/steps/step-04-self-check.md'
+nextStepFile: './step-04-self-check.md'
 ---
 
 # Step 3: Execute Implementation
@@ -91,7 +89,7 @@ For each task:
 
 ## NEXT STEP
 
-When ALL tasks are complete (or halted on blocker), load `step-04-self-check.md`.
+When ALL tasks are complete (or halted on blocker), read fully and follow: `step-04-self-check.md`.
 
 ---
 

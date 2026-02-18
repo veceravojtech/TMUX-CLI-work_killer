@@ -167,9 +167,10 @@ func (s *Server) WindowsSend(windowIdentifier, command string) (bool, error) {
 			ErrWindowNotFound, windowID, session.SessionID)
 	}
 
-	// Send command using tmux.Executor (direct internal call per Decision 3)
+	// Send command using tmux.Executor with 1-second delay (direct internal call per Decision 3)
 	// Command is sent exactly as provided - no modification (per AC requirement)
-	err = s.executor.SendMessage(session.SessionID, windowID, command)
+	// Using SendMessageWithDelay to ensure long commands are fully delivered before Enter is pressed
+	err = s.executor.SendMessageWithDelay(session.SessionID, windowID, command)
 	if err != nil {
 		// Wrap tmux execution error with categorized error and context (STRICT Rule 9)
 		return false, fmt.Errorf("%w: session=%s window=%s command=%q: %w",

@@ -28,24 +28,23 @@ This uses **step-file architecture** for focused execution:
 Load config from `{project-root}/_bmad/bmm/config.yaml` and resolve:
 
 - `user_name`, `communication_language`, `user_skill_level`
-- `output_folder`, `sprint_artifacts`
+- `planning_artifacts`, `implementation_artifacts`
 - `date` as system-generated current datetime
+- ✅ YOU MUST ALWAYS SPEAK OUTPUT In your Agent communication style with the config `{communication_language}`
 
 ### Paths
 
 - `installed_path` = `{project-root}/_bmad/bmm/workflows/bmad-quick-flow/quick-dev`
 - `project_context` = `**/project-context.md` (load if exists)
-- `project_levels` = `{project-root}/_bmad/bmm/workflows/workflow-status/project-levels.yaml`
 
 ### Related Workflows
 
-- `create_tech_spec_workflow` = `{project-root}/_bmad/bmm/workflows/bmad-quick-flow/create-tech-spec/workflow.yaml`
-- `workflow_init` = `{project-root}/_bmad/bmm/workflows/workflow-status/init/workflow.yaml`
+- `quick_spec_workflow` = `{project-root}/_bmad/bmm/workflows/bmad-quick-flow/quick-spec/workflow.md`
 - `party_mode_exec` = `{project-root}/_bmad/core/workflows/party-mode/workflow.md`
-- `advanced_elicitation` = `{project-root}/_bmad/core/tasks/advanced-elicitation.xml`
+- `advanced_elicitation` = `{project-root}/_bmad/core/workflows/advanced-elicitation/workflow.xml`
 
 ---
 
 ## EXECUTION
 
-Load and execute `steps/step-01-mode-detection.md` to begin the workflow.
+Read fully and follow: `steps/step-01-mode-detection.md` to begin the workflow.

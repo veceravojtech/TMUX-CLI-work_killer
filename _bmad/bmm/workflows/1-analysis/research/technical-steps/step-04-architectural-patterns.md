@@ -11,6 +11,7 @@
 - 💬 FOCUS on architectural patterns and design decisions
 - 🔍 WEB SEARCH REQUIRED - verify current facts against live sources
 - 📝 WRITE CONTENT IMMEDIATELY TO DOCUMENT
+- ✅ YOU MUST ALWAYS SPEAK OUTPUT In your Agent communication style with the config `{communication_language}`
 
 ## EXECUTION PROTOCOLS:
 
@@ -154,7 +155,7 @@ Show the generated architectural patterns and present continue option:
 #### If 'C' (Continue):
 
 - Append the final content to the research document
-- Update frontmatter: `stepsCompleted: [1, 2, 3]`
+- Update frontmatter: `stepsCompleted: [1, 2, 3, 4]`
 - Load: `./step-05-implementation-research.md`
 
 ## APPEND TO DOCUMENT:

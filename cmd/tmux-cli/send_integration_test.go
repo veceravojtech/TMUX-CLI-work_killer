@@ -110,7 +110,7 @@ func TestInterWindowCommunication_EndToEnd(t *testing.T) {
 	// Send message after recovery
 	afterRecoveryMessage := "Message after recovery"
 	// Note: Window IDs may have changed after recovery, reload session
-	recoveredSession, err := fileStore.Load(sessionID)
+	recoveredSession, err := fileStore.Load(testDir)
 	require.NoError(t, err)
 
 	err = executor.SendMessage(sessionID, recoveredSession.Windows[0].TmuxWindowID, afterRecoveryMessage)

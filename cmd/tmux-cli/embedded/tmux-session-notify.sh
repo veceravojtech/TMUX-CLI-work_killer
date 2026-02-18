@@ -45,21 +45,33 @@ CWD="${PWD:-unknown}"
 # Try to get window name from .tmux-session
 SESSION_FILE=".tmux-session"
 WINDOW_NAME="unknown"
+TMUX_SESSION_ID=""
+TMUX_WINDOW_ID=""
 if [[ -f "$SESSION_FILE" ]]; then
     WINDOW_NAME=$(jq -r --arg uuid "$WINDOW_UUID" '.windows[]? | select(.uuid == $uuid) | .name // "unknown"' "$SESSION_FILE" 2>/dev/null || echo "unknown")
+    # Read session ID and tmux window ID from session file for capture-pane targeting
+    TMUX_SESSION_ID=$(jq -r '.sessionId // empty' "$SESSION_FILE" 2>/dev/null || echo "")
+    TMUX_WINDOW_ID=$(jq -r --arg uuid "$WINDOW_UUID" \
+        '.windows[]? | select(.uuid == $uuid) | .tmuxWindowId // empty' \
+        "$SESSION_FILE" 2>/dev/null || echo "")
 fi
 
-# Parse transcript path from hook input
-TRANSCRIPT_PATH=$(echo "$HOOK_INPUT" | jq -r '.transcript_path // empty')
-
-# Get complete last message from transcript if available
+# Capture terminal output directly from the pane instead of parsing transcript
+FULL_CONTENT=""
 LAST_CONTENT=""
-if [[ -n "$TRANSCRIPT_PATH" && -f "$TRANSCRIPT_PATH" ]]; then
-    # Extract ALL text from the last user/assistant message (handle multiple content blocks)
-    LAST_CONTENT=$(tac "$TRANSCRIPT_PATH" | \
-        jq -rs 'map(select(.type == "user" or .type == "assistant")) | first |
-                if .message.content | type == "string" then .message.content
-                else [.message.content[]? | select(.type == "text") | .text] | join("\n") end' 2>/dev/null || echo "")
+CONTENT_TRIMMED=false
+if [[ -n "$TMUX_SESSION_ID" && -n "$TMUX_WINDOW_ID" ]]; then
+    FULL_CONTENT=$(tmux capture-pane -t "${TMUX_SESSION_ID}:${TMUX_WINDOW_ID}" \
+        -p -S -200 2>/dev/null || echo "")
+    if [[ -n "$FULL_CONTENT" ]]; then
+        TOTAL_LINES=$(printf '%s' "$FULL_CONTENT" | wc -l)
+        if [[ "$TOTAL_LINES" -gt 150 ]]; then
+            LAST_CONTENT=$(printf '%s' "$FULL_CONTENT" | tail -150)
+            CONTENT_TRIMMED=true
+        else
+            LAST_CONTENT="$FULL_CONTENT"
+        fi
+    fi
 fi
 
 # Map event type to friendly name
@@ -89,8 +101,10 @@ mkdir -p "$AGENT_LOG_DIR"
 # Use single log file per agent (overwrite mode)
 LOG_FILE="$AGENT_LOG_DIR/agent.log"
 
-# Overwrite log file with only the message content
-echo "${LAST_CONTENT}" > "$LOG_FILE"
+# Only write agent.log on Stop events (avoids overwriting useful output on start/end)
+if [[ "$EVENT_TYPE" == "stop" ]]; then
+    echo "${FULL_CONTENT}" > "$LOG_FILE"
+fi
 
 # If this is a Stop event and not supervisor, notify supervisor window
 if [[ "$EVENT_TYPE" == "stop" && "$WINDOW_NAME" != "supervisor" ]]; then
@@ -101,6 +115,12 @@ if [[ "$EVENT_TYPE" == "stop" && "$WINDOW_NAME" != "supervisor" ]]; then
 output:
 
 ${LAST_CONTENT}"
+
+        if [[ "$CONTENT_TRIMMED" == true ]]; then
+            NOTIFICATION_MESSAGE="${NOTIFICATION_MESSAGE}
+
+[trimmed to 150 lines — full output: .tmux-cli/${WINDOW_NAME}/agent.log]"
+        fi
         tmux-cli windows-message --receiver supervisor --message "$NOTIFICATION_MESSAGE" 2>/dev/null || true
 
         # Also write to a notifications file for persistence

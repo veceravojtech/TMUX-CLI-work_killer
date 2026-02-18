@@ -1,4 +1,4 @@
-# Technical Research Step 5: Technical Synthesis and Completion
+# Technical Research Step 6: Technical Synthesis and Completion
 
 ## MANDATORY EXECUTION RULES (READ FIRST):
 
@@ -11,13 +11,14 @@
 - 💬 FOCUS on comprehensive technical synthesis and authoritative conclusions
 - 🔍 WEB SEARCH REQUIRED - verify current facts against live sources
 - 📄 PRODUCE COMPREHENSIVE DOCUMENT with narrative intro, TOC, and summary
+- ✅ YOU MUST ALWAYS SPEAK OUTPUT In your Agent communication style with the config `{communication_language}`
 
 ## EXECUTION PROTOCOLS:
 
 - 🎯 Show web search analysis before presenting findings
 - ⚠️ Present [C] complete option after synthesis content generation
 - 💾 ONLY save when user chooses C (Complete)
-- 📖 Update frontmatter `stepsCompleted: [1, 2, 3, 4, 5]` before completing workflow
+- 📖 Update frontmatter `stepsCompleted: [1, 2, 3, 4, 5, 6]` before completing workflow
 - 🚫 FORBIDDEN to complete workflow until C is selected
 - 📚 GENERATE COMPLETE DOCUMENT STRUCTURE with intro, TOC, and summary
 
@@ -416,7 +417,7 @@ _This comprehensive technical research document serves as an authoritative techn
 #### If 'C' (Complete Research):
 
 - Append the complete technical document to the research file
-- Update frontmatter: `stepsCompleted: [1, 2, 3, 4, 5]`
+- Update frontmatter: `stepsCompleted: [1, 2, 3, 4, 5, 6]`
 - Complete the technical research workflow
 - Provide final technical document delivery confirmation
 

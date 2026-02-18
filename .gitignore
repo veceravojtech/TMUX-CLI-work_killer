@@ -65,3 +65,5 @@ _bmad-output/implementation-artifacts/*
 
 # tmux-cli runtime logs
 .tmux-cli/logs/*
+/_bmad/
+/_bmad-output/

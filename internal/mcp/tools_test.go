@@ -319,7 +319,7 @@ func TestServer_WindowsSend_Success(t *testing.T) {
 	var commandSent bool
 	var capturedSessionID, capturedWindowID, capturedMessage string
 	mockExecutor := &testutil.MockTmuxExecutor{}
-	mockExecutor.On("SendMessage", "test-session", "@0", "npm run build").Return(nil).Run(func(args mock.Arguments) {
+	mockExecutor.On("SendMessageWithDelay", "test-session", "@0", "npm run build").Return(nil).Run(func(args mock.Arguments) {
 		capturedSessionID = args.String(0)
 		capturedWindowID = args.String(1)
 		capturedMessage = args.String(2)
@@ -338,7 +338,7 @@ func TestServer_WindowsSend_Success(t *testing.T) {
 	// Assert
 	require.NoError(t, err)
 	assert.True(t, success)
-	assert.True(t, commandSent, "SendMessage should have been called")
+	assert.True(t, commandSent, "SendMessageWithDelay should have been called")
 	assert.Equal(t, "test-session", capturedSessionID)
 	assert.Equal(t, "@0", capturedWindowID)
 	assert.Equal(t, "npm run build", capturedMessage)
@@ -439,7 +439,7 @@ func TestServer_WindowsSend_Error_TmuxCommandFailed(t *testing.T) {
 	}
 
 	mockExecutor := &testutil.MockTmuxExecutor{}
-	mockExecutor.On("SendMessage", "test-session", "@0", "npm run build").Return(errors.New("tmux not running"))
+	mockExecutor.On("SendMessageWithDelay", "test-session", "@0", "npm run build").Return(errors.New("tmux not running"))
 
 	server := &Server{
 		store:      mockStore,
@@ -474,7 +474,7 @@ func TestServer_WindowsSend_SpecialCharacters(t *testing.T) {
 	specialCommand := "echo 'Hello World' && ls -la"
 	var capturedCommand string
 	mockExecutor := &testutil.MockTmuxExecutor{}
-	mockExecutor.On("SendMessage", "test-session", "@0", specialCommand).Return(nil).Run(func(args mock.Arguments) {
+	mockExecutor.On("SendMessageWithDelay", "test-session", "@0", specialCommand).Return(nil).Run(func(args mock.Arguments) {
 		capturedCommand = args.String(2)
 	})
 
@@ -510,7 +510,7 @@ func TestServer_WindowsSend_WithWindowName(t *testing.T) {
 
 	var capturedWindowID string
 	mockExecutor := &testutil.MockTmuxExecutor{}
-	mockExecutor.On("SendMessage", "test-session", "@1", "echo test").Return(nil).Run(func(args mock.Arguments) {
+	mockExecutor.On("SendMessageWithDelay", "test-session", "@1", "echo test").Return(nil).Run(func(args mock.Arguments) {
 		capturedWindowID = args.String(1)
 	})
 
@@ -576,7 +576,7 @@ func TestServer_WindowsSend_WithWindowID_BackwardCompatibility(t *testing.T) {
 	}
 
 	mockExecutor := &testutil.MockTmuxExecutor{}
-	mockExecutor.On("SendMessage", "test-session", "@0", "echo test").Return(nil)
+	mockExecutor.On("SendMessageWithDelay", "test-session", "@0", "echo test").Return(nil)
 
 	server := &Server{
 		store:      mockStore,
