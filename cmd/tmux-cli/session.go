@@ -25,6 +25,9 @@ var hookSessionNotify string
 //go:embed embedded/tmux-validate-session.sh
 var hookValidateSession string
 
+//go:embed embedded/no-interactive-questions.sh
+var hookNoInteractiveQuestions string
+
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Create a new tmux session",
@@ -1183,14 +1186,21 @@ type ClaudeSettings struct {
 
 // HooksConfig represents the hooks configuration
 type HooksConfig struct {
-	SessionStart []HookGroup `json:"SessionStart,omitempty"`
-	SessionEnd   []HookGroup `json:"SessionEnd,omitempty"`
-	Stop         []HookGroup `json:"Stop,omitempty"`
+	SessionStart []HookGroup           `json:"SessionStart,omitempty"`
+	SessionEnd   []HookGroup           `json:"SessionEnd,omitempty"`
+	Stop         []HookGroup           `json:"Stop,omitempty"`
+	PreToolUse   []PreToolUseHookGroup `json:"PreToolUse,omitempty"`
 }
 
 // HookGroup represents a group of hooks
 type HookGroup struct {
 	Hooks []Hook `json:"hooks"`
+}
+
+// PreToolUseHookGroup represents a PreToolUse hook group with a tool matcher
+type PreToolUseHookGroup struct {
+	Matcher string `json:"matcher"`
+	Hooks   []Hook `json:"hooks"`
 }
 
 // Hook represents a single hook command
@@ -1244,6 +1254,11 @@ func runInstallProjectFiles(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create .tmux-cli/logs directory: %w", err)
 	}
 
+	claudeHooksDir := filepath.Join(claudeDir, "hooks")
+	if err := os.MkdirAll(claudeHooksDir, 0755); err != nil {
+		return fmt.Errorf("create .claude/hooks directory: %w", err)
+	}
+
 	// 5. Write embedded hook scripts to files
 	hookScripts := map[string]string{
 		"tmux-session-notify.sh":   hookSessionNotify,
@@ -1260,7 +1275,28 @@ func runInstallProjectFiles(cmd *cobra.Command, args []string) error {
 		filesModified = append(filesModified, relPath)
 	}
 
-	// 6. Create hook configuration
+	noInteractiveQuestionsPath := filepath.Join(claudeHooksDir, "no-interactive-questions.sh")
+	if err := os.WriteFile(noInteractiveQuestionsPath, []byte(hookNoInteractiveQuestions), 0755); err != nil {
+		return fmt.Errorf("write no-interactive-questions.sh: %w", err)
+	}
+	relNoInteractive, _ := filepath.Rel(projectRoot, noInteractiveQuestionsPath)
+	filesModified = append(filesModified, relNoInteractive)
+
+	// 6. Read existing PreToolUse entries from settings.json (if file exists)
+	var existingPreToolUse []PreToolUseHookGroup
+	if settingsExists {
+		existingData, err := os.ReadFile(settingsFile)
+		if err != nil {
+			return fmt.Errorf("read existing settings.json: %w", err)
+		}
+		var existingSettings ClaudeSettings
+		if err := json.Unmarshal(existingData, &existingSettings); err != nil {
+			return fmt.Errorf("parse existing settings.json: %w", err)
+		}
+		existingPreToolUse = existingSettings.Hooks.PreToolUse
+	}
+
+	// 7. Build canonical settings (always overwrite SessionStart/SessionEnd/Stop)
 	settings := ClaudeSettings{
 		Hooks: HooksConfig{
 			SessionStart: []HookGroup{
@@ -1296,16 +1332,36 @@ func runInstallProjectFiles(cmd *cobra.Command, args []string) error {
 					},
 				},
 			},
+			PreToolUse: existingPreToolUse,
 		},
 	}
 
-	// 7. Marshal to JSON with proper indentation
+	// 8. Merge: add AskUserQuestion PreToolUse entry if not already present (idempotent)
+	matcherFound := false
+	for _, group := range settings.Hooks.PreToolUse {
+		if group.Matcher == "AskUserQuestion" {
+			matcherFound = true
+			break
+		}
+	}
+	if !matcherFound {
+		settings.Hooks.PreToolUse = append(settings.Hooks.PreToolUse, PreToolUseHookGroup{
+			Matcher: "AskUserQuestion",
+			Hooks: []Hook{{
+				Type:    "command",
+				Command: `"$CLAUDE_PROJECT_DIR"/.claude/hooks/no-interactive-questions.sh`,
+				Timeout: 5,
+			}},
+		})
+	}
+
+	// 9. Marshal to JSON with proper indentation
 	jsonData, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal settings to JSON: %w", err)
 	}
 
-	// 8. Write to .claude/settings.json
+	// 10. Write to .claude/settings.json
 	if err := os.WriteFile(settingsFile, jsonData, 0644); err != nil {
 		return fmt.Errorf("write settings file: %w", err)
 	}

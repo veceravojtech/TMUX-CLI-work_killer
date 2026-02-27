@@ -231,11 +231,22 @@ func TestServer_WindowsCreate_CommandParameterIgnored(t *testing.T) {
 	output, err := server.executor.CaptureWindowOutput(sessionID, window.TmuxWindowID)
 	require.NoError(t, err)
 
-	// Assert: ZSH_VERSION should be set (proves zsh is running)
-	assert.Contains(t, output, "SHELL_TYPE=", "ZSH_VERSION should be set")
-	assert.NotContains(t, output, "SHELL_TYPE=$ZSH_VERSION", "ZSH_VERSION should have actual value, not be unexpanded")
-
-	t.Logf("Window uses zsh shell despite command parameter: %s", "bash")
+	// Assert: ZSH_VERSION should be expanded to an actual version (proves zsh is running).
+	// The captured pane includes both the command line (literal $ZSH_VERSION) and
+	// the output line (expanded value like "5.9"), so we check line-by-line.
+	lines := strings.Split(output, "\n")
+	found := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "SHELL_TYPE=") && !strings.Contains(trimmed, "$") {
+			version := strings.TrimPrefix(trimmed, "SHELL_TYPE=")
+			assert.NotEmpty(t, version, "ZSH_VERSION should have a value")
+			found = true
+			t.Logf("Window uses zsh (version %s) despite command parameter: bash", version)
+			break
+		}
+	}
+	assert.True(t, found, "Expected an output line with expanded SHELL_TYPE=<version>")
 }
 
 // TestServer_WindowsCreate_CleanupOnUUIDSetupFailure verifies that the window

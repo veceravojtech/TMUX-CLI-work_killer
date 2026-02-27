@@ -219,6 +219,115 @@ func TestRunInstallProjectFiles_OverwriteExisting(t *testing.T) {
 	assert.Len(t, settings.Hooks.SessionStart, 1)
 }
 
+// TestRunInstallProjectFiles_CreatesNoInteractiveQuestionsHook verifies hook script is created
+func TestRunInstallProjectFiles_CreatesNoInteractiveQuestionsHook(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDir, _ := os.Getwd()
+	defer os.Chdir(originalDir)
+	require.NoError(t, os.Chdir(tmpDir))
+	forceInstall = true
+	defer func() { forceInstall = false }()
+
+	err := runInstallProjectFiles(nil, []string{})
+	assert.NoError(t, err)
+
+	hookPath := filepath.Join(tmpDir, ".claude", "hooks", "no-interactive-questions.sh")
+	info, err := os.Stat(hookPath)
+	assert.NoError(t, err, "no-interactive-questions.sh should be created at .claude/hooks/")
+	assert.True(t, info.Mode()&0111 != 0, "hook script should be executable")
+}
+
+// TestRunInstallProjectFiles_AddsPreToolUseHook verifies PreToolUse entry is written to settings.json
+func TestRunInstallProjectFiles_AddsPreToolUseHook(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDir, _ := os.Getwd()
+	defer os.Chdir(originalDir)
+	require.NoError(t, os.Chdir(tmpDir))
+	forceInstall = true
+	defer func() { forceInstall = false }()
+
+	err := runInstallProjectFiles(nil, []string{})
+	require.NoError(t, err)
+
+	settingsFile := filepath.Join(tmpDir, ".claude", "settings.json")
+	data, err := os.ReadFile(settingsFile)
+	require.NoError(t, err)
+
+	var settings ClaudeSettings
+	require.NoError(t, json.Unmarshal(data, &settings))
+
+	require.Len(t, settings.Hooks.PreToolUse, 1)
+	assert.Equal(t, "AskUserQuestion", settings.Hooks.PreToolUse[0].Matcher)
+	require.Len(t, settings.Hooks.PreToolUse[0].Hooks, 1)
+	assert.Contains(t, settings.Hooks.PreToolUse[0].Hooks[0].Command, "no-interactive-questions.sh")
+	assert.Equal(t, 5, settings.Hooks.PreToolUse[0].Hooks[0].Timeout)
+}
+
+// TestRunInstallProjectFiles_PreToolUseIdempotent verifies no duplicate entries on re-run
+func TestRunInstallProjectFiles_PreToolUseIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDir, _ := os.Getwd()
+	defer os.Chdir(originalDir)
+	require.NoError(t, os.Chdir(tmpDir))
+	forceInstall = true
+	defer func() { forceInstall = false }()
+
+	require.NoError(t, runInstallProjectFiles(nil, []string{}))
+	require.NoError(t, runInstallProjectFiles(nil, []string{}))
+
+	settingsFile := filepath.Join(tmpDir, ".claude", "settings.json")
+	data, err := os.ReadFile(settingsFile)
+	require.NoError(t, err)
+
+	var settings ClaudeSettings
+	require.NoError(t, json.Unmarshal(data, &settings))
+
+	assert.Len(t, settings.Hooks.PreToolUse, 1, "running install twice must not duplicate PreToolUse entry")
+}
+
+// TestRunInstallProjectFiles_MergePreservesExistingPreToolUse verifies existing entries are preserved
+func TestRunInstallProjectFiles_MergePreservesExistingPreToolUse(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDir, _ := os.Getwd()
+	defer os.Chdir(originalDir)
+	require.NoError(t, os.Chdir(tmpDir))
+	forceInstall = true
+	defer func() { forceInstall = false }()
+
+	// Pre-create settings.json with an existing PreToolUse entry for a different matcher
+	claudeDir := filepath.Join(tmpDir, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0755))
+	existing := ClaudeSettings{
+		Hooks: HooksConfig{
+			PreToolUse: []PreToolUseHookGroup{
+				{
+					Matcher: "Bash",
+					Hooks:   []Hook{{Type: "command", Command: "existing-bash-hook.sh", Timeout: 10}},
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	require.NoError(t, os.WriteFile(filepath.Join(claudeDir, "settings.json"), data, 0644))
+
+	err := runInstallProjectFiles(nil, []string{})
+	require.NoError(t, err)
+
+	result, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	require.NoError(t, err)
+	var settings ClaudeSettings
+	require.NoError(t, json.Unmarshal(result, &settings))
+
+	// Both entries should be present
+	assert.Len(t, settings.Hooks.PreToolUse, 2, "existing Bash matcher should be preserved")
+	matchers := make([]string, len(settings.Hooks.PreToolUse))
+	for i, g := range settings.Hooks.PreToolUse {
+		matchers[i] = g.Matcher
+	}
+	assert.Contains(t, matchers, "Bash")
+	assert.Contains(t, matchers, "AskUserQuestion")
+}
+
 // TestClaudeSettings_JSONMarshaling verifies JSON marshaling produces correct format
 func TestClaudeSettings_JSONMarshaling(t *testing.T) {
 	settings := ClaudeSettings{

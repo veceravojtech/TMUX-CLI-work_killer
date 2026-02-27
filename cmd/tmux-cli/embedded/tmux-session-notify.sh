@@ -62,11 +62,11 @@ LAST_CONTENT=""
 CONTENT_TRIMMED=false
 if [[ -n "$TMUX_SESSION_ID" && -n "$TMUX_WINDOW_ID" ]]; then
     FULL_CONTENT=$(tmux capture-pane -t "${TMUX_SESSION_ID}:${TMUX_WINDOW_ID}" \
-        -p -S -200 2>/dev/null || echo "")
+        -p -S - 2>/dev/null || echo "")
     if [[ -n "$FULL_CONTENT" ]]; then
         TOTAL_LINES=$(printf '%s' "$FULL_CONTENT" | wc -l)
-        if [[ "$TOTAL_LINES" -gt 150 ]]; then
-            LAST_CONTENT=$(printf '%s' "$FULL_CONTENT" | tail -150)
+        if [[ "$TOTAL_LINES" -gt 50 ]]; then
+            LAST_CONTENT=$(printf '%s' "$FULL_CONTENT" | tail -50)
             CONTENT_TRIMMED=true
         else
             LAST_CONTENT="$FULL_CONTENT"
@@ -119,7 +119,11 @@ ${LAST_CONTENT}"
         if [[ "$CONTENT_TRIMMED" == true ]]; then
             NOTIFICATION_MESSAGE="${NOTIFICATION_MESSAGE}
 
-[trimmed to 150 lines — full output: .tmux-cli/${WINDOW_NAME}/agent.log]"
+[trimmed to last 50 lines — full output: .tmux-cli/${WINDOW_NAME}/agent.log]"
+        else
+            NOTIFICATION_MESSAGE="${NOTIFICATION_MESSAGE}
+
+[full output: .tmux-cli/${WINDOW_NAME}/agent.log]"
         fi
         tmux-cli windows-message --receiver supervisor --message "$NOTIFICATION_MESSAGE" 2>/dev/null || true
 

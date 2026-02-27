@@ -5,11 +5,11 @@
 // windows-send, and windows-message.
 //
 // Error Handling:
-// This package defines 10 categorized error types to support AI interpretation:
+// This package defines 12 categorized error types to support AI interpretation:
 // - Session errors (session file not found, auto-detection failed)
-// - Window errors (window not found, creation failed)
+// - Window errors (window not found, creation failed, kill failed)
 // - Tmux errors (tmux not running, command execution failed)
-// - Validation errors (invalid session/window IDs)
+// - Validation errors (invalid session/window IDs, invalid input)
 // - Filesystem errors (working directory issues, corrupted session files)
 //
 // All errors use Go 1.13+ error wrapping with %w format for proper error chains.

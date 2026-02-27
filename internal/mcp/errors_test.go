@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestErrorTypes_Defined verifies all 10 error types exist with correct messages
+// TestErrorTypes_Defined verifies all 12 error types exist with correct messages
 func TestErrorTypes_Defined(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -22,6 +22,7 @@ func TestErrorTypes_Defined(t *testing.T) {
 		// Window Errors
 		{"ErrWindowNotFound", ErrWindowNotFound, "window not found"},
 		{"ErrWindowCreateFailed", ErrWindowCreateFailed, "window creation failed"},
+		{"ErrWindowKillFailed", ErrWindowKillFailed, "window kill failed"},
 
 		// Tmux Errors
 		{"ErrTmuxNotRunning", ErrTmuxNotRunning, "tmux session not running"},
@@ -30,6 +31,7 @@ func TestErrorTypes_Defined(t *testing.T) {
 		// Validation Errors
 		{"ErrInvalidSessionID", ErrInvalidSessionID, "invalid session ID format"},
 		{"ErrInvalidWindowID", ErrInvalidWindowID, "invalid window ID format"},
+		{"ErrInvalidInput", ErrInvalidInput, "invalid input parameter"},
 
 		// Filesystem Errors
 		{"ErrWorkingDirNotFound", ErrWorkingDirNotFound, "working directory not accessible"},
@@ -85,6 +87,15 @@ func TestErrorWrapping_Window(t *testing.T) {
 		assert.Contains(t, wrappedErr.Error(), "window creation failed")
 		assert.Contains(t, wrappedErr.Error(), "build-window")
 	})
+
+	t.Run("ErrWindowKillFailed with context", func(t *testing.T) {
+		wrappedErr := fmt.Errorf("%w: cannot kill last window in session", ErrWindowKillFailed)
+
+		assert.Error(t, wrappedErr)
+		assert.ErrorIs(t, wrappedErr, ErrWindowKillFailed)
+		assert.Contains(t, wrappedErr.Error(), "window kill failed")
+		assert.Contains(t, wrappedErr.Error(), "cannot kill last window")
+	})
 }
 
 // TestErrorWrapping_Tmux tests error wrapping for tmux-related errors
@@ -127,6 +138,15 @@ func TestErrorWrapping_Validation(t *testing.T) {
 		assert.ErrorIs(t, wrappedErr, ErrInvalidWindowID)
 		assert.Contains(t, wrappedErr.Error(), "invalid window ID format")
 		assert.Contains(t, wrappedErr.Error(), "bad-window-id")
+	})
+
+	t.Run("ErrInvalidInput with parameter context", func(t *testing.T) {
+		wrappedErr := fmt.Errorf("%w: command cannot be empty", ErrInvalidInput)
+
+		assert.Error(t, wrappedErr)
+		assert.ErrorIs(t, wrappedErr, ErrInvalidInput)
+		assert.Contains(t, wrappedErr.Error(), "invalid input parameter")
+		assert.Contains(t, wrappedErr.Error(), "command cannot be empty")
 	})
 }
 
