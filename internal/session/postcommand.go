@@ -8,9 +8,33 @@ import (
 	"sync"
 	"time"
 
-	"github.com/console/tmux-cli/internal/store"
 	"github.com/console/tmux-cli/internal/tmux"
 )
+
+// PostCommandConfig defines the configuration for commands to execute
+// after window initialization with fallback support.
+type PostCommandConfig struct {
+	Enabled       bool     `json:"enabled"`
+	Commands      []string `json:"commands,omitempty"`
+	ErrorPatterns []string `json:"errorPatterns,omitempty"`
+}
+
+// DefaultPostCommandConfig returns the default post-command configuration
+// with Claude CLI launch and fallback handling.
+func DefaultPostCommandConfig() *PostCommandConfig {
+	return &PostCommandConfig{
+		Enabled: true,
+		Commands: []string{
+			`claude --dangerously-skip-permissions --session-id="$TMUX_WINDOW_UUID"`,
+			`claude --dangerously-skip-permissions --resume "$TMUX_WINDOW_UUID"`,
+			`claude --dangerously-skip-permissions`,
+		},
+		ErrorPatterns: []string{
+			"already in use",
+			"No conversation found",
+		},
+	}
+}
 
 // logMutex protects concurrent writes to postcommand.log
 // Multiple windows may execute PostCommand chains simultaneously
@@ -22,7 +46,7 @@ var logMutex sync.Mutex
 // - config is nil or disabled
 // - any command in the fallback chain succeeds
 // Returns error only if all fallback commands fail
-func ExecutePostCommandWithFallback(executor tmux.TmuxExecutor, sessionID, windowID string, config *store.PostCommandConfig) error {
+func ExecutePostCommandWithFallback(executor tmux.TmuxExecutor, sessionID, windowID string, config *PostCommandConfig) error {
 	// Skip if config is nil or disabled
 	if config == nil || !config.Enabled {
 		return nil

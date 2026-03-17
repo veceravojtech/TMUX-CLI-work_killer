@@ -400,3 +400,60 @@ func (e *RealTmuxExecutor) SendMessageWithFeedback(sessionID, windowID, message 
 
 	return output, nil
 }
+
+// SetSessionEnvironment sets an environment variable on a tmux session
+// Command: tmux set-environment -t <sessionID> <key> <value>
+func (e *RealTmuxExecutor) SetSessionEnvironment(sessionID, key, value string) error {
+	cmd := exec.Command("tmux", "set-environment", "-t", sessionID, key, value)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if cmd.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux set-environment failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}
+
+// GetSessionEnvironment reads an environment variable from a tmux session
+// Command: tmux show-environment -t <sessionID> <key>
+// Output format: KEY=VALUE
+func (e *RealTmuxExecutor) GetSessionEnvironment(sessionID, key string) (string, error) {
+	cmd := exec.Command("tmux", "show-environment", "-t", sessionID, key)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if cmd.Err == exec.ErrNotFound {
+			return "", ErrTmuxNotFound
+		}
+		return "", fmt.Errorf("tmux show-environment failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+
+	// Parse KEY=VALUE format
+	line := strings.TrimSpace(string(output))
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("unexpected show-environment output: %s", line)
+	}
+	return parts[1], nil
+}
+
+// FindSessionByEnvironment finds a session where key=value in its environment
+// Iterates all sessions and checks each one's environment
+func (e *RealTmuxExecutor) FindSessionByEnvironment(key, value string) (string, error) {
+	sessions, err := e.ListSessions()
+	if err != nil {
+		return "", err
+	}
+
+	for _, sessionID := range sessions {
+		envVal, err := e.GetSessionEnvironment(sessionID, key)
+		if err != nil {
+			continue // Key not set on this session
+		}
+		if envVal == value {
+			return sessionID, nil
+		}
+	}
+
+	return "", nil
+}

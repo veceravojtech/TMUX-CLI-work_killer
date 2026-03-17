@@ -1,9 +1,8 @@
 // Package mcp implements the Model Context Protocol server for tmux-cli.
 //
 // Session Detection:
-// The server auto-detects session files from the current working directory.
-// It looks for .tmux-cli-session.json in the directory where the MCP server starts.
-// No configuration files, environment variables, or CLI flags are used (zero-config).
+// The server discovers sessions by matching project path stored in tmux session
+// environment variables. No session file is needed.
 //
 // The server provides five window management operations: windows-list, windows-create,
 // windows-kill, windows-send, and windows-message.
@@ -12,76 +11,44 @@ package mcp
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/console/tmux-cli/internal/store"
 	"github.com/console/tmux-cli/internal/tmux"
 )
 
 // Server represents an MCP server instance with session management capabilities.
 //
-// The server auto-detects session files from the current working directory
-// and provides direct access to internal tmux-cli packages (session.Manager,
-// store.SessionStore, tmux.Executor) without subprocess execution.
+// The server discovers sessions by matching project path stored in tmux session
+// environment variables. No session file is required.
 type Server struct {
-	// Session management
-	store    store.SessionStore
-	executor tmux.TmuxExecutor
-
-	// Configuration
-	workingDir  string // Absolute path where MCP server started (from os.Getwd())
-	sessionFile string // Full path to .tmux-cli-session.json file
+	executor   tmux.TmuxExecutor
+	workingDir string // Absolute path where MCP server started
 }
 
-// NewServer creates a new MCP server with automatic session file detection.
-//
-// Detection Algorithm:
-// 1. Get current working directory using os.Getwd()
-// 2. Look for .tmux-cli-session.json in that directory
-// 3. Return error if file doesn't exist (no fallback logic)
-//
-// This implements zero-configuration session detection (FR19):
-// - No CLI flags required
-// - No environment variables
-// - No configuration files
-// - No directory traversal
-//
-// Performance: Session detection completes in <50ms, exceeding NFR-P2 (<500ms).
-//
-// Error Handling:
-// Returns ErrSessionNotFound if session file doesn't exist in working directory.
-// Returns ErrWorkingDirNotFound if os.Getwd() fails (rare edge case).
-func NewServer() (*Server, error) {
-	// Get current working directory where tmux-cli mcp was executed
-	workingDir, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrWorkingDirNotFound, err)
-	}
-
-	// Session file expected at: {workingDir}/.tmux-session
-	sessionFile := filepath.Join(workingDir, store.SessionFileName)
-
-	// Verify file exists
-	if _, err := os.Stat(sessionFile); err != nil {
-		return nil, fmt.Errorf("%w in directory %s: expected %s",
-			ErrSessionNotFound, workingDir, sessionFile)
-	}
-
-	// Create store pointing to detected session file directory
-	fileStore, err := store.NewFileSessionStore()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create session store: %w", err)
-	}
-
+// NewServer creates a new MCP server. Never fails — graceful degradation.
+// If no matching session is found, tools return ErrSessionNotFound with helpful message.
+func NewServer(workingDir string) *Server {
 	return &Server{
-		workingDir:  workingDir,
-		sessionFile: sessionFile,
-		store:       fileStore,
-		executor:    tmux.NewTmuxExecutor(),
-	}, nil
+		executor:   tmux.NewTmuxExecutor(),
+		workingDir: workingDir,
+	}
+}
+
+// discoverSession finds the tmux session for this working directory.
+// Returns sessionID or error if no matching session found.
+func (s *Server) discoverSession() (string, error) {
+	sessionID, err := s.executor.FindSessionByEnvironment(
+		"TMUX_CLI_PROJECT_PATH", s.workingDir,
+	)
+	if err != nil {
+		return "", fmt.Errorf("%w: failed to search tmux sessions: %w", ErrTmuxCommandFailed, err)
+	}
+	if sessionID == "" {
+		return "", fmt.Errorf("%w: no tmux-cli session found for directory %s",
+			ErrSessionNotFound, s.workingDir)
+	}
+	return sessionID, nil
 }
 
 // WindowsListInput defines the input schema for windows-list tool (no parameters needed)
@@ -115,6 +82,13 @@ type WindowsMessageOutput struct {
 	Sender  string `json:"sender" jsonschema:"Name of the sending window (auto-detected from TMUX_WINDOW_UUID)"`
 }
 
+// WindowInfo represents a window returned by WindowsCreate
+type WindowInfo struct {
+	TmuxWindowID string `json:"tmuxWindowId"`
+	Name         string `json:"name"`
+	UUID         string `json:"uuid,omitempty"`
+}
+
 // WindowsCreateInput defines the input schema for windows-create tool
 type WindowsCreateInput struct {
 	Name    string `json:"name" jsonschema:"Name for the new window"`
@@ -123,7 +97,7 @@ type WindowsCreateInput struct {
 
 // WindowsCreateOutput defines the output schema for windows-create tool
 type WindowsCreateOutput struct {
-	Window *store.Window `json:"window" jsonschema:"Details of the created window including ID, name, and metadata"`
+	Window *WindowInfo `json:"window" jsonschema:"Details of the created window including ID, name, and metadata"`
 }
 
 // WindowsKillInput defines the input schema for windows-kill tool
@@ -137,7 +111,6 @@ type WindowsKillOutput struct {
 }
 
 // WindowsListHandler is the MCP tool handler for windows-list operation.
-// It wraps the WindowsList() method to match the MCP SDK handler signature.
 func (s *Server) WindowsListHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsListInput) (
 	*sdkmcp.CallToolResult,
 	WindowsListOutput,
@@ -152,7 +125,6 @@ func (s *Server) WindowsListHandler(ctx context.Context, req *sdkmcp.CallToolReq
 }
 
 // WindowsSendHandler is the MCP tool handler for windows-send operation.
-// It wraps the WindowsSend() method to match the MCP SDK handler signature.
 func (s *Server) WindowsSendHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsSendInput) (
 	*sdkmcp.CallToolResult,
 	WindowsSendOutput,
@@ -167,7 +139,6 @@ func (s *Server) WindowsSendHandler(ctx context.Context, req *sdkmcp.CallToolReq
 }
 
 // WindowsMessageHandler is the MCP tool handler for windows-message operation.
-// It wraps the WindowsMessage() method to match the MCP SDK handler signature.
 func (s *Server) WindowsMessageHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsMessageInput) (
 	*sdkmcp.CallToolResult,
 	WindowsMessageOutput,
@@ -182,7 +153,6 @@ func (s *Server) WindowsMessageHandler(ctx context.Context, req *sdkmcp.CallTool
 }
 
 // WindowsCreateHandler is the MCP tool handler for windows-create operation.
-// It wraps the WindowsCreate() method to match the MCP SDK handler signature.
 func (s *Server) WindowsCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsCreateInput) (
 	*sdkmcp.CallToolResult,
 	WindowsCreateOutput,
@@ -197,7 +167,6 @@ func (s *Server) WindowsCreateHandler(ctx context.Context, req *sdkmcp.CallToolR
 }
 
 // WindowsKillHandler is the MCP tool handler for windows-kill operation.
-// It wraps the WindowsKill() method to match the MCP SDK handler signature.
 func (s *Server) WindowsKillHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsKillInput) (
 	*sdkmcp.CallToolResult,
 	WindowsKillOutput,
@@ -212,13 +181,7 @@ func (s *Server) WindowsKillHandler(ctx context.Context, req *sdkmcp.CallToolReq
 }
 
 // RegisterTools registers all MCP tools with the given SDK server.
-// This includes windows-list, windows-create, windows-kill,
-// windows-send, and windows-message tools.
-//
-// Tool registration uses type-safe handlers with automatic JSON schema
-// generation from Go struct types (MCP SDK v1.2.0+ pattern).
 func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
-	// Register windows-list tool (FR1: List all windows in current session)
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "windows-list",
 		Description: "List all windows in the current tmux session with IDs, names, and active status",
@@ -228,43 +191,39 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 		},
 	}, s.WindowsListHandler)
 
-	// Register windows-send tool (FR8, FR9, FR10: Send commands to windows for remote execution and orchestration)
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "windows-send",
 		Description: "Send a text command to a specific window for execution without manual switching. Supports multi-window orchestration workflows by sending commands in sequence.",
 		Annotations: &sdkmcp.ToolAnnotations{
-			ReadOnlyHint:   false, // Modifies window state
-			IdempotentHint: false, // Sending same command twice executes it twice
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
 		},
 	}, s.WindowsSendHandler)
 
-	// Register windows-message tool (Inter-window AI agent communication)
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "windows-message",
 		Description: "Send formatted message to another window with auto-detected sender and reply instructions. Enables inter-window AI agent communication.",
 		Annotations: &sdkmcp.ToolAnnotations{
-			ReadOnlyHint:   false, // Modifies window state by sending message
-			IdempotentHint: false, // Sending same message twice delivers it twice
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
 		},
 	}, s.WindowsMessageHandler)
 
-	// Register windows-create tool (FR11, FR13: Create new windows for dynamic workflow expansion)
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "windows-create",
 		Description: "Create a new window in the current tmux session for expanded workflows. Optionally execute a command in the new window. Enables dynamic window lifecycle management and parallel execution.",
 		Annotations: &sdkmcp.ToolAnnotations{
-			ReadOnlyHint:   false, // Creates new window (modifies state)
-			IdempotentHint: false, // Creating same window twice creates duplicates
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
 		},
 	}, s.WindowsCreateHandler)
 
-	// Register windows-kill tool (FR12, FR13: Terminate specific windows for cleanup and lifecycle management)
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "windows-kill",
 		Description: "Terminate a specific window in the current tmux session. Supports workflow cleanup by removing temporary windows. Idempotent - returns success if window already doesn't exist. CRITICAL: Cannot kill the last window in a session (would terminate session).",
 		Annotations: &sdkmcp.ToolAnnotations{
-			ReadOnlyHint:   false, // Kills window (modifies state)
-			IdempotentHint: true,  // Killing same window twice succeeds (idempotent)
+			ReadOnlyHint:   false,
+			IdempotentHint: true,
 		},
 	}, s.WindowsKillHandler)
 

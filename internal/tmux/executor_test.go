@@ -68,6 +68,18 @@ func (m *mockExecutor) SendMessageWithFeedback(sessionID, windowID, message stri
 	return "", nil
 }
 
+func (m *mockExecutor) SetSessionEnvironment(sessionID, key, value string) error {
+	return nil
+}
+
+func (m *mockExecutor) GetSessionEnvironment(sessionID, key string) (string, error) {
+	return "", nil
+}
+
+func (m *mockExecutor) FindSessionByEnvironment(key, value string) (string, error) {
+	return "", nil
+}
+
 func TestTmuxExecutor_Interface_HasSendMessage(t *testing.T) {
 	// This test verifies that SendMessage is part of the TmuxExecutor interface
 	// It will fail until SendMessage is added to the interface definition

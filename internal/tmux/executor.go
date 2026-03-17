@@ -57,6 +57,16 @@ type TmuxExecutor interface {
 	// Returns the captured output after a 1-second delay
 	// Useful for detecting command execution errors in the pane
 	SendMessageWithFeedback(sessionID, windowID, message string) (string, error)
+
+	// SetSessionEnvironment sets an environment variable on a tmux session
+	SetSessionEnvironment(sessionID, key, value string) error
+
+	// GetSessionEnvironment reads an environment variable from a tmux session
+	GetSessionEnvironment(sessionID, key string) (string, error)
+
+	// FindSessionByEnvironment finds a session where key=value in its environment
+	// Returns sessionID or empty string if not found
+	FindSessionByEnvironment(key, value string) (string, error)
 }
 
 // WindowInfo contains metadata about a tmux window

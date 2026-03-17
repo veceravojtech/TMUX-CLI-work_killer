@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/console/tmux-cli/internal/store"
 	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,6 +83,18 @@ func (m *MockExecutorWithFeedback) HasSession(id string) (bool, error) {
 
 func (m *MockExecutorWithFeedback) ListSessions() ([]string, error) {
 	return nil, nil
+}
+
+func (m *MockExecutorWithFeedback) SetSessionEnvironment(sessionID, key, value string) error {
+	return nil
+}
+
+func (m *MockExecutorWithFeedback) GetSessionEnvironment(sessionID, key string) (string, error) {
+	return "", nil
+}
+
+func (m *MockExecutorWithFeedback) FindSessionByEnvironment(key, value string) (string, error) {
+	return "", nil
 }
 
 // setupTestLogDir creates a temporary test directory and changes to it
@@ -241,7 +252,7 @@ func TestExecutePostCommandWithFallback_LoggingIntegration(t *testing.T) {
 	}
 
 	// Create config with 3 fallback commands
-	config := &store.PostCommandConfig{
+	config := &PostCommandConfig{
 		Enabled: true,
 		Commands: []string{
 			"claude --session-id=\"test\"",
@@ -290,7 +301,7 @@ func TestExecutePostCommandWithFallback_AllFailures(t *testing.T) {
 		},
 	}
 
-	config := &store.PostCommandConfig{
+	config := &PostCommandConfig{
 		Enabled: true,
 		Commands: []string{
 			"claude --session-id=\"test\"",

@@ -97,3 +97,21 @@ func (m *MockTmuxExecutor) SendMessageWithFeedback(sessionID, windowID, message 
 	args := m.Called(sessionID, windowID, message)
 	return args.String(0), args.Error(1)
 }
+
+// SetSessionEnvironment mocks setting a session environment variable
+func (m *MockTmuxExecutor) SetSessionEnvironment(sessionID, key, value string) error {
+	args := m.Called(sessionID, key, value)
+	return args.Error(0)
+}
+
+// GetSessionEnvironment mocks reading a session environment variable
+func (m *MockTmuxExecutor) GetSessionEnvironment(sessionID, key string) (string, error) {
+	args := m.Called(sessionID, key)
+	return args.String(0), args.Error(1)
+}
+
+// FindSessionByEnvironment mocks finding a session by environment variable
+func (m *MockTmuxExecutor) FindSessionByEnvironment(key, value string) (string, error) {
+	args := m.Called(key, value)
+	return args.String(0), args.Error(1)
+}

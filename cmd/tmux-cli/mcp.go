@@ -21,9 +21,8 @@ var mcpCmd = &cobra.Command{
 	Long: `Start the MCP protocol server to enable AI assistants like Claude
 to manage tmux windows through the Model Context Protocol.
 
-The server auto-detects the session file from the current working directory
-and listens for MCP requests via stdin/stdout. Run this command from your
-project root directory containing .tmux-cli-session.json.
+The server auto-discovers the tmux session for the current working directory
+and listens for MCP requests via stdin/stdout.
 
 Examples:
   # Start MCP server (blocks until Ctrl+C)
@@ -33,14 +32,17 @@ The server will shut down gracefully on SIGINT (Ctrl+C) or SIGTERM.`,
 	RunE: runMCPServer,
 }
 
-// runMCPServer initializes and starts the MCP server with session detection
+// runMCPServer initializes and starts the MCP server with session discovery
 // and graceful shutdown handling.
 func runMCPServer(cmd *cobra.Command, args []string) error {
-	// Initialize MCP server with session detection
-	mcpServer, err := mcp.NewServer()
+	// Get working directory for session discovery
+	workingDir, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("failed to initialize MCP server: %w", err)
+		return fmt.Errorf("failed to get working directory: %w", err)
 	}
+
+	// Initialize MCP server (never fails — graceful degradation)
+	mcpServer := mcp.NewServer(workingDir)
 
 	// Configure MCP SDK server
 	impl := &sdkmcp.Implementation{

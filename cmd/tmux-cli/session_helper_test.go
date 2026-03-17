@@ -6,17 +6,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/console/tmux-cli/internal/store"
+	"github.com/console/tmux-cli/internal/tmux"
 )
 
 // TestResolveWindowIdentifier_CLI_WithWindowID tests that window IDs are returned as-is
 func TestResolveWindowIdentifier_CLI_WithWindowID(t *testing.T) {
-	session := &store.Session{
-		SessionID: "test-session",
-		Windows: []store.Window{
-			{TmuxWindowID: "@0", Name: "supervisor"},
-			{TmuxWindowID: "@1", Name: "bmad-worker"},
-		},
+	windows := []tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "bmad-worker"},
 	}
 
 	tests := []struct {
@@ -31,7 +28,7 @@ func TestResolveWindowIdentifier_CLI_WithWindowID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := ResolveWindowIdentifier(session, tt.identifier)
+			result, err := ResolveWindowIdentifier(windows, tt.identifier)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -40,13 +37,10 @@ func TestResolveWindowIdentifier_CLI_WithWindowID(t *testing.T) {
 
 // TestResolveWindowIdentifier_CLI_WithWindowName tests that window names are resolved to IDs
 func TestResolveWindowIdentifier_CLI_WithWindowName(t *testing.T) {
-	session := &store.Session{
-		SessionID: "test-session",
-		Windows: []store.Window{
-			{TmuxWindowID: "@0", Name: "supervisor"},
-			{TmuxWindowID: "@1", Name: "bmad-worker"},
-			{TmuxWindowID: "@2", Name: "dev-server"},
-		},
+	windows := []tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "bmad-worker"},
+		{TmuxWindowID: "@2", Name: "dev-server"},
 	}
 
 	tests := []struct {
@@ -61,7 +55,7 @@ func TestResolveWindowIdentifier_CLI_WithWindowName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := ResolveWindowIdentifier(session, tt.identifier)
+			result, err := ResolveWindowIdentifier(windows, tt.identifier)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -70,15 +64,12 @@ func TestResolveWindowIdentifier_CLI_WithWindowName(t *testing.T) {
 
 // TestResolveWindowIdentifier_CLI_WithInvalidName tests error handling for invalid names
 func TestResolveWindowIdentifier_CLI_WithInvalidName(t *testing.T) {
-	session := &store.Session{
-		SessionID: "test-session",
-		Windows: []store.Window{
-			{TmuxWindowID: "@0", Name: "supervisor"},
-			{TmuxWindowID: "@1", Name: "bmad-worker"},
-		},
+	windows := []tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "bmad-worker"},
 	}
 
-	result, err := ResolveWindowIdentifier(session, "invalid-name")
+	result, err := ResolveWindowIdentifier(windows, "invalid-name")
 	require.Error(t, err)
 	assert.Equal(t, "", result)
 	assert.Contains(t, err.Error(), "window name \"invalid-name\" not found")
@@ -88,11 +79,8 @@ func TestResolveWindowIdentifier_CLI_WithInvalidName(t *testing.T) {
 
 // TestResolveWindowIdentifier_CLI_CaseSensitive tests case-sensitive matching
 func TestResolveWindowIdentifier_CLI_CaseSensitive(t *testing.T) {
-	session := &store.Session{
-		SessionID: "test-session",
-		Windows: []store.Window{
-			{TmuxWindowID: "@0", Name: "supervisor"},
-		},
+	windows := []tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
 	}
 
 	tests := []struct {
@@ -107,7 +95,7 @@ func TestResolveWindowIdentifier_CLI_CaseSensitive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := ResolveWindowIdentifier(session, tt.identifier)
+			result, err := ResolveWindowIdentifier(windows, tt.identifier)
 			if tt.shouldError {
 				require.Error(t, err)
 				assert.Equal(t, "", result)
@@ -121,14 +109,11 @@ func TestResolveWindowIdentifier_CLI_CaseSensitive(t *testing.T) {
 
 // TestResolveWindowIdentifier_CLI_EmptyIdentifier tests error for empty identifier
 func TestResolveWindowIdentifier_CLI_EmptyIdentifier(t *testing.T) {
-	session := &store.Session{
-		SessionID: "test-session",
-		Windows: []store.Window{
-			{TmuxWindowID: "@0", Name: "supervisor"},
-		},
+	windows := []tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
 	}
 
-	result, err := ResolveWindowIdentifier(session, "")
+	result, err := ResolveWindowIdentifier(windows, "")
 	require.Error(t, err)
 	assert.Equal(t, "", result)
 	assert.Contains(t, err.Error(), "window identifier cannot be empty")

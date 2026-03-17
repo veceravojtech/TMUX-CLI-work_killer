@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestErrorTypes_Defined verifies all 12 error types exist with correct messages
+// TestErrorTypes_Defined verifies all error types exist with correct messages
 func TestErrorTypes_Defined(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -16,8 +16,7 @@ func TestErrorTypes_Defined(t *testing.T) {
 		expectedMsg string
 	}{
 		// Session Errors
-		{"ErrSessionNotFound", ErrSessionNotFound, "session file not detected"},
-		{"ErrSessionNotDetected", ErrSessionNotDetected, "session auto-detection failed"},
+		{"ErrSessionNotFound", ErrSessionNotFound, "no tmux-cli session found for this directory"},
 
 		// Window Errors
 		{"ErrWindowNotFound", ErrWindowNotFound, "window not found"},
@@ -35,7 +34,6 @@ func TestErrorTypes_Defined(t *testing.T) {
 
 		// Filesystem Errors
 		{"ErrWorkingDirNotFound", ErrWorkingDirNotFound, "working directory not accessible"},
-		{"ErrSessionFileCorrupt", ErrSessionFileCorrupt, "session file corrupted"},
 	}
 
 	for _, tt := range tests {
@@ -49,21 +47,11 @@ func TestErrorTypes_Defined(t *testing.T) {
 // TestErrorWrapping_Session tests error wrapping for session-related errors
 func TestErrorWrapping_Session(t *testing.T) {
 	t.Run("ErrSessionNotFound with directory context", func(t *testing.T) {
-		wrappedErr := fmt.Errorf("%w in directory /test/path", ErrSessionNotFound)
+		wrappedErr := fmt.Errorf("%w: no tmux-cli session found for directory /test/path", ErrSessionNotFound)
 
 		assert.Error(t, wrappedErr)
 		assert.ErrorIs(t, wrappedErr, ErrSessionNotFound)
-		assert.Contains(t, wrappedErr.Error(), "session file not detected")
 		assert.Contains(t, wrappedErr.Error(), "/test/path")
-	})
-
-	t.Run("ErrSessionNotDetected with session ID context", func(t *testing.T) {
-		wrappedErr := fmt.Errorf("%w: session=%s", ErrSessionNotDetected, "test-session-123")
-
-		assert.Error(t, wrappedErr)
-		assert.ErrorIs(t, wrappedErr, ErrSessionNotDetected)
-		assert.Contains(t, wrappedErr.Error(), "session auto-detection failed")
-		assert.Contains(t, wrappedErr.Error(), "test-session-123")
 	})
 }
 
@@ -159,14 +147,5 @@ func TestErrorWrapping_Filesystem(t *testing.T) {
 		assert.ErrorIs(t, wrappedErr, ErrWorkingDirNotFound)
 		assert.Contains(t, wrappedErr.Error(), "working directory not accessible")
 		assert.Contains(t, wrappedErr.Error(), "/nonexistent/path")
-	})
-
-	t.Run("ErrSessionFileCorrupt with file path", func(t *testing.T) {
-		wrappedErr := fmt.Errorf("%w: file=%s", ErrSessionFileCorrupt, ".tmux-cli-session.json")
-
-		assert.Error(t, wrappedErr)
-		assert.ErrorIs(t, wrappedErr, ErrSessionFileCorrupt)
-		assert.Contains(t, wrappedErr.Error(), "session file corrupted")
-		assert.Contains(t, wrappedErr.Error(), ".tmux-cli-session.json")
 	})
 }

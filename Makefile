@@ -111,6 +111,7 @@ test-integration:
 install: build
 	@echo "Installing $(BINARY_NAME) to $(INSTALL_PATH)..."
 	@mkdir -p $(INSTALL_PATH)
+	@rm -f $(INSTALL_PATH)/$(BINARY_NAME)
 	@cp $(BINARY_PATH) $(INSTALL_PATH)/$(BINARY_NAME)
 	@chmod +x $(INSTALL_PATH)/$(BINARY_NAME)
 	@echo "✓ Installed to $(INSTALL_PATH)/$(BINARY_NAME)"
