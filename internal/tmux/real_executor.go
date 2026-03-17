@@ -2,6 +2,8 @@ package tmux
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -456,4 +458,32 @@ func (e *RealTmuxExecutor) FindSessionByEnvironment(key, value string) (string, 
 	}
 
 	return "", nil
+}
+
+// AttachSession attaches the current terminal to an existing tmux session
+// Command: tmux attach-session -t <id>
+// This method blocks until the user detaches from the tmux session.
+// It forwards stdin/stdout/stderr to allow interactive terminal access.
+func (e *RealTmuxExecutor) AttachSession(id string) error {
+	cmd := exec.Command("tmux", "attach-session", "-t", id)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+
+	// Capture stderr in a buffer so we can include it in error messages,
+	// while still forwarding it to the user's terminal via MultiWriter
+	var stderrBuf strings.Builder
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+
+	err := cmd.Run()
+	if err != nil {
+		if cmd.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		stderrMsg := strings.TrimSpace(stderrBuf.String())
+		if stderrMsg != "" {
+			return fmt.Errorf("tmux attach-session failed: %s: %w", stderrMsg, err)
+		}
+		return fmt.Errorf("tmux attach-session failed: %w", err)
+	}
+	return nil
 }

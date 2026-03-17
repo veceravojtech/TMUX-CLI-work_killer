@@ -101,6 +101,11 @@ func (m *MockTmuxExecutor) FindSessionByEnvironment(key, value string) (string, 
 	return args.String(0), args.Error(1)
 }
 
+func (m *MockTmuxExecutor) AttachSession(id string) error {
+	args := m.Called(id)
+	return args.Error(0)
+}
+
 // TestNewSessionManager_ReturnsInstance verifies constructor works
 func TestNewSessionManager_ReturnsInstance(t *testing.T) {
 	mockExec := new(MockTmuxExecutor)

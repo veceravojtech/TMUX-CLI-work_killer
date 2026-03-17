@@ -115,3 +115,9 @@ func (m *MockTmuxExecutor) FindSessionByEnvironment(key, value string) (string, 
 	args := m.Called(key, value)
 	return args.String(0), args.Error(1)
 }
+
+// AttachSession mocks attaching to a tmux session
+func (m *MockTmuxExecutor) AttachSession(id string) error {
+	args := m.Called(id)
+	return args.Error(0)
+}

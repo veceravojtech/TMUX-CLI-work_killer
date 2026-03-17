@@ -123,6 +123,34 @@ func TestWindowsKillCmd_RequiredFlags(t *testing.T) {
 	assert.NotNil(t, windowIDFlagCmd, "--window-id flag should exist")
 }
 
+// TestStartAttachCmd_Exists verifies the start-attach command is registered
+func TestStartAttachCmd_Exists(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"start-attach"})
+	assert.NoError(t, err, "start-attach command should be registered")
+	assert.NotNil(t, cmd, "start-attach command should exist")
+	assert.Equal(t, "start-attach", cmd.Use, "command name should be 'start-attach'")
+}
+
+// TestStartAttachCmd_HasRunE verifies start-attach has a RunE handler
+func TestStartAttachCmd_HasRunE(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"start-attach"})
+	assert.NoError(t, err)
+	require.NotNil(t, cmd)
+	assert.NotNil(t, cmd.RunE, "start-attach command should have RunE function")
+}
+
+// TestInstallCmd_OldNameRemoved verifies install-project-files name no longer exists
+func TestInstallCmd_OldNameRemoved(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"install-project-files"})
+	// Cobra returns an error for unknown commands — the old name should not resolve
+	if err == nil && cmd != nil {
+		assert.NotEqual(t, "install-project-files", cmd.Use, "install-project-files should no longer exist as a separate command")
+	} else {
+		// Error finding the command means the old name is properly gone
+		assert.Error(t, err, "install-project-files should not be found as a command")
+	}
+}
+
 // TestEndCmd_Removed verifies end command no longer exists
 func TestEndCmd_Removed(t *testing.T) {
 	// The end command has been removed

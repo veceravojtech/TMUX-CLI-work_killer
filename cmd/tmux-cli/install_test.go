@@ -14,17 +14,17 @@ import (
 // Install Project Files Command Tests
 // ============================================================================
 
-// TestInstallProjectFilesCmd_Exists verifies the install-project-files command is registered
-func TestInstallProjectFilesCmd_Exists(t *testing.T) {
-	cmd, _, err := rootCmd.Find([]string{"install-project-files"})
-	assert.NoError(t, err, "install-project-files command should be registered")
-	assert.NotNil(t, cmd, "install-project-files command should exist")
-	assert.Equal(t, "install-project-files", cmd.Use, "command name should be 'install-project-files'")
+// TestInstallCmd_Exists verifies the install command is registered
+func TestInstallCmd_Exists(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"install"})
+	assert.NoError(t, err, "install command should be registered")
+	assert.NotNil(t, cmd, "install command should exist")
+	assert.Equal(t, "install", cmd.Use, "command name should be 'install'")
 }
 
-// TestInstallProjectFilesCmd_HasForceFlag verifies --force flag exists
-func TestInstallProjectFilesCmd_HasForceFlag(t *testing.T) {
-	cmd, _, err := rootCmd.Find([]string{"install-project-files"})
+// TestInstallCmd_HasForceFlag verifies --force flag exists
+func TestInstallCmd_HasForceFlag(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"install"})
 	assert.NoError(t, err)
 	require.NotNil(t, cmd)
 
@@ -33,8 +33,8 @@ func TestInstallProjectFilesCmd_HasForceFlag(t *testing.T) {
 	assert.Equal(t, "bool", forceFlag.Value.Type(), "--force should be a boolean flag")
 }
 
-// TestRunInstallProjectFiles_CreatesSettingsJSON verifies settings.json is created
-func TestRunInstallProjectFiles_CreatesSettingsJSON(t *testing.T) {
+// TestRunInstall_CreatesSettingsJSON verifies settings.json is created
+func TestRunInstall_CreatesSettingsJSON(t *testing.T) {
 	// Create temporary test directory
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
@@ -49,7 +49,7 @@ func TestRunInstallProjectFiles_CreatesSettingsJSON(t *testing.T) {
 	defer func() { forceInstall = false }()
 
 	// Run the install command
-	err = runInstallProjectFiles(nil, []string{})
+	err = runInstall(nil, []string{})
 	assert.NoError(t, err, "install should succeed")
 
 	// Verify .claude/settings.json was created
@@ -79,8 +79,8 @@ func TestRunInstallProjectFiles_CreatesSettingsJSON(t *testing.T) {
 	assert.Equal(t, 10, hook.Timeout)
 }
 
-// TestRunInstallProjectFiles_CreatesHooksDirectory verifies scripts/hooks/ is created and populated
-func TestRunInstallProjectFiles_CreatesHooksDirectory(t *testing.T) {
+// TestRunInstall_CreatesHooksDirectory verifies scripts/hooks/ is created and populated
+func TestRunInstall_CreatesHooksDirectory(t *testing.T) {
 	// Create temporary test directory without scripts/hooks
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
@@ -94,7 +94,7 @@ func TestRunInstallProjectFiles_CreatesHooksDirectory(t *testing.T) {
 	defer func() { forceInstall = false }()
 
 	// Run the install command - should succeed and create hooks directory
-	err = runInstallProjectFiles(nil, []string{})
+	err = runInstall(nil, []string{})
 	assert.NoError(t, err, "install should succeed and create scripts/hooks/")
 
 	// Verify scripts/hooks/ directory was created
@@ -114,8 +114,8 @@ func TestRunInstallProjectFiles_CreatesHooksDirectory(t *testing.T) {
 	assert.NoError(t, err, "tmux-validate-session.sh should be created")
 }
 
-// TestRunInstallProjectFiles_SetsScriptPermissions verifies hook scripts get executable permissions
-func TestRunInstallProjectFiles_SetsScriptPermissions(t *testing.T) {
+// TestRunInstall_SetsScriptPermissions verifies hook scripts get executable permissions
+func TestRunInstall_SetsScriptPermissions(t *testing.T) {
 	// Create temporary test directory
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
@@ -130,7 +130,7 @@ func TestRunInstallProjectFiles_SetsScriptPermissions(t *testing.T) {
 	defer func() { forceInstall = false }()
 
 	// Run the install command
-	err = runInstallProjectFiles(nil, []string{})
+	err = runInstall(nil, []string{})
 	assert.NoError(t, err)
 
 	// Verify scripts were created with executable permissions
@@ -146,8 +146,8 @@ func TestRunInstallProjectFiles_SetsScriptPermissions(t *testing.T) {
 	}
 }
 
-// TestRunInstallProjectFiles_CreatesLogsDirectory verifies .tmux-cli/logs/ is created
-func TestRunInstallProjectFiles_CreatesLogsDirectory(t *testing.T) {
+// TestRunInstall_CreatesLogsDirectory verifies .tmux-cli/logs/ is created
+func TestRunInstall_CreatesLogsDirectory(t *testing.T) {
 	// Create temporary test directory
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
@@ -162,7 +162,7 @@ func TestRunInstallProjectFiles_CreatesLogsDirectory(t *testing.T) {
 	defer func() { forceInstall = false }()
 
 	// Run the install command
-	err = runInstallProjectFiles(nil, []string{})
+	err = runInstall(nil, []string{})
 	assert.NoError(t, err)
 
 	// Verify .tmux-cli/logs/ directory was created
@@ -172,8 +172,8 @@ func TestRunInstallProjectFiles_CreatesLogsDirectory(t *testing.T) {
 	assert.True(t, info.IsDir(), ".tmux-cli/logs/ should be a directory")
 }
 
-// TestRunInstallProjectFiles_OverwriteExisting verifies --force flag behavior
-func TestRunInstallProjectFiles_OverwriteExisting(t *testing.T) {
+// TestRunInstall_OverwriteExisting verifies --force flag behavior
+func TestRunInstall_OverwriteExisting(t *testing.T) {
 	// Create temporary test directory
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
@@ -203,7 +203,7 @@ func TestRunInstallProjectFiles_OverwriteExisting(t *testing.T) {
 	defer func() { forceInstall = false }()
 
 	// Run the install command
-	err = runInstallProjectFiles(nil, []string{})
+	err = runInstall(nil, []string{})
 	assert.NoError(t, err)
 
 	// Verify settings.json was overwritten
@@ -219,8 +219,8 @@ func TestRunInstallProjectFiles_OverwriteExisting(t *testing.T) {
 	assert.Len(t, settings.Hooks.SessionStart, 1)
 }
 
-// TestRunInstallProjectFiles_CreatesNoInteractiveQuestionsHook verifies hook script is created
-func TestRunInstallProjectFiles_CreatesNoInteractiveQuestionsHook(t *testing.T) {
+// TestRunInstall_CreatesNoInteractiveQuestionsHook verifies hook script is created
+func TestRunInstall_CreatesNoInteractiveQuestionsHook(t *testing.T) {
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
 	defer os.Chdir(originalDir)
@@ -228,7 +228,7 @@ func TestRunInstallProjectFiles_CreatesNoInteractiveQuestionsHook(t *testing.T) 
 	forceInstall = true
 	defer func() { forceInstall = false }()
 
-	err := runInstallProjectFiles(nil, []string{})
+	err := runInstall(nil, []string{})
 	assert.NoError(t, err)
 
 	hookPath := filepath.Join(tmpDir, ".claude", "hooks", "no-interactive-questions.sh")
@@ -237,8 +237,8 @@ func TestRunInstallProjectFiles_CreatesNoInteractiveQuestionsHook(t *testing.T) 
 	assert.True(t, info.Mode()&0111 != 0, "hook script should be executable")
 }
 
-// TestRunInstallProjectFiles_AddsPreToolUseHook verifies PreToolUse entry is written to settings.json
-func TestRunInstallProjectFiles_AddsPreToolUseHook(t *testing.T) {
+// TestRunInstall_AddsPreToolUseHook verifies PreToolUse entry is written to settings.json
+func TestRunInstall_AddsPreToolUseHook(t *testing.T) {
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
 	defer os.Chdir(originalDir)
@@ -246,7 +246,7 @@ func TestRunInstallProjectFiles_AddsPreToolUseHook(t *testing.T) {
 	forceInstall = true
 	defer func() { forceInstall = false }()
 
-	err := runInstallProjectFiles(nil, []string{})
+	err := runInstall(nil, []string{})
 	require.NoError(t, err)
 
 	settingsFile := filepath.Join(tmpDir, ".claude", "settings.json")
@@ -263,8 +263,8 @@ func TestRunInstallProjectFiles_AddsPreToolUseHook(t *testing.T) {
 	assert.Equal(t, 5, settings.Hooks.PreToolUse[0].Hooks[0].Timeout)
 }
 
-// TestRunInstallProjectFiles_PreToolUseIdempotent verifies no duplicate entries on re-run
-func TestRunInstallProjectFiles_PreToolUseIdempotent(t *testing.T) {
+// TestRunInstall_PreToolUseIdempotent verifies no duplicate entries on re-run
+func TestRunInstall_PreToolUseIdempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
 	defer os.Chdir(originalDir)
@@ -272,8 +272,8 @@ func TestRunInstallProjectFiles_PreToolUseIdempotent(t *testing.T) {
 	forceInstall = true
 	defer func() { forceInstall = false }()
 
-	require.NoError(t, runInstallProjectFiles(nil, []string{}))
-	require.NoError(t, runInstallProjectFiles(nil, []string{}))
+	require.NoError(t, runInstall(nil, []string{}))
+	require.NoError(t, runInstall(nil, []string{}))
 
 	settingsFile := filepath.Join(tmpDir, ".claude", "settings.json")
 	data, err := os.ReadFile(settingsFile)
@@ -285,8 +285,8 @@ func TestRunInstallProjectFiles_PreToolUseIdempotent(t *testing.T) {
 	assert.Len(t, settings.Hooks.PreToolUse, 1, "running install twice must not duplicate PreToolUse entry")
 }
 
-// TestRunInstallProjectFiles_MergePreservesExistingPreToolUse verifies existing entries are preserved
-func TestRunInstallProjectFiles_MergePreservesExistingPreToolUse(t *testing.T) {
+// TestRunInstall_MergePreservesExistingPreToolUse verifies existing entries are preserved
+func TestRunInstall_MergePreservesExistingPreToolUse(t *testing.T) {
 	tmpDir := t.TempDir()
 	originalDir, _ := os.Getwd()
 	defer os.Chdir(originalDir)
@@ -310,7 +310,7 @@ func TestRunInstallProjectFiles_MergePreservesExistingPreToolUse(t *testing.T) {
 	data, _ := json.MarshalIndent(existing, "", "  ")
 	require.NoError(t, os.WriteFile(filepath.Join(claudeDir, "settings.json"), data, 0644))
 
-	err := runInstallProjectFiles(nil, []string{})
+	err := runInstall(nil, []string{})
 	require.NoError(t, err)
 
 	result, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))

@@ -30,9 +30,23 @@ var startCmd = &cobra.Command{
 	Short: "Create a new tmux session",
 	Long: `Create a new detached tmux session for the current directory.
 
+If a session is already running for this directory, you will be prompted
+to recreate it or keep the existing one.
+
 The session is identified by project path and timestamp.
 Session state is stored in tmux itself — no session file needed.`,
 	RunE: runSessionStart,
+}
+
+var startAttachCmd = &cobra.Command{
+	Use:   "start-attach",
+	Short: "Create a new tmux session and attach to it",
+	Long: `Create a new detached tmux session for the current directory, then attach to it.
+
+If a session is already running for the current directory, you will be prompted
+to recreate it or keep the existing one. After session creation (or reuse),
+tmux will attach to the session.`,
+	RunE: runStartAttach,
 }
 
 var killCmd = &cobra.Command{
@@ -128,8 +142,8 @@ Examples:
 	RunE: runWindowsMessage,
 }
 
-var installProjectFilesCmd = &cobra.Command{
-	Use:   "install-project-files",
+var installCmd = &cobra.Command{
+	Use:   "install",
 	Short: "Install Claude Code hooks and project files",
 	Long: `Install Claude Code hooks and create required project directories.
 
@@ -139,13 +153,12 @@ This command automatically:
   - Creates required directories (.tmux-cli/logs/)
 
 Examples:
-  tmux-cli install-project-files
-  tmux-cli install-project-files --force`,
-	RunE: runInstallProjectFiles,
+  tmux-cli install
+  tmux-cli install --force`,
+	RunE: runInstall,
 }
 
 var (
-	projectPath     string
 	windowName      string
 	windowIDFlag    string
 	sendWindowID    string
@@ -180,11 +193,12 @@ func init() {
 	windowsMessageCmd.MarkFlagRequired("receiver")
 	windowsMessageCmd.MarkFlagRequired("message")
 
-	// Add flags to install-project-files command
-	installProjectFilesCmd.Flags().BoolVar(&forceInstall, "force", false, "Overwrite existing .claude/settings.json without prompting")
+	// Add flags to install command
+	installCmd.Flags().BoolVar(&forceInstall, "force", false, "Overwrite existing .claude/settings.json without prompting")
 
 	// Add all commands directly to root
 	rootCmd.AddCommand(startCmd)
+	rootCmd.AddCommand(startAttachCmd)
 	rootCmd.AddCommand(killCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(statusCmd)
@@ -195,7 +209,7 @@ func init() {
 	rootCmd.AddCommand(windowsUuidCmd)
 	rootCmd.AddCommand(windowsMessageCmd)
 	rootCmd.AddCommand(mcpCmd)
-	rootCmd.AddCommand(installProjectFilesCmd)
+	rootCmd.AddCommand(installCmd)
 }
 
 // UsageError represents an error in command usage or arguments
@@ -212,28 +226,38 @@ func NewUsageError(msg string) error {
 	return UsageError{msg: msg}
 }
 
-func runSessionStart(cmd *cobra.Command, args []string) error {
-	// Use current directory as project path
-	var err error
-	projectPath, err = os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	executor := tmux.NewTmuxExecutor()
-
+// startOrReuseSession handles session discovery, interactive prompts for existing sessions,
+// and session creation. Returns the session ID (existing or newly created).
+func startOrReuseSession(executor tmux.TmuxExecutor, projectPath string) (string, error) {
 	// Check if session already exists for this path
-	// Ignore errors — if tmux server isn't running, no sessions exist
 	existingSessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", projectPath)
 
 	if existingSessionID != "" {
-		// Found existing session — check if it's still running
 		running, _ := executor.HasSession(existingSessionID)
 		if running {
-			fmt.Printf("Using existing session '%s' for %s\n", existingSessionID, projectPath)
-			return nil
+			fmt.Printf("Session '%s' is already running for %s\n", existingSessionID, projectPath)
+			fmt.Println("What would you like to do?")
+			fmt.Println("  [r] Recreate session (kill existing + create new)")
+			fmt.Println("  [c] Cancel and keep existing session")
+			fmt.Print("Choice (r/c): ")
+
+			var response string
+			if _, err := fmt.Scanln(&response); err != nil {
+				// EOF or pipe input — treat as cancel
+				fmt.Printf("Keeping existing session '%s'\n", existingSessionID)
+				return existingSessionID, nil
+			}
+
+			if response == "r" || response == "R" {
+				if err := executor.KillSession(existingSessionID); err != nil {
+					return "", fmt.Errorf("kill existing session '%s': %w", existingSessionID, err)
+				}
+				// Fall through to create new session
+			} else {
+				fmt.Printf("Keeping existing session '%s'\n", existingSessionID)
+				return existingSessionID, nil
+			}
 		}
-		// Session no longer running, create new one
 	}
 
 	// Create new session
@@ -241,11 +265,35 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	manager := session.NewSessionManager(executor)
 
 	if err := manager.CreateSession(sessionID, projectPath); err != nil {
-		return err
+		return "", err
 	}
 
 	fmt.Printf("Created session '%s' for %s\n", sessionID, projectPath)
-	return nil
+	return sessionID, nil
+}
+
+func runSessionStart(cmd *cobra.Command, args []string) error {
+	projectPath, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+	executor := tmux.NewTmuxExecutor()
+	_, err = startOrReuseSession(executor, projectPath)
+	return err
+}
+
+func runStartAttach(cmd *cobra.Command, args []string) error {
+	projectPath, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+	executor := tmux.NewTmuxExecutor()
+	sessionID, err := startOrReuseSession(executor, projectPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Attaching to session '%s'...\n", sessionID)
+	return executor.AttachSession(sessionID)
 }
 
 func runSessionKill(cmd *cobra.Command, args []string) error {
@@ -728,7 +776,7 @@ type Hook struct {
 	Timeout int    `json:"timeout"`
 }
 
-func runInstallProjectFiles(cmd *cobra.Command, args []string) error {
+func runInstall(cmd *cobra.Command, args []string) error {
 	projectRoot, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)

@@ -97,6 +97,10 @@ func (m *MockExecutorWithFeedback) FindSessionByEnvironment(key, value string) (
 	return "", nil
 }
 
+func (m *MockExecutorWithFeedback) AttachSession(id string) error {
+	return nil
+}
+
 // setupTestLogDir creates a temporary test directory and changes to it
 // Returns cleanup function
 func setupTestLogDir(t *testing.T) func() {

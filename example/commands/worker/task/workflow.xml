@@ -1,0 +1,136 @@
+<task id="worker/task/workflow" name="Worker schema workflow">
+  <objective>Execute worker workflow using tmux-cli: create/reuse a tmux window, send a command or instructions to the agent, respond to questions, wait for completion, and optionally chain to a follow-up command.</objective>
+
+  <parameters>
+    <param name="COMMAND_NAME" required="true">The slash command to send to the agent (e.g. /bmad-bmm-quick-spec). Provided via consumer's &lt;commandName&gt;.</param>
+    <param name="ARGUMENT" required="false">Argument to pass with the command (e.g. a file path or task ID). NULL means no argument. Provided via consumer's &lt;argument&gt;.</param>
+    <param name="WINDOW_NAME" required="false">Tmux window name. If not provided, derived from {{COMMAND_NAME}}. Provided via consumer's &lt;windowName&gt;.</param>
+    <param name="MESSAGE" required="false">Multi-line instructions to send instead of a slash command. When provided, step 4 is used instead of step 3. Provided via consumer's &lt;message&gt;.</param>
+    <param name="PERMISSIONS" required="false">Behavioral constraints prepended to the message (e.g. "you CAN: ..., you CANNOT: ..."). Provided via consumer's &lt;permissions&gt;.</param>
+    <param name="POST_COMPLETION" required="false">A command to execute after the agent completes successfully (e.g. /worker:tech-spec). Provided via consumer's &lt;postCompletion&gt;.</param>
+  </parameters>
+
+  <requirements critical="true">
+    <mcp>tmux-cli MCP server REQUIRED</mcp>
+    <note>Consumer .md file MUST provide at least {{COMMAND_NAME}} inside a &lt;context&gt; block</note>
+    <note>Consumer may specify additional requirements (CLI tools, MCP servers) — respect those too</note>
+  </requirements>
+
+  <llm critical="true">
+    <mandate>Execute steps ONE BY ONE in EXACT ORDER — NEVER skip or reorder steps</mandate>
+    <mandate>Create TODO list for tracking all tasks</mandate>
+    <mandate>ALWAYS use windows-send for sending commands/instructions to the agent</mandate>
+    <mandate>ALWAYS send slash command and instruction as TWO SEPARATE windows-send calls — command first, then instruction — to ensure command loads before instruction is processed</mandate>
+    <mandate>ALWAYS use windows-message for responding to agent questions</mandate>
+    <mandate>NEVER use sleep to wait for responses — stay IDLE, the agent's message will trigger you</mandate>
+  </llm>
+
+  <flow>
+    <step n="1" title="Create or Reuse Tmux Window">
+      <action>Call tmux-cli tool: windows-create with name from {{WINDOW_NAME}} (or derive from {{COMMAND_NAME}} if not provided)</action>
+      <check condition="window already exists">
+        <action>Skip creation, mark window as REUSED</action>
+      </check>
+    </step>
+
+    <step n="2" title="Clear Window if Reused" condition="window was REUSED">
+      <action>Execute windows-send with parameter: /clear</action>
+      <critical>ALWAYS use windows-send, NEVER use windows-message</critical>
+    </step>
+
+    <step n="3" title="Send Command" condition="{{MESSAGE}} is NOT provided">
+      <substep n="3.1" title="Send Slash Command">
+        <action>Execute windows-send with ONLY the slash command: {{COMMAND_NAME}}</action>
+        <critical>Send the slash command ALONE — no argument, no extra text. This ensures the command loads properly.</critical>
+        <critical>ALWAYS use windows-send, NEVER use windows-message</critical>
+      </substep>
+      <substep n="3.2" title="Send Instruction / Argument" condition="{{ARGUMENT}} is NOT NULL">
+        <action>Execute a SEPARATE windows-send with the argument/instruction</action>
+        <note>CRITICAL: Provide EXHAUSTIVE DESCRIPTION as the argument — include all gathered context, file paths, and details</note>
+        <critical>This MUST be a separate windows-send call from step 3.1 — never combine command and instruction in one call</critical>
+        <critical>ALWAYS use windows-send, NEVER use windows-message</critical>
+      </substep>
+    </step>
+
+    <step n="3.5" title="Scope Guard — enforce single-purpose usage">
+      <rule>The agent should be used ONLY for what {{COMMAND_NAME}} is designed to do.</rule>
+      <example type="correct">{{COMMAND_NAME}} says "create spec" → you use it to create a spec</example>
+      <example type="wrong">{{COMMAND_NAME}} says "create spec" → you use it to implement code</example>
+      <critical>If the agent asks to do something beyond its intended purpose, answer NO</critical>
+    </step>
+
+    <step n="4" title="Send Initial Instructions" condition="{{MESSAGE}} IS provided AND {{COMMAND_NAME}} IS provided">
+      <substep n="4.1" title="Send Slash Command (if provided)">
+        <action>Execute windows-send with ONLY the slash command: {{COMMAND_NAME}}</action>
+        <critical>Send the slash command ALONE first — this ensures the command loads properly before instructions are sent.</critical>
+        <critical>ALWAYS use windows-send, NEVER use windows-message</critical>
+      </substep>
+      <substep n="4.2" title="Send Instructions">
+        <action>Compose the full message by combining {{PERMISSIONS}} (if provided) + {{MESSAGE}}</action>
+        <action>Execute a SEPARATE windows-send with the composed message</action>
+        <note>This MUST be a separate windows-send from the slash command — never combine them</note>
+        <critical>ALWAYS use windows-send, NEVER use windows-message</critical>
+      </substep>
+    </step>
+
+    <step n="4-alt" title="Send Instructions Only" condition="{{MESSAGE}} IS provided AND {{COMMAND_NAME}} IS NOT provided">
+      <action>Compose the full message by combining {{PERMISSIONS}} (if provided) + {{MESSAGE}}</action>
+      <action>Execute windows-send with the composed message</action>
+      <critical>ALWAYS use windows-send, NEVER use windows-message</critical>
+    </step>
+
+    <step n="5" title="Respond to Agent Questions">
+      <substep n="5.1" title="Analyze Question and Determine Response">
+        <check condition="agent asks about running/implementing beyond its scope">
+          <action>CRITICAL: Answer NO — the agent must stay within its designated task</action>
+        </check>
+        <check condition="you have enough context to answer">
+          <action>RESPOND immediately using windows-message — DO NOT ask the user</action>
+          <reason>Minimize user interruptions when you can answer autonomously</reason>
+        </check>
+        <check condition="cannot determine answer">
+          <action>ASK user for clarification</action>
+          <action>Then execute windows-message with user's answer</action>
+        </check>
+      </substep>
+      <critical>ALWAYS use windows-message for responses, NEVER use windows-send</critical>
+    </step>
+
+    <step n="6" title="Wait for Completion — stay IDLE">
+      <action>Do NOTHING until the agent signals that all work is done</action>
+      <note>Agent will tell you when work is complete</note>
+      <note>If agent asks to do more than it was intended for, say NO</note>
+    </step>
+
+    <step n="7" title="Determine Result">
+      <action condition="operation success, nothing remains">Kill the window — agent completed successfully</action>
+      <action condition="operation success, still more to do">Continue until all work is done</action>
+      <action condition="operation failed">Ask the user how to proceed</action>
+    </step>
+
+    <step n="8" title="Post-Completion" condition="{{POST_COMPLETION}} IS provided">
+      <action>Execute the chained command: {{POST_COMPLETION}}</action>
+      <note>This allows automatic pipeline chaining — the next worker starts immediately after success</note>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>windows-send: Use for sending commands and instructions to the agent</rule>
+    <rule>windows-message: Use for responding to agent questions</rule>
+    <rule>CRITICAL: Slash commands and instructions MUST be sent as TWO SEPARATE windows-send calls — first the command alone, then the instruction/argument in a second call. This ensures the command loads before instructions are processed.</rule>
+    <rule>Never skip wait steps — agent coordination is critical</rule>
+    <rule>Always check the consumer's &lt;context&gt; block for parameter values before starting</rule>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      • Use agents only for the task they are intended for
+      • This is a WORKER TASK that coordinates with a tmux-cli agent
+      • You MUST execute each step in exact order
+      • You MUST wait for agent responses before proceeding (stay idle — the message will trigger you)
+      • You MUST NOT use "sleep" to wait for messages — just stay idle
+      • You MUST use the correct tool (windows-send vs windows-message) for each step
+      • Create TODO list at start to track all steps
+    </critical-rules>
+  </llm>
+</task>

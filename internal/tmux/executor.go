@@ -67,6 +67,9 @@ type TmuxExecutor interface {
 	// FindSessionByEnvironment finds a session where key=value in its environment
 	// Returns sessionID or empty string if not found
 	FindSessionByEnvironment(key, value string) (string, error)
+
+	// AttachSession attaches the current terminal to an existing tmux session
+	AttachSession(id string) error
 }
 
 // WindowInfo contains metadata about a tmux window
