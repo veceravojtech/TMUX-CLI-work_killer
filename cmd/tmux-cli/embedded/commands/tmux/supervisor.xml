@@ -144,28 +144,15 @@
     </step>
 
     <step n="4" title="Spawn protocol (repeat per worker, sequentially within your turn)">
-      <substep n="4.1" title="Pick unique window name">
-        <action>Call windows-list</action>
-        <action>Find highest integer suffix N among windows named execute-&lt;int&gt;</action>
-        <action>Next name = execute-(max+1). Start at execute-1 if none exist.</action>
-        <critical>Do not reuse an execute-N suffix after kill — always pick fresh max+1. N monotonically increases across the session.</critical>
-      </substep>
-      <substep n="4.2" title="Create window">
-        <action>Call windows-create with name=execute-N, no command</action>
-        <action>Capture the returned tmuxWindowId (e.g. "@3") as SELF_WID for send operations</action>
-      </substep>
-      <substep n="4.3" title="Send /tmux:execute">
-        <action>Call windows-send to SELF_WID with exactly: /tmux:execute</action>
-        <critical>Send the slash command ALONE — no argument, no extra text</critical>
-      </substep>
-      <substep n="4.4" title="Send task message">
-        <action>Call a SEPARATE windows-send to SELF_WID with the task message template (see &lt;task-message-template&gt; below)</action>
-        <critical>This MUST be a separate windows-send call from 4.3</critical>
-        <critical>Task message MUST include the RESPONSE PROTOCOL block (filepath-only DONE + save-path) exactly as in the template</critical>
-      </substep>
-      <substep n="4.5" title="Record">
-        <action>Add (SELF_WID, execute-N name, subtask label, planned report-path) to your running worker table</action>
-      </substep>
+      <action>Call windows-spawn-worker with:
+        - supervisorWid: your SUPERVISOR_WID name
+        - subtask: one-line label for this worker
+        - contextFile: path to the context .md file created in step 3
+        - scope: multi-line scope summary (files, directories, what to investigate or implement)
+        - context: multi-line supporting context (optional — prior findings, constraints, non-goals)</action>
+      <action>The tool atomically: picks the next execute-N name, creates the window, sends /tmux:execute, assembles and sends the task message with DELIVERABLE + RESPONSE PROTOCOL.</action>
+      <action>Record from the response: workerName, window.tmuxWindowId, taskMessage (for your tracking table).</action>
+      <critical>ALWAYS use windows-spawn-worker — never assemble the spawn steps manually via windows-create + windows-send.</critical>
     </step>
 
     <step n="5" title="Idle and route">
@@ -270,7 +257,7 @@
   </flow>
 
   <task-message-template>
-    <note>Send as one windows-send in step 4.4. Worker N gets a fresh report slug.</note>
+    <note>REFERENCE ONLY — this template is assembled server-side by windows-spawn-worker. You do NOT need to format or send it manually. Shown here for documentation of what the worker receives.</note>
     <template>
 SUPERVISOR_WID=&lt;your SUPERVISOR_WID name&gt;
 SELF_WID=&lt;the execute-N name&gt;
@@ -303,11 +290,10 @@ RESPONSE PROTOCOL (MANDATORY):
   </task-message-template>
 
   <execution-rules>
-    <rule>windows-send: /tmux:execute and the task message (two separate calls)</rule>
+    <rule>windows-spawn-worker: single atomic call to spawn a worker (creates window, sends /tmux:execute, sends task message with DELIVERABLE + RESPONSE PROTOCOL)</rule>
+    <rule>NEVER assemble spawn steps manually — always use windows-spawn-worker</rule>
     <rule>windows-message: all subsequent supervisor→worker communication (answers, pushbacks, reminders, amends)</rule>
     <rule>windows-kill: only on accepted DONE or terminal FAILED; never on SUPERVISOR_WID; pass window NAME</rule>
-    <rule>Do not reuse an execute-N suffix after kill; always pick fresh max+1</rule>
-    <rule>One logical step per windows-send; never pack /tmux:execute and task message together</rule>
     <rule>Always Read the file cited in a DONE before applying the gap catalogue; never rely on the (absent) inline body</rule>
     <rule>If a worker sends DONE without file=, REMIND once; do not accept an inline-body DONE as a shortcut</rule>
   </execution-rules>
@@ -333,15 +319,12 @@ RESPONSE PROTOCOL (MANDATORY):
 
   <llm final="true">
     <critical-rules>
-      • DO NOT call /worker:execute — use /tmux:execute which is the correct skill name
       • DO NOT use sleep; idle is the trigger
       • DO NOT kill your own SUPERVISOR_WID
       • DO NOT treat stop-hook idle notifications as untagged-output violations — they are expected lifecycle
       • DO NOT advance state on untagged non-idle output — reply once with REMIND and keep waiting
-      • DO NOT exceed 3 pushbacks per worker
       • DO NOT pass @N to windows-kill — use the window NAME
       • DO NOT accept DONE without file=&lt;abs-path&gt; — REMIND to use file-only protocol
-      • DO NOT read the tmux DONE body as the report — the .md file IS the report; always Read it
       • DO NOT spawn any worker (step 4) before tasks.yaml is written and verified (step 3b) — this is a blocking gate, no exceptions
       • DO NOT violate &lt;autonomy-policy&gt; — never ask the user outside the two defined exits
       • DO NOT default to serial — default to maximum parallelism; serialize only when later worker's scope is literally unconstructable without prior worker's output

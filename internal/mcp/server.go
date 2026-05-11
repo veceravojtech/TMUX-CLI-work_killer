@@ -103,6 +103,22 @@ type WindowsCreateOutput struct {
 	Window *WindowInfo `json:"window" jsonschema:"Details of the created window including ID, name, and metadata"`
 }
 
+// WindowsSpawnWorkerInput defines the input schema for windows-spawn-worker tool
+type WindowsSpawnWorkerInput struct {
+	SupervisorWid string `json:"supervisorWid" jsonschema:"Supervisor's tmux window name (e.g. 'supervisor'). Used in the task message and RESPONSE PROTOCOL."`
+	Subtask       string `json:"subtask" jsonschema:"One-line label for the worker's task (e.g. 'audit auth module'). Appears as SUBTASK in the task message."`
+	ContextFile   string `json:"contextFile" jsonschema:"Path to the context .md file the worker should read for full spec."`
+	Scope         string `json:"scope" jsonschema:"Multi-line scope summary — files, directories, what to investigate or implement."`
+	Context       string `json:"context,omitempty" jsonschema:"Multi-line supporting context — prior findings, constraints, non-goals. Optional."`
+}
+
+// WindowsSpawnWorkerOutput defines the output schema for windows-spawn-worker tool
+type WindowsSpawnWorkerOutput struct {
+	Window      *WindowInfo `json:"window" jsonschema:"Details of the created worker window"`
+	WorkerName  string      `json:"workerName" jsonschema:"The execute-N name assigned to this worker"`
+	TaskMessage string      `json:"taskMessage" jsonschema:"The exact task message sent to the worker"`
+}
+
 // WindowsKillInput defines the input schema for windows-kill tool
 type WindowsKillInput struct {
 	WindowID string `json:"windowId" jsonschema:"The tmux window ID to terminate (e.g. '@0' or '@1')"`
@@ -209,6 +225,26 @@ func (s *Server) WindowsKillHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	return nil, WindowsKillOutput{Success: success}, nil
 }
 
+// WindowsSpawnWorkerHandler is the MCP tool handler for windows-spawn-worker.
+func (s *Server) WindowsSpawnWorkerHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsSpawnWorkerInput) (
+	*sdkmcp.CallToolResult,
+	WindowsSpawnWorkerOutput,
+	error,
+) {
+	window, workerName, taskMessage, err := s.WindowsSpawnWorker(
+		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context,
+	)
+	if err != nil {
+		return nil, WindowsSpawnWorkerOutput{}, err
+	}
+
+	return nil, WindowsSpawnWorkerOutput{
+		Window:      window,
+		WorkerName:  workerName,
+		TaskMessage: taskMessage,
+	}, nil
+}
+
 // RegisterTools registers all MCP tools with the given SDK server.
 func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
@@ -264,6 +300,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.HooksConfigHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "windows-spawn-worker",
+		Description: "Atomic worker spawn: creates execute-N window, sends /tmux:execute skill, then sends structured task message with DELIVERABLE and RESPONSE PROTOCOL. Consolidates the supervisor spawn protocol into one call.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.WindowsSpawnWorkerHandler)
 
 	return nil
 }

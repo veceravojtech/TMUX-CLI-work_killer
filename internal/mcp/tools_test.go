@@ -510,3 +510,174 @@ func TestServer_WindowsSend_WithSudo_NoPassword(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidInput)
 	assert.Contains(t, err.Error(), "sudo not configured")
 }
+
+// --- nextExecuteN tests ---
+
+func TestNextExecuteN_EmptyList(t *testing.T) {
+	result := nextExecuteN(nil)
+	assert.Equal(t, "execute-1", result)
+}
+
+func TestNextExecuteN_NoExecuteWindows(t *testing.T) {
+	windows := []WindowListItem{{Name: "supervisor"}, {Name: "main"}}
+	result := nextExecuteN(windows)
+	assert.Equal(t, "execute-1", result)
+}
+
+func TestNextExecuteN_OneExecuteWindow(t *testing.T) {
+	windows := []WindowListItem{{Name: "supervisor"}, {Name: "execute-1"}}
+	result := nextExecuteN(windows)
+	assert.Equal(t, "execute-2", result)
+}
+
+func TestNextExecuteN_GapInNumbers(t *testing.T) {
+	windows := []WindowListItem{{Name: "execute-3"}, {Name: "execute-7"}}
+	result := nextExecuteN(windows)
+	assert.Equal(t, "execute-8", result)
+}
+
+func TestNextExecuteN_NonNumericSuffix(t *testing.T) {
+	windows := []WindowListItem{{Name: "execute-foo"}, {Name: "supervisor"}}
+	result := nextExecuteN(windows)
+	assert.Equal(t, "execute-1", result)
+}
+
+// --- buildTaskMessage tests ---
+
+func TestBuildTaskMessage_AllFields(t *testing.T) {
+	msg := buildTaskMessage("supervisor", "execute-3", "audit auth module", ".tmux-cli/research/2026-05-11-22/task-auth.md", "Check all auth endpoints", "Prior audit found XSS in login", "2026-05-11-22")
+
+	assert.Contains(t, msg, "SUPERVISOR_WID=supervisor")
+	assert.Contains(t, msg, "SELF_WID=execute-3")
+	assert.Contains(t, msg, "SUBTASK: audit auth module")
+	assert.Contains(t, msg, ".tmux-cli/research/2026-05-11-22/task-auth.md")
+	assert.Contains(t, msg, "Check all auth endpoints")
+	assert.Contains(t, msg, "Prior audit found XSS in login")
+	assert.Contains(t, msg, "DELIVERABLE")
+	assert.Contains(t, msg, "RESPONSE PROTOCOL (MANDATORY)")
+	assert.Contains(t, msg, "execute-3-<slug>.md")
+	assert.Contains(t, msg, "windows-message to supervisor")
+	assert.Contains(t, msg, "[EXECUTE:DONE wid=execute-3 sup=supervisor")
+}
+
+func TestBuildTaskMessage_EmptyContext(t *testing.T) {
+	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", "2026-05-11-22")
+
+	assert.Contains(t, msg, "CONTEXT:\n(none)")
+}
+
+func TestBuildTaskMessage_ResearchDir(t *testing.T) {
+	msg := buildTaskMessage("supervisor", "execute-5", "task", "ctx.md", "scope", "", "2026-01-15-09")
+
+	assert.Contains(t, msg, ".tmux-cli/research/2026-01-15-09/execute-5-<slug>.md")
+}
+
+// --- WindowsSpawnWorker tests ---
+
+func TestServer_WindowsSpawnWorker_Success(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "zsh").Return("@1", nil)
+	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
+	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.Contains(s, "SUPERVISOR_WID=supervisor") &&
+			strings.Contains(s, "SELF_WID=execute-1") &&
+			strings.Contains(s, "SUBTASK: audit auth") &&
+			strings.Contains(s, "RESPONSE PROTOCOL")
+	})).Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	window, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "prior findings")
+
+	require.NoError(t, err)
+	assert.Equal(t, "execute-1", workerName)
+	assert.Equal(t, "execute-1", window.Name)
+	assert.Equal(t, "@1", window.TmuxWindowID)
+	assert.Contains(t, taskMessage, "SUPERVISOR_WID=supervisor")
+	assert.Contains(t, taskMessage, "SELF_WID=execute-1")
+	assert.Contains(t, taskMessage, "SUBTASK: audit auth")
+	mockExec.AssertExpectations(t)
+}
+
+func TestServer_WindowsSpawnWorker_EmptySupervisorWid(t *testing.T) {
+	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
+	_, _, _, err := server.WindowsSpawnWorker("", "task", "ctx.md", "scope", "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+}
+
+func TestServer_WindowsSpawnWorker_EmptySubtask(t *testing.T) {
+	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "", "ctx.md", "scope", "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+}
+
+func TestServer_WindowsSpawnWorker_EmptyContextFile(t *testing.T) {
+	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "", "scope", "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+}
+
+func TestServer_WindowsSpawnWorker_EmptyScope(t *testing.T) {
+	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "", "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+}
+
+func TestServer_WindowsSpawnWorker_ExecuteSendFails_CleansUp(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "zsh").Return("@1", nil)
+	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(errors.New("send failed"))
+	mockExec.On("KillWindow", "test-session", "@1").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
+	mockExec.AssertCalled(t, "KillWindow", "test-session", "@1")
+}
+
+func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "zsh").Return("@1", nil)
+	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
+	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(errors.New("delay send failed"))
+	mockExec.On("KillWindow", "test-session", "@1").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
+	mockExec.AssertCalled(t, "KillWindow", "test-session", "@1")
+}

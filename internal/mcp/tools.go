@@ -3,6 +3,7 @@ package mcp
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -362,4 +363,106 @@ func (s *Server) HooksConfig(action, hook string) (*HooksConfigOutput, error) {
 	default:
 		return nil, fmt.Errorf("%w: invalid action %q (valid: list, enable, disable)", ErrInvalidInput, action)
 	}
+}
+
+func nextExecuteN(windows []WindowListItem) string {
+	maxN := 0
+	for _, w := range windows {
+		if strings.HasPrefix(w.Name, "execute-") {
+			suffix := w.Name[len("execute-"):]
+			if n, err := strconv.Atoi(suffix); err == nil && n > maxN {
+				maxN = n
+			}
+		}
+	}
+	return fmt.Sprintf("execute-%d", maxN+1)
+}
+
+func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchDir string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "SUPERVISOR_WID=%s\n", supervisorWid)
+	fmt.Fprintf(&b, "SELF_WID=%s\n", workerName)
+	fmt.Fprintf(&b, "SUBTASK: %s\n", subtask)
+	b.WriteString("\nSCOPE:\n")
+	fmt.Fprintf(&b, "Full spec is in %s — read it and follow it.\n\n", contextFile)
+	b.WriteString(scope)
+	b.WriteString("\n")
+	b.WriteString("\nCONTEXT:\n")
+	if context != "" {
+		b.WriteString(context)
+	} else {
+		b.WriteString("(none)")
+	}
+	b.WriteString("\n")
+	b.WriteString("\nDELIVERABLE (write these sections INSIDE the report .md; do NOT paste them into tmux):\n")
+	b.WriteString("- FINDINGS: >=3 bullets, each with file path or symbol reference\n")
+	b.WriteString("- RISKS: bullets OR the literal word \"none\"\n")
+	b.WriteString("- RECOMMENDATION: 1-3 sentences, must contain a verb of decision (use|avoid|rewrite|keep|split|merge)\n")
+	b.WriteString("- FILES: absolute paths touched or cited, one per line\n")
+	b.WriteString("\nRESPONSE PROTOCOL (MANDATORY):\n")
+	fmt.Fprintf(&b, "1. Save the full report to .tmux-cli/research/%s/%s-<slug>.md\n", researchDir, workerName)
+	b.WriteString("   with headings ## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES plus any supporting detail.\n")
+	b.WriteString("   Pick a descriptive <slug> (kebab-case, <=40 chars).\n")
+	fmt.Fprintf(&b, "2. Reply via windows-message to %s with ONLY:\n", supervisorWid)
+	fmt.Fprintf(&b, "   [EXECUTE:DONE wid=%s sup=%s file=<abs-path-to-your-md>]\n", workerName, supervisorWid)
+	b.WriteString("   Do NOT inline FINDINGS/RISKS/RECOMMENDATION/FILES in the tmux message. The file IS the report.\n")
+	b.WriteString("3. [EXECUTE:NEED_INPUT ...] and [EXECUTE:FAILED reason=...] may carry a short (<200 char) inline reason.\n")
+	b.WriteString("4. If the supervisor sends [EXECUTE:PUSHBACK ...], update the SAME .md file and re-tag [EXECUTE:DONE file=<same-path>].\n")
+
+	return b.String()
+}
+
+// WindowsSpawnWorker atomically spawns a worker: creates window, sends /tmux:execute,
+// and sends the structured task message.
+func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, context string) (*WindowInfo, string, string, error) {
+	if supervisorWid == "" {
+		return nil, "", "", fmt.Errorf("%w: supervisorWid cannot be empty", ErrInvalidInput)
+	}
+	if subtask == "" {
+		return nil, "", "", fmt.Errorf("%w: subtask cannot be empty", ErrInvalidInput)
+	}
+	if contextFile == "" {
+		return nil, "", "", fmt.Errorf("%w: contextFile cannot be empty", ErrInvalidInput)
+	}
+	if scope == "" {
+		return nil, "", "", fmt.Errorf("%w: scope cannot be empty", ErrInvalidInput)
+	}
+
+	windows, err := s.WindowsList()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to list windows: %w", err)
+	}
+
+	workerName := nextExecuteN(windows)
+
+	window, err := s.WindowsCreate(workerName, "")
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to create worker window %s: %w", workerName, err)
+	}
+
+	sessionID, err := s.discoverSession()
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	err = s.executor.SendMessage(sessionID, window.TmuxWindowID, "/tmux:execute")
+	if err != nil {
+		_ = s.executor.KillWindow(sessionID, window.TmuxWindowID)
+		return nil, "", "", fmt.Errorf("%w: failed to send /tmux:execute to %s: %w",
+			ErrTmuxCommandFailed, workerName, err)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	researchDir := time.Now().Format("2006-01-02-15")
+	taskMessage := buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchDir)
+
+	err = s.executor.SendMessageWithDelay(sessionID, window.TmuxWindowID, taskMessage)
+	if err != nil {
+		_ = s.executor.KillWindow(sessionID, window.TmuxWindowID)
+		return nil, "", "", fmt.Errorf("%w: failed to send task message to %s: %w",
+			ErrTmuxCommandFailed, workerName, err)
+	}
+
+	return window, workerName, taskMessage, nil
 }
