@@ -953,3 +953,59 @@ func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
 	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
 	mockExec.AssertCalled(t, "KillWindow", "test-session", "@1")
 }
+
+func TestServer_TasksValidate_Clean(t *testing.T) {
+	root := t.TempDir()
+	mockExec := new(testutil.MockTmuxExecutor)
+	server := newTestServer(mockExec, root)
+
+	dir := root + "/.tmux-cli"
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(dir+"/tasks.yaml", []byte(`status: ready
+cycle: 1
+tasks:
+  - name: "clean task"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+`), 0o644))
+
+	out, err := server.TasksValidate()
+	require.NoError(t, err)
+	assert.True(t, out.Valid)
+	assert.Empty(t, out.Errors)
+}
+
+func TestServer_TasksValidate_ExtraFields(t *testing.T) {
+	root := t.TempDir()
+	mockExec := new(testutil.MockTmuxExecutor)
+	server := newTestServer(mockExec, root)
+
+	dir := root + "/.tmux-cli"
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(dir+"/tasks.yaml", []byte(`status: ready
+cycle: 1
+tasks:
+  - name: "bloated task"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+    scope: "inline scope"
+`), 0o644))
+
+	out, err := server.TasksValidate()
+	require.NoError(t, err)
+	assert.False(t, out.Valid)
+	require.Len(t, out.Errors, 1)
+	assert.Contains(t, out.Errors[0], "scope")
+	assert.Contains(t, out.Errors[0], "context .md file")
+}
+
+func TestServer_TasksValidate_NoFile(t *testing.T) {
+	root := t.TempDir()
+	mockExec := new(testutil.MockTmuxExecutor)
+	server := newTestServer(mockExec, root)
+
+	_, err := server.TasksValidate()
+	require.Error(t, err)
+}

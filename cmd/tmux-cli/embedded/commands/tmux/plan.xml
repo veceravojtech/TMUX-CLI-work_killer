@@ -240,11 +240,12 @@ tasks:
       <check condition="any context file is missing">
         <action>STOP. Create missing context files per step 3, then re-verify.</action>
       </check>
-      <check condition="all context files exist AND tasks.yaml contains all planned tasks">
+      <action>Call tasks-validate MCP tool. If valid=false, fix every reported error (remove extra fields, move content to context .md file) and re-run until valid=true.</action>
+      <check condition="all context files exist AND tasks-validate returns valid=true AND tasks.yaml contains all planned tasks">
         <action>Proceed to step 4.</action>
       </check>
       <rule>Set status to "planning" — NOT "ready". Only step 11 sets "ready" after user approval.</rule>
-      <rule critical="true">BLOCKING GATE. No worker may be spawned (step 4) until tasks.yaml is written, verified, and all context files exist. This ensures every planning session has a persistent task plan.</rule>
+      <rule critical="true">BLOCKING GATE. No worker may be spawned (step 4) until tasks.yaml is written, verified, tasks-validate passes, and all context files exist.</rule>
       <incremental condition="INCREMENTAL mode">
         <action>Preserve existing tasks. Append new tasks. Preserve existing cycle number.</action>
       </incremental>

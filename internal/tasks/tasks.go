@@ -126,6 +126,66 @@ func CreateContextFile(projectRoot, researchDir, slug, taskName string) (string,
 	return relPath, nil
 }
 
+var allowedTaskKeys = map[string]bool{
+	"name":       true,
+	"wid":        true,
+	"status":     true,
+	"context":    true,
+	"depends_on": true,
+}
+
+func ValidateTasksFile(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return []string{fmt.Sprintf("cannot read %s: %v", path, err)}
+	}
+
+	var raw struct {
+		Tasks []yaml.Node `yaml:"tasks"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return []string{fmt.Sprintf("invalid YAML: %v", err)}
+	}
+
+	var errs []string
+	for _, node := range raw.Tasks {
+		if node.Kind != yaml.MappingNode {
+			continue
+		}
+		var name, wid, context string
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i].Value
+			val := node.Content[i+1].Value
+			switch key {
+			case "name":
+				name = val
+			case "wid":
+				wid = val
+			case "context":
+				context = val
+			}
+		}
+		id := wid
+		if id == "" {
+			id = name
+		}
+
+		if len(name) > 100 {
+			errs = append(errs, fmt.Sprintf("task %s: name exceeds 100 chars (%d) — shorten it, put detail in the context .md file", id, len(name)))
+		}
+		if context == "" {
+			errs = append(errs, fmt.Sprintf("task %s: missing context field — every task must point to a context .md file", id))
+		}
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i].Value
+			if !allowedTaskKeys[key] {
+				errs = append(errs, fmt.Sprintf("task %s: extra field '%s' — remove it and move content into the context .md file", id, key))
+			}
+		}
+	}
+	return errs
+}
+
 func (tf *TasksFile) IsPlanning() bool {
 	return tf.Status == FileStatusPlanning
 }

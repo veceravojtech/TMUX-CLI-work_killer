@@ -154,11 +154,12 @@
       <check condition="tasks.yaml does not exist OR is missing planned tasks">
         <action>STOP. Do NOT proceed to step 4. Write tasks.yaml first per step 3 task-tracking, then re-verify.</action>
       </check>
-      <check condition="tasks.yaml exists AND contains all planned pending tasks">
+      <action>Call tasks-validate MCP tool. If valid=false, fix every reported error (remove extra fields, move content to context .md file) and re-run until valid=true.</action>
+      <check condition="tasks.yaml exists AND contains all planned pending tasks AND tasks-validate returns valid=true">
         <action>Set the top-level status in tasks.yaml to "ready". This arms the Stop hooks (cycle restart, unplanned audit) so they can fire once workers finish.</action>
         <action>Proceed to step 4.</action>
       </check>
-      <rule critical="true">This is a BLOCKING GATE. No worker may be spawned (step 4) until tasks.yaml is written, verified, AND its status is set to "ready". This ensures every supervisor session has a persistent task plan that survives context resets.</rule>
+      <rule critical="true">This is a BLOCKING GATE. No worker may be spawned (step 4) until tasks.yaml is written, verified, tasks-validate passes, AND its status is set to "ready".</rule>
     </step>
 
     <step n="4" title="Spawn protocol (repeat per worker, sequentially within your turn)">

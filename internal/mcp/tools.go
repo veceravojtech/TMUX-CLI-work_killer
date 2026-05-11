@@ -7,8 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"path/filepath"
+
 	"github.com/console/tmux-cli/internal/session"
 	"github.com/console/tmux-cli/internal/setup"
+	"github.com/console/tmux-cli/internal/tasks"
 	"github.com/console/tmux-cli/internal/tmux"
 )
 
@@ -544,4 +547,16 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	}
 
 	return window, workerName, taskMessage, nil
+}
+
+func (s *Server) TasksValidate() (*TasksValidateOutput, error) {
+	path := filepath.Join(s.workingDir, ".tmux-cli", "tasks.yaml")
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("no tasks.yaml found at %s", path)
+	}
+	errs := tasks.ValidateTasksFile(path)
+	return &TasksValidateOutput{
+		Valid:  len(errs) == 0,
+		Errors: errs,
+	}, nil
 }

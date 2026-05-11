@@ -4,9 +4,9 @@
 // The server discovers sessions by matching project path stored in tmux session
 // environment variables. No session file is needed.
 //
-// The server provides eight tools: windows-list, windows-create,
+// The server provides nine tools: windows-list, windows-create,
 // windows-kill, windows-send, windows-message, windows-spawn-worker,
-// windows-recover-workers, and hooks-config.
+// windows-recover-workers, tasks-validate, and hooks-config.
 package mcp
 
 import (
@@ -51,6 +51,28 @@ func (s *Server) discoverSession() (string, error) {
 			ErrSessionNotFound, s.workingDir)
 	}
 	return sessionID, nil
+}
+
+// TasksValidateInput defines the input schema for tasks-validate tool (no parameters needed)
+type TasksValidateInput struct{}
+
+// TasksValidateOutput defines the output schema for tasks-validate tool
+type TasksValidateOutput struct {
+	Valid  bool     `json:"valid" jsonschema:"True if tasks.yaml passes all lean format checks"`
+	Errors []string `json:"errors,omitempty" jsonschema:"Validation errors with fix instructions"`
+}
+
+// TasksValidateHandler is the MCP tool handler for tasks-validate operation.
+func (s *Server) TasksValidateHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TasksValidateInput) (
+	*sdkmcp.CallToolResult,
+	TasksValidateOutput,
+	error,
+) {
+	output, err := s.TasksValidate()
+	if err != nil {
+		return nil, TasksValidateOutput{}, err
+	}
+	return nil, *output, nil
 }
 
 // WindowsListInput defines the input schema for windows-list tool (no parameters needed)
@@ -346,6 +368,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: false,
 		},
 	}, s.WindowsSpawnWorkerHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "tasks-validate",
+		Description: "Validate .tmux-cli/tasks.yaml lean format. Returns errors if tasks contain extra fields (scope, supporting_context, etc.) that belong in the context .md file. MUST be called after writing tasks.yaml and before spawning workers.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, s.TasksValidateHandler)
 
 	return nil
 }

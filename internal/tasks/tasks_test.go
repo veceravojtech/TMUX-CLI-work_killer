@@ -447,6 +447,155 @@ tasks:
 	assert.Nil(t, tf.Tasks[0].DependsOn)
 }
 
+func TestValidateTasks_Clean(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "short task name"
+    wid: "execute-1"
+    status: pending
+    context: ".tmux-cli/research/2026-05-12-00/task-auth.md"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	assert.Empty(t, errs)
+}
+
+func TestValidateTasks_ExtraFields(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "task with scope"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+    scope: |
+      This is inline scope that should be in the context file.
+  - name: "task with supporting_context"
+    wid: "execute-2"
+    status: pending
+    context: "ctx2.md"
+    supporting_context: |
+      This is inline context that should be in the context file.
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	require.Len(t, errs, 2)
+	assert.Contains(t, errs[0], "execute-1")
+	assert.Contains(t, errs[0], "scope")
+	assert.Contains(t, errs[0], "context .md file")
+	assert.Contains(t, errs[1], "execute-2")
+	assert.Contains(t, errs[1], "supporting_context")
+}
+
+func TestValidateTasks_NameTooLong(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	longName := ""
+	for i := 0; i < 101; i++ {
+		longName += "x"
+	}
+
+	yamlData := fmt.Sprintf(`status: ready
+cycle: 1
+tasks:
+  - name: "%s"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+`, longName)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "name exceeds 100 chars")
+}
+
+func TestValidateTasks_MissingContext(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "no context"
+    wid: "execute-1"
+    status: pending
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "missing context")
+}
+
+func TestValidateTasks_MultipleErrors(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	longName := ""
+	for i := 0; i < 120; i++ {
+		longName += "a"
+	}
+
+	yamlData := fmt.Sprintf(`status: ready
+cycle: 1
+tasks:
+  - name: "%s"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+    scope: "inline scope"
+    supporting_context: "inline context"
+`, longName)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	assert.Len(t, errs, 3)
+}
+
+func TestValidateTasks_FileNotFound(t *testing.T) {
+	errs := ValidateTasksFile("/nonexistent/tasks.yaml")
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "cannot read")
+}
+
+func TestValidateTasks_UnknownExtraField(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "task"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+    description: "long description that should be in the context file"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "description")
+	assert.Contains(t, errs[0], "context .md file")
+}
+
 func TestCreateContextFile(t *testing.T) {
 	root := t.TempDir()
 	researchDir := "2026-05-11-20"
