@@ -406,8 +406,8 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 	fmt.Fprintf(&b, "2. Reply via windows-message to %s with ONLY:\n", supervisorWid)
 	fmt.Fprintf(&b, "   [EXECUTE:DONE wid=%s sup=%s file=<abs-path-to-your-md>]\n", workerName, supervisorWid)
 	b.WriteString("   Do NOT inline FINDINGS/RISKS/RECOMMENDATION/FILES in the tmux message. The file IS the report.\n")
-	b.WriteString("3. [EXECUTE:NEED_INPUT ...] and [EXECUTE:FAILED reason=...] may carry a short (<200 char) inline reason.\n")
-	b.WriteString("4. If the supervisor sends [EXECUTE:PUSHBACK ...], update the SAME .md file and re-tag [EXECUTE:DONE file=<same-path>].\n")
+	fmt.Fprintf(&b, "3. [EXECUTE:NEED_INPUT wid=%s sup=%s ...] and [EXECUTE:FAILED wid=%s sup=%s reason=...] may carry a short (<200 char) inline reason.\n", workerName, supervisorWid, workerName, supervisorWid)
+	fmt.Fprintf(&b, "4. If the supervisor sends [EXECUTE:PUSHBACK ...], update the SAME .md file and re-tag [EXECUTE:DONE wid=%s sup=%s file=<same-path>].\n", workerName, supervisorWid)
 
 	return b.String()
 }

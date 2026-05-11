@@ -284,8 +284,8 @@ RESPONSE PROTOCOL (MANDATORY):
 2. Reply via windows-message to SUPERVISOR_WID with ONLY:
    [EXECUTE:DONE wid=&lt;self&gt; sup=&lt;supervisor&gt; file=&lt;abs-path-to-your-md&gt;]
    Do NOT inline FINDINGS/RISKS/RECOMMENDATION/FILES in the tmux message. The file IS the report.
-3. [EXECUTE:NEED_INPUT ...] and [EXECUTE:FAILED reason=...] may carry a short (&lt;200 char) inline reason.
-4. If the supervisor sends [EXECUTE:PUSHBACK ...], update the SAME .md file and re-tag [EXECUTE:DONE file=&lt;same-path&gt;].
+3. [EXECUTE:NEED_INPUT wid=&lt;self&gt; sup=&lt;supervisor&gt; ...] and [EXECUTE:FAILED wid=&lt;self&gt; sup=&lt;supervisor&gt; reason=...] may carry a short (&lt;200 char) inline reason.
+4. If the supervisor sends [EXECUTE:PUSHBACK ...], update the SAME .md file and re-tag [EXECUTE:DONE wid=&lt;self&gt; sup=&lt;supervisor&gt; file=&lt;same-path&gt;].
     </template>
   </task-message-template>
 
