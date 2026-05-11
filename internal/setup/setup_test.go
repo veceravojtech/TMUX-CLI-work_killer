@@ -39,12 +39,12 @@ func TestRun_FullSetup(t *testing.T) {
 	err := Run(cfg)
 	require.NoError(t, err)
 
-	// settings.yaml created
-	settingsData, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "settings.yaml"))
+	// setting.yaml created
+	settingsData, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "setting.yaml"))
 	require.NoError(t, err)
 	var s Settings
 	require.NoError(t, yaml.Unmarshal(settingsData, &s))
-	assert.True(t, s.Hooks.SessionNotify)
+	assert.False(t, s.Hooks.SessionNotify)
 	assert.True(t, s.Commands.Enabled)
 
 	// hook scripts created
@@ -60,7 +60,7 @@ func TestRun_FullSetup(t *testing.T) {
 	require.NoError(t, err)
 	var cs ClaudeSettings
 	require.NoError(t, json.Unmarshal(csData, &cs))
-	assert.NotEmpty(t, cs.Hooks.SessionStart)
+	assert.Empty(t, cs.Hooks.SessionStart)
 
 	// commands created (commands enabled by default)
 	for name := range cfg.CommandTemplates {
@@ -78,7 +78,7 @@ func TestRun_FullSetup(t *testing.T) {
 func TestRun_CommandsDisabled(t *testing.T) {
 	dir := setupTestProject(t)
 
-	// Pre-create settings.yaml with commands disabled
+	// Pre-create setting.yaml with commands disabled
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli"), 0o755))
 	settingsData, err := yaml.Marshal(&Settings{
 		Hooks: HooksSettings{
@@ -89,7 +89,7 @@ func TestRun_CommandsDisabled(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, ".tmux-cli", "settings.yaml"),
+		filepath.Join(dir, ".tmux-cli", "setting.yaml"),
 		settingsData, 0o644,
 	))
 
@@ -117,7 +117,7 @@ func TestRun_Idempotent(t *testing.T) {
 	require.NoError(t, Run(cfg))
 
 	// Verify artifacts still correct after second run
-	assert.FileExists(t, filepath.Join(dir, ".tmux-cli", "settings.yaml"))
+	assert.FileExists(t, filepath.Join(dir, ".tmux-cli", "setting.yaml"))
 	assert.FileExists(t, filepath.Join(dir, ".claude", "settings.json"))
 
 	for name := range cfg.HookScripts {
@@ -160,7 +160,7 @@ func TestRun_NoGitDir(t *testing.T) {
 	require.NoError(t, err)
 
 	// all other artifacts still created
-	assert.FileExists(t, filepath.Join(dir, ".tmux-cli", "settings.yaml"))
+	assert.FileExists(t, filepath.Join(dir, ".tmux-cli", "setting.yaml"))
 	assert.FileExists(t, filepath.Join(dir, ".claude", "settings.json"))
 
 	// .git/info/exclude should NOT exist

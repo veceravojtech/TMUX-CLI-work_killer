@@ -26,29 +26,39 @@ type CommandsSettings struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+type SupervisorSettings struct {
+	MaxCycles  int `yaml:"max_cycles"`
+	CycleDelay int `yaml:"cycle_delay"`
+}
+
 type Settings struct {
-	Hooks    HooksSettings    `yaml:"hooks"`
-	Commands CommandsSettings `yaml:"commands"`
+	Hooks      HooksSettings      `yaml:"hooks"`
+	Commands   CommandsSettings   `yaml:"commands"`
+	Supervisor SupervisorSettings `yaml:"supervisor"`
 }
 
 func DefaultSettings() *Settings {
 	return &Settings{
 		Hooks: HooksSettings{
-			SessionNotify:    true,
+			SessionNotify:    false,
 			BlockInteractive: true,
 		},
 		Commands: CommandsSettings{
 			Enabled: true,
 		},
+		Supervisor: SupervisorSettings{
+			MaxCycles:  0,
+			CycleDelay: 5,
+		},
 	}
 }
 
-func settingsPath(projectRoot string) string {
-	return filepath.Join(projectRoot, ".tmux-cli", "settings.yaml")
+func settingPath(projectRoot string) string {
+	return filepath.Join(projectRoot, ".tmux-cli", "setting.yaml")
 }
 
 func LoadSettings(projectRoot string) (*Settings, error) {
-	p := settingsPath(projectRoot)
+	p := settingPath(projectRoot)
 
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -66,11 +76,14 @@ func LoadSettings(projectRoot string) (*Settings, error) {
 	if err := yaml.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
+	if err := SaveSettings(projectRoot, &s); err != nil {
+		return nil, err
+	}
 	return &s, nil
 }
 
 func SaveSettings(projectRoot string, s *Settings) error {
-	p := settingsPath(projectRoot)
+	p := settingPath(projectRoot)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}

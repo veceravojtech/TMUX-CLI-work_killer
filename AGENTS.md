@@ -37,8 +37,8 @@ cmd/tmux-cli/
     commands/tmux/     command templates installed to .claude/commands/tmux/
 
 internal/
-  setup/               auto-setup system (settings.yaml → hooks, settings.json, commands, gitexclude)
-    config.go          Settings YAML model, Load/Save/Default
+  setup/               auto-setup system (setting.yaml → hooks, settings.json, commands, gitexclude)
+    config.go          Settings YAML model, Load/Save/Default (includes supervisor.max_cycles)
     hooks.go           WriteHookScripts → .tmux-cli/hooks/
     claude_settings.go ClaudeSettings JSON model, Generate/Write → .claude/settings.json
     commands.go        WriteCommands → .claude/commands/tmux/ (clean-slate)
@@ -58,6 +58,8 @@ internal/
     command_wrapper.go WrapCommandForPersistence
     window_options.go  constants (WindowUUIDOption)
     errors.go          ErrTmuxNotFound, ErrSessionAlreadyExists
+  tasks/
+    tasks.go           Task/TasksFile model, Load/Save/Archive
   testutil/
     mock_tmux.go       MockTmuxExecutor (testify/mock)
 ```
@@ -70,24 +72,28 @@ internal/
 
 **Adding a new CLI command**: Define `cobra.Command` var in `session.go` → implement `runX` function → add flags in `init()` → `rootCmd.AddCommand()` in `init()`.
 
-**Auto-setup flow**: Every `start`/`start-attach` calls `runAutoSetup(projectPath)` which reads `.tmux-cli/settings.yaml` and regenerates all artifacts. The `internal/setup` package is the single source of truth — no manual install step.
+**Auto-setup flow**: Every `start`/`start-attach` calls `runAutoSetup(projectPath)` which reads `.tmux-cli/setting.yaml` and regenerates all artifacts. The `internal/setup` package is the single source of truth — no manual install step.
 
 **Embedded assets**: Hook scripts and command templates are `//go:embed`-ed in `session.go`. Command templates use `embed.FS` walked at runtime to build a `map[string]string`.
 
 ## What tmux-cli owns (auto-generated, do not hand-edit)
 
 - `.tmux-cli/hooks/` — shell scripts written from embedded content
-- `.claude/settings.json` — fully overwritten from `.tmux-cli/settings.yaml`
+- `.tmux-cli/tasks.yaml` — active task queue for supervisor cycles
+- `.tmux-cli/tasks/{y-m-d-hh}/` — archived task files from previous runs
+- `.tmux-cli/research/{y-m-d-hh}/` — worker reports and context files
+- `.claude/settings.json` — fully overwritten from `.tmux-cli/setting.yaml`
 - `.claude/commands/tmux/` — command templates from embedded content (clean-slate on every start)
 - `.git/info/exclude` entries for the above
 
 ## What users edit
 
-- `.tmux-cli/settings.yaml` — the single config file (hooks toggle, custom hooks, commands enable)
+- `.tmux-cli/setting.yaml` — the single config file (hooks toggle, custom hooks, commands enable, supervisor.max_cycles)
+- `.tmux-cli/tasks.yaml` — can be pre-created to queue planned work for the supervisor
 
 ## Testing conventions
 
-- TDD: write tests first, then implementation
+- **TDD is mandatory**: always write tests BEFORE implementation. Red-green-refactor cycle: write a failing test, make it pass with minimal code, then refactor. No production code without a failing test first.
 - Use `t.TempDir()` for filesystem isolation
 - Use `github.com/stretchr/testify` (assert/require)
 - Mock tmux via `testutil.MockTmuxExecutor` with `.On().Return()` chains
@@ -111,8 +117,32 @@ internal/
 | windows-send | no | no | Send command (with optional sudo) |
 | windows-message | no | no | Formatted inter-window message |
 | windows-kill | no | yes | Kill window by name |
-| hooks-config | no | yes | List/enable/disable hooks in settings.yaml |
+| hooks-config | no | yes | List/enable/disable hooks in setting.yaml |
+
+## Post-task requirement
+
+Always run `make install` after completing any code changes. This builds the binary and copies it to `~/.local/bin/tmux-cli`, ensuring the running installation reflects the latest changes.
 
 ## Supervisor/execute protocol
 
 The `/supervisor` command spawns parallel `/execute` workers via tmux-cli MCP. Workers have full read+write access. Communication uses tagged messages (`[EXECUTE:DONE]`, `[EXECUTE:NEED_INPUT]`, `[EXECUTE:FAILED]`). Command templates live in `cmd/tmux-cli/embedded/commands/tmux/` and are installed to `.claude/commands/tmux/` in target projects.
+
+## Task tracking system
+
+The supervisor uses `.tmux-cli/tasks.yaml` as a persistent task queue:
+
+- Tasks have statuses: `pending`, `in_progress`, `done`
+- Each task points to a context `.md` file in `.tmux-cli/research/{y-m-d-hh}/`
+- The `cycle` counter tracks how many supervisor cycles have run
+- `supervisor.max_cycles` in `setting.yaml` controls the limit (0 = unlimited)
+
+File structure:
+```
+.tmux-cli/
+  tasks.yaml              — active task queue
+  tasks/{y-m-d-hh}/       — archived task files from previous runs
+  research/{y-m-d-hh}/    — worker reports and context files
+  setting.yaml            — config (includes supervisor.max_cycles)
+```
+
+Stop gate: if unfinished tasks exist from a previous run when new work arrives, the supervisor stops and asks the user what to do. The user can archive and start fresh.

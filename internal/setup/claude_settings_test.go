@@ -30,10 +30,13 @@ func TestGenerateClaudeSettings_AllEnabled(t *testing.T) {
 	assert.Equal(t, "command", cs.Hooks.SessionEnd[0].Hooks[0].Type)
 	assert.Equal(t, 10, cs.Hooks.SessionEnd[0].Hooks[0].Timeout)
 
-	require.Len(t, cs.Hooks.Stop, 1)
+	require.Len(t, cs.Hooks.Stop, 2)
 	require.Len(t, cs.Hooks.Stop[0].Hooks, 1)
 	assert.Equal(t, "command", cs.Hooks.Stop[0].Hooks[0].Type)
 	assert.Equal(t, 10, cs.Hooks.Stop[0].Hooks[0].Timeout)
+	assert.Equal(t, "command", cs.Hooks.Stop[1].Hooks[0].Type)
+	assert.Contains(t, cs.Hooks.Stop[1].Hooks[0].Command, "tmux-supervisor-cycle.sh stop")
+	assert.Equal(t, 15, cs.Hooks.Stop[1].Hooks[0].Timeout)
 
 	require.Len(t, cs.Hooks.PreToolUse, 1)
 	assert.Equal(t, "AskUserQuestion", cs.Hooks.PreToolUse[0].Matcher)
@@ -61,7 +64,9 @@ func TestGenerateClaudeSettings_NotifyDisabled(t *testing.T) {
 
 	assert.Empty(t, cs.Hooks.SessionStart)
 	assert.Empty(t, cs.Hooks.SessionEnd)
-	assert.Empty(t, cs.Hooks.Stop)
+	require.Len(t, cs.Hooks.Stop, 1)
+	assert.Contains(t, cs.Hooks.Stop[0].Hooks[0].Command, "tmux-supervisor-cycle.sh stop")
+	assert.Equal(t, 15, cs.Hooks.Stop[0].Hooks[0].Timeout)
 	require.Len(t, cs.Hooks.PreToolUse, 1)
 }
 
@@ -77,8 +82,46 @@ func TestGenerateClaudeSettings_BlockInteractiveDisabled(t *testing.T) {
 
 	require.Len(t, cs.Hooks.SessionStart, 1)
 	require.Len(t, cs.Hooks.SessionEnd, 1)
-	require.Len(t, cs.Hooks.Stop, 1)
+	require.Len(t, cs.Hooks.Stop, 2)
+	assert.Contains(t, cs.Hooks.Stop[1].Hooks[0].Command, "tmux-supervisor-cycle.sh stop")
+	assert.Equal(t, 15, cs.Hooks.Stop[1].Hooks[0].Timeout)
 	assert.Empty(t, cs.Hooks.PreToolUse)
+}
+
+func TestGenerateClaudeSettings_SupervisorCycleAlwaysPresent(t *testing.T) {
+	cases := []struct {
+		name             string
+		sessionNotify    bool
+		blockInteractive bool
+	}{
+		{"BothEnabled", true, true},
+		{"BothDisabled", false, false},
+		{"NotifyOnly", true, false},
+		{"BlockOnly", false, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Settings{
+				Hooks: HooksSettings{
+					SessionNotify:    tc.sessionNotify,
+					BlockInteractive: tc.blockInteractive,
+				},
+			}
+
+			cs := GenerateClaudeSettings(s)
+
+			var found bool
+			for _, g := range cs.Hooks.Stop {
+				for _, h := range g.Hooks {
+					if h.Command == supervisorCycleScript+" stop" && h.Timeout == 15 {
+						found = true
+					}
+				}
+			}
+			assert.True(t, found, "supervisor-cycle Stop hook must always be present")
+		})
+	}
 }
 
 func TestGenerateClaudeSettings_CustomHooks(t *testing.T) {

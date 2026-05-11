@@ -1,5 +1,5 @@
-<task id="supervisor" name="Parallel /execute supervisor">
-  <objective>Spawn N parallel /execute workers via tmux-cli with collision-safe window names. Workers save a full .md report and reply with a filepath-only DONE tag; supervisor Reads the file, verifies it against the pushback catalogue, pushes back up to 3x on gaps, and kills windows on acceptance.</objective>
+<task id="supervisor" name="Parallel /tmux:execute supervisor">
+  <objective>Spawn N parallel /tmux:execute workers via tmux-cli with collision-safe window names. Workers save a full .md report and reply with a filepath-only DONE tag; supervisor Reads the file, verifies it against the pushback catalogue, pushes back up to 3x on gaps, and kills windows on acceptance.</objective>
 
   <input>
     <arg name="$ARGUMENTS">Path to a task file OR inline task description. Task-file format is free-form; the supervisor reads it, derives fan-out shape per &lt;ranking&gt;, and proceeds.</arg>
@@ -13,13 +13,13 @@
 
   <requirements critical="true">
     <mcp>tmux-cli MCP server REQUIRED</mcp>
-    <directory>research-root = ./research (relative to project working directory; create if absent)</directory>
+    <directory>research-root = .tmux-cli/research/{y-m-d-hh}/ (relative to project working directory; create if absent. {y-m-d-hh} expands to current timestamp, e.g. 2026-05-11-20)</directory>
   </requirements>
 
   <glossary>
     <term name="SUPERVISOR_WID">Name of the supervisor's tmux window (e.g. "supervisor"). Stable for whole session.</term>
     <term name="SELF_WID">Name of a worker's tmux window (e.g. "execute-7"). Each worker gets unique N.</term>
-    <term name="research-root">Primary directory where per-worker .md reports are saved. Defined in &lt;requirements&gt;.</term>
+    <term name="research-root">Primary directory where per-worker .md reports are saved: .tmux-cli/research/{y-m-d-hh}/ (timestamped). Defined in &lt;requirements&gt;.</term>
     <term name="subtask label">One-line human-readable description of what a worker is doing (e.g. "implement setup config parser").</term>
     <term name="sup=">Supervisor's window name in tag messages.</term>
     <term name="wid=">Worker's window name in tag messages.</term>
@@ -54,7 +54,8 @@
     <mandate>Execute steps ONE BY ONE in EXACT ORDER</mandate>
     <mandate>Create TODO list for tracking spawned workers (SELF_WID + subtask label)</mandate>
     <mandate>Operate per &lt;autonomy-policy&gt; — do not ask the user outside the two defined exits.</mandate>
-    <mandate>NEVER call /worker:execute — it triggers workflow.xml and causes window-name collisions on parallel fan-out</mandate>
+    <mandate>NEVER spawn a worker before tasks.yaml is written and verified (step 3b gate)</mandate>
+    <mandate>NEVER call /worker:execute — use /tmux:execute which is the correct skill name</mandate>
     <mandate>NEVER use sleep — idle is the trigger for incoming windows-message</mandate>
     <mandate>NEVER kill your own SUPERVISOR_WID</mandate>
     <mandate>windows-kill takes the window NAME (e.g. "execute-3"), not an @id. windows-send accepts @N; kill does not.</mandate>
@@ -76,6 +77,27 @@
       <rule>This context MUST inform your fan-out decisions, task scoping, and worker instructions throughout the session.</rule>
     </step>
 
+    <step n="1c" title="Tasks gate">
+      <action>Check if .tmux-cli/tasks.yaml exists in the project root.</action>
+      <check condition="tasks.yaml exists AND has tasks with status=pending or status=in_progress">
+        <check condition="this supervisor was called WITH .tmux-cli/tasks.yaml as $ARGUMENTS (continuation cycle)">
+          <action>This IS a continuation cycle — proceed to step 2 and work on pending tasks from tasks.yaml.</action>
+        </check>
+        <check condition="this supervisor was called with OTHER input (new invocation)">
+          <action>STOP. Print to user: "STOP GATE: Unfinished tasks found in .tmux-cli/tasks.yaml. [list each task name and status]. To continue previous work, re-run without new input. To start fresh, reply 'archive and start new'."</action>
+          <action>If user says "archive and start new": move tasks.yaml to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed) and proceed with fresh tasks.yaml.</action>
+          <action>Wait for user response before proceeding.</action>
+        </check>
+      </check>
+      <check condition="tasks.yaml does not exist">
+        <action>Proceed normally to step 2.</action>
+      </check>
+      <check condition="tasks.yaml exists AND all tasks have status=done">
+        <action>Archive the completed tasks.yaml to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed), then remove the original tasks.yaml.</action>
+        <action>Proceed normally to step 2 with a clean slate.</action>
+      </check>
+    </step>
+
     <step n="2" title="Identify SUPERVISOR_WID">
       <action>From windows-list, pick the entry with active: true if present.</action>
       <fallback>If the tmux-cli implementation does not expose active:true (e.g. returns only {"name":...}), and exactly one window exists, treat its NAME as SUPERVISOR_WID. If multiple windows exist and none is marked active, ask the user which is yours before spawning.</fallback>
@@ -94,6 +116,22 @@
       <ambiguity>When the task is ambiguous (multiple valid fan-out shapes, unclear priority across TODO items, "do the follow-ups" input), apply &lt;autonomy-policy&gt; — pick per &lt;ranking&gt; and proceed.</ambiguity>
       <ranking>Highest-yield-first for auto-fan-out: (1) closest to user-facing surface or critical path, (2) closest to impact target, (3) smallest budget before completion, (4) overturns prior assumption if confirmed. Break ties by lowest budget. If two options are budget-tied and yield-tied, pick the one that runs first in dependency order (prerequisite before dependent).</ranking>
       <exhaustive-coverage critical="true">NEVER skip a possible path due to low probability of success. Every identified vector — even speculative or low-yield — must be executed to produce a precise ruling (confirmed, refuted with evidence, or blocked by specific barrier). "Not worth budget" and "too speculative" are NOT valid reasons to skip a worker. The goal is exhaustive coverage: every path precisely documented as viable or dead, with no gaps left to assumption.</exhaustive-coverage>
+      <task-tracking critical="true">
+        <action>After determining the fan-out shape, create or update .tmux-cli/tasks.yaml with all planned tasks. Each task entry has: name (subtask label), wid (execute-N), status (pending), and cycle (current cycle number, starting at 1).</action>
+        <action>If tasks.yaml already exists from a continuation cycle, preserve done tasks and update/add pending ones.</action>
+        <format>tasks.yaml structure: cycle: N, tasks: [{name: "...", wid: "execute-N", status: pending|in_progress|done}]</format>
+      </task-tracking>
+    </step>
+
+    <step n="3b" title="Tasks gate — verify tasks.yaml before spawn" critical="true">
+      <action>Read .tmux-cli/tasks.yaml and verify it contains ALL planned tasks with status=pending.</action>
+      <check condition="tasks.yaml does not exist OR is missing planned tasks">
+        <action>STOP. Do NOT proceed to step 4. Write tasks.yaml first per step 3 task-tracking, then re-verify.</action>
+      </check>
+      <check condition="tasks.yaml exists AND contains all planned pending tasks">
+        <action>Proceed to step 4.</action>
+      </check>
+      <rule critical="true">This is a BLOCKING GATE. No worker may be spawned (step 4) until tasks.yaml is written and verified. This ensures every supervisor session has a persistent task plan that survives context resets.</rule>
     </step>
 
     <step n="4" title="Spawn protocol (repeat per worker, sequentially within your turn)">
@@ -107,8 +145,8 @@
         <action>Call windows-create with name=execute-N, no command</action>
         <action>Capture the returned tmuxWindowId (e.g. "@3") as SELF_WID for send operations</action>
       </substep>
-      <substep n="4.3" title="Send /execute">
-        <action>Call windows-send to SELF_WID with exactly: /execute</action>
+      <substep n="4.3" title="Send /tmux:execute">
+        <action>Call windows-send to SELF_WID with exactly: /tmux:execute</action>
         <critical>Send the slash command ALONE — no argument, no extra text</critical>
       </substep>
       <substep n="4.4" title="Send task message">
@@ -124,7 +162,7 @@
     <step n="5" title="Idle and route">
       <action>Do NOTHING. Wait for windows-message from workers.</action>
       <rule>NEVER use sleep. NEVER poll windows-list while idle.</rule>
-      <rule>Stop-hook idle notifications of the form "Idling — awaiting supervisor task payload" / "Idling for supervisor acceptance or pushback" / "Report delivered to supervisor. Idling for accept or pushback" are EXPECTED lifecycle output from the /execute skill and DO NOT count as untagged-output violations. They mean the worker has finished its turn and is waiting. Do not REMIND, do not advance state — simply wait for the next real message.</rule>
+      <rule>Stop-hook idle notifications of the form "Idling — awaiting supervisor task payload" / "Idling for supervisor acceptance or pushback" / "Report delivered to supervisor. Idling for accept or pushback" are EXPECTED lifecycle output from the /tmux:execute skill and DO NOT count as untagged-output violations. They mean the worker has finished its turn and is waiting. Do not REMIND, do not advance state — simply wait for the next real message.</rule>
       <branch tag="[EXECUTE:NEED_INPUT ...]">
         <action>Answer with windows-message to that wid, drawing from (a) the task's SCOPE/CONTEXT, (b) prior accepted reports in research-root, (c) files on disk. If still unanswerable, reply [SUPERVISOR:NARROW-SCOPE] with a reduced problem statement the worker CAN answer, rather than escalating. Escalate to user ONLY for user-only knowledge (credentials, intent, out-of-band facts) that no file-reading can supply.</action>
       </branch>
@@ -135,7 +173,7 @@
         <action>Read REASON. First attempt: kill and respawn with narrowed scope. If a second respawn on the same subtask class FAILs with the same reason, escalate to user with the failure chain + a proposed pivot. NEVER silently retry the same prompt.</action>
       </branch>
       <branch tag="worker emitted FINDINGS/RISKS/etc. inline in tmux without a file= tag">
-        <action>This violates the file-only response protocol. Reply via windows-message with: [SUPERVISOR:REMIND] Use the file= response protocol. Save to ./research/execute-&lt;N&gt;-&lt;slug&gt;.md and reply with only [EXECUTE:DONE file=&lt;abs-path&gt;].</action>
+        <action>This violates the file-only response protocol. Reply via windows-message with: [SUPERVISOR:REMIND] Use the file= response protocol. Save to .tmux-cli/research/{y-m-d-hh}/execute-&lt;N&gt;-&lt;slug&gt;.md and reply with only [EXECUTE:DONE file=&lt;abs-path&gt;].</action>
         <action>Do not advance state; wait for the file-form reply.</action>
       </branch>
       <branch tag="no [EXECUTE:...] header at all AND not a stop-hook idle line">
@@ -172,7 +210,8 @@
       </check>
     </step>
 
-    <step n="7" title="Kill window">
+    <step n="7" title="Kill window and update task state">
+      <action>Mark the corresponding task as status=done in .tmux-cli/tasks.yaml.</action>
       <action>Call windows-kill with windowId = the NAME (e.g. "execute-7"), not the @id</action>
       <critical>NEVER kill SUPERVISOR_WID</critical>
       <critical>If windows-kill returns "invalid window ID format: window IDs not allowed", you passed @N — retry with the name</critical>
@@ -198,7 +237,26 @@
       <condition>all workers have been killed</condition>
       <action>Merge all accepted file= contents into a single user-facing answer. State overlaps and conflicts explicitly. Keep it tight.</action>
       <action>For long-running sessions, consider writing a session-synthesis .md (e.g. NN_session-&lt;topic&gt;.md) into research-root that cites each per-worker file and captures the consolidated state. The user often asks for this at the end anyway.</action>
-      <action critical="true">Writing synthesis does NOT return control to the user. After synthesis, re-run §8a against the synthesis's OWN "proposed next wave" / "queue changes" / "follow-ups" sections. If any listed workers are executable (scope fully self-contained — no user-only authorization required), LOOP BACK to §3 (fan-out decision) and spawn in parallel. Return to the user ONLY when the synthesis's replan produces zero new executable workers AND a real &lt;stop-conditions&gt; rule fires. The flow is a LOOP (3→4→5→6→7→[5a]→[8a]→9→3), not a one-pass.</action>
+      <action critical="true">Writing synthesis does NOT return control to the user. After synthesis, re-run §8a against the synthesis's OWN "proposed next wave" / "queue changes" / "follow-ups" sections. If any listed workers are executable (scope fully self-contained — no user-only authorization required), LOOP BACK to §3 (fan-out decision) and spawn in parallel. Return to the user ONLY when the synthesis's replan produces zero new executable workers AND a real &lt;stop-conditions&gt; rule fires. The flow is a LOOP (3→4→5→6→7→[5a]→[8a]→9→[9b]→3), not a one-pass.</action>
+    </step>
+
+    <step n="9b" title="Cycle completion and continuation">
+      <condition>Step 9 synthesis is complete</condition>
+      <action>Read .tmux-cli/tasks.yaml and mark all completed tasks as status=done.</action>
+      <action>Read supervisor.max_cycles from .tmux-cli/setting.yaml (default: 0 = unlimited).</action>
+      <action>Increment the cycle counter in tasks.yaml.</action>
+      <check condition="pending tasks remain AND (max_cycles == 0 OR cycle &lt; max_cycles)">
+        <action>Send /clear to SUPERVISOR_WID via windows-send.</action>
+        <action>Send /tmux:supervisor .tmux-cli/tasks.yaml to SUPERVISOR_WID via windows-send.</action>
+        <action>STOP — a fresh supervisor instance takes over with the updated tasks.yaml as input.</action>
+      </check>
+      <check condition="max_cycles reached (cycle >= max_cycles AND max_cycles > 0)">
+        <action>Print to user: "Cycle limit reached ({cycle}/{max_cycles}). Remaining pending tasks: [list task names]."</action>
+        <action>STOP.</action>
+      </check>
+      <check condition="no pending tasks remain">
+        <action>Normal stop — all work is complete.</action>
+      </check>
     </step>
   </flow>
 
@@ -222,7 +280,7 @@ DELIVERABLE (write these sections INSIDE the report .md; do NOT paste them into 
 - FILES: absolute paths touched or cited, one per line
 
 RESPONSE PROTOCOL (MANDATORY):
-1. Save the full report to ./research/execute-&lt;N&gt;-&lt;slug&gt;.md
+1. Save the full report to .tmux-cli/research/{y-m-d-hh}/execute-&lt;N&gt;-&lt;slug&gt;.md
    with headings ## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES plus any supporting detail.
    Pick a descriptive &lt;slug&gt; (kebab-case, ≤40 chars).
 2. Reply via windows-message to SUPERVISOR_WID with ONLY:
@@ -234,11 +292,11 @@ RESPONSE PROTOCOL (MANDATORY):
   </task-message-template>
 
   <execution-rules>
-    <rule>windows-send: /execute and the task message (two separate calls)</rule>
+    <rule>windows-send: /tmux:execute and the task message (two separate calls)</rule>
     <rule>windows-message: all subsequent supervisor→worker communication (answers, pushbacks, reminders, amends)</rule>
     <rule>windows-kill: only on accepted DONE or terminal FAILED; never on SUPERVISOR_WID; pass window NAME</rule>
     <rule>Do not reuse an execute-N suffix after kill; always pick fresh max+1</rule>
-    <rule>One logical step per windows-send; never pack /execute and task message together</rule>
+    <rule>One logical step per windows-send; never pack /tmux:execute and task message together</rule>
     <rule>Always Read the file cited in a DONE before applying the gap catalogue; never rely on the (absent) inline body</rule>
     <rule>If a worker sends DONE without file=, REMIND once; do not accept an inline-body DONE as a shortcut</rule>
   </execution-rules>
@@ -249,6 +307,8 @@ RESPONSE PROTOCOL (MANDATORY):
       - 2 consecutive FAILEDs on the same subtask class after narrowing.
       - Headline finding requiring user-only authorization (credentials, out-of-band intent, scope change beyond project).
       - Token/time budget exhausted (if user set one).
+      - Cycle limit reached (supervisor.max_cycles in .tmux-cli/setting.yaml; step 9b).
+      - STOP GATE triggered (step 1c) — unfinished tasks from a previous run.
       - Explicit user interrupt.</rule>
     <not-stop>These are NOT stop conditions — resolve autonomously per &lt;autonomy-policy&gt;:
       - "I have two reasonable options" → pick per &lt;ranking&gt;.
@@ -262,7 +322,7 @@ RESPONSE PROTOCOL (MANDATORY):
 
   <llm final="true">
     <critical-rules>
-      • DO NOT call /worker:execute — it triggers workflow.xml and collides on parallel fan-out
+      • DO NOT call /worker:execute — use /tmux:execute which is the correct skill name
       • DO NOT use sleep; idle is the trigger
       • DO NOT kill your own SUPERVISOR_WID
       • DO NOT treat stop-hook idle notifications as untagged-output violations — they are expected lifecycle
@@ -271,6 +331,7 @@ RESPONSE PROTOCOL (MANDATORY):
       • DO NOT pass @N to windows-kill — use the window NAME
       • DO NOT accept DONE without file=&lt;abs-path&gt; — REMIND to use file-only protocol
       • DO NOT read the tmux DONE body as the report — the .md file IS the report; always Read it
+      • DO NOT spawn any worker (step 4) before tasks.yaml is written and verified (step 3b) — this is a blocking gate, no exceptions
       • DO NOT violate &lt;autonomy-policy&gt; — never ask the user outside the two defined exits
       • DO NOT default to serial — default to maximum parallelism; serialize only when later worker's scope is literally unconstructable without prior worker's output
       • DO NOT let a running worker finish on a now-pointless scope — amend or kill via [SUPERVISOR:AMEND]/[SUPERVISOR:KILL] when new findings refute its premise (step 5a)

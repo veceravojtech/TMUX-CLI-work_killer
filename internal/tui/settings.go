@@ -1,0 +1,137 @@
+package tui
+
+import (
+	"fmt"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/console/tmux-cli/internal/setup"
+)
+
+type settingItem struct {
+	key   string
+	label string
+	value bool
+}
+
+type Model struct {
+	items       []settingItem
+	cursor      int
+	projectRoot string
+}
+
+func NewModel(projectRoot string, settings *setup.Settings) Model {
+	return Model{
+		projectRoot: projectRoot,
+		items: []settingItem{
+			{key: "hooks.session_notify", label: "Session Notify", value: settings.Hooks.SessionNotify},
+			{key: "hooks.block_interactive", label: "Block Interactive", value: settings.Hooks.BlockInteractive},
+			{key: "commands.enabled", label: "Commands Enabled", value: settings.Commands.Enabled},
+		},
+	}
+}
+
+func (m Model) Init() tea.Cmd {
+	return nil
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "esc":
+			return m, m.save()
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.items)-1 {
+				m.cursor++
+			}
+		case " ", "enter":
+			m.items[m.cursor].value = !m.items[m.cursor].value
+		}
+	case saveResultMsg:
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+var (
+	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).MarginBottom(1)
+	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+	checkStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	uncheckStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).MarginTop(1)
+)
+
+func (m Model) View() string {
+	s := titleStyle.Render("tmux-cli Settings") + "\n"
+
+	for i, item := range m.items {
+		var checkbox string
+		if item.value {
+			checkbox = checkStyle.Render("[x]")
+		} else {
+			checkbox = uncheckStyle.Render("[ ]")
+		}
+
+		line := fmt.Sprintf("%s %s", checkbox, item.label)
+		if i == m.cursor {
+			line = selectedStyle.Render("> "+line) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(item.key)
+		} else {
+			line = "  " + line
+		}
+		s += line + "\n"
+	}
+
+	s += helpStyle.Render("↑/↓ navigate • space/enter toggle • q/esc save & quit")
+	return s
+}
+
+type saveResultMsg struct{ err error }
+
+func (m Model) save() tea.Cmd {
+	return func() tea.Msg {
+		settings := m.ToSettings()
+		err := setup.SaveSettings(m.projectRoot, settings)
+		return saveResultMsg{err: err}
+	}
+}
+
+func (m Model) ToSettings() *setup.Settings {
+	s := setup.DefaultSettings()
+	for _, item := range m.items {
+		switch item.key {
+		case "hooks.session_notify":
+			s.Hooks.SessionNotify = item.value
+		case "hooks.block_interactive":
+			s.Hooks.BlockInteractive = item.value
+		case "commands.enabled":
+			s.Commands.Enabled = item.value
+		}
+	}
+	return s
+}
+
+func Run(projectRoot string) error {
+	settings, err := setup.LoadSettings(projectRoot)
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+
+	model := NewModel(projectRoot, settings)
+	p := tea.NewProgram(model)
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("run TUI: %w", err)
+	}
+
+	if fm, ok := finalModel.(Model); ok {
+		if saveErr := setup.SaveSettings(projectRoot, fm.ToSettings()); saveErr != nil {
+			return fmt.Errorf("save settings: %w", saveErr)
+		}
+	}
+	return nil
+}

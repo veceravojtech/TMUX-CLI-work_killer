@@ -31,7 +31,7 @@ func TestHooksConfig_List(t *testing.T) {
 
 	assert.False(t, out.Changed)
 	assert.NotNil(t, out.Hooks)
-	assert.True(t, out.Hooks.SessionNotify)
+	assert.False(t, out.Hooks.SessionNotify)
 	assert.True(t, out.Hooks.BlockInteractive)
 }
 
@@ -96,10 +96,10 @@ func TestHooksConfig_ListNoSettingsFile(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.False(t, out.Changed)
-	assert.True(t, out.Hooks.SessionNotify)
+	assert.False(t, out.Hooks.SessionNotify)
 	assert.True(t, out.Hooks.BlockInteractive)
 
-	// Verify settings.yaml was auto-created
-	_, err = os.Stat(filepath.Join(root, ".tmux-cli", "settings.yaml"))
+	// Verify setting.yaml was auto-created
+	_, err = os.Stat(filepath.Join(root, ".tmux-cli", "setting.yaml"))
 	assert.NoError(t, err)
 }

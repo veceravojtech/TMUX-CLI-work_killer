@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/console/tmux-cli/internal/session"
 	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/tmux"
+	"github.com/console/tmux-cli/internal/tui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -25,6 +27,9 @@ var hookValidateSession string
 
 //go:embed embedded/no-interactive-questions.sh
 var hookNoInteractiveQuestions string
+
+//go:embed embedded/tmux-supervisor-cycle.sh
+var hookSupervisorCycle string
 
 //go:embed embedded/commands/tmux
 var embeddedCommands embed.FS
@@ -150,6 +155,18 @@ Example:
 	RunE: runWindowsUuid,
 }
 
+var settingCmd = &cobra.Command{
+	Use:   "setting",
+	Short: "Open TUI to configure tmux-cli settings",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get current directory: %w", err)
+		}
+		return tui.Run(cwd)
+	},
+}
+
 var windowsMessageCmd = &cobra.Command{
 	Use:   "windows-message",
 	Short: "Send a formatted message to another window",
@@ -202,6 +219,10 @@ func init() {
 	startCmd.Flags().Bool("sudo", false, "Prompt for sudo password and cache it for the session")
 	startAttachCmd.Flags().Bool("sudo", false, "Prompt for sudo password and cache it for the session")
 
+	// Add --clean flag to start and start-attach commands
+	startCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
+	startAttachCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
+
 	// Add all commands directly to root
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(startAttachCmd)
@@ -214,6 +235,7 @@ func init() {
 	rootCmd.AddCommand(windowsSendCmd)
 	rootCmd.AddCommand(windowsUuidCmd)
 	rootCmd.AddCommand(windowsMessageCmd)
+	rootCmd.AddCommand(settingCmd)
 	rootCmd.AddCommand(mcpCmd)
 }
 
@@ -277,10 +299,19 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath string) (string
 	return sessionID, nil
 }
 
+func cleanProjectDir(projectPath string) error {
+	return os.RemoveAll(filepath.Join(projectPath, ".tmux-cli"))
+}
+
 func runSessionStart(cmd *cobra.Command, args []string) error {
 	projectPath, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
+	}
+	if clean, _ := cmd.Flags().GetBool("clean"); clean {
+		if err := cleanProjectDir(projectPath); err != nil {
+			return fmt.Errorf("clean project dir: %w", err)
+		}
 	}
 	if err := runAutoSetup(projectPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-setup: %v\n", err)
@@ -303,6 +334,11 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	projectPath, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
+	}
+	if clean, _ := cmd.Flags().GetBool("clean"); clean {
+		if err := cleanProjectDir(projectPath); err != nil {
+			return fmt.Errorf("clean project dir: %w", err)
+		}
 	}
 	if err := runAutoSetup(projectPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-setup: %v\n", err)
@@ -776,6 +812,7 @@ func runAutoSetup(projectPath string) error {
 		"tmux-session-notify.sh":      hookSessionNotify,
 		"tmux-validate-session.sh":    hookValidateSession,
 		"no-interactive-questions.sh": hookNoInteractiveQuestions,
+		"tmux-supervisor-cycle.sh":    hookSupervisorCycle,
 	}
 
 	cmdTemplates := make(map[string]string)

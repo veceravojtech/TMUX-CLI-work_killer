@@ -34,6 +34,7 @@ type Hook struct {
 
 const notifyScript = `"$CLAUDE_PROJECT_DIR"/.tmux-cli/hooks/tmux-session-notify.sh`
 const noInteractiveScript = `"$CLAUDE_PROJECT_DIR"/.tmux-cli/hooks/no-interactive-questions.sh`
+const supervisorCycleScript = `"$CLAUDE_PROJECT_DIR"/.tmux-cli/hooks/tmux-supervisor-cycle.sh`
 
 func GenerateClaudeSettings(s *Settings) *ClaudeSettings {
 	cs := &ClaudeSettings{}
@@ -49,6 +50,10 @@ func GenerateClaudeSettings(s *Settings) *ClaudeSettings {
 			{Hooks: []Hook{{Type: "command", Command: notifyScript + " stop", Timeout: 10}}},
 		}
 	}
+
+	cs.Hooks.Stop = append(cs.Hooks.Stop, HookGroup{
+		Hooks: []Hook{{Type: "command", Command: supervisorCycleScript + " stop", Timeout: 15}},
+	})
 
 	if s.Hooks.BlockInteractive {
 		cs.Hooks.PreToolUse = append(cs.Hooks.PreToolUse, PreToolUseHookGroup{

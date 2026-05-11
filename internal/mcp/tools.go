@@ -329,7 +329,7 @@ func (s *Server) WindowsKill(windowIdentifier string) (bool, error) {
 	return true, nil
 }
 
-// HooksConfig views or toggles hook configuration in settings.yaml.
+// HooksConfig views or toggles hook configuration in setting.yaml.
 func (s *Server) HooksConfig(action, hook string) (*HooksConfigOutput, error) {
 	switch action {
 	case "list":

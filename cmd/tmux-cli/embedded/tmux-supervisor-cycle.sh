@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+#
+# tmux-supervisor-cycle.sh
+# Claude Code Stop hook: auto-restarts the supervisor when context is exhausted
+# and unfinished tasks remain in .tmux-cli/tasks.yaml.
+#
+# Usage: Registered as a Stop hook — fires on every Claude Code exit
+# Environment: Expects $TMUX_WINDOW_UUID and $CLAUDE_PROJECT_DIR
+# Only acts on the "supervisor" window (inverse of tmux-session-notify.sh)
+
+set -euo pipefail
+
+HOOK_INPUT=$(cat)
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- Session discovery (same pattern as tmux-session-notify.sh) ---
+
+WINDOW_UUID="${TMUX_WINDOW_UUID:-}"
+if [[ -z "$WINDOW_UUID" ]]; then
+    exit 0
+fi
+
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
+SESSION_ID=""
+WINDOW_NAME=""
+TMUX_WINDOW_ID=""
+
+for sid in $(tmux list-sessions -F '#{session_name}' 2>/dev/null); do
+    path=$(tmux show-environment -t "$sid" TMUX_CLI_PROJECT_PATH 2>/dev/null | sed 's/^TMUX_CLI_PROJECT_PATH=//' || echo "")
+    if [[ "$path" == "$PROJECT_DIR" ]]; then
+        SESSION_ID="$sid"
+        break
+    fi
+done
+
+if [[ -z "$SESSION_ID" ]]; then
+    exit 0
+fi
+
+while IFS='|' read -r wid wname; do
+    uuid=$(tmux show-options -wv -t "${SESSION_ID}:${wid}" @window-uuid 2>/dev/null || echo "")
+    if [[ "$uuid" == "$WINDOW_UUID" ]]; then
+        WINDOW_NAME="$wname"
+        TMUX_WINDOW_ID="$wid"
+        break
+    fi
+done < <(tmux list-windows -t "$SESSION_ID" -F '#{window_id}|#{window_name}' 2>/dev/null)
+
+# ONLY proceed for the supervisor window
+if [[ "$WINDOW_NAME" != "supervisor" ]]; then
+    exit 0
+fi
+
+# --- Check that no execute-* worker windows are still running ---
+
+OPEN_WORKERS=$(tmux list-windows -t "$SESSION_ID" -F '#{window_name}' 2>/dev/null | grep -c '^execute-' || echo "0")
+
+if [[ "$OPEN_WORKERS" -gt 0 ]]; then
+    exit 0
+fi
+
+# --- Check tasks.yaml for unfinished tasks ---
+
+TASKS_FILE="${PROJECT_DIR}/.tmux-cli/tasks.yaml"
+
+if [[ ! -f "$TASKS_FILE" ]]; then
+    exit 0
+fi
+
+UNFINISHED=$(grep -c 'status: pending\|status: in_progress' "$TASKS_FILE" 2>/dev/null) || UNFINISHED=0
+
+if [[ "$UNFINISHED" -eq 0 ]]; then
+    exit 0
+fi
+
+# --- Read max_cycles from setting.yaml (default 0 = unlimited) ---
+
+SETTINGS_FILE="${PROJECT_DIR}/.tmux-cli/setting.yaml"
+MAX_CYCLES=0
+CYCLE_DELAY=5
+
+if [[ -f "$SETTINGS_FILE" ]]; then
+    MAX_CYCLES=$(grep -E '^\s*max_cycles:' "$SETTINGS_FILE" 2>/dev/null | sed 's/.*max_cycles:\s*//' | tr -d ' ' || echo "0")
+    if [[ -z "$MAX_CYCLES" ]]; then
+        MAX_CYCLES=0
+    fi
+    CYCLE_DELAY=$(grep -E '^\s*cycle_delay:' "$SETTINGS_FILE" 2>/dev/null | sed 's/.*cycle_delay:\s*//' | tr -d ' ' || echo "5")
+    if [[ -z "$CYCLE_DELAY" ]]; then
+        CYCLE_DELAY=5
+    fi
+fi
+
+# --- Read current cycle from tasks.yaml ---
+
+CURRENT_CYCLE=$(grep -E '^cycle:' "$TASKS_FILE" 2>/dev/null | sed 's/^cycle:\s*//' | tr -d ' ' || echo "0")
+if [[ -z "$CURRENT_CYCLE" ]]; then
+    CURRENT_CYCLE=0
+fi
+
+# --- Check cycle limit ---
+
+if [[ "$MAX_CYCLES" -gt 0 && "$CURRENT_CYCLE" -ge "$MAX_CYCLES" ]]; then
+    LOG_DIR="${PROJECT_DIR}/.tmux-cli/logs"
+    mkdir -p "$LOG_DIR"
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor cycle limit reached (${CURRENT_CYCLE}/${MAX_CYCLES}), NOT restarting" >> "$LOG_DIR/notifications.log"
+    exit 0
+fi
+
+# --- Increment cycle counter in tasks.yaml ---
+
+NEW_CYCLE=$((CURRENT_CYCLE + 1))
+sed -i "s/^cycle:.*/cycle: ${NEW_CYCLE}/" "$TASKS_FILE"
+
+# --- Log the restart ---
+
+LOG_DIR="${PROJECT_DIR}/.tmux-cli/logs"
+mkdir -p "$LOG_DIR"
+CYCLE_MSG="unlimited"
+if [[ "$MAX_CYCLES" -gt 0 ]]; then
+    CYCLE_MSG="${NEW_CYCLE}/${MAX_CYCLES}"
+fi
+echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor auto-cycle restart (cycle ${CYCLE_MSG}, ${UNFINISHED} unfinished tasks)" >> "$LOG_DIR/notifications.log"
+
+# --- Cancellable countdown before restart ---
+
+PANE_TARGET="${SESSION_ID}:${TMUX_WINDOW_ID}"
+CANCEL_FILE="${PROJECT_DIR}/.tmux-cli/cancel-cycle"
+
+rm -f "$CANCEL_FILE"
+
+if [[ "$CYCLE_DELAY" -le 0 ]]; then
+    # No countdown — restart immediately
+    tmux send-keys -t "$PANE_TARGET" "/clear" Enter
+    sleep 2
+    tmux send-keys -t "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml" Enter
+    exit 0
+fi
+
+for i in $(seq "$CYCLE_DELAY" -1 1); do
+    if [[ -f "$CANCEL_FILE" ]]; then
+        rm -f "$CANCEL_FILE"
+        tmux display-message -t "$PANE_TARGET" "Supervisor cycle cancelled."
+        echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor cycle cancelled by user" >> "$LOG_DIR/notifications.log"
+        # Undo the cycle increment since we're not restarting
+        sed -i "s/^cycle:.*/cycle: ${CURRENT_CYCLE}/" "$TASKS_FILE"
+        exit 0
+    fi
+    tmux display-message -t "$PANE_TARGET" "Supervisor restarting in ${i}s... (touch .tmux-cli/cancel-cycle to abort)"
+    sleep 1
+done
+
+# Final cancel check after last sleep
+if [[ -f "$CANCEL_FILE" ]]; then
+    rm -f "$CANCEL_FILE"
+    tmux display-message -t "$PANE_TARGET" "Supervisor cycle cancelled."
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor cycle cancelled by user" >> "$LOG_DIR/notifications.log"
+    sed -i "s/^cycle:.*/cycle: ${CURRENT_CYCLE}/" "$TASKS_FILE"
+    exit 0
+fi
+
+# --- Send restart commands to the supervisor pane ---
+
+tmux send-keys -t "$PANE_TARGET" "/clear" Enter
+sleep 2
+tmux send-keys -t "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml" Enter
+
+exit 0
