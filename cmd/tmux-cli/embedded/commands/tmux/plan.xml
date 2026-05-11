@@ -67,6 +67,7 @@
     <mandate>windows-kill takes the window NAME (e.g. "execute-3"), not an @id. windows-send accepts @N; kill does not.</mandate>
     <mandate>Execute steps ONE BY ONE in EXACT ORDER</mandate>
     <mandate>NEVER use AskUserQuestion — all interaction is via text output and waiting for user messages (ensures compatibility inside tmux windows)</mandate>
+    <mandate>NEVER use batch Bash scripts to validate, revalidate, or process multiple specs — ALWAYS use the proper agent flow: spawn workers, route messages, call MCP tools (spec-validate, tasks-validate) per-file. Batch shortcuts bypass quality gates and miss context-dependent gaps. Token cost is irrelevant — precision is the goal.</mandate>
   </llm>
 
   <spec-deliverable-template>
@@ -463,6 +464,7 @@ Run `/tmux:supervisor` to execute the plan.
       • ALWAYS verify spec quality against S1–S8 before accepting a worker's DONE
       • ALWAYS use windows-spawn-worker with the custom deliverable parameter — never use the default FINDINGS format for spec workers
       • DO NOT use AskUserQuestion — all user interaction via text output and waiting for messages
+      • NEVER use batch Bash scripts (grep loops, for-each shell commands) to validate or process specs — ALWAYS use the proper flow: spec-validate MCP tool per file, workers for spec writing. Batch shortcuts bypass quality gates. Token cost is irrelevant — precision is the goal.
     </critical-rules>
   </llm>
 </task>
