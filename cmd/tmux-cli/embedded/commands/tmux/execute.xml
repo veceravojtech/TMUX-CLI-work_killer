@@ -22,6 +22,13 @@
       </check>
     </step>
 
+    <step n="1b" title="Read project context">
+      <action>Check if AGENTS.md exists in the project root. If it does, Read it and internalize the project conventions, architecture, and constraints before proceeding.</action>
+      <action>If AGENTS.md does not exist, check for CLAUDE.md instead. Read whichever is found first.</action>
+      <action>If neither exists, proceed without project context.</action>
+      <rule>This context MUST inform your implementation decisions, code style, testing approach, and all work within SCOPE.</rule>
+    </step>
+
     <step n="2" title="Await and parse task message">
       <rule critical="true">Your first real input after /execute is a windows-send from the supervisor carrying the task message. It may arrive in the SAME turn as /execute or a moment later — the supervisor sends /execute and the task message as TWO SEPARATE windows-send calls.</rule>
       <rule critical="true">If the window scrollback contains /execute but NO supervisor-sent task payload yet, IDLE. Do NOT emit any message. "No task message yet" is NOT a failure — wait for it to arrive.</rule>
@@ -92,6 +99,7 @@ PARTIAL: &lt;what you have, or "none"&gt;
       • You are the worker — do not re-enter /worker:execute or workflow.xml
       • Supervisor owns lifecycle — never kill your own window
       • Stay within SCOPE — surface adjacent findings as RISKS, not expanded work
+      • ALWAYS read AGENTS.md or CLAUDE.md before starting work — project conventions are mandatory context
       • One tagged message per reply; untagged output gets REMIND from the supervisor
     </critical-rules>
   </llm>

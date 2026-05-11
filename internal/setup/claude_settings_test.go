@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -211,6 +212,63 @@ func TestGenerateClaudeSettings_SessionNotifyArgs(t *testing.T) {
 	assert.Contains(t, cs.Hooks.SessionStart[0].Hooks[0].Command, " start")
 	assert.Contains(t, cs.Hooks.SessionEnd[0].Hooks[0].Command, " end")
 	assert.Contains(t, cs.Hooks.Stop[0].Hooks[0].Command, " stop")
+}
+
+func TestGenerateClaudeSettings_UnplannedAuditEnabled(t *testing.T) {
+	s := &Settings{
+		Hooks: HooksSettings{
+			SessionNotify:    false,
+			BlockInteractive: false,
+		},
+		Supervisor: SupervisorSettings{UnplannedAudit: true},
+	}
+
+	cs := GenerateClaudeSettings(s)
+
+	require.Len(t, cs.Hooks.Stop, 2)
+	assert.Contains(t, cs.Hooks.Stop[0].Hooks[0].Command, "tmux-unplanned-audit.sh stop")
+	assert.Equal(t, 15, cs.Hooks.Stop[0].Hooks[0].Timeout)
+	assert.Contains(t, cs.Hooks.Stop[1].Hooks[0].Command, "tmux-supervisor-cycle.sh stop")
+}
+
+func TestGenerateClaudeSettings_UnplannedAuditDisabled(t *testing.T) {
+	s := &Settings{
+		Hooks: HooksSettings{
+			SessionNotify:    false,
+			BlockInteractive: false,
+		},
+		Supervisor: SupervisorSettings{UnplannedAudit: false},
+	}
+
+	cs := GenerateClaudeSettings(s)
+
+	require.Len(t, cs.Hooks.Stop, 1)
+	assert.Contains(t, cs.Hooks.Stop[0].Hooks[0].Command, "tmux-supervisor-cycle.sh stop")
+}
+
+func TestGenerateClaudeSettings_UnplannedAuditBeforeSupervisorCycle(t *testing.T) {
+	s := &Settings{
+		Hooks: HooksSettings{
+			SessionNotify:    true,
+			BlockInteractive: false,
+		},
+		Supervisor: SupervisorSettings{UnplannedAudit: true},
+	}
+
+	cs := GenerateClaudeSettings(s)
+
+	var auditIdx, cycleIdx int
+	for i, g := range cs.Hooks.Stop {
+		for _, h := range g.Hooks {
+			if strings.Contains(h.Command, "tmux-unplanned-audit.sh") {
+				auditIdx = i
+			}
+			if strings.Contains(h.Command, "tmux-supervisor-cycle.sh") {
+				cycleIdx = i
+			}
+		}
+	}
+	assert.Less(t, auditIdx, cycleIdx, "unplanned-audit hook must come before supervisor-cycle hook")
 }
 
 func TestWriteClaudeSettings_CreatesFile(t *testing.T) {

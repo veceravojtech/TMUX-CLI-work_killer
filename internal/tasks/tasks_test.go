@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestTasksFilePath(t *testing.T) {
@@ -28,28 +29,35 @@ func TestLoadTasks_ValidFile(t *testing.T) {
 	dir := filepath.Join(root, ".tmux-cli")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 
-	yaml := `cycle: 2
+	yamlData := `status: ready
+cycle: 2
 tasks:
   - name: "implement auth"
+    wid: "execute-1"
     status: pending
-    context_file: ".tmux-cli/research/auth.md"
+    context: ".tmux-cli/research/auth.md"
   - name: "add logging"
+    wid: "execute-2"
     status: done
-    context_file: ".tmux-cli/research/logging.md"
+    context: ".tmux-cli/research/logging.md"
 `
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yaml), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
 
 	tf, err := LoadTasks(root)
 	require.NoError(t, err)
 	require.NotNil(t, tf)
 
+	assert.Equal(t, FileStatusReady, tf.Status)
 	assert.Equal(t, 2, tf.Cycle)
 	require.Len(t, tf.Tasks, 2)
 	assert.Equal(t, "implement auth", tf.Tasks[0].Name)
+	assert.Equal(t, "execute-1", tf.Tasks[0].Wid)
 	assert.Equal(t, StatusPending, tf.Tasks[0].Status)
-	assert.Equal(t, ".tmux-cli/research/auth.md", tf.Tasks[0].ContextFile)
+	assert.Equal(t, ".tmux-cli/research/auth.md", tf.Tasks[0].Context)
 	assert.Equal(t, "add logging", tf.Tasks[1].Name)
+	assert.Equal(t, "execute-2", tf.Tasks[1].Wid)
 	assert.Equal(t, StatusDone, tf.Tasks[1].Status)
+	assert.Equal(t, ".tmux-cli/research/logging.md", tf.Tasks[1].Context)
 }
 
 func TestLoadTasks_InvalidYAML(t *testing.T) {
@@ -67,10 +75,11 @@ func TestSaveTasks_RoundTrip(t *testing.T) {
 	root := t.TempDir()
 
 	original := &TasksFile{
-		Cycle: 1,
+		Status: FileStatusReady,
+		Cycle:  1,
 		Tasks: []Task{
-			{Name: "task one", Status: StatusPending, ContextFile: "path/one.md"},
-			{Name: "task two", Status: StatusInProgress, ContextFile: "path/two.md"},
+			{Name: "task one", Wid: "execute-1", Status: StatusPending, Context: "path/one.md"},
+			{Name: "task two", Wid: "execute-2", Status: StatusInProgress, Context: "path/two.md"},
 		},
 	}
 
@@ -81,13 +90,17 @@ func TestSaveTasks_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
 
+	assert.Equal(t, FileStatusReady, loaded.Status)
 	assert.Equal(t, original.Cycle, loaded.Cycle)
 	require.Len(t, loaded.Tasks, 2)
 	assert.Equal(t, "task one", loaded.Tasks[0].Name)
+	assert.Equal(t, "execute-1", loaded.Tasks[0].Wid)
 	assert.Equal(t, StatusPending, loaded.Tasks[0].Status)
-	assert.Equal(t, "path/one.md", loaded.Tasks[0].ContextFile)
+	assert.Equal(t, "path/one.md", loaded.Tasks[0].Context)
 	assert.Equal(t, "task two", loaded.Tasks[1].Name)
+	assert.Equal(t, "execute-2", loaded.Tasks[1].Wid)
 	assert.Equal(t, StatusInProgress, loaded.Tasks[1].Status)
+	assert.Equal(t, "path/two.md", loaded.Tasks[1].Context)
 }
 
 func TestSaveTasks_CreatesDirectories(t *testing.T) {
@@ -106,7 +119,7 @@ func TestArchiveTasks(t *testing.T) {
 	tf := &TasksFile{
 		Cycle: 3,
 		Tasks: []Task{
-			{Name: "archived task", Status: StatusDone, ContextFile: "done.md"},
+			{Name: "archived task", Wid: "execute-1", Status: StatusDone, Context: "done.md"},
 		},
 	}
 	require.NoError(t, SaveTasks(root, tf))
@@ -160,6 +173,24 @@ func TestArchiveTasks_NoFile(t *testing.T) {
 
 	err := ArchiveTasks(root)
 	assert.Error(t, err)
+}
+
+func TestIsPlanning(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		expect bool
+	}{
+		{"planning", FileStatusPlanning, true},
+		{"ready", FileStatusReady, false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tf := &TasksFile{Status: tt.status}
+			assert.Equal(t, tt.expect, tf.IsPlanning())
+		})
+	}
 }
 
 func TestPendingTasks(t *testing.T) {
@@ -233,4 +264,101 @@ func TestMarkDone_NotFound(t *testing.T) {
 	ok := tf.MarkDone("nonexistent")
 	assert.False(t, ok)
 	assert.Equal(t, StatusPending, tf.Tasks[0].Status)
+}
+
+func TestTask_MarshalUnmarshal_AllFields(t *testing.T) {
+	task := Task{
+		Name:    "implement feature",
+		Wid:     "execute-3",
+		Status:  StatusInProgress,
+		Context: ".tmux-cli/research/2026-05-11-20/task-feature.md",
+	}
+
+	data, err := yaml.Marshal(task)
+	require.NoError(t, err)
+
+	var loaded Task
+	require.NoError(t, yaml.Unmarshal(data, &loaded))
+
+	assert.Equal(t, task.Name, loaded.Name)
+	assert.Equal(t, task.Wid, loaded.Wid)
+	assert.Equal(t, task.Status, loaded.Status)
+	assert.Equal(t, task.Context, loaded.Context)
+
+	yamlStr := string(data)
+	assert.Contains(t, yamlStr, "name:")
+	assert.Contains(t, yamlStr, "wid:")
+	assert.Contains(t, yamlStr, "status:")
+	assert.Contains(t, yamlStr, "context:")
+	assert.NotContains(t, yamlStr, "context_file:")
+}
+
+func TestTask_MarshalUnmarshal_EmptyWid(t *testing.T) {
+	task := Task{
+		Name:    "task without wid",
+		Status:  StatusPending,
+		Context: "some/path.md",
+	}
+
+	data, err := yaml.Marshal(task)
+	require.NoError(t, err)
+
+	var loaded Task
+	require.NoError(t, yaml.Unmarshal(data, &loaded))
+
+	assert.Equal(t, "", loaded.Wid)
+	assert.Equal(t, task.Name, loaded.Name)
+}
+
+func TestCreateContextFile(t *testing.T) {
+	root := t.TempDir()
+	researchDir := "2026-05-11-20"
+	slug := "task-auth-flow"
+	taskName := "Implement auth flow"
+
+	relPath, err := CreateContextFile(root, researchDir, slug, taskName)
+	require.NoError(t, err)
+
+	expectedRel := filepath.Join(".tmux-cli", "research", researchDir, slug+".md")
+	assert.Equal(t, expectedRel, relPath)
+
+	absPath := filepath.Join(root, relPath)
+	data, err := os.ReadFile(absPath)
+	require.NoError(t, err)
+
+	content := string(data)
+	assert.Contains(t, content, "# Task: Implement auth flow")
+	assert.Contains(t, content, "## Problem")
+	assert.Contains(t, content, "## Solution")
+	assert.Contains(t, content, "## Files to touch")
+}
+
+func TestCreateContextFile_CreatesDirectories(t *testing.T) {
+	root := t.TempDir()
+
+	relPath, err := CreateContextFile(root, "2026-01-01-00", "task-test", "Test task")
+	require.NoError(t, err)
+
+	absPath := filepath.Join(root, relPath)
+	_, err = os.Stat(absPath)
+	assert.NoError(t, err)
+}
+
+func TestCreateContextFile_DoesNotOverwriteExisting(t *testing.T) {
+	root := t.TempDir()
+	researchDir := "2026-05-11-20"
+	slug := "task-existing"
+
+	dir := filepath.Join(root, ".tmux-cli", "research", researchDir)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	existing := filepath.Join(dir, slug+".md")
+	require.NoError(t, os.WriteFile(existing, []byte("existing content"), 0o644))
+
+	relPath, err := CreateContextFile(root, researchDir, slug, "New task")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(".tmux-cli", "research", researchDir, slug+".md"), relPath)
+
+	data, err := os.ReadFile(filepath.Join(root, relPath))
+	require.NoError(t, err)
+	assert.Equal(t, "existing content", string(data))
 }

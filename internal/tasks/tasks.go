@@ -15,17 +15,22 @@ const (
 	StatusPending    = "pending"
 	StatusInProgress = "in_progress"
 	StatusDone       = "done"
+
+	FileStatusPlanning = "planning"
+	FileStatusReady    = "ready"
 )
 
 type Task struct {
-	Name        string `yaml:"name"`
-	Status      string `yaml:"status"`
-	ContextFile string `yaml:"context_file"`
+	Name    string `yaml:"name"`
+	Wid     string `yaml:"wid"`
+	Status  string `yaml:"status"`
+	Context string `yaml:"context"`
 }
 
 type TasksFile struct {
-	Cycle int    `yaml:"cycle"`
-	Tasks []Task `yaml:"tasks"`
+	Status string `yaml:"status"`
+	Cycle  int    `yaml:"cycle"`
+	Tasks  []Task `yaml:"tasks"`
 }
 
 func TasksFilePath(projectRoot string) string {
@@ -84,6 +89,44 @@ func ArchiveTasks(projectRoot string) error {
 		return err
 	}
 	return os.Remove(src)
+}
+
+const contextTemplate = `# Task: %s
+
+## Problem
+
+[What needs to be fixed/added and why]
+
+## Solution
+
+[How to implement it]
+
+## Files to touch
+
+[List of files that need changes]
+`
+
+func CreateContextFile(projectRoot, researchDir, slug, taskName string) (string, error) {
+	relPath := filepath.Join(".tmux-cli", "research", researchDir, slug+".md")
+	absPath := filepath.Join(projectRoot, relPath)
+
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		return "", err
+	}
+
+	if _, err := os.Stat(absPath); err == nil {
+		return relPath, nil
+	}
+
+	content := fmt.Sprintf(contextTemplate, taskName)
+	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return relPath, nil
+}
+
+func (tf *TasksFile) IsPlanning() bool {
+	return tf.Status == FileStatusPlanning
 }
 
 func (tf *TasksFile) PendingTasks() []Task {

@@ -35,6 +35,7 @@ type Hook struct {
 const notifyScript = `"$CLAUDE_PROJECT_DIR"/.tmux-cli/hooks/tmux-session-notify.sh`
 const noInteractiveScript = `"$CLAUDE_PROJECT_DIR"/.tmux-cli/hooks/no-interactive-questions.sh`
 const supervisorCycleScript = `"$CLAUDE_PROJECT_DIR"/.tmux-cli/hooks/tmux-supervisor-cycle.sh`
+const unplannedAuditScript = `"$CLAUDE_PROJECT_DIR"/.tmux-cli/hooks/tmux-unplanned-audit.sh`
 
 func GenerateClaudeSettings(s *Settings) *ClaudeSettings {
 	cs := &ClaudeSettings{}
@@ -49,6 +50,12 @@ func GenerateClaudeSettings(s *Settings) *ClaudeSettings {
 		cs.Hooks.Stop = []HookGroup{
 			{Hooks: []Hook{{Type: "command", Command: notifyScript + " stop", Timeout: 10}}},
 		}
+	}
+
+	if s.Supervisor.UnplannedAudit {
+		cs.Hooks.Stop = append(cs.Hooks.Stop, HookGroup{
+			Hooks: []Hook{{Type: "command", Command: unplannedAuditScript + " stop", Timeout: 15}},
+		})
 	}
 
 	cs.Hooks.Stop = append(cs.Hooks.Stop, HookGroup{

@@ -18,6 +18,7 @@ func TestDefaultSettings_Values(t *testing.T) {
 	assert.True(t, s.Commands.Enabled)
 	assert.Equal(t, 0, s.Supervisor.MaxCycles)
 	assert.Equal(t, 5, s.Supervisor.CycleDelay)
+	assert.True(t, s.Supervisor.UnplannedAudit)
 }
 
 func TestLoadSettings_SupervisorMaxCycles(t *testing.T) {
@@ -71,7 +72,7 @@ func TestSaveSettings_SupervisorRoundTrip(t *testing.T) {
 			BlockInteractive: true,
 		},
 		Commands:   CommandsSettings{Enabled: true},
-		Supervisor: SupervisorSettings{MaxCycles: 10, CycleDelay: 3},
+		Supervisor: SupervisorSettings{MaxCycles: 10, CycleDelay: 3, UnplannedAudit: true},
 	}
 
 	err := SaveSettings(root, original)

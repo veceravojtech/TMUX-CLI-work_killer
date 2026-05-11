@@ -27,8 +27,9 @@ type CommandsSettings struct {
 }
 
 type SupervisorSettings struct {
-	MaxCycles  int `yaml:"max_cycles"`
-	CycleDelay int `yaml:"cycle_delay"`
+	MaxCycles      int  `yaml:"max_cycles"`
+	CycleDelay     int  `yaml:"cycle_delay"`
+	UnplannedAudit bool `yaml:"unplanned_audit"`
 }
 
 type Settings struct {
@@ -47,8 +48,9 @@ func DefaultSettings() *Settings {
 			Enabled: true,
 		},
 		Supervisor: SupervisorSettings{
-			MaxCycles:  0,
-			CycleDelay: 5,
+			MaxCycles:      0,
+			CycleDelay:     5,
+			UnplannedAudit: true,
 		},
 	}
 }

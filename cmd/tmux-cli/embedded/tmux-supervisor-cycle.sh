@@ -68,6 +68,13 @@ if [[ ! -f "$TASKS_FILE" ]]; then
     exit 0
 fi
 
+# --- Skip when tasks.yaml is still in planning mode ---
+
+FILE_STATUS=$(grep -E '^status:' "$TASKS_FILE" 2>/dev/null | sed 's/^status:\s*//' | tr -d ' ' || echo "")
+if [[ "$FILE_STATUS" == "planning" ]]; then
+    exit 0
+fi
+
 UNFINISHED=$(grep -c 'status: pending\|status: in_progress' "$TASKS_FILE" 2>/dev/null) || UNFINISHED=0
 
 if [[ "$UNFINISHED" -eq 0 ]]; then
@@ -131,6 +138,7 @@ rm -f "$CANCEL_FILE"
 
 if [[ "$CYCLE_DELAY" -le 0 ]]; then
     # No countdown — restart immediately
+    rm -f "${PROJECT_DIR}/.tmux-cli/audit-done"
     tmux send-keys -t "$PANE_TARGET" "/clear" Enter
     sleep 2
     tmux send-keys -t "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml" Enter
@@ -161,6 +169,7 @@ fi
 
 # --- Send restart commands to the supervisor pane ---
 
+rm -f "${PROJECT_DIR}/.tmux-cli/audit-done"
 tmux send-keys -t "$PANE_TARGET" "/clear" Enter
 sleep 2
 tmux send-keys -t "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml" Enter

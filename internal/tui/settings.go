@@ -15,18 +15,21 @@ type settingItem struct {
 }
 
 type Model struct {
-	items       []settingItem
-	cursor      int
-	projectRoot string
+	items        []settingItem
+	cursor       int
+	projectRoot  string
+	baseSettings *setup.Settings
 }
 
 func NewModel(projectRoot string, settings *setup.Settings) Model {
 	return Model{
-		projectRoot: projectRoot,
+		projectRoot:  projectRoot,
+		baseSettings: settings,
 		items: []settingItem{
 			{key: "hooks.session_notify", label: "Session Notify", value: settings.Hooks.SessionNotify},
 			{key: "hooks.block_interactive", label: "Block Interactive", value: settings.Hooks.BlockInteractive},
 			{key: "commands.enabled", label: "Commands Enabled", value: settings.Commands.Enabled},
+			{key: "supervisor.unplanned_audit", label: "Unplanned Audit", value: settings.Supervisor.UnplannedAudit},
 		},
 	}
 }
@@ -40,7 +43,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc":
-			return m, m.save()
+			return m, tea.Quit
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -52,8 +55,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case " ", "enter":
 			m.items[m.cursor].value = !m.items[m.cursor].value
 		}
-	case saveResultMsg:
-		return m, tea.Quit
 	}
 	return m, nil
 }
@@ -90,18 +91,13 @@ func (m Model) View() string {
 	return s
 }
 
-type saveResultMsg struct{ err error }
-
-func (m Model) save() tea.Cmd {
-	return func() tea.Msg {
-		settings := m.ToSettings()
-		err := setup.SaveSettings(m.projectRoot, settings)
-		return saveResultMsg{err: err}
-	}
-}
-
 func (m Model) ToSettings() *setup.Settings {
-	s := setup.DefaultSettings()
+	var s setup.Settings
+	if m.baseSettings != nil {
+		s = *m.baseSettings
+	} else {
+		s = *setup.DefaultSettings()
+	}
 	for _, item := range m.items {
 		switch item.key {
 		case "hooks.session_notify":
@@ -110,9 +106,11 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Hooks.BlockInteractive = item.value
 		case "commands.enabled":
 			s.Commands.Enabled = item.value
+		case "supervisor.unplanned_audit":
+			s.Supervisor.UnplannedAudit = item.value
 		}
 	}
-	return s
+	return &s
 }
 
 func Run(projectRoot string) error {

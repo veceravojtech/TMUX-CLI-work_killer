@@ -51,6 +51,7 @@
   </autonomy-policy>
 
   <llm critical="true">
+    <mandate>NEVER bypass the supervisor protocol. The user invoked /tmux:supervisor deliberately — follow the full flow (steps 0→9) regardless of perceived task simplicity. "Too simple for workers" is NOT a valid reason to skip. Even a single-worker linear task goes through fan-out, tasks.yaml, spawn, poll, accept, synthesize.</mandate>
     <mandate>Execute steps ONE BY ONE in EXACT ORDER</mandate>
     <mandate>Create TODO list for tracking spawned workers (SELF_WID + subtask label)</mandate>
     <mandate>Operate per &lt;autonomy-policy&gt; — do not ask the user outside the two defined exits.</mandate>
@@ -62,6 +63,11 @@
   </llm>
 
   <flow>
+    <step n="0" title="Clean slate">
+      <action>Remove .tmux-cli/audit-done guard file if it exists (allows the unplanned-audit hook to fire at the end of this cycle).</action>
+      <action>If .tmux-cli/tasks.yaml exists and is NOT a continuation cycle, set its top-level status field to "planning". If it doesn't exist yet, the status will be set when tasks.yaml is first created in step 3.</action>
+    </step>
+
     <step n="1" title="MCP precondition">
       <action>Call windows-list</action>
       <check condition="tmux-cli not available">
@@ -117,9 +123,11 @@
       <ranking>Highest-yield-first for auto-fan-out: (1) closest to user-facing surface or critical path, (2) closest to impact target, (3) smallest budget before completion, (4) overturns prior assumption if confirmed. Break ties by lowest budget. If two options are budget-tied and yield-tied, pick the one that runs first in dependency order (prerequisite before dependent).</ranking>
       <exhaustive-coverage critical="true">NEVER skip a possible path due to low probability of success. Every identified vector — even speculative or low-yield — must be executed to produce a precise ruling (confirmed, refuted with evidence, or blocked by specific barrier). "Not worth budget" and "too speculative" are NOT valid reasons to skip a worker. The goal is exhaustive coverage: every path precisely documented as viable or dead, with no gaps left to assumption.</exhaustive-coverage>
       <task-tracking critical="true">
-        <action>After determining the fan-out shape, create or update .tmux-cli/tasks.yaml with all planned tasks. Each task entry has: name (subtask label), wid (execute-N), status (pending), and cycle (current cycle number, starting at 1).</action>
+        <action>After determining the fan-out shape, create or update .tmux-cli/tasks.yaml with all planned tasks. Each task entry has: name (subtask label), wid (execute-N), status (pending), context (path to .md file), and cycle (current cycle number, starting at 1).</action>
+        <action>Before writing a task to tasks.yaml, create a context .md file for it in .tmux-cli/research/{y-m-d-hh}/ using the slug pattern task-&lt;slug&gt;.md. The context field MUST be set on every task — it is mandatory.</action>
         <action>If tasks.yaml already exists from a continuation cycle, preserve done tasks and update/add pending ones.</action>
-        <format>tasks.yaml structure: cycle: N, tasks: [{name: "...", wid: "execute-N", status: pending|in_progress|done}]</format>
+        <format>tasks.yaml structure: status: planning, cycle: N, tasks: [{name: "...", wid: "execute-N", status: pending, context: ".tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md"}]</format>
+        <rule>When first creating or updating tasks.yaml during fan-out planning, set the top-level status to "planning". This prevents Stop hooks (cycle restart, unplanned audit) from firing while the supervisor is still planning.</rule>
       </task-tracking>
     </step>
 
@@ -129,9 +137,10 @@
         <action>STOP. Do NOT proceed to step 4. Write tasks.yaml first per step 3 task-tracking, then re-verify.</action>
       </check>
       <check condition="tasks.yaml exists AND contains all planned pending tasks">
+        <action>Set the top-level status in tasks.yaml to "ready". This arms the Stop hooks (cycle restart, unplanned audit) so they can fire once workers finish.</action>
         <action>Proceed to step 4.</action>
       </check>
-      <rule critical="true">This is a BLOCKING GATE. No worker may be spawned (step 4) until tasks.yaml is written and verified. This ensures every supervisor session has a persistent task plan that survives context resets.</rule>
+      <rule critical="true">This is a BLOCKING GATE. No worker may be spawned (step 4) until tasks.yaml is written, verified, AND its status is set to "ready". This ensures every supervisor session has a persistent task plan that survives context resets.</rule>
     </step>
 
     <step n="4" title="Spawn protocol (repeat per worker, sequentially within your turn)">
@@ -268,7 +277,9 @@ SELF_WID=&lt;the execute-N name&gt;
 SUBTASK: &lt;one-line label&gt;
 
 SCOPE:
-&lt;multi-line scope — files, directories, what to implement or investigate&gt;
+Full spec is in &lt;context-file-path&gt; — read it and follow it.
+
+&lt;multi-line scope summary — files, directories, what to implement or investigate&gt;
 
 CONTEXT:
 &lt;multi-line supporting context — prior findings, constraints, non-goals&gt;
