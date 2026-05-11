@@ -18,7 +18,6 @@
 
   <llm critical="true">
     <mandate>Execute steps ONE BY ONE in EXACT ORDER — NEVER skip or reorder steps</mandate>
-    <mandate>Create TODO list for tracking all tasks</mandate>
     <mandate>ALWAYS use windows-send for sending commands/instructions to the agent</mandate>
     <mandate>ALWAYS send slash command and instruction as TWO SEPARATE windows-send calls — command first, then instruction — to ensure command loads before instruction is processed</mandate>
     <mandate>ALWAYS use windows-message for responding to agent questions</mandate>
@@ -53,13 +52,6 @@
       </substep>
     </step>
 
-    <step n="3.5" title="Scope Guard — enforce single-purpose usage">
-      <rule>The agent should be used ONLY for what {{COMMAND_NAME}} is designed to do.</rule>
-      <example type="correct">{{COMMAND_NAME}} says "create spec" → you use it to create a spec</example>
-      <example type="wrong">{{COMMAND_NAME}} says "create spec" → you use it to implement code</example>
-      <critical>If the agent asks to do something beyond its intended purpose, answer NO</critical>
-    </step>
-
     <step n="4" title="Send Initial Instructions" condition="{{MESSAGE}} IS provided AND {{COMMAND_NAME}} IS provided">
       <substep n="4.1" title="Send Slash Command (if provided)">
         <action>Execute windows-send with ONLY the slash command: {{COMMAND_NAME}}</action>
@@ -74,13 +66,8 @@
       </substep>
     </step>
 
-    <step n="4-alt" title="Send Instructions Only" condition="{{MESSAGE}} IS provided AND {{COMMAND_NAME}} IS NOT provided">
-      <action>Compose the full message by combining {{PERMISSIONS}} (if provided) + {{MESSAGE}}</action>
-      <action>Execute windows-send with the composed message</action>
-      <critical>ALWAYS use windows-send, NEVER use windows-message</critical>
-    </step>
-
     <step n="5" title="Respond to Agent Questions">
+      <rule critical="true">Scope Guard: the agent must be used ONLY for what {{COMMAND_NAME}} is designed to do. If the agent asks to do something beyond its intended purpose, answer NO.</rule>
       <substep n="5.1" title="Analyze Question and Determine Response">
         <check condition="agent asks about running/implementing beyond its scope">
           <action>CRITICAL: Answer NO — the agent must stay within its designated task</action>
@@ -104,7 +91,8 @@
     </step>
 
     <step n="7" title="Determine Result">
-      <action condition="operation success, nothing remains">Kill the window — agent completed successfully</action>
+      <action condition="operation success, nothing remains, no SUPERVISOR_WID in context">Kill the window — agent completed successfully</action>
+      <action condition="operation success, nothing remains, SUPERVISOR_WID is set">Do NOT kill the window — the supervisor owns lifecycle</action>
       <action condition="operation success, still more to do">Continue until all work is done</action>
       <action condition="operation failed">Ask the user how to proceed</action>
     </step>
@@ -131,7 +119,7 @@
       • You MUST wait for agent responses before proceeding (stay idle — the message will trigger you)
       • You MUST NOT use "sleep" to wait for messages — just stay idle
       • You MUST use the correct tool (windows-send vs windows-message) for each step
-      • Create TODO list at start to track all steps
+      • Workflow manages one task — no TODO list needed
     </critical-rules>
   </llm>
 </task>

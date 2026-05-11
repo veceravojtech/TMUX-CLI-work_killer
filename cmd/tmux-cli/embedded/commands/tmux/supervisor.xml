@@ -31,8 +31,8 @@
   <message-tags>
     <note>All supervisor↔worker communication is tagged. Use tags verbatim; semantics below are the source of truth.</note>
     <tag name="[EXECUTE:DONE wid=... sup=... file=&lt;abs-path&gt;]" from="worker">Worker reports completion. Body carries NO inline findings — the .md at file= IS the report.</tag>
-    <tag name="[EXECUTE:NEED_INPUT &lt;short reason&gt;]" from="worker">Worker cannot proceed without a fact. Reason ≤ 200 chars inline. Supervisor answers via windows-message or replies [SUPERVISOR:NARROW-SCOPE].</tag>
-    <tag name="[EXECUTE:FAILED reason=&lt;short&gt;]" from="worker">Worker hit a terminal failure. Reason ≤ 200 chars inline. Supervisor respawns with narrowed scope (first attempt) or escalates (second).</tag>
+    <tag name="[EXECUTE:NEED_INPUT wid=... sup=... &lt;short reason&gt;]" from="worker">Worker cannot proceed without a fact. Reason ≤ 200 chars inline. Supervisor answers via windows-message to that wid, or replies [SUPERVISOR:NARROW-SCOPE].</tag>
+    <tag name="[EXECUTE:FAILED wid=... sup=... reason=&lt;short&gt;]" from="worker">Worker hit a terminal failure. Reason ≤ 200 chars inline. Supervisor respawns with narrowed scope (first attempt) or escalates (second).</tag>
     <tag name="[SUPERVISOR:REMIND &lt;what to do&gt;]" from="supervisor">Supervisor reminds worker of protocol (e.g. file-only DONE). Does not advance state.</tag>
     <tag name="[EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;G1..G5&gt;]" from="supervisor">Supervisor requests a DELIVERABLE fix per pushback catalogue. Worker updates the SAME .md file and re-tags DONE.</tag>
     <tag name="[SUPERVISOR:AMEND &lt;new scope&gt;]" from="supervisor">Supervisor amends a running worker's scope mid-run. Worker applies to current task.</tag>
@@ -296,6 +296,7 @@ RESPONSE PROTOCOL (MANDATORY):
     <rule>windows-kill: only on accepted DONE or terminal FAILED; never on SUPERVISOR_WID; pass window NAME</rule>
     <rule>Always Read the file cited in a DONE before applying the gap catalogue; never rely on the (absent) inline body</rule>
     <rule>If a worker sends DONE without file=, REMIND once; do not accept an inline-body DONE as a shortcut</rule>
+    <rule>windows-send: used ONLY for self-directed cycle-restart commands to SUPERVISOR_WID in step 9b (/clear, /tmux:supervisor)</rule>
   </execution-rules>
 
   <stop-conditions>

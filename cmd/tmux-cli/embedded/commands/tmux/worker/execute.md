@@ -7,7 +7,7 @@ description: 'Execute tasks via tmux worker.'
 IT IS CRITICAL THAT YOU FOLLOW THESE STEPS:
 
 <context>
-<commandName>/execute</commandName>
+<commandName>/tmux:execute</commandName>
 <argument>NULL</argument>
 </context>
 

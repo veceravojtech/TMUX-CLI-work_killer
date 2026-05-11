@@ -94,7 +94,7 @@ touch "$GUARD_FILE"
 
 PANE_TARGET="${SESSION_ID}:${TMUX_WINDOW_ID}"
 
-AUDIT_PROMPT="Unplanned work audit: check all .md reports in .tmux-cli/research/ for actionable items not covered by completed tasks. If found, add pending tasks and run /tmux:supervisor .tmux-cli/tasks.yaml. If clean, report clean."
+AUDIT_PROMPT="Unplanned work audit: scan the closest surrounding code context for both pre-existing issues and newly introduced problems not covered by completed tasks. Verify all work is truly done — nothing missed, nothing half-finished, no pre-existing solvable tasks. If any actionable items remain, add pending tasks to .tmux-cli/tasks.yaml. If everything is clean, report clean."
 
 tmux send-keys -l -t "$PANE_TARGET" "$AUDIT_PROMPT"
 sleep 0.1

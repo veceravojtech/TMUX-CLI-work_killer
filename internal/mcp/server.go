@@ -4,8 +4,8 @@
 // The server discovers sessions by matching project path stored in tmux session
 // environment variables. No session file is needed.
 //
-// The server provides five window management operations: windows-list, windows-create,
-// windows-kill, windows-send, and windows-message.
+// The server provides seven tools: windows-list, windows-create,
+// windows-kill, windows-send, windows-message, windows-spawn-worker, and hooks-config.
 package mcp
 
 import (
@@ -121,7 +121,7 @@ type WindowsSpawnWorkerOutput struct {
 
 // WindowsKillInput defines the input schema for windows-kill tool
 type WindowsKillInput struct {
-	WindowID string `json:"windowId" jsonschema:"The tmux window ID to terminate (e.g. '@0' or '@1')"`
+	WindowID string `json:"windowId" jsonschema:"Window name to terminate (e.g. 'execute-3' or 'supervisor')"`
 }
 
 // WindowsKillOutput defines the output schema for windows-kill tool
