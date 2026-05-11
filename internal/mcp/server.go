@@ -4,9 +4,9 @@
 // The server discovers sessions by matching project path stored in tmux session
 // environment variables. No session file is needed.
 //
-// The server provides nine tools: windows-list, windows-create,
+// The server provides ten tools: windows-list, windows-create,
 // windows-kill, windows-send, windows-message, windows-spawn-worker,
-// windows-recover-workers, tasks-validate, and hooks-config.
+// windows-recover-workers, tasks-validate, spec-validate, and hooks-config.
 package mcp
 
 import (
@@ -51,6 +51,44 @@ func (s *Server) discoverSession() (string, error) {
 			ErrSessionNotFound, s.workingDir)
 	}
 	return sessionID, nil
+}
+
+// SpecValidateInput defines the input schema for spec-validate tool
+type SpecValidateInput struct {
+	File string `json:"file" jsonschema:"Absolute path to the spec .md file to validate"`
+}
+
+// SpecValidateOutput defines the output schema for spec-validate tool
+type SpecValidateOutput struct {
+	Valid bool              `json:"valid" jsonschema:"True if spec passes all S0-S8 checks"`
+	Gaps  []SpecValidateGap `json:"gaps,omitempty" jsonschema:"Quality gaps found, each with ID and message"`
+	Stats SpecValidateStats `json:"stats" jsonschema:"Spec statistics — test cases, acceptance criteria, code map entries"`
+}
+
+// SpecValidateGap represents a single quality gap found during validation
+type SpecValidateGap struct {
+	ID      string `json:"id" jsonschema:"Gap identifier (S0-S8)"`
+	Message string `json:"message" jsonschema:"Human-readable description of the gap and how to fix it"`
+}
+
+// SpecValidateStats contains quantitative metrics from the spec
+type SpecValidateStats struct {
+	TestCases          int `json:"test_cases" jsonschema:"Number of test cases found in Test Plan"`
+	AcceptanceCriteria int `json:"acceptance_criteria" jsonschema:"Number of checkbox acceptance criteria"`
+	CodeMapEntries     int `json:"code_map_entries" jsonschema:"Number of file:line references in Code Map"`
+}
+
+// SpecValidateHandler is the MCP tool handler for spec-validate operation.
+func (s *Server) SpecValidateHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input SpecValidateInput) (
+	*sdkmcp.CallToolResult,
+	SpecValidateOutput,
+	error,
+) {
+	output, err := s.SpecValidate(input.File)
+	if err != nil {
+		return nil, SpecValidateOutput{}, err
+	}
+	return nil, *output, nil
 }
 
 // TasksValidateInput defines the input schema for tasks-validate tool (no parameters needed)
@@ -368,6 +406,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: false,
 		},
 	}, s.WindowsSpawnWorkerHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "spec-validate",
+		Description: "Validate a spec .md file against the S0-S8 quality catalogue. Checks: Intent (S0), Code Map references (S1), Implementation Plan structure (S2), Test Plan specificity (S3), Acceptance Criteria Given/When/Then format (S4), Boundaries & Never entries (S7), no TBD/placeholders (S8). Returns gaps with fix instructions and stats (test cases, ACs, code map entries). Use in /tmux:plan step 6 to verify worker-produced specs.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, s.SpecValidateHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "tasks-validate",

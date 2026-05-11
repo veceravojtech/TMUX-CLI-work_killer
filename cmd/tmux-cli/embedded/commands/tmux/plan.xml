@@ -300,18 +300,14 @@ tasks:
     </step>
 
     <step n="6" title="Verify spec quality — pushback catalogue S1–S8">
-      <action>Read the spec .md at the file= path cited in the DONE tag. If the file does not exist, reply [SUPERVISOR:REMIND] file= path does not exist — resave and re-tag, and wait.</action>
-      <rule>Check the file contents against these spec-quality gaps. Pushback at most 3x per worker. Each pushback MUST cite exactly one gap.</rule>
-      <gap id="S1">Code Map is empty or doesn't cite specific files/functions/line numbers from the source code</gap>
-      <gap id="S2">Implementation Plan lacks file structure (no "Files to Create/Modify") or key classes/functions</gap>
-      <gap id="S3">Test Plan is generic ("write tests") without specific test cases and expected behavior</gap>
-      <gap id="S4">Acceptance Criteria are missing, vague, or don't use Given/When/Then format</gap>
+      <action>If the file= path cited in the DONE tag does not exist, reply [SUPERVISOR:REMIND] file= path does not exist — resave and re-tag, and wait.</action>
+      <action>Call spec-validate MCP tool with the file= path. The tool checks S0 (Intent), S1 (Code Map), S2 (Implementation Plan), S3 (Test Plan), S4 (Acceptance Criteria), S7 (Boundaries), S8 (RFD/placeholders) automatically.</action>
+      <action>After spec-validate, also check these gaps manually (they require judgment the tool cannot perform):</action>
       <gap id="S5">Dependencies not specified when the module clearly depends on others (check the plan's dependency graph)</gap>
       <gap id="S6">I/O Matrix missing when module has meaningful interfaces (APIs, CLI commands, message protocols, file formats) — if module has no I/O interfaces, this gap does not apply</gap>
-      <gap id="S7">Boundaries section missing or has no "Never" entries — scope edges are undefined, implementation worker won't know what's out of scope</gap>
-      <gap id="S8">Ready for Development standard not met: tasks lack file paths, or Acceptance Criteria don't use Given/When/Then, or placeholders/TBDs remain in non-optional sections</gap>
+      <rule>Pushback at most 3x per worker. Each pushback MUST cite exactly one gap.</rule>
       <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S8&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
-      <check condition="spec passes all S1–S8 checks">
+      <check condition="spec-validate returns valid=true AND S5/S6 manual checks pass">
         <action>Accept. Proceed to step 7.</action>
       </check>
       <check condition="3 pushbacks already sent to this worker">

@@ -1096,3 +1096,47 @@ func TestServer_TasksValidate_NoFile(t *testing.T) {
 	_, err := server.TasksValidate()
 	require.Error(t, err)
 }
+
+func TestServer_SpecValidate_Valid(t *testing.T) {
+	root := t.TempDir()
+	mockExec := new(testutil.MockTmuxExecutor)
+	server := newTestServer(mockExec, root)
+
+	spec := "## Intent\n\n**Problem:** Broken.\n**Approach:** Fix.\n\n" +
+		"## Boundaries & Constraints\n\n**Always:** Do.\n**Never:** Don't.\n\n" +
+		"## Dependencies\n\nnone\n\n" +
+		"## Code Map\n\n- `file.go:10` — thing\n\n" +
+		"## Implementation Plan\n\n### Files to Create/Modify\n\n- `file.go` — modify\n\n" +
+		"## Test Plan\n\n- TestThing: checks it\n\n" +
+		"## Acceptance Criteria\n\n- [ ] Given X, when Y, then Z\n"
+	require.NoError(t, os.WriteFile(root+"/spec.md", []byte(spec), 0o644))
+
+	out, err := server.SpecValidate(root + "/spec.md")
+	require.NoError(t, err)
+	assert.True(t, out.Valid)
+	assert.Empty(t, out.Gaps)
+}
+
+func TestServer_SpecValidate_WithGaps(t *testing.T) {
+	root := t.TempDir()
+	mockExec := new(testutil.MockTmuxExecutor)
+	server := newTestServer(mockExec, root)
+
+	spec := "## Dependencies\n\nnone\n\n## Code Map\n\n## Test Plan\n\n- TestX: check\n\n" +
+		"## Acceptance Criteria\n\n- [ ] It works\n"
+	require.NoError(t, os.WriteFile(root+"/spec.md", []byte(spec), 0o644))
+
+	out, err := server.SpecValidate(root + "/spec.md")
+	require.NoError(t, err)
+	assert.False(t, out.Valid)
+	assert.NotEmpty(t, out.Gaps)
+}
+
+func TestServer_SpecValidate_NotFound(t *testing.T) {
+	root := t.TempDir()
+	mockExec := new(testutil.MockTmuxExecutor)
+	server := newTestServer(mockExec, root)
+
+	_, err := server.SpecValidate("/nonexistent/spec.md")
+	require.Error(t, err)
+}

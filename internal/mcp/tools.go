@@ -563,6 +563,26 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	return window, workerName, taskMessage, nil
 }
 
+func (s *Server) SpecValidate(file string) (*SpecValidateOutput, error) {
+	result, err := tasks.ValidateSpecFile(file)
+	if err != nil {
+		return nil, err
+	}
+	gaps := make([]SpecValidateGap, len(result.Gaps))
+	for i, g := range result.Gaps {
+		gaps[i] = SpecValidateGap{ID: g.ID, Message: g.Message}
+	}
+	return &SpecValidateOutput{
+		Valid: result.Valid,
+		Gaps:  gaps,
+		Stats: SpecValidateStats{
+			TestCases:          result.Stats.TestCases,
+			AcceptanceCriteria: result.Stats.AcceptanceCriteria,
+			CodeMapEntries:     result.Stats.CodeMapEntries,
+		},
+	}, nil
+}
+
 func (s *Server) TasksValidate() (*TasksValidateOutput, error) {
 	path := filepath.Join(s.workingDir, ".tmux-cli", "tasks.yaml")
 	if _, err := os.Stat(path); err != nil {
