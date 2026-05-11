@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/console/tmux-cli/internal/session"
+	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/tmux"
 )
 
@@ -64,27 +66,27 @@ func resolveWindowIdentifier(windows []tmux.WindowInfo, identifier string) (stri
 }
 
 // WindowsSend sends a text command to a specific window for execution.
-func (s *Server) WindowsSend(windowIdentifier, command string) (bool, error) {
+func (s *Server) WindowsSend(windowIdentifier, command string, sudo bool) (bool, string, error) {
 	if windowIdentifier == "" {
-		return false, fmt.Errorf("%w: windowIdentifier cannot be empty", ErrInvalidWindowID)
+		return false, "", fmt.Errorf("%w: windowIdentifier cannot be empty", ErrInvalidWindowID)
 	}
 	if command == "" {
-		return false, fmt.Errorf("%w: command cannot be empty", ErrInvalidInput)
+		return false, "", fmt.Errorf("%w: command cannot be empty", ErrInvalidInput)
 	}
 
 	sessionID, err := s.discoverSession()
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 
 	windows, err := s.executor.ListWindows(sessionID)
 	if err != nil {
-		return false, fmt.Errorf("%w: %w", ErrTmuxCommandFailed, err)
+		return false, "", fmt.Errorf("%w: %w", ErrTmuxCommandFailed, err)
 	}
 
 	windowID, err := resolveWindowIdentifier(windows, windowIdentifier)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 
 	// Verify window exists
@@ -96,17 +98,59 @@ func (s *Server) WindowsSend(windowIdentifier, command string) (bool, error) {
 		}
 	}
 	if !windowExists {
-		return false, fmt.Errorf("%w: windowID=%s session=%s",
+		return false, "", fmt.Errorf("%w: windowID=%s session=%s",
 			ErrWindowNotFound, windowID, sessionID)
+	}
+
+	if sudo {
+		password, err := s.executor.GetSessionEnvironment(sessionID, "TMUX_CLI_SUDO_PASS")
+		if err != nil || password == "" {
+			return false, "", fmt.Errorf("%w: sudo not configured — start session with --sudo flag", ErrInvalidInput)
+		}
+
+		// Find or create persistent sudo window
+		sudoWindowID := ""
+		for i := range windows {
+			if windows[i].Name == "sudo" {
+				sudoWindowID = windows[i].TmuxWindowID
+				break
+			}
+		}
+		if sudoWindowID == "" {
+			sudoWindowID, err = s.executor.CreateWindow(sessionID, "sudo", "zsh")
+			if err != nil {
+				return false, "", fmt.Errorf("%w: failed to create sudo window: %w", ErrTmuxCommandFailed, err)
+			}
+			// Export password as env var in the persistent window
+			escapedPW := strings.ReplaceAll(password, "'", "'\\''")
+			err = s.executor.SendMessage(sessionID, sudoWindowID, "export _SP='"+escapedPW+"'")
+			if err != nil {
+				return false, "", fmt.Errorf("%w: failed to set sudo password: %w", ErrTmuxCommandFailed, err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// Execute command with sudo -S (reads password from stdin)
+		sudoCmd := fmt.Sprintf("echo \"$_SP\" | sudo -S %s 2>/dev/null", command)
+		err = s.executor.SendMessageWithDelay(sessionID, sudoWindowID, sudoCmd)
+		if err != nil {
+			return false, "", fmt.Errorf("%w: sudo send failed: %w", ErrTmuxCommandFailed, err)
+		}
+
+		time.Sleep(2 * time.Second)
+
+		output, _ := s.executor.CaptureWindowOutput(sessionID, sudoWindowID)
+
+		return true, strings.TrimSpace(output), nil
 	}
 
 	err = s.executor.SendMessageWithDelay(sessionID, windowID, command)
 	if err != nil {
-		return false, fmt.Errorf("%w: session=%s window=%s command=%q: %w",
+		return false, "", fmt.Errorf("%w: session=%s window=%s command=%q: %w",
 			ErrTmuxCommandFailed, sessionID, windowID, command, err)
 	}
 
-	return true, nil
+	return true, "", nil
 }
 
 // WindowsMessage sends a formatted message to another window with auto-detected sender.
@@ -283,4 +327,39 @@ func (s *Server) WindowsKill(windowIdentifier string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// HooksConfig views or toggles hook configuration in settings.yaml.
+func (s *Server) HooksConfig(action, hook string) (*HooksConfigOutput, error) {
+	switch action {
+	case "list":
+		settings, err := setup.LoadSettings(s.workingDir)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to load settings: %w", ErrInvalidInput, err)
+		}
+		return &HooksConfigOutput{Hooks: &settings.Hooks, Changed: false}, nil
+
+	case "enable", "disable":
+		if hook != "session_notify" && hook != "block_interactive" {
+			return nil, fmt.Errorf("%w: invalid hook name %q (valid: session_notify, block_interactive)", ErrInvalidInput, hook)
+		}
+		settings, err := setup.LoadSettings(s.workingDir)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to load settings: %w", ErrInvalidInput, err)
+		}
+		value := action == "enable"
+		switch hook {
+		case "session_notify":
+			settings.Hooks.SessionNotify = value
+		case "block_interactive":
+			settings.Hooks.BlockInteractive = value
+		}
+		if err := setup.SaveSettings(s.workingDir, settings); err != nil {
+			return nil, fmt.Errorf("%w: failed to save settings: %w", ErrInvalidInput, err)
+		}
+		return &HooksConfigOutput{Hooks: &settings.Hooks, Changed: true}, nil
+
+	default:
+		return nil, fmt.Errorf("%w: invalid action %q (valid: list, enable, disable)", ErrInvalidInput, action)
+	}
 }

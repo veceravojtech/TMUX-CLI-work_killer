@@ -14,6 +14,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/tmux"
 )
 
@@ -63,11 +64,13 @@ type WindowsListOutput struct {
 type WindowsSendInput struct {
 	WindowID string `json:"windowId" jsonschema:"Window identifier to send command to (e.g. '@0' or '@1')"`
 	Command  string `json:"command" jsonschema:"Command text to execute in the window (sent exactly as provided)"`
+	Sudo     bool   `json:"sudo,omitempty" jsonschema:"When true, automatically creates a temp window, runs the command with sudo using cached password, captures output, and destroys the temp window. Do NOT manually create a window for sudo."`
 }
 
 // WindowsSendOutput defines the output schema for windows-send tool
 type WindowsSendOutput struct {
-	Success bool `json:"success" jsonschema:"True if command was sent successfully"`
+	Success bool   `json:"success" jsonschema:"True if command was sent successfully"`
+	Output  string `json:"output,omitempty" jsonschema:"Captured output from sudo command execution (only present when sudo=true)"`
 }
 
 // WindowsMessageInput defines the input schema for windows-message tool
@@ -110,6 +113,32 @@ type WindowsKillOutput struct {
 	Success bool `json:"success" jsonschema:"True if window was killed or already didn't exist (idempotent)"`
 }
 
+// HooksConfigInput defines the input schema for hooks-config tool
+type HooksConfigInput struct {
+	Action string `json:"action" jsonschema:"Action to perform: list, enable, or disable"`
+	Hook   string `json:"hook,omitempty" jsonschema:"Hook name: session_notify or block_interactive. Required for enable/disable."`
+}
+
+// HooksConfigOutput defines the output schema for hooks-config tool
+type HooksConfigOutput struct {
+	Hooks   *setup.HooksSettings `json:"hooks"`
+	Changed bool                 `json:"changed"`
+}
+
+// HooksConfigHandler is the MCP tool handler for hooks-config operation.
+func (s *Server) HooksConfigHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input HooksConfigInput) (
+	*sdkmcp.CallToolResult,
+	HooksConfigOutput,
+	error,
+) {
+	output, err := s.HooksConfig(input.Action, input.Hook)
+	if err != nil {
+		return nil, HooksConfigOutput{}, err
+	}
+
+	return nil, *output, nil
+}
+
 // WindowsListHandler is the MCP tool handler for windows-list operation.
 func (s *Server) WindowsListHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsListInput) (
 	*sdkmcp.CallToolResult,
@@ -130,12 +159,12 @@ func (s *Server) WindowsSendHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	WindowsSendOutput,
 	error,
 ) {
-	success, err := s.WindowsSend(input.WindowID, input.Command)
+	success, output, err := s.WindowsSend(input.WindowID, input.Command, input.Sudo)
 	if err != nil {
 		return nil, WindowsSendOutput{}, err
 	}
 
-	return nil, WindowsSendOutput{Success: success}, nil
+	return nil, WindowsSendOutput{Success: success, Output: output}, nil
 }
 
 // WindowsMessageHandler is the MCP tool handler for windows-message operation.
@@ -193,7 +222,7 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "windows-send",
-		Description: "Send a text command to a specific window for execution without manual switching. Supports multi-window orchestration workflows by sending commands in sequence.",
+		Description: "Send a text command to a specific window for execution without manual switching. Supports multi-window orchestration workflows by sending commands in sequence. When sudo=true, a persistent 'sudo' shell window is automatically created (or reused if it exists), the command runs with elevated privileges using the cached password (from --sudo session flag), and output is captured and returned. Do NOT create a separate window for sudo commands — it is handled automatically.",
 		Annotations: &sdkmcp.ToolAnnotations{
 			ReadOnlyHint:   false,
 			IdempotentHint: false,
@@ -226,6 +255,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.WindowsKillHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "hooks-config",
+		Description: "View and toggle hook configuration. Actions: list (show current config), enable/disable (toggle a named hook). Changes take effect on next tmux-cli start.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: true,
+		},
+	}, s.HooksConfigHandler)
 
 	return nil
 }

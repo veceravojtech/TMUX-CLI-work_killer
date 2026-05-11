@@ -1,17 +1,18 @@
 package main
 
 import (
-	_ "embed"
-	"encoding/json"
+	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/console/tmux-cli/internal/session"
+	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // Embedded hook scripts
@@ -24,6 +25,27 @@ var hookValidateSession string
 
 //go:embed embedded/no-interactive-questions.sh
 var hookNoInteractiveQuestions string
+
+//go:embed embedded/commands/tmux
+var embeddedCommands embed.FS
+
+var readPassword = func() (string, error) {
+	fmt.Print("Enter sudo password: ")
+	bytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return "", err
+	}
+	return string(bytes), nil
+}
+
+func promptAndStoreSudoPassword(executor tmux.TmuxExecutor, sessionID string) error {
+	password, err := readPassword()
+	if err != nil {
+		return fmt.Errorf("read sudo password: %w", err)
+	}
+	return executor.SetSessionEnvironment(sessionID, "TMUX_CLI_SUDO_PASS", password)
+}
 
 var startCmd = &cobra.Command{
 	Use:   "start",
@@ -142,22 +164,6 @@ Examples:
 	RunE: runWindowsMessage,
 }
 
-var installCmd = &cobra.Command{
-	Use:   "install",
-	Short: "Install Claude Code hooks and project files",
-	Long: `Install Claude Code hooks and create required project directories.
-
-This command automatically:
-  - Creates .claude/settings.json with hook configuration
-  - Sets executable permissions on hook scripts
-  - Creates required directories (.tmux-cli/logs/)
-
-Examples:
-  tmux-cli install
-  tmux-cli install --force`,
-	RunE: runInstall,
-}
-
 var (
 	windowName      string
 	windowIDFlag    string
@@ -165,7 +171,6 @@ var (
 	sendMessage     string
 	messageReceiver string
 	messageText     string
-	forceInstall    bool
 )
 
 func init() {
@@ -193,8 +198,9 @@ func init() {
 	windowsMessageCmd.MarkFlagRequired("receiver")
 	windowsMessageCmd.MarkFlagRequired("message")
 
-	// Add flags to install command
-	installCmd.Flags().BoolVar(&forceInstall, "force", false, "Overwrite existing .claude/settings.json without prompting")
+	// Add --sudo flag to start and start-attach commands
+	startCmd.Flags().Bool("sudo", false, "Prompt for sudo password and cache it for the session")
+	startAttachCmd.Flags().Bool("sudo", false, "Prompt for sudo password and cache it for the session")
 
 	// Add all commands directly to root
 	rootCmd.AddCommand(startCmd)
@@ -209,7 +215,6 @@ func init() {
 	rootCmd.AddCommand(windowsUuidCmd)
 	rootCmd.AddCommand(windowsMessageCmd)
 	rootCmd.AddCommand(mcpCmd)
-	rootCmd.AddCommand(installCmd)
 }
 
 // UsageError represents an error in command usage or arguments
@@ -277,9 +282,21 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
+	if err := runAutoSetup(projectPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: auto-setup: %v\n", err)
+	}
 	executor := tmux.NewTmuxExecutor()
-	_, err = startOrReuseSession(executor, projectPath)
-	return err
+	sessionID, err := startOrReuseSession(executor, projectPath)
+	if err != nil {
+		return err
+	}
+	sudoFlag, _ := cmd.Flags().GetBool("sudo")
+	if sudoFlag {
+		if err := promptAndStoreSudoPassword(executor, sessionID); err != nil {
+			return fmt.Errorf("sudo setup failed: %w", err)
+		}
+	}
+	return nil
 }
 
 func runStartAttach(cmd *cobra.Command, args []string) error {
@@ -287,10 +304,19 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
+	if err := runAutoSetup(projectPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: auto-setup: %v\n", err)
+	}
 	executor := tmux.NewTmuxExecutor()
 	sessionID, err := startOrReuseSession(executor, projectPath)
 	if err != nil {
 		return err
+	}
+	sudoFlag, _ := cmd.Flags().GetBool("sudo")
+	if sudoFlag {
+		if err := promptAndStoreSudoPassword(executor, sessionID); err != nil {
+			return fmt.Errorf("sudo setup failed: %w", err)
+		}
 	}
 	fmt.Printf("Attaching to session '%s'...\n", sessionID)
 	return executor.AttachSession(sessionID)
@@ -745,195 +771,30 @@ func runWindowsUuid(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// ClaudeSettings represents the .claude/settings.json structure
-type ClaudeSettings struct {
-	Hooks HooksConfig `json:"hooks"`
-}
-
-// HooksConfig represents the hooks configuration
-type HooksConfig struct {
-	SessionStart []HookGroup           `json:"SessionStart,omitempty"`
-	SessionEnd   []HookGroup           `json:"SessionEnd,omitempty"`
-	Stop         []HookGroup           `json:"Stop,omitempty"`
-	PreToolUse   []PreToolUseHookGroup `json:"PreToolUse,omitempty"`
-}
-
-// HookGroup represents a group of hooks
-type HookGroup struct {
-	Hooks []Hook `json:"hooks"`
-}
-
-// PreToolUseHookGroup represents a PreToolUse hook group with a tool matcher
-type PreToolUseHookGroup struct {
-	Matcher string `json:"matcher"`
-	Hooks   []Hook `json:"hooks"`
-}
-
-// Hook represents a single hook command
-type Hook struct {
-	Type    string `json:"type"`
-	Command string `json:"command"`
-	Timeout int    `json:"timeout"`
-}
-
-func runInstall(cmd *cobra.Command, args []string) error {
-	projectRoot, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	claudeDir := filepath.Join(projectRoot, ".claude")
-	settingsFile := filepath.Join(claudeDir, "settings.json")
-	settingsExists := false
-	if _, err := os.Stat(settingsFile); err == nil {
-		settingsExists = true
-	}
-
-	if settingsExists && !forceInstall {
-		fmt.Printf("Warning: .claude/settings.json already exists.\n")
-		fmt.Printf("This will overwrite the existing file.\n")
-		fmt.Printf("\nContinue? (y/n): ")
-
-		var response string
-		fmt.Scanln(&response)
-		if response != "y" && response != "Y" {
-			fmt.Println("Installation cancelled")
-			return nil
-		}
-	}
-
-	if err := os.MkdirAll(claudeDir, 0755); err != nil {
-		return fmt.Errorf("create .claude directory: %w", err)
-	}
-
-	hooksDir := filepath.Join(projectRoot, "scripts", "hooks")
-	if err := os.MkdirAll(hooksDir, 0755); err != nil {
-		return fmt.Errorf("create scripts/hooks directory: %w", err)
-	}
-
-	logsDir := filepath.Join(projectRoot, ".tmux-cli", "logs")
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
-		return fmt.Errorf("create .tmux-cli/logs directory: %w", err)
-	}
-
-	claudeHooksDir := filepath.Join(claudeDir, "hooks")
-	if err := os.MkdirAll(claudeHooksDir, 0755); err != nil {
-		return fmt.Errorf("create .claude/hooks directory: %w", err)
-	}
-
+func runAutoSetup(projectPath string) error {
 	hookScripts := map[string]string{
-		"tmux-session-notify.sh":   hookSessionNotify,
-		"tmux-validate-session.sh": hookValidateSession,
+		"tmux-session-notify.sh":      hookSessionNotify,
+		"tmux-validate-session.sh":    hookValidateSession,
+		"no-interactive-questions.sh": hookNoInteractiveQuestions,
 	}
 
-	filesModified := []string{}
-	for filename, content := range hookScripts {
-		scriptPath := filepath.Join(hooksDir, filename)
-		if err := os.WriteFile(scriptPath, []byte(content), 0755); err != nil {
-			return fmt.Errorf("write hook script %s: %w", filename, err)
+	cmdTemplates := make(map[string]string)
+	fs.WalkDir(embeddedCommands, "embedded/commands/tmux", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
 		}
-		relPath, _ := filepath.Rel(projectRoot, scriptPath)
-		filesModified = append(filesModified, relPath)
-	}
-
-	noInteractiveQuestionsPath := filepath.Join(claudeHooksDir, "no-interactive-questions.sh")
-	if err := os.WriteFile(noInteractiveQuestionsPath, []byte(hookNoInteractiveQuestions), 0755); err != nil {
-		return fmt.Errorf("write no-interactive-questions.sh: %w", err)
-	}
-	relNoInteractive, _ := filepath.Rel(projectRoot, noInteractiveQuestionsPath)
-	filesModified = append(filesModified, relNoInteractive)
-
-	var existingPreToolUse []PreToolUseHookGroup
-	if settingsExists {
-		existingData, err := os.ReadFile(settingsFile)
-		if err != nil {
-			return fmt.Errorf("read existing settings.json: %w", err)
+		content, readErr := embeddedCommands.ReadFile(path)
+		if readErr != nil {
+			return readErr
 		}
-		var existingSettings ClaudeSettings
-		if err := json.Unmarshal(existingData, &existingSettings); err != nil {
-			return fmt.Errorf("parse existing settings.json: %w", err)
-		}
-		existingPreToolUse = existingSettings.Hooks.PreToolUse
-	}
+		relPath := strings.TrimPrefix(path, "embedded/commands/tmux/")
+		cmdTemplates[relPath] = string(content)
+		return nil
+	})
 
-	settings := ClaudeSettings{
-		Hooks: HooksConfig{
-			SessionStart: []HookGroup{
-				{
-					Hooks: []Hook{
-						{
-							Type:    "command",
-							Command: `"$CLAUDE_PROJECT_DIR"/scripts/hooks/tmux-session-notify.sh start`,
-							Timeout: 10,
-						},
-					},
-				},
-			},
-			SessionEnd: []HookGroup{
-				{
-					Hooks: []Hook{
-						{
-							Type:    "command",
-							Command: `"$CLAUDE_PROJECT_DIR"/scripts/hooks/tmux-session-notify.sh end`,
-							Timeout: 10,
-						},
-					},
-				},
-			},
-			Stop: []HookGroup{
-				{
-					Hooks: []Hook{
-						{
-							Type:    "command",
-							Command: `"$CLAUDE_PROJECT_DIR"/scripts/hooks/tmux-session-notify.sh stop`,
-							Timeout: 10,
-						},
-					},
-				},
-			},
-			PreToolUse: existingPreToolUse,
-		},
-	}
-
-	matcherFound := false
-	for _, group := range settings.Hooks.PreToolUse {
-		if group.Matcher == "AskUserQuestion" {
-			matcherFound = true
-			break
-		}
-	}
-	if !matcherFound {
-		settings.Hooks.PreToolUse = append(settings.Hooks.PreToolUse, PreToolUseHookGroup{
-			Matcher: "AskUserQuestion",
-			Hooks: []Hook{{
-				Type:    "command",
-				Command: `"$CLAUDE_PROJECT_DIR"/.claude/hooks/no-interactive-questions.sh`,
-				Timeout: 5,
-			}},
-		})
-	}
-
-	jsonData, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal settings to JSON: %w", err)
-	}
-
-	if err := os.WriteFile(settingsFile, jsonData, 0644); err != nil {
-		return fmt.Errorf("write settings file: %w", err)
-	}
-
-	filesModified = append(filesModified, ".claude/settings.json")
-	filesModified = append(filesModified, ".tmux-cli/logs/")
-
-	fmt.Println("✓ Project files installed successfully")
-	fmt.Println()
-	fmt.Println("Files created/modified:")
-	for _, file := range filesModified {
-		fmt.Printf("  - %s\n", file)
-	}
-	fmt.Println()
-	fmt.Println("Next steps:")
-	fmt.Println("  Run 'claude' in this directory to use the configured hooks")
-
-	return nil
+	return setup.Run(&setup.SetupConfig{
+		ProjectRoot:      projectPath,
+		HookScripts:      hookScripts,
+		CommandTemplates: cmdTemplates,
+	})
 }

@@ -7,12 +7,6 @@
 
 `npx -y bmad-method install --directory . --modules bmm,bmb --tools claude-code --yes`
 
-## never forget to run tmux-cli install:
-
-`cd %projectRoot%`
-
-`tmux-cli install`
-
 ## never forget to do some work:
 
 `tmux-cli start-attach`

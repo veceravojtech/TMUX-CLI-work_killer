@@ -1,0 +1,98 @@
+<task id="execute" name="Self-contained /execute worker">
+  <objective>Parse a supervisor-sent task message, perform the task within SCOPE, and report back via windows-message using the strict [EXECUTE:...] tagged protocol.</objective>
+
+  <requirements critical="true">
+    <mcp>tmux-cli MCP server REQUIRED</mcp>
+  </requirements>
+
+  <llm critical="true">
+    <mandate>NEVER windows-kill anything — the supervisor owns lifecycle</mandate>
+    <mandate>NEVER use windows-send — use windows-message for all replies to the supervisor</mandate>
+    <mandate>NEVER call /worker:execute or invoke workflow.xml — YOU are the worker</mandate>
+    <mandate>NEVER emit text without an [EXECUTE:...] header when replying to the supervisor</mandate>
+    <mandate>NEVER emit [EXECUTE:FAILED] because "no task message yet" — /execute and the task payload are two separate windows-send calls; idle until the payload arrives</mandate>
+  </llm>
+
+  <flow>
+    <step n="1" title="MCP precondition">
+      <action>Call windows-list</action>
+      <check condition="tmux-cli not available">
+        <action>Print exactly: ERROR: tmux-cli MCP required but not available — enable it and retry.</action>
+        <action>STOP</action>
+      </check>
+    </step>
+
+    <step n="2" title="Await and parse task message">
+      <rule critical="true">Your first real input after /execute is a windows-send from the supervisor carrying the task message. It may arrive in the SAME turn as /execute or a moment later — the supervisor sends /execute and the task message as TWO SEPARATE windows-send calls.</rule>
+      <rule critical="true">If the window scrollback contains /execute but NO supervisor-sent task payload yet, IDLE. Do NOT emit any message. "No task message yet" is NOT a failure — wait for it to arrive.</rule>
+      <rule critical="true">Only emit [EXECUTE:FAILED ...] for a task message that HAS ARRIVED but is malformed. Never emit FAILED for an empty/absent message.</rule>
+      <action>Once a task message is in hand, extract:</action>
+      <field required="true">SUPERVISOR_WID — receiver for all outbound windows-message</field>
+      <field required="true">SELF_WID — include in every header</field>
+      <field required="true">SUBTASK, SCOPE, CONTEXT, DELIVERABLE</field>
+      <check condition="a task message was received but any required field is missing">
+        <action>Reply ONCE with: `[EXECUTE:FAILED wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt;]\nREASON: malformed task message\nPARTIAL: &lt;what was received, truncated&gt;`</action>
+        <action>STOP</action>
+      </check>
+    </step>
+
+    <step n="3" title="Work">
+      <rule>Perform the task STRICTLY within SCOPE</rule>
+      <rule>Use all available tools: Read, Write, Edit, Bash, Grep, Glob, Agent, and any MCP tools needed</rule>
+      <rule>Do not exceed SCOPE — if you notice adjacent issues, mention them under RISKS instead</rule>
+    </step>
+
+    <step n="4" title="Ask only when blocked" condition="concrete gap blocks progress">
+      <action>windows-message to SUPERVISOR_WID:</action>
+      <template>
+[EXECUTE:NEED_INPUT wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt;]
+QUESTION: &lt;one line&gt;
+WHY: &lt;one line&gt;
+      </template>
+      <rule>One question per message</rule>
+      <action>Idle until reply arrives</action>
+    </step>
+
+    <step n="5" title="Report completion">
+      <action>Save a full report to the path specified in RESPONSE PROTOCOL</action>
+      <action>windows-message to SUPERVISOR_WID with ONLY the DONE tag and file path:</action>
+      <template>
+[EXECUTE:DONE wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt; file=&lt;abs-path-to-report&gt;]
+      </template>
+      <action>Idle — the supervisor will either accept (and kill your window) or push back</action>
+    </step>
+
+    <step n="6" title="Pushback handling" condition="receive [EXECUTE:PUSHBACK n=&lt;k&gt; gap=&lt;Gx&gt;]">
+      <action>Address EXACTLY the named gap</action>
+      <action>Update the SAME report file and re-tag [EXECUTE:DONE file=&lt;same-path&gt;]</action>
+      <rule>Do not argue. Do not expand scope.</rule>
+    </step>
+
+    <step n="7" title="Unrecoverable failure" condition="cannot complete the task">
+      <action>windows-message to SUPERVISOR_WID:</action>
+      <template>
+[EXECUTE:FAILED wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt;]
+REASON: &lt;one line&gt;
+PARTIAL: &lt;what you have, or "none"&gt;
+      </template>
+      <action>Idle</action>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>windows-message: every outbound reply to the supervisor</rule>
+    <rule>windows-send: NEVER</rule>
+    <rule>windows-kill: NEVER</rule>
+    <rule>Every reply MUST begin with exactly one [EXECUTE:NEED_INPUT|DONE|FAILED] header</rule>
+    <rule>Every header MUST carry wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt;</rule>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      • You are the worker — do not re-enter /worker:execute or workflow.xml
+      • Supervisor owns lifecycle — never kill your own window
+      • Stay within SCOPE — surface adjacent findings as RISKS, not expanded work
+      • One tagged message per reply; untagged output gets REMIND from the supervisor
+    </critical-rules>
+  </llm>
+</task>
