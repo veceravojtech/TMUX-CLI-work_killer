@@ -515,6 +515,20 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 		return nil, "", "", fmt.Errorf("failed to list windows: %w", err)
 	}
 
+	settings, _ := setup.LoadSettings(s.workingDir)
+	if settings != nil && settings.Supervisor.MaxWorkers > 0 {
+		var count int
+		for _, w := range windows {
+			if strings.HasPrefix(w.Name, "execute-") {
+				count++
+			}
+		}
+		if count >= settings.Supervisor.MaxWorkers {
+			return nil, "", "", fmt.Errorf("%w: %d execute workers already running (limit: %d) — wait for a worker to finish or increase supervisor.max_workers in setting.yaml",
+				ErrMaxWorkersExceeded, count, settings.Supervisor.MaxWorkers)
+		}
+	}
+
 	workerName := nextExecuteN(windows)
 
 	window, err := s.WindowsCreate(workerName, "")

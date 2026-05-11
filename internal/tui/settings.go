@@ -9,9 +9,11 @@ import (
 )
 
 type settingItem struct {
-	key   string
-	label string
-	value bool
+	key    string
+	label  string
+	kind   string // "bool" or "int"
+	value  bool
+	intVal int
 }
 
 type Model struct {
@@ -26,12 +28,13 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 		projectRoot:  projectRoot,
 		baseSettings: settings,
 		items: []settingItem{
-			{key: "hooks.session_notify", label: "Session Notify", value: settings.Hooks.SessionNotify},
-			{key: "hooks.block_interactive", label: "Block Interactive", value: settings.Hooks.BlockInteractive},
-			{key: "commands.enabled", label: "Commands Enabled", value: settings.Commands.Enabled},
-			{key: "supervisor.unplanned_audit", label: "Unplanned Audit", value: settings.Supervisor.UnplannedAudit},
-			{key: "plan.auto_approve", label: "Plan Auto-Approve", value: settings.Plan.AutoApprove},
-			{key: "plan.auto_execute", label: "Plan Auto-Execute", value: settings.Plan.AutoExecute},
+			{key: "hooks.session_notify", label: "Session Notify", kind: "bool", value: settings.Hooks.SessionNotify},
+			{key: "hooks.block_interactive", label: "Block Interactive", kind: "bool", value: settings.Hooks.BlockInteractive},
+			{key: "commands.enabled", label: "Commands Enabled", kind: "bool", value: settings.Commands.Enabled},
+			{key: "supervisor.max_workers", label: "Max Workers", kind: "int", intVal: settings.Supervisor.MaxWorkers},
+			{key: "supervisor.unplanned_audit", label: "Unplanned Audit", kind: "bool", value: settings.Supervisor.UnplannedAudit},
+			{key: "plan.auto_approve", label: "Plan Auto-Approve", kind: "bool", value: settings.Plan.AutoApprove},
+			{key: "plan.auto_execute", label: "Plan Auto-Execute", kind: "bool", value: settings.Plan.AutoExecute},
 		},
 	}
 }
@@ -55,7 +58,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 		case " ", "enter":
-			m.items[m.cursor].value = !m.items[m.cursor].value
+			if m.items[m.cursor].kind == "bool" {
+				m.items[m.cursor].value = !m.items[m.cursor].value
+			}
+		case "right", "l":
+			if m.items[m.cursor].kind == "int" {
+				m.items[m.cursor].intVal++
+			}
+		case "left", "h":
+			if m.items[m.cursor].kind == "int" && m.items[m.cursor].intVal > 0 {
+				m.items[m.cursor].intVal--
+			}
 		}
 	}
 	return m, nil
@@ -73,16 +86,29 @@ func (m Model) View() string {
 	s := titleStyle.Render("tmux-cli Settings") + "\n"
 
 	for i, item := range m.items {
-		var checkbox string
-		if item.value {
-			checkbox = checkStyle.Render("[x]")
+		var indicator string
+		if item.kind == "int" {
+			val := fmt.Sprintf("%d", item.intVal)
+			if item.intVal == 0 {
+				indicator = uncheckStyle.Render("[" + val + "]")
+			} else {
+				indicator = checkStyle.Render("[" + val + "]")
+			}
 		} else {
-			checkbox = uncheckStyle.Render("[ ]")
+			if item.value {
+				indicator = checkStyle.Render("[x]")
+			} else {
+				indicator = uncheckStyle.Render("[ ]")
+			}
 		}
 
-		line := fmt.Sprintf("%s %s", checkbox, item.label)
+		line := fmt.Sprintf("%s %s", indicator, item.label)
 		if i == m.cursor {
-			line = selectedStyle.Render("> "+line) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(item.key)
+			hint := item.key
+			if item.kind == "int" {
+				hint += "  ←/→ adjust"
+			}
+			line = selectedStyle.Render("> "+line) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(hint)
 		} else {
 			line = "  " + line
 		}
@@ -108,6 +134,8 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Hooks.BlockInteractive = item.value
 		case "commands.enabled":
 			s.Commands.Enabled = item.value
+		case "supervisor.max_workers":
+			s.Supervisor.MaxWorkers = item.intVal
 		case "supervisor.unplanned_audit":
 			s.Supervisor.UnplannedAudit = item.value
 		case "plan.auto_approve":

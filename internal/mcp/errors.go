@@ -40,6 +40,12 @@ var (
 	ErrTmuxCommandFailed = errors.New("tmux command execution failed")
 )
 
+// Resource Limit Errors
+var (
+	// ErrMaxWorkersExceeded indicates the supervisor.max_workers limit has been reached
+	ErrMaxWorkersExceeded = errors.New("max workers limit exceeded")
+)
+
 // Validation Errors
 var (
 	// ErrInvalidSessionID indicates the session ID format is invalid

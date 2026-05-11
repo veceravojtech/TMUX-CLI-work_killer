@@ -28,6 +28,7 @@ type CommandsSettings struct {
 
 type SupervisorSettings struct {
 	MaxCycles      int  `yaml:"max_cycles"`
+	MaxWorkers     int  `yaml:"max_workers"`
 	CycleDelay     int  `yaml:"cycle_delay"`
 	UnplannedAudit bool `yaml:"unplanned_audit"`
 }

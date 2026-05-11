@@ -31,14 +31,15 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 6)
+	assert.Len(t, m.items, 7)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
 	assert.False(t, m.items[1].value)
 	assert.Equal(t, "commands.enabled", m.items[2].key)
 	assert.True(t, m.items[2].value)
-	assert.Equal(t, "supervisor.unplanned_audit", m.items[3].key)
+	assert.Equal(t, "supervisor.max_workers", m.items[3].key)
+	assert.Equal(t, "supervisor.unplanned_audit", m.items[4].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -85,14 +86,18 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 5, m.cursor)
 
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 6, m.cursor)
+
 	// Can't go past last item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 5, m.cursor)
+	assert.Equal(t, 6, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 4, m.cursor)
+	assert.Equal(t, 5, m.cursor)
 
 	// Can't go above first item
 	for i := 0; i < 10; i++ {
@@ -381,6 +386,140 @@ func TestModel_View(t *testing.T) {
 	assert.Contains(t, view, "Session Notify")
 	assert.Contains(t, view, "Block Interactive")
 	assert.Contains(t, view, "Commands Enabled")
+}
+
+func TestNewModel_IncludesNumericItems(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	var found bool
+	for _, item := range m.items {
+		if item.key == "supervisor.max_workers" {
+			found = true
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 0, item.intVal)
+		}
+	}
+	assert.True(t, found, "supervisor.max_workers must be in TUI items")
+}
+
+func TestModel_NumericItem_IncrementDecrement(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	// Find max_workers index
+	var idx int
+	for i, item := range m.items {
+		if item.key == "supervisor.max_workers" {
+			idx = i
+			break
+		}
+	}
+
+	// Navigate to it
+	for i := 0; i < idx; i++ {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+
+	// Increment with right arrow
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(Model)
+	assert.Equal(t, 1, m.items[idx].intVal)
+
+	// Increment more
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(Model)
+	assert.Equal(t, 2, m.items[idx].intVal)
+
+	// Decrement with left arrow
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	assert.Equal(t, 1, m.items[idx].intVal)
+
+	// Can't go below 0
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	assert.Equal(t, 0, m.items[idx].intVal)
+}
+
+func TestModel_NumericItem_SpaceEnterNoToggle(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	// Find max_workers index
+	var idx int
+	for i, item := range m.items {
+		if item.key == "supervisor.max_workers" {
+			idx = i
+			break
+		}
+	}
+
+	// Navigate to it
+	for i := 0; i < idx; i++ {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+
+	// Space/enter should not change numeric item
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = updated.(Model)
+	assert.Equal(t, 0, m.items[idx].intVal)
+}
+
+func TestModel_ToSettings_MaxWorkers(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	// Set max_workers directly
+	for i, item := range m.items {
+		if item.key == "supervisor.max_workers" {
+			m.items[i].intVal = 5
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 5, result.Supervisor.MaxWorkers)
+}
+
+func TestModel_ToSettings_PreservesMaxWorkers(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_workers: 8
+  max_cycles: 5
+  cycle_delay: 3
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+
+	m := NewModel(dir, settings)
+	result := m.ToSettings()
+
+	assert.Equal(t, 8, result.Supervisor.MaxWorkers, "max_workers must be preserved")
+	assert.Equal(t, 5, result.Supervisor.MaxCycles)
+}
+
+func TestModel_NumericItem_View(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	settings.Supervisor.MaxWorkers = 4
+	m := NewModel(dir, settings)
+
+	view := m.View()
+	assert.Contains(t, view, "Max Workers")
+	assert.Contains(t, view, "4")
 }
 
 func TestModel_VimKeys(t *testing.T) {

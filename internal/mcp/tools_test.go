@@ -954,6 +954,93 @@ func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
 	mockExec.AssertCalled(t, "KillWindow", "test-session", "@1")
 }
 
+func TestServer_WindowsSpawnWorker_MaxWorkersExceeded(t *testing.T) {
+	root := t.TempDir()
+	settingsDir := root + "/.tmux-cli"
+	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
+	require.NoError(t, os.WriteFile(settingsDir+"/setting.yaml", []byte(`supervisor:
+  max_workers: 2
+`), 0o644))
+
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", root).Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{Name: "supervisor", TmuxWindowID: "@0"},
+		{Name: "execute-1", TmuxWindowID: "@1"},
+		{Name: "execute-2", TmuxWindowID: "@2"},
+	}, nil)
+
+	server := newTestServer(mockExec, root)
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMaxWorkersExceeded)
+	assert.Contains(t, err.Error(), "2 execute workers already running")
+}
+
+func TestServer_WindowsSpawnWorker_MaxWorkersNotExceeded(t *testing.T) {
+	root := t.TempDir()
+	settingsDir := root + "/.tmux-cli"
+	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
+	require.NoError(t, os.WriteFile(settingsDir+"/setting.yaml", []byte(`supervisor:
+  max_workers: 3
+`), 0o644))
+
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", root).Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{Name: "supervisor", TmuxWindowID: "@0"},
+		{Name: "execute-1", TmuxWindowID: "@1"},
+	}, nil)
+	mockExec.On("CreateWindow", "test-session", "execute-2", mock.Anything).Return("@2", nil)
+	mockExec.On("SetWindowOption", "test-session", "@2", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@2", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@2", mock.Anything).Return("", nil)
+	mockExec.On("SendMessage", "test-session", "@2", "/tmux:execute").Return(nil)
+	mockExec.On("SendMessageWithDelay", "test-session", "@2", mock.Anything).Return(nil)
+
+	server := newTestServer(mockExec, root)
+	window, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "execute-2", name)
+	assert.NotNil(t, window)
+}
+
+func TestServer_WindowsSpawnWorker_MaxWorkersZeroUnlimited(t *testing.T) {
+	root := t.TempDir()
+	settingsDir := root + "/.tmux-cli"
+	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
+	require.NoError(t, os.WriteFile(settingsDir+"/setting.yaml", []byte(`supervisor:
+  max_workers: 0
+`), 0o644))
+
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", root).Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{Name: "supervisor", TmuxWindowID: "@0"},
+		{Name: "execute-1", TmuxWindowID: "@1"},
+		{Name: "execute-2", TmuxWindowID: "@2"},
+		{Name: "execute-3", TmuxWindowID: "@3"},
+	}, nil)
+	mockExec.On("CreateWindow", "test-session", "execute-4", mock.Anything).Return("@4", nil)
+	mockExec.On("SetWindowOption", "test-session", "@4", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@4", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@4", mock.Anything).Return("", nil)
+	mockExec.On("SendMessage", "test-session", "@4", "/tmux:execute").Return(nil)
+	mockExec.On("SendMessageWithDelay", "test-session", "@4", mock.Anything).Return(nil)
+
+	server := newTestServer(mockExec, root)
+	_, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "execute-4", name)
+}
+
 func TestServer_TasksValidate_Clean(t *testing.T) {
 	root := t.TempDir()
 	mockExec := new(testutil.MockTmuxExecutor)

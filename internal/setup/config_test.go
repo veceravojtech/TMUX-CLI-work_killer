@@ -168,6 +168,47 @@ commands:
 	assert.Equal(t, 10, s.Hooks.Custom[1].Timeout)
 }
 
+func TestDefaultSettings_MaxWorkers(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 0, s.Supervisor.MaxWorkers, "default max_workers should be 0 (unlimited)")
+}
+
+func TestLoadSettings_SupervisorMaxWorkers(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_workers: 4
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, 4, s.Supervisor.MaxWorkers)
+}
+
+func TestSaveSettings_MaxWorkersRoundTrip(t *testing.T) {
+	root := t.TempDir()
+
+	original := &Settings{
+		Hooks:      HooksSettings{BlockInteractive: true},
+		Commands:   CommandsSettings{Enabled: true},
+		Supervisor: SupervisorSettings{MaxWorkers: 3, MaxCycles: 5, CycleDelay: 5, UnplannedAudit: true},
+	}
+
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, 3, loaded.Supervisor.MaxWorkers)
+}
+
 func TestDefaultSettings_PlanFields(t *testing.T) {
 	s := DefaultSettings()
 
