@@ -110,6 +110,7 @@ type WindowsSpawnWorkerInput struct {
 	ContextFile   string `json:"contextFile" jsonschema:"Path to the context .md file the worker should read for full spec."`
 	Scope         string `json:"scope" jsonschema:"Multi-line scope summary — files, directories, what to investigate or implement."`
 	Context       string `json:"context,omitempty" jsonschema:"Multi-line supporting context — prior findings, constraints, non-goals. Optional."`
+	Deliverable   string `json:"deliverable,omitempty" jsonschema:"Custom deliverable format to replace the default FINDINGS/RISKS/RECOMMENDATION/FILES sections. When empty, the standard deliverable is used. Use this for spec-writing workers that need a different output format."`
 }
 
 // WindowsSpawnWorkerOutput defines the output schema for windows-spawn-worker tool
@@ -232,7 +233,7 @@ func (s *Server) WindowsSpawnWorkerHandler(ctx context.Context, req *sdkmcp.Call
 	error,
 ) {
 	window, workerName, taskMessage, err := s.WindowsSpawnWorker(
-		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context,
+		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context, input.Deliverable,
 	)
 	if err != nil {
 		return nil, WindowsSpawnWorkerOutput{}, err

@@ -378,7 +378,7 @@ func nextExecuteN(windows []WindowListItem) string {
 	return fmt.Sprintf("execute-%d", maxN+1)
 }
 
-func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchDir string) string {
+func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchDir, deliverable string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "SUPERVISOR_WID=%s\n", supervisorWid)
 	fmt.Fprintf(&b, "SELF_WID=%s\n", workerName)
@@ -395,10 +395,15 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 	}
 	b.WriteString("\n")
 	b.WriteString("\nDELIVERABLE (write these sections INSIDE the report .md; do NOT paste them into tmux):\n")
-	b.WriteString("- FINDINGS: >=3 bullets, each with file path or symbol reference\n")
-	b.WriteString("- RISKS: bullets OR the literal word \"none\"\n")
-	b.WriteString("- RECOMMENDATION: 1-3 sentences, must contain a verb of decision (use|avoid|rewrite|keep|split|merge)\n")
-	b.WriteString("- FILES: absolute paths touched or cited, one per line\n")
+	if deliverable != "" {
+		b.WriteString(deliverable)
+		b.WriteString("\n")
+	} else {
+		b.WriteString("- FINDINGS: >=3 bullets, each with file path or symbol reference\n")
+		b.WriteString("- RISKS: bullets OR the literal word \"none\"\n")
+		b.WriteString("- RECOMMENDATION: 1-3 sentences, must contain a verb of decision (use|avoid|rewrite|keep|split|merge)\n")
+		b.WriteString("- FILES: absolute paths touched or cited, one per line\n")
+	}
 	b.WriteString("\nRESPONSE PROTOCOL (MANDATORY):\n")
 	fmt.Fprintf(&b, "1. Save the full report to .tmux-cli/research/%s/%s-<slug>.md\n", researchDir, workerName)
 	b.WriteString("   with headings ## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES plus any supporting detail.\n")
@@ -414,7 +419,7 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 
 // WindowsSpawnWorker atomically spawns a worker: creates window, sends /tmux:execute,
 // and sends the structured task message.
-func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, context string) (*WindowInfo, string, string, error) {
+func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, context, deliverable string) (*WindowInfo, string, string, error) {
 	if supervisorWid == "" {
 		return nil, "", "", fmt.Errorf("%w: supervisorWid cannot be empty", ErrInvalidInput)
 	}
@@ -455,7 +460,7 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	time.Sleep(2 * time.Second)
 
 	researchDir := time.Now().Format("2006-01-02-15")
-	taskMessage := buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchDir)
+	taskMessage := buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchDir, deliverable)
 
 	err = s.executor.SendMessageWithDelay(sessionID, window.TmuxWindowID, taskMessage)
 	if err != nil {

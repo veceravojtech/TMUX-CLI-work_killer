@@ -168,6 +168,55 @@ commands:
 	assert.Equal(t, 10, s.Hooks.Custom[1].Timeout)
 }
 
+func TestDefaultSettings_PlanFields(t *testing.T) {
+	s := DefaultSettings()
+
+	assert.False(t, s.Plan.AutoApprove)
+	assert.False(t, s.Plan.AutoExecute)
+}
+
+func TestLoadSettings_WithPlanFields(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+plan:
+  auto_approve: true
+  auto_execute: false
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+
+	assert.True(t, s.Plan.AutoApprove)
+	assert.False(t, s.Plan.AutoExecute)
+}
+
+func TestSaveLoadRoundTrip_PlanFields(t *testing.T) {
+	root := t.TempDir()
+
+	original := &Settings{
+		Hooks:    HooksSettings{BlockInteractive: true},
+		Commands: CommandsSettings{Enabled: true},
+		Plan:     PlanSettings{AutoApprove: true, AutoExecute: true},
+	}
+
+	err := SaveSettings(root, original)
+	require.NoError(t, err)
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+
+	assert.True(t, loaded.Plan.AutoApprove)
+	assert.True(t, loaded.Plan.AutoExecute)
+}
+
 func TestLoadSettings_BackfillsMissingSections(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".tmux-cli")

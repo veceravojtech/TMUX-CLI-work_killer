@@ -30,6 +30,8 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "hooks.block_interactive", label: "Block Interactive", value: settings.Hooks.BlockInteractive},
 			{key: "commands.enabled", label: "Commands Enabled", value: settings.Commands.Enabled},
 			{key: "supervisor.unplanned_audit", label: "Unplanned Audit", value: settings.Supervisor.UnplannedAudit},
+			{key: "plan.auto_approve", label: "Plan Auto-Approve", value: settings.Plan.AutoApprove},
+			{key: "plan.auto_execute", label: "Plan Auto-Execute", value: settings.Plan.AutoExecute},
 		},
 	}
 }
@@ -108,6 +110,10 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Commands.Enabled = item.value
 		case "supervisor.unplanned_audit":
 			s.Supervisor.UnplannedAudit = item.value
+		case "plan.auto_approve":
+			s.Plan.AutoApprove = item.value
+		case "plan.auto_execute":
+			s.Plan.AutoExecute = item.value
 		}
 	}
 	return &s

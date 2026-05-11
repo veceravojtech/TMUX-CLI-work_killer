@@ -32,10 +32,16 @@ type SupervisorSettings struct {
 	UnplannedAudit bool `yaml:"unplanned_audit"`
 }
 
+type PlanSettings struct {
+	AutoApprove bool `yaml:"auto_approve"`
+	AutoExecute bool `yaml:"auto_execute"`
+}
+
 type Settings struct {
 	Hooks      HooksSettings      `yaml:"hooks"`
 	Commands   CommandsSettings   `yaml:"commands"`
 	Supervisor SupervisorSettings `yaml:"supervisor"`
+	Plan       PlanSettings       `yaml:"plan"`
 }
 
 func DefaultSettings() *Settings {
@@ -51,6 +57,10 @@ func DefaultSettings() *Settings {
 			MaxCycles:      0,
 			CycleDelay:     5,
 			UnplannedAudit: true,
+		},
+		Plan: PlanSettings{
+			AutoApprove: false,
+			AutoExecute: false,
 		},
 	}
 }

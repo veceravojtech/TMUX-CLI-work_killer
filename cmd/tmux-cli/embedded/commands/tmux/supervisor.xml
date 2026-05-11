@@ -26,6 +26,7 @@
     <term name="ranking heuristic">Priority ordering used for auto fan-out; see &lt;ranking&gt; inside step 3.</term>
     <term name="autonomy">Supervisor operates without user confirmation after initial invocation; see &lt;autonomy-policy&gt;.</term>
     <term name="pushback catalogue">The G1–G5 taxonomy in step 6 used to gate DONE acceptance.</term>
+    <term name="PRE_PLANNED">Internal flag set when tasks.yaml was created by /tmux:plan (detected in step 1c). Causes steps 3 and 3b to skip fan-out planning.</term>
   </glossary>
 
   <message-tags>
@@ -60,6 +61,7 @@
     <mandate>NEVER use sleep — idle is the trigger for incoming windows-message</mandate>
     <mandate>NEVER kill your own SUPERVISOR_WID</mandate>
     <mandate>windows-kill takes the window NAME (e.g. "execute-3"), not an @id. windows-send accepts @N; kill does not.</mandate>
+    <mandate>When PRE_PLANNED is true, do NOT re-derive fan-out — trust the plan. Only verify context files exist (step 3b) and spawn (step 4).</mandate>
   </llm>
 
   <flow>
@@ -85,6 +87,16 @@
 
     <step n="1c" title="Tasks gate">
       <action>Check if .tmux-cli/tasks.yaml exists in the project root.</action>
+      <check condition="tasks.yaml exists AND top-level status=ready AND has tasks with status=pending (pre-planned by /tmux:plan)">
+        <check condition="all pending tasks have a context field pointing to an existing .md file">
+          <action>PRE-PLANNED session detected (created by /tmux:plan). Log: "Pre-planned tasks detected (N pending). Consuming plan."</action>
+          <action>Set internal flag: PRE_PLANNED=true.</action>
+          <action>Proceed to step 2.</action>
+        </check>
+        <check condition="some pending tasks are missing context files">
+          <action>STOP. Print: "Pre-planned tasks found but N context files are missing: [list missing paths]. Run /tmux:plan to fix, or archive and start fresh."</action>
+        </check>
+      </check>
       <check condition="tasks.yaml exists AND has tasks with status=pending or status=in_progress">
         <check condition="this supervisor was called WITH .tmux-cli/tasks.yaml as $ARGUMENTS (continuation cycle)">
           <action>This IS a continuation cycle — proceed to step 2 and work on pending tasks from tasks.yaml.</action>
@@ -111,6 +123,11 @@
     </step>
 
     <step n="3" title="Fan-out decision">
+      <check condition="PRE_PLANNED is true">
+        <action>Skip fan-out planning — tasks were pre-planned by /tmux:plan.</action>
+        <action>Read tasks.yaml for the task list. Each task entry has: name, wid, context, scope (optional), supporting_context (optional).</action>
+        <action>Proceed directly to step 3b for verification.</action>
+      </check>
       <rule>1 worker when task is linear OR subtasks share MUTABLE state (same SHM slot, same DB row, same file being written)</rule>
       <rule>N workers when subtasks are file-disjoint OR topic-disjoint AND mutually independent</rule>
       <rule critical="true">Default to MAXIMUM parallelism. Serial-by-default is a failure mode. Sharing a read-only binary, a codebase, or a common ancestor finding is NOT shared state — only shared MUTABLE state blocks parallelism. Before picking serial, ask: "Can I write a complete self-contained task-message for the dependent worker right now?" If yes → PARALLEL. Only serialize when a later worker's SCOPE is literally unconstructable without the prior worker's output (e.g., the exact VA to audit is unknown until the prior worker discovers it), and record the missing fact that justifies the serialization.</rule>
@@ -153,6 +170,11 @@
       <action>The tool atomically: picks the next execute-N name, creates the window, sends /tmux:execute, assembles and sends the task message with DELIVERABLE + RESPONSE PROTOCOL.</action>
       <action>Record from the response: workerName, window.tmuxWindowId, taskMessage (for your tracking table).</action>
       <critical>ALWAYS use windows-spawn-worker — never assemble the spawn steps manually via windows-create + windows-send.</critical>
+      <rule condition="PRE_PLANNED is true">When consuming pre-planned tasks, pass fields from tasks.yaml directly to windows-spawn-worker:
+        - subtask: task.name
+        - contextFile: task.context
+        - scope: task.scope (if present; otherwise derive a brief scope from the context file)
+        - context: task.supporting_context (if present; otherwise empty)</rule>
     </step>
 
     <step n="5" title="Idle and route">

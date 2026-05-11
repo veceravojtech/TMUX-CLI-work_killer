@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 4)
+	assert.Len(t, m.items, 6)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -77,20 +77,28 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 3, m.cursor)
 
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 4, m.cursor)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 5, m.cursor)
+
 	// Can't go past last item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 3, m.cursor)
+	assert.Equal(t, 5, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 2, m.cursor)
+	assert.Equal(t, 4, m.cursor)
 
 	// Can't go above first item
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	m = updated.(Model)
+	for i := 0; i < 10; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m = updated.(Model)
+	}
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -229,6 +237,78 @@ func TestModel_ToSettings_UnplannedAuditToggle(t *testing.T) {
 
 	result := m.ToSettings()
 	assert.False(t, result.Supervisor.UnplannedAudit)
+}
+
+func TestNewModel_IncludesPlanItems(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	keys := make([]string, len(m.items))
+	for i, item := range m.items {
+		keys[i] = item.key
+	}
+	assert.Contains(t, keys, "plan.auto_approve")
+	assert.Contains(t, keys, "plan.auto_execute")
+}
+
+func TestToSettings_PlanAutoApprove(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	// Find plan.auto_approve and toggle it on
+	for i, item := range m.items {
+		if item.key == "plan.auto_approve" {
+			m.items[i].value = true
+		}
+	}
+
+	result := m.ToSettings()
+	assert.True(t, result.Plan.AutoApprove)
+	assert.False(t, result.Plan.AutoExecute)
+}
+
+func TestToSettings_PlanAutoExecute(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "plan.auto_execute" {
+			m.items[i].value = true
+		}
+	}
+
+	result := m.ToSettings()
+	assert.False(t, result.Plan.AutoApprove)
+	assert.True(t, result.Plan.AutoExecute)
+}
+
+func TestToSettings_PreservesBaseSettings_WithPlan(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 10
+  cycle_delay: 15
+plan:
+  auto_approve: true
+  auto_execute: false
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+
+	m := NewModel(dir, settings)
+	result := m.ToSettings()
+
+	assert.True(t, result.Plan.AutoApprove, "plan.auto_approve must be preserved from base")
+	assert.False(t, result.Plan.AutoExecute)
+	assert.Equal(t, 10, result.Supervisor.MaxCycles, "non-TUI fields must be preserved")
+	assert.Equal(t, 15, result.Supervisor.CycleDelay, "non-TUI fields must be preserved")
 }
 
 func TestModel_QuitReturnsTeaQuit(t *testing.T) {
