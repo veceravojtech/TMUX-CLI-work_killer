@@ -60,6 +60,14 @@ if [[ "$OPEN_WORKERS" -gt 0 ]]; then
     exit 0
 fi
 
+# --- Skip if auto-execute guard is present (plan already restarted the supervisor) ---
+
+GUARD_FILE="${PROJECT_DIR}/.tmux-cli/auto-execute-guard"
+if [[ -f "$GUARD_FILE" ]]; then
+    rm -f "$GUARD_FILE"
+    exit 0
+fi
+
 # --- Check tasks.yaml for unfinished tasks ---
 
 TASKS_FILE="${PROJECT_DIR}/.tmux-cli/tasks.yaml"

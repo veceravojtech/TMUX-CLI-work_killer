@@ -112,7 +112,7 @@ internal/
 - `PostCommandConfig` has a 3-level fallback chain for launching Claude in new windows — errors from one level trigger the next
 - The `install` command was removed — all setup is automatic via `start`/`start-attach`
 
-## MCP tools (7 total)
+## MCP tools (8 total)
 
 | Tool | Read-only | Idempotent | Purpose |
 |------|-----------|-----------|---------|
@@ -122,6 +122,7 @@ internal/
 | windows-message | no | no | Formatted inter-window message |
 | windows-kill | no | yes | Kill window by name |
 | windows-spawn-worker | no | no | Atomic worker spawn (create + /tmux:execute + task message) |
+| windows-recover-workers | no | yes | Batch-recover stuck execute-N workers (Enter + continue message) |
 | hooks-config | no | yes | List/enable/disable hooks in setting.yaml |
 
 ## Post-task requirement

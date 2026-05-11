@@ -67,6 +67,7 @@
   <flow>
     <step n="0" title="Clean slate">
       <action>Remove .tmux-cli/audit-done guard file if it exists (allows the unplanned-audit hook to fire at the end of this cycle).</action>
+      <action>Remove .tmux-cli/auto-execute-guard if it exists (consumed by the Stop hook to prevent double-invocation after plan auto-execute).</action>
       <action>If .tmux-cli/tasks.yaml exists and is NOT a continuation cycle, set its top-level status field to "planning". If it doesn't exist yet, the status will be set when tasks.yaml is first created in step 3.</action>
     </step>
 
@@ -125,7 +126,7 @@
     <step n="3" title="Fan-out decision">
       <check condition="PRE_PLANNED is true">
         <action>Skip fan-out planning — tasks were pre-planned by /tmux:plan.</action>
-        <action>Read tasks.yaml for the task list. Each task entry has: name, wid, context, scope (optional), supporting_context (optional).</action>
+        <action>Read tasks.yaml for the task list. Each task entry has: name, wid, status, context (path to .md file).</action>
         <action>Proceed directly to step 3b for verification.</action>
       </check>
       <rule>1 worker when task is linear OR subtasks share MUTABLE state (same SHM slot, same DB row, same file being written)</rule>
@@ -165,16 +166,16 @@
         - supervisorWid: your SUPERVISOR_WID name
         - subtask: one-line label for this worker
         - contextFile: path to the context .md file created in step 3
-        - scope: multi-line scope summary (files, directories, what to investigate or implement)
-        - context: multi-line supporting context (optional — prior findings, constraints, non-goals)</action>
+        - scope: derived from the context .md file (read it and summarize key scope — files, directories, what to investigate or implement)
+        - context: derived from the context .md file (prior findings, constraints, non-goals — if present)</action>
       <action>The tool atomically: picks the next execute-N name, creates the window, sends /tmux:execute, assembles and sends the task message with DELIVERABLE + RESPONSE PROTOCOL.</action>
       <action>Record from the response: workerName, window.tmuxWindowId, taskMessage (for your tracking table).</action>
       <critical>ALWAYS use windows-spawn-worker — never assemble the spawn steps manually via windows-create + windows-send.</critical>
-      <rule condition="PRE_PLANNED is true">When consuming pre-planned tasks, pass fields from tasks.yaml directly to windows-spawn-worker:
+      <rule condition="PRE_PLANNED is true">When consuming pre-planned tasks, read the context .md file for each task and pass to windows-spawn-worker:
         - subtask: task.name
         - contextFile: task.context
-        - scope: task.scope (if present; otherwise derive a brief scope from the context file)
-        - context: task.supporting_context (if present; otherwise empty)</rule>
+        - scope: derived from the context .md file (read it, summarize key scope points)
+        - context: derived from the context .md file (dependencies, constraints, prior findings)</rule>
     </step>
 
     <step n="5" title="Idle and route">

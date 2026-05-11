@@ -24,6 +24,9 @@ type TmuxExecutor interface {
 	// ListWindows returns all windows in a session with their metadata
 	ListWindows(sessionID string) ([]WindowInfo, error)
 
+	// SendEnter sends a bare Enter keystroke to a window (no text payload)
+	SendEnter(sessionID, windowID string) error
+
 	// SendMessage sends a text message to a specific window in a session
 	// The message is delivered to the first pane of the target window
 	// An Enter key is automatically appended to the message

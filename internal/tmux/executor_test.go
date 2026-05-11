@@ -40,6 +40,10 @@ func (m *mockExecutor) ListWindows(sessionID string) ([]WindowInfo, error) {
 	return nil, nil
 }
 
+func (m *mockExecutor) SendEnter(sessionID, windowID string) error {
+	return nil
+}
+
 func (m *mockExecutor) SendMessage(sessionID, windowID, message string) error {
 	return nil
 }

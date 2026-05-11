@@ -4,8 +4,9 @@
 // The server discovers sessions by matching project path stored in tmux session
 // environment variables. No session file is needed.
 //
-// The server provides seven tools: windows-list, windows-create,
-// windows-kill, windows-send, windows-message, windows-spawn-worker, and hooks-config.
+// The server provides eight tools: windows-list, windows-create,
+// windows-kill, windows-send, windows-message, windows-spawn-worker,
+// windows-recover-workers, and hooks-config.
 package mcp
 
 import (
@@ -120,6 +121,18 @@ type WindowsSpawnWorkerOutput struct {
 	TaskMessage string      `json:"taskMessage" jsonschema:"The exact task message sent to the worker"`
 }
 
+// WindowsRecoverWorkersInput defines the input schema for windows-recover-workers tool
+type WindowsRecoverWorkersInput struct {
+	Message string `json:"message,omitempty" jsonschema:"Message to send after dismissing prompt. Defaults to 'continue' if empty."`
+}
+
+// WindowsRecoverWorkersOutput defines the output schema for windows-recover-workers tool
+type WindowsRecoverWorkersOutput struct {
+	Recovered []string `json:"recovered" jsonschema:"Names of worker windows that were recovered"`
+	Message   string   `json:"message" jsonschema:"The message that was sent to each worker"`
+	Count     int      `json:"count" jsonschema:"Number of workers recovered"`
+}
+
 // WindowsKillInput defines the input schema for windows-kill tool
 type WindowsKillInput struct {
 	WindowID string `json:"windowId" jsonschema:"Window name to terminate (e.g. 'execute-3' or 'supervisor')"`
@@ -226,6 +239,20 @@ func (s *Server) WindowsKillHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	return nil, WindowsKillOutput{Success: success}, nil
 }
 
+// WindowsRecoverWorkersHandler is the MCP tool handler for windows-recover-workers.
+func (s *Server) WindowsRecoverWorkersHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsRecoverWorkersInput) (
+	*sdkmcp.CallToolResult,
+	WindowsRecoverWorkersOutput,
+	error,
+) {
+	output, err := s.WindowsRecoverWorkers(input.Message)
+	if err != nil {
+		return nil, WindowsRecoverWorkersOutput{}, err
+	}
+
+	return nil, *output, nil
+}
+
 // WindowsSpawnWorkerHandler is the MCP tool handler for windows-spawn-worker.
 func (s *Server) WindowsSpawnWorkerHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsSpawnWorkerInput) (
 	*sdkmcp.CallToolResult,
@@ -301,6 +328,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.HooksConfigHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "windows-recover-workers",
+		Description: "Batch-recover stuck execute-N worker windows by dismissing interactive prompts (Enter keystroke) and sending a continue message. Idempotent — safe to call multiple times. Use when workers hit rate limits or other interactive prompts.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: true,
+		},
+	}, s.WindowsRecoverWorkersHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "windows-spawn-worker",

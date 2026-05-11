@@ -365,6 +365,75 @@ func (s *Server) HooksConfig(action, hook string) (*HooksConfigOutput, error) {
 	}
 }
 
+// WindowsRecoverWorkers batch-recovers stuck execute-N worker windows.
+func (s *Server) WindowsRecoverWorkers(message string) (*WindowsRecoverWorkersOutput, error) {
+	if message == "" {
+		message = "continue"
+	}
+
+	sessionID, err := s.discoverSession()
+	if err != nil {
+		return nil, err
+	}
+
+	windows, err := s.executor.ListWindows(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrTmuxCommandFailed, err)
+	}
+
+	// Filter execute-* workers
+	type workerInfo struct {
+		name     string
+		windowID string
+	}
+	var workers []workerInfo
+	for _, w := range windows {
+		if strings.HasPrefix(w.Name, "execute-") {
+			workers = append(workers, workerInfo{name: w.Name, windowID: w.TmuxWindowID})
+		}
+	}
+
+	if len(workers) == 0 {
+		return &WindowsRecoverWorkersOutput{
+			Recovered: []string{},
+			Message:   message,
+			Count:     0,
+		}, nil
+	}
+
+	// Phase 1: Send Enter to all workers (dismiss dialogs)
+	enterOK := make(map[string]bool)
+	for _, w := range workers {
+		if err := s.executor.SendEnter(sessionID, w.windowID); err == nil {
+			enterOK[w.name] = true
+		}
+	}
+
+	// Wait for dialogs to dismiss
+	time.Sleep(1 * time.Second)
+
+	// Phase 2: Send message to workers where Enter succeeded
+	var recovered []string
+	for _, w := range workers {
+		if !enterOK[w.name] {
+			continue
+		}
+		if err := s.executor.SendMessage(sessionID, w.windowID, message); err == nil {
+			recovered = append(recovered, w.name)
+		}
+	}
+
+	if recovered == nil {
+		recovered = []string{}
+	}
+
+	return &WindowsRecoverWorkersOutput{
+		Recovered: recovered,
+		Message:   message,
+		Count:     len(recovered),
+	}, nil
+}
+
 func nextExecuteN(windows []WindowListItem) string {
 	maxN := 0
 	for _, w := range windows {
@@ -412,7 +481,12 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 	fmt.Fprintf(&b, "   [EXECUTE:DONE wid=%s sup=%s file=<abs-path-to-your-md>]\n", workerName, supervisorWid)
 	b.WriteString("   Do NOT inline FINDINGS/RISKS/RECOMMENDATION/FILES in the tmux message. The file IS the report.\n")
 	fmt.Fprintf(&b, "3. [EXECUTE:NEED_INPUT wid=%s sup=%s ...] and [EXECUTE:FAILED wid=%s sup=%s reason=...] may carry a short (<200 char) inline reason.\n", workerName, supervisorWid, workerName, supervisorWid)
-	fmt.Fprintf(&b, "4. If the supervisor sends [EXECUTE:PUSHBACK ...], update the SAME .md file and re-tag [EXECUTE:DONE wid=%s sup=%s file=<same-path>].\n", workerName, supervisorWid)
+	b.WriteString("4. If the supervisor sends [EXECUTE:PUSHBACK n=<N> gap=<SX>]:\n")
+	b.WriteString("   a. Before amending: identify what currently works well in the cited section and adjacent sections (KEEP list).\n")
+	b.WriteString("   b. Fix the cited gap.\n")
+	b.WriteString("   c. Verify KEEP items survived the fix.\n")
+	b.WriteString("   d. Append a Spec Change Log entry: gap cited, what changed, what was preserved, what bad state was avoided.\n")
+	fmt.Fprintf(&b, "   e. Re-tag [EXECUTE:DONE wid=%s sup=%s file=<same-path>].\n", workerName, supervisorWid)
 
 	return b.String()
 }

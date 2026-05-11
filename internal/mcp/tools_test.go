@@ -595,6 +595,192 @@ func TestBuildTaskMessage_CustomDeliverable(t *testing.T) {
 
 // --- WindowsSpawnWorker tests ---
 
+// --- WindowsRecoverWorkers tests ---
+
+func TestServer_WindowsRecoverWorkers_Success(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "execute-1"},
+		{TmuxWindowID: "@2", Name: "execute-2"},
+		{TmuxWindowID: "@3", Name: "execute-3"},
+	}, nil)
+	mockExec.On("SendEnter", "test-session", "@1").Return(nil)
+	mockExec.On("SendEnter", "test-session", "@2").Return(nil)
+	mockExec.On("SendEnter", "test-session", "@3").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", "continue").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@2", "continue").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@3", "continue").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	output, err := server.WindowsRecoverWorkers("")
+
+	require.NoError(t, err)
+	assert.Equal(t, 3, output.Count)
+	assert.Equal(t, "continue", output.Message)
+	assert.ElementsMatch(t, []string{"execute-1", "execute-2", "execute-3"}, output.Recovered)
+	mockExec.AssertExpectations(t)
+}
+
+func TestServer_WindowsRecoverWorkers_DefaultMessage(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "execute-1"},
+	}, nil)
+	mockExec.On("SendEnter", "test-session", "@1").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", "continue").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	output, err := server.WindowsRecoverWorkers("")
+
+	require.NoError(t, err)
+	assert.Equal(t, "continue", output.Message)
+	mockExec.AssertCalled(t, "SendMessage", "test-session", "@1", "continue")
+}
+
+func TestServer_WindowsRecoverWorkers_CustomMessage(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "execute-1"},
+	}, nil)
+	mockExec.On("SendEnter", "test-session", "@1").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", "retry").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	output, err := server.WindowsRecoverWorkers("retry")
+
+	require.NoError(t, err)
+	assert.Equal(t, "retry", output.Message)
+	mockExec.AssertCalled(t, "SendMessage", "test-session", "@1", "retry")
+}
+
+func TestServer_WindowsRecoverWorkers_NoWorkers(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	output, err := server.WindowsRecoverWorkers("")
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, output.Count)
+	assert.Empty(t, output.Recovered)
+	assert.Equal(t, "continue", output.Message)
+}
+
+func TestServer_WindowsRecoverWorkers_SessionNotFound(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("", nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	_, err := server.WindowsRecoverWorkers("")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+func TestServer_WindowsRecoverWorkers_ListWindowsFails(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return(nil, errors.New("tmux list-windows failed"))
+
+	server := newTestServer(mockExec, "/test/dir")
+	_, err := server.WindowsRecoverWorkers("")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
+}
+
+func TestServer_WindowsRecoverWorkers_SendEnterFails_ContinuesOthers(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "execute-1"},
+		{TmuxWindowID: "@2", Name: "execute-2"},
+	}, nil)
+	mockExec.On("SendEnter", "test-session", "@1").Return(errors.New("window dead"))
+	mockExec.On("SendEnter", "test-session", "@2").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@2", "continue").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	output, err := server.WindowsRecoverWorkers("")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, output.Count)
+	assert.Equal(t, []string{"execute-2"}, output.Recovered)
+	mockExec.AssertNotCalled(t, "SendMessage", "test-session", "@1", "continue")
+}
+
+func TestServer_WindowsRecoverWorkers_SendMessageFails_ContinuesOthers(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "execute-1"},
+		{TmuxWindowID: "@2", Name: "execute-2"},
+	}, nil)
+	mockExec.On("SendEnter", "test-session", "@1").Return(nil)
+	mockExec.On("SendEnter", "test-session", "@2").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", "continue").Return(errors.New("send failed"))
+	mockExec.On("SendMessage", "test-session", "@2", "continue").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	output, err := server.WindowsRecoverWorkers("")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, output.Count)
+	assert.Equal(t, []string{"execute-2"}, output.Recovered)
+}
+
+func TestServer_WindowsRecoverWorkers_SkipsNonExecuteWindows(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "sudo"},
+		{TmuxWindowID: "@2", Name: "execute-1"},
+		{TmuxWindowID: "@3", Name: "main"},
+	}, nil)
+	mockExec.On("SendEnter", "test-session", "@2").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@2", "continue").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	output, err := server.WindowsRecoverWorkers("")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, output.Count)
+	assert.Equal(t, []string{"execute-1"}, output.Recovered)
+	mockExec.AssertNotCalled(t, "SendEnter", "test-session", "@0")
+	mockExec.AssertNotCalled(t, "SendEnter", "test-session", "@1")
+	mockExec.AssertNotCalled(t, "SendEnter", "test-session", "@3")
+}
+
+func TestServer_WindowsRecoverWorkers_NonNumericExecuteSuffix(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "execute-foo"},
+	}, nil)
+	mockExec.On("SendEnter", "test-session", "@1").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", "continue").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	output, err := server.WindowsRecoverWorkers("")
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, output.Count)
+	assert.Equal(t, []string{"execute-foo"}, output.Recovered)
+}
+
 func TestServer_WindowsSpawnWorker_Success(t *testing.T) {
 	mockExec := new(testutil.MockTmuxExecutor)
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)

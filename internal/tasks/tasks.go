@@ -21,13 +21,11 @@ const (
 )
 
 type Task struct {
-	Name              string   `yaml:"name"`
-	Wid               string   `yaml:"wid"`
-	Status            string   `yaml:"status"`
-	Context           string   `yaml:"context"`
-	Scope             string   `yaml:"scope,omitempty"`
-	SupportingContext string   `yaml:"supporting_context,omitempty"`
-	DependsOn         []string `yaml:"depends_on,omitempty"`
+	Name      string   `yaml:"name"`
+	Wid       string   `yaml:"wid"`
+	Status    string   `yaml:"status"`
+	Context   string   `yaml:"context"`
+	DependsOn []string `yaml:"depends_on,omitempty"`
 }
 
 type TasksFile struct {

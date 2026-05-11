@@ -25,6 +25,10 @@ func (m *MockExecutorWithFeedback) SendMessageWithFeedback(sessionID, windowID, 
 }
 
 // Implement other required interface methods (stubs)
+func (m *MockExecutorWithFeedback) SendEnter(sessionID, windowID string) error {
+	return nil
+}
+
 func (m *MockExecutorWithFeedback) SendMessage(sessionID, windowID, message string) error {
 	return nil
 }

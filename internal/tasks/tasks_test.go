@@ -310,59 +310,7 @@ func TestTask_MarshalUnmarshal_EmptyWid(t *testing.T) {
 	assert.Equal(t, task.Name, loaded.Name)
 }
 
-func TestTask_ScopeField(t *testing.T) {
-	task := Task{
-		Name:    "scoped task",
-		Wid:     "execute-1",
-		Status:  StatusPending,
-		Context: "ctx.md",
-		Scope:   "internal/tasks/tasks.go only",
-	}
-
-	data, err := yaml.Marshal(task)
-	require.NoError(t, err)
-
-	yamlStr := string(data)
-	assert.Contains(t, yamlStr, "scope: internal/tasks/tasks.go only")
-
-	var loaded Task
-	require.NoError(t, yaml.Unmarshal(data, &loaded))
-	assert.Equal(t, task.Scope, loaded.Scope)
-
-	// omitempty: empty scope must not appear as a YAML key
-	taskEmpty := Task{Name: "empty scope", Status: StatusPending}
-	dataEmpty, err := yaml.Marshal(taskEmpty)
-	require.NoError(t, err)
-	assert.NotContains(t, string(dataEmpty), "scope:")
-}
-
-func TestTask_SupportingContextField(t *testing.T) {
-	task := Task{
-		Name:              "ctx task",
-		Wid:               "execute-2",
-		Status:            StatusPending,
-		Context:           "ctx.md",
-		SupportingContext: "See also: design doc at .tmux-cli/research/design.md",
-	}
-
-	data, err := yaml.Marshal(task)
-	require.NoError(t, err)
-
-	yamlStr := string(data)
-	assert.Contains(t, yamlStr, "supporting_context:")
-
-	var loaded Task
-	require.NoError(t, yaml.Unmarshal(data, &loaded))
-	assert.Equal(t, task.SupportingContext, loaded.SupportingContext)
-
-	// omitempty: empty supporting_context must not appear in YAML
-	taskEmpty := Task{Name: "no ctx", Status: StatusPending}
-	dataEmpty, err := yaml.Marshal(taskEmpty)
-	require.NoError(t, err)
-	assert.NotContains(t, string(dataEmpty), "supporting_context")
-}
-
-func TestTasksFile_RoundTrip_WithNewFields(t *testing.T) {
+func TestTasksFile_RoundTrip_LeanFormat(t *testing.T) {
 	root := t.TempDir()
 
 	original := &TasksFile{
@@ -370,12 +318,10 @@ func TestTasksFile_RoundTrip_WithNewFields(t *testing.T) {
 		Cycle:  3,
 		Tasks: []Task{
 			{
-				Name:              "full task",
-				Wid:               "execute-1",
-				Status:            StatusPending,
-				Context:           "path/ctx.md",
-				Scope:             "modify internal/tasks only",
-				SupportingContext: "architecture notes in AGENTS.md",
+				Name:    "full task",
+				Wid:     "execute-1",
+				Status:  StatusPending,
+				Context: "path/ctx.md",
 			},
 			{
 				Name:    "minimal task",
@@ -393,46 +339,14 @@ func TestTasksFile_RoundTrip_WithNewFields(t *testing.T) {
 	require.NotNil(t, loaded)
 	require.Len(t, loaded.Tasks, 2)
 
-	assert.Equal(t, "modify internal/tasks only", loaded.Tasks[0].Scope)
-	assert.Equal(t, "architecture notes in AGENTS.md", loaded.Tasks[0].SupportingContext)
-	assert.Equal(t, "", loaded.Tasks[1].Scope)
-	assert.Equal(t, "", loaded.Tasks[1].SupportingContext)
+	assert.Equal(t, "full task", loaded.Tasks[0].Name)
+	assert.Equal(t, "path/ctx.md", loaded.Tasks[0].Context)
 
-	// Verify omitempty: the saved YAML should not have scope/supporting_context for task 2
 	data, err := os.ReadFile(TasksFilePath(root))
 	require.NoError(t, err)
 	yamlStr := string(data)
-	assert.Contains(t, yamlStr, "scope: modify internal/tasks only")
-	assert.Contains(t, yamlStr, "supporting_context: architecture notes in AGENTS.md")
-}
-
-func TestTasksFile_BackwardsCompatibility(t *testing.T) {
-	root := t.TempDir()
-	dir := filepath.Join(root, ".tmux-cli")
-	require.NoError(t, os.MkdirAll(dir, 0o755))
-
-	// Old-format YAML without scope or supporting_context
-	oldYAML := `status: ready
-cycle: 1
-tasks:
-  - name: "legacy task"
-    wid: "execute-1"
-    status: pending
-    context: "old/path.md"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(oldYAML), 0o644))
-
-	tf, err := LoadTasks(root)
-	require.NoError(t, err)
-	require.NotNil(t, tf)
-	require.Len(t, tf.Tasks, 1)
-
-	assert.Equal(t, "legacy task", tf.Tasks[0].Name)
-	assert.Equal(t, "execute-1", tf.Tasks[0].Wid)
-	assert.Equal(t, StatusPending, tf.Tasks[0].Status)
-	assert.Equal(t, "old/path.md", tf.Tasks[0].Context)
-	assert.Equal(t, "", tf.Tasks[0].Scope)
-	assert.Equal(t, "", tf.Tasks[0].SupportingContext)
+	assert.NotContains(t, yamlStr, "scope:")
+	assert.NotContains(t, yamlStr, "supporting_context:")
 }
 
 func TestTask_DependsOnField(t *testing.T) {

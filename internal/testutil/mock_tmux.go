@@ -56,6 +56,12 @@ func (m *MockTmuxExecutor) ListWindows(sessionID string) ([]tmux.WindowInfo, err
 	return args.Get(0).([]tmux.WindowInfo), args.Error(1)
 }
 
+// SendEnter mocks sending a bare Enter keystroke to a window
+func (m *MockTmuxExecutor) SendEnter(sessionID, windowID string) error {
+	args := m.Called(sessionID, windowID)
+	return args.Error(0)
+}
+
 // SendMessage mocks sending a text message to a window
 func (m *MockTmuxExecutor) SendMessage(sessionID, windowID, message string) error {
 	args := m.Called(sessionID, windowID, message)

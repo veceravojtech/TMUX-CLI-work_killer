@@ -1,5 +1,5 @@
 <task id="plan" name="Planning supervisor — parallel spec-writing orchestrator">
-  <objective>Spawn N parallel /tmux:execute workers via tmux-cli to produce implementation-ready specification files. Read a plan/spec file, decompose it into modules, create research-task context files, spawn spec-writing workers, verify spec quality against the S1–S5 pushback catalogue, present specs for interactive user approval, and finalize approved specs into tasks.yaml for /tmux:supervisor.</objective>
+  <objective>Spawn N parallel /tmux:execute workers via tmux-cli to produce implementation-ready specification files. Read a plan/spec file, decompose it into modules, create research-task context files, spawn spec-writing workers, verify spec quality against the S1–S8 pushback catalogue, present specs for interactive user approval, and finalize approved specs into tasks.yaml for /tmux:supervisor.</objective>
 
   <input>
     <arg name="$ARGUMENTS">Path to a plan/spec file OR inline task description. The planning supervisor reads it, derives module decomposition, and spawns parallel spec-writing workers.</arg>
@@ -7,7 +7,7 @@
 
   <output>
     <primary>A finalized .tmux-cli/tasks.yaml with status: ready and N implementation tasks, each pointing to an approved spec .md file. Ready for /tmux:supervisor consumption.</primary>
-    <secondary>Spec .md files in .tmux-cli/research/{y-m-d-hh}/ — one per module, with Overview, Dependencies, Source Analysis, Implementation Plan, Test Plan, Acceptance Criteria, and Implementation Notes.</secondary>
+    <secondary>Spec .md files in .tmux-cli/research/{y-m-d-hh}/ — one per module, with Intent, Boundaries &amp; Constraints, I/O &amp; Edge-Case Matrix, Dependencies, Code Map, Implementation Plan, Test Plan, Acceptance Criteria, Design Notes, Implementation Notes, Verification, and Spec Change Log.</secondary>
     <secondary>Research-task context .md files in .tmux-cli/research/{y-m-d-hh}/ — one per module, describing what the worker should research.</secondary>
   </output>
 
@@ -21,13 +21,13 @@
     <term name="SELF_WID">Name of a spec-writing worker's tmux window (e.g. "execute-3"). Each worker gets unique N.</term>
     <term name="research-root">Primary directory for context and spec files: .tmux-cli/research/{y-m-d-hh}/ (timestamped). Defined in &lt;requirements&gt;.</term>
     <term name="research-task context file">Markdown file the planning supervisor writes FOR a worker, telling it what to research and how to produce the spec. Named task-&lt;slug&gt;.md in research-root.</term>
-    <term name="spec file">Markdown file a worker produces as its deliverable. Contains implementation-ready specification with mandatory sections (Overview through Implementation Notes). Named execute-&lt;N&gt;-&lt;slug&gt;.md in research-root.</term>
+    <term name="spec file">Markdown file a worker produces as its deliverable. Contains implementation-ready specification with mandatory sections (Intent through Spec Change Log). Named execute-&lt;N&gt;-&lt;slug&gt;.md in research-root.</term>
     <term name="AUTO_APPROVE">Internal flag set when plan.auto_approve=true in setting.yaml. Causes steps 9-10 to be skipped.</term>
     <term name="AUTO_EXECUTE">Internal flag set when plan.auto_execute=true in setting.yaml. Causes step 11 to auto-invoke /tmux:supervisor after finalization.</term>
     <term name="FRESH mode">No usable tasks.yaml exists — derive everything from scratch.</term>
     <term name="INCREMENTAL mode">tasks.yaml exists with status: planning — preserve existing tasks, append new spec tasks.</term>
     <term name="ranking heuristic">Priority ordering for decomposition: (1) closest to user-facing surface or critical path, (2) closest to impact target, (3) smallest budget before completion, (4) overturns prior assumption if confirmed. Break ties by lowest budget.</term>
-    <term name="pushback catalogue">The S1–S5 taxonomy in step 6 used to gate spec quality before acceptance.</term>
+    <term name="pushback catalogue">The S1–S8 taxonomy in step 6 used to gate spec quality before acceptance.</term>
   </glossary>
 
   <message-tags>
@@ -36,7 +36,7 @@
     <tag name="[EXECUTE:NEED_INPUT wid=... sup=... &lt;short reason&gt;]" from="worker">Worker cannot proceed without a fact. Reason ≤ 200 chars inline. Planning supervisor answers via windows-message, or replies [SUPERVISOR:NARROW-SCOPE].</tag>
     <tag name="[EXECUTE:FAILED wid=... sup=... reason=&lt;short&gt;]" from="worker">Worker hit terminal failure. Reason ≤ 200 chars inline. Planning supervisor respawns with narrowed scope (first attempt) or escalates (second).</tag>
     <tag name="[SUPERVISOR:REMIND &lt;what to do&gt;]" from="plan-supervisor">Protocol reminder to worker. Does not advance state.</tag>
-    <tag name="[EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S5&gt;]" from="plan-supervisor">Spec quality gap per pushback catalogue. Worker updates the SAME .md and re-tags DONE.</tag>
+    <tag name="[EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S8&gt;]" from="plan-supervisor">Spec quality gap per pushback catalogue. Worker updates the SAME .md and re-tags DONE.</tag>
     <tag name="[SUPERVISOR:AMEND &lt;new scope&gt;]" from="plan-supervisor">Amend a running worker's scope mid-run.</tag>
     <tag name="[SUPERVISOR:AMEND-PROTOCOL &lt;new rule&gt;]" from="plan-supervisor">Amend response protocol mid-run.</tag>
     <tag name="[SUPERVISOR:KILL]" from="plan-supervisor">Instruct worker to exit cleanly — scope now pointless.</tag>
@@ -47,7 +47,7 @@
     <rule>The planning supervisor operates AUTONOMOUSLY during the SPEC-WRITING PHASE (steps 0–8): spawning workers, routing messages, pushing back on gaps, replanning. No user gates during worker management.</rule>
     <rule>The planning supervisor is INTERACTIVE during the APPROVAL PHASE (steps 9–10): the user reviews, edits, adds, removes, or re-specs modules before finalization.</rule>
     <rule>NEVER finalize (step 11) without explicit user "approve" from step 10 — UNLESS AUTO_APPROVE is true.</rule>
-    <rule>When AUTO_APPROVE is true, the planning supervisor operates FULLY AUTONOMOUSLY — no user interaction at any step. Specs are accepted after S1-S5 verification and immediately finalized.</rule>
+    <rule>When AUTO_APPROVE is true, the planning supervisor operates FULLY AUTONOMOUSLY — no user interaction at any step. Specs are accepted after S1-S8 verification and immediately finalized.</rule>
     <rule>For ambiguity during spec-writing: pick the highest-yield interpretation per &lt;ranking&gt; and record the chosen rationale so the user can redirect in step 10.</rule>
     <rule>Escalate to user ONLY for: (a) zero executable workers constructable from input, (b) user-only knowledge (credentials, intent, out-of-band facts), or (c) the mandatory approval phase (steps 9–10).</rule>
   </autonomy-policy>
@@ -58,7 +58,7 @@
     <mandate>NEVER skip user review (steps 9–10 are mandatory) — UNLESS AUTO_APPROVE is true</mandate>
     <mandate>When AUTO_EXECUTE is true, ALWAYS send /clear + /tmux:supervisor to PLAN_WID after finalization — this is the handoff to the implementation supervisor</mandate>
     <mandate>ALWAYS use windows-spawn-worker for spawning — never assemble manually via windows-create + windows-send</mandate>
-    <mandate>ALWAYS verify spec quality against S1–S5 before accepting a worker's DONE</mandate>
+    <mandate>ALWAYS verify spec quality against S1–S8 before accepting a worker's DONE</mandate>
     <mandate>Default to MAXIMUM parallelism for spec workers — implementation dependency does NOT block spec-writing</mandate>
     <mandate>NEVER spawn a worker before tasks.yaml is written and verified (step 3b gate)</mandate>
     <mandate>NEVER call /worker:execute — use /tmux:execute which is the correct skill name</mandate>
@@ -73,17 +73,46 @@
     <note>This is the custom deliverable format passed to windows-spawn-worker via the deliverable parameter. It REPLACES the standard FINDINGS/RISKS/RECOMMENDATION/FILES format. Workers produce spec files with these mandatory sections.</note>
     <template>
 DELIVERABLE (write these sections INSIDE the spec .md; do NOT paste them into tmux):
-- ## Overview: What this module does, its boundaries, why it exists.
+- ## Intent: Restate the module's purpose from the research-task context file. Two fields:
+  **Problem:** ONE_TO_TWO_SENTENCES — what is broken or missing.
+  **Approach:** ONE_TO_TWO_SENTENCES — the high-level "what", not the "how".
+  This is the anchor — the rest of the spec must serve this intent.
+- ## Boundaries &amp; Constraints: Three tiers:
+  **Always:** invariant rules this module must obey (e.g. "all public functions must have tests").
+  **Ask First:** decisions requiring human approval during implementation — the implementation worker MUST halt and ask before proceeding on these.
+  **Never:** explicit non-goals and forbidden approaches (e.g. "never modify the executor interface").
+- ## I/O &amp; Edge-Case Matrix (optional — DELETE entirely if no meaningful I/O interfaces exist, do NOT write "N/A"):
+  Table with columns: Scenario | Input / State | Expected Output / Behavior | Error Handling.
+  Cover: happy path, error cases, boundary conditions. Each row must be specific enough to become a test case.
 - ## Dependencies: Which modules must be complete first and what they provide. Write "none" if independent.
-- ## Source Analysis: For each source file analyzed — file path, key functions/classes found, what to reuse vs. rewrite, protocol details and constants extracted. MUST cite specific files, functions, and line numbers from the source code.
+- ## Code Map: Annotated file paths that prevent blind codebase searching during implementation. Format: `FILE:LINE` — ROLE_OR_RELEVANCE. Each entry answers: what does the implementation worker need this file for? MUST cite specific files, functions, and line numbers from the source code.
 - ## Implementation Plan:
-  - ### Files to Create: path and purpose for each new file.
+  - ### Files to Create/Modify: path and purpose for each file. One task per file preferred; group tightly-coupled changes when splitting would be artificial.
   - ### Key Classes/Functions: name, purpose, signature, key logic.
   - ### API Endpoints (if applicable): method, path, description, request/response format.
   - ### Frontend Pages (if applicable): template name, description, key UI elements.
-- ## Test Plan: Specific unit test cases with expected behavior (not just "write tests"). Integration test scenarios describing what to test against real services/hardware.
-- ## Acceptance Criteria: Checkboxes — specific, verifiable conditions. Each criterion must be independently testable.
-- ## Implementation Notes: Tricky parts, gotchas, architectural decisions, edge cases, performance considerations.
+- ## Test Plan: Specific unit test cases with expected behavior (not just "write tests"). Integration test scenarios describing what to test against real services/hardware. If an I/O Matrix is present, include test cases covering its edge cases.
+- ## Acceptance Criteria: Given/When/Then format. Each criterion must be independently testable AND checkbox-formatted:
+  - [ ] Given PRECONDITION, when ACTION, then EXPECTED_RESULT
+- ## Design Notes (optional — DELETE entirely if the approach is straightforward, do NOT write "N/A"):
+  Architectural rationale and golden examples only when non-obvious. Keep examples to 5–10 lines.
+- ## Implementation Notes: Tricky parts, gotchas, edge cases, performance considerations. Do NOT mix design rationale here — that belongs in Design Notes.
+- ## Verification: How the implementation worker confirms its own work. Prefer CLI commands with expected output. When no CLI check applies, state what to inspect manually. DELETE entirely if no verifiable claims exist.
+- ## Spec Change Log: Initially empty. Populated during pushback rounds. Append-only — never delete existing entries. Each entry records: what gap was cited, what was changed, what known-bad state was avoided, and KEEP instructions (what worked well and must survive the fix).
+
+SELF-REVIEW (mandatory before tagging DONE):
+Verify the spec against the Ready for Development standard:
+- Actionable: every task in Implementation Plan has a file path and specific action
+- Logical: tasks are ordered by dependency — no task references something created by a later task
+- Testable: all Acceptance Criteria use Given/When/Then format
+- Complete: no placeholders, no TBDs, no "to be determined", no empty sections (except optional ones marked DELETE)
+If any criterion fails, fix before submitting DONE.
+
+EXPLORATION:
+Isolate deep codebase exploration in sub-agents where available. Instruct sub-agents to return distilled summaries only — file paths, key functions, signatures, relevant constants. Do not load full file contents into your own context when a sub-agent summary suffices. This prevents context snowballing during spec writing.
+
+SCOPE:
+Target 900–1600 tokens for the spec body (excluding Code Map file listings). Below 900 risks ambiguity for implementation workers. Above 1600 risks context rot — the implementation worker loads this spec alongside other context. If your spec exceeds 1600, tighten prose or split sub-modules. Neither limit blocks submission — they are quality signals for self-review.
     </template>
   </spec-deliverable-template>
 
@@ -94,7 +123,7 @@ DELIVERABLE (write these sections INSIDE the spec .md; do NOT paste them into tm
 
 ## Research Instructions
 
-Produce an implementation-ready spec for this module. Read the source files listed below, analyze the existing code, and write a comprehensive spec following the DELIVERABLE format in your task message.
+Produce an implementation-ready spec for this module. Read the source files listed below, analyze the existing code, and write a comprehensive spec following the DELIVERABLE format in your task message. Self-review against the Ready for Development standard before submitting.
 
 ## Source Files to Analyze
 - `path/to/file` — what to look for
@@ -107,8 +136,11 @@ Produce an implementation-ready spec for this module. Read the source files list
 - Module X: &lt;what it provides to this module&gt;
 (or "none" if independent)
 
-## Constraints
-&lt;project conventions, architecture patterns, non-goals, technology choices&gt;
+## Constraints &amp; Boundaries
+Always: &lt;invariant rules from the plan/project context — conventions, patterns that MUST be followed&gt;
+Never: &lt;explicit non-goals for this module — what is OUT of scope, forbidden approaches&gt;
+Ask First: &lt;decisions the implementation worker should escalate to human — architectural choices, risky tradeoffs&gt;
+&lt;additional project conventions, architecture patterns, technology choices&gt;
     </template>
   </research-task-template>
 
@@ -202,10 +234,6 @@ tasks:
     wid: "execute-N"
     status: pending
     context: ".tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md"
-    scope: |
-      &lt;multi-line scope summary — what to research, source files, boundaries&gt;
-    supporting_context: |
-      &lt;dependencies, constraints, project conventions. Optional.&gt;
     depends_on: ["execute-M"]  # implementation dependency — from plan's dependency graph. Optional.
       </format>
       <action>Verify all context files referenced in tasks.yaml exist on disk.</action>
@@ -228,8 +256,8 @@ tasks:
         - supervisorWid: your PLAN_WID name
         - subtask: task name (one-line label for this spec worker)
         - contextFile: path to the research-task context .md file
-        - scope: multi-line scope from tasks.yaml entry
-        - context: multi-line supporting_context from tasks.yaml entry (if present)
+        - scope: derived from the context .md file (read it and summarize key scope points)
+        - context: derived from the context .md file (dependencies, constraints, prior findings)
         - deliverable: custom spec format from &lt;spec-deliverable-template&gt;
       </params>
       <action>The tool atomically: picks the next execute-N name, creates the window, sends /tmux:execute, assembles and sends the task message with the custom DELIVERABLE + RESPONSE PROTOCOL.</action>
@@ -243,7 +271,7 @@ tasks:
       <rule>NEVER use sleep. NEVER poll windows-list while idle.</rule>
       <rule>Stop-hook idle notifications ("Idling — awaiting supervisor task payload" / "Report delivered to supervisor. Idling for accept or pushback") are expected /tmux:execute lifecycle output. Do not REMIND, do not advance state — wait for the next real message.</rule>
       <branch tag="[EXECUTE:DONE ...]">
-        <action>Proceed to step 6 — Read the spec file and verify against S1–S5.</action>
+        <action>Proceed to step 6 — Read the spec file and verify against S1–S8.</action>
       </branch>
       <branch tag="[EXECUTE:NEED_INPUT ...]">
         <action>Answer with windows-message to that wid, drawing from (a) the task's SCOPE/CONTEXT, (b) prior accepted specs in research-root, (c) files on disk. If still unanswerable, reply [SUPERVISOR:NARROW-SCOPE] with a reduced problem statement. Escalate to user ONLY for user-only knowledge.</action>
@@ -270,16 +298,19 @@ tasks:
       <when>Fire this check after EVERY accepted DONE. Do not skip.</when>
     </step>
 
-    <step n="6" title="Verify spec quality — pushback catalogue S1–S5">
+    <step n="6" title="Verify spec quality — pushback catalogue S1–S8">
       <action>Read the spec .md at the file= path cited in the DONE tag. If the file does not exist, reply [SUPERVISOR:REMIND] file= path does not exist — resave and re-tag, and wait.</action>
       <rule>Check the file contents against these spec-quality gaps. Pushback at most 3x per worker. Each pushback MUST cite exactly one gap.</rule>
-      <gap id="S1">Source Analysis is empty or doesn't cite specific files/functions/line numbers from the source code</gap>
-      <gap id="S2">Implementation Plan lacks file structure (no "Files to Create") or key classes/functions</gap>
+      <gap id="S1">Code Map is empty or doesn't cite specific files/functions/line numbers from the source code</gap>
+      <gap id="S2">Implementation Plan lacks file structure (no "Files to Create/Modify") or key classes/functions</gap>
       <gap id="S3">Test Plan is generic ("write tests") without specific test cases and expected behavior</gap>
-      <gap id="S4">Acceptance Criteria are missing, vague, or not checkboxable</gap>
+      <gap id="S4">Acceptance Criteria are missing, vague, or don't use Given/When/Then format</gap>
       <gap id="S5">Dependencies not specified when the module clearly depends on others (check the plan's dependency graph)</gap>
-      <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S5&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
-      <check condition="spec passes all S1–S5 checks">
+      <gap id="S6">I/O Matrix missing when module has meaningful interfaces (APIs, CLI commands, message protocols, file formats) — if module has no I/O interfaces, this gap does not apply</gap>
+      <gap id="S7">Boundaries section missing or has no "Never" entries — scope edges are undefined, implementation worker won't know what's out of scope</gap>
+      <gap id="S8">Ready for Development standard not met: tasks lack file paths, or Acceptance Criteria don't use Given/When/Then, or placeholders/TBDs remain in non-optional sections</gap>
+      <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S8&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
+      <check condition="spec passes all S1–S8 checks">
         <action>Accept. Proceed to step 7.</action>
       </check>
       <check condition="3 pushbacks already sent to this worker">
@@ -362,14 +393,10 @@ Reply: **approve** | **edit &lt;N&gt;** | **add &lt;description&gt;** | **remove
 status: ready
 cycle: 1
 tasks:
-  - name: "&lt;from spec ## Overview — concise module name&gt;"
+  - name: "&lt;from spec ## Intent — concise module name&gt;"
     wid: "execute-N"
     status: pending
     context: "&lt;path to the accepted spec .md file&gt;"
-    scope: |
-      &lt;from spec ## Overview — what this module does and its boundaries&gt;
-    supporting_context: |
-      &lt;from spec ## Dependencies + ## Implementation Notes — merged&gt;
     depends_on: ["execute-M"]  # from spec ## Dependencies, mapped to wids. Optional.
       </format>
       <action>Respect the dependency graph from the specs — use depends_on fields or order tasks by implementation wave (prerequisites first).</action>
@@ -383,6 +410,7 @@ Run `/tmux:supervisor` to execute the plan.
       </template>
       <check condition="AUTO_EXECUTE is true">
         <action>Auto-execute mode enabled (plan.auto_execute=true in setting.yaml). Invoking supervisor automatically.</action>
+        <action>Write guard file .tmux-cli/auto-execute-guard (prevents the Stop hook from also restarting the supervisor — without this, both auto-execute AND the Stop hook would send /tmux:supervisor, causing a double invocation).</action>
         <action>Send /clear to PLAN_WID via windows-send.</action>
         <action>Send /tmux:supervisor .tmux-cli/tasks.yaml to PLAN_WID via windows-send.</action>
         <action>STOP — a fresh supervisor instance takes over with the finalized tasks.yaml.</action>
@@ -396,12 +424,12 @@ Run `/tmux:supervisor` to execute the plan.
     <rule>NEVER assemble spawn steps manually — always use windows-spawn-worker</rule>
     <rule>windows-message: all planning supervisor↔worker communication (answers, pushbacks, reminders, amends, kills)</rule>
     <rule>windows-kill: only on accepted spec or terminal FAILED; never on PLAN_WID; pass window NAME</rule>
-    <rule>Always Read the file cited in a DONE before applying the S1–S5 catalogue; never rely on inline body</rule>
+    <rule>Always Read the file cited in a DONE before applying the S1–S8 catalogue; never rely on inline body</rule>
     <rule>If a worker sends DONE without file=, REMIND once; do not accept inline-body DONE</rule>
     <rule>tasks.yaml status transitions: missing → planning (step 3b) → ready (step 11 only, after user approval)</rule>
     <rule>Research-task context files are created BEFORE tasks.yaml references them</rule>
-    <rule>Spec files are created BY workers, verified BY the planning supervisor against S1–S5</rule>
-    <rule>The scope and supporting_context fields in finalized tasks.yaml (step 11) are derived from accepted spec sections — ensure they are complete and self-contained for /tmux:supervisor consumption</rule>
+    <rule>Spec files are created BY workers, verified BY the planning supervisor against S1–S8</rule>
+    <rule>All scope and context detail lives in the context .md file — tasks.yaml entries are lean (name, wid, status, context path, depends_on). The context file IS the spec — ensure it is complete and self-contained for /tmux:supervisor consumption</rule>
     <rule>The deliverable parameter on windows-spawn-worker overrides the standard FINDINGS/RISKS/RECOMMENDATION/FILES format with the spec template</rule>
     <rule>windows-send: used ONLY for auto-execute self-restart commands to PLAN_WID in step 11 (/clear, /tmux:supervisor)</rule>
   </execution-rules>
@@ -435,7 +463,7 @@ Run `/tmux:supervisor` to execute the plan.
       • DO NOT spawn any worker (step 4) before tasks.yaml is written and verified (step 3b) — blocking gate, no exceptions
       • DO NOT serialize spec-writing for implementation dependencies — specs are written by reading source, not by depending on other implementations
       • ALWAYS create research-task context files before writing tasks.yaml entries that reference them
-      • ALWAYS verify spec quality against S1–S5 before accepting a worker's DONE
+      • ALWAYS verify spec quality against S1–S8 before accepting a worker's DONE
       • ALWAYS use windows-spawn-worker with the custom deliverable parameter — never use the default FINDINGS format for spec workers
       • DO NOT use AskUserQuestion — all user interaction via text output and waiting for messages
     </critical-rules>

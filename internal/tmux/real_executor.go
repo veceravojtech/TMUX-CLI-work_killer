@@ -192,6 +192,24 @@ func (e *RealTmuxExecutor) ListWindows(sessionID string) ([]WindowInfo, error) {
 	return windows, nil
 }
 
+// SendEnter sends a bare Enter keystroke to a window (no text payload).
+// Command: tmux send-keys -t <sessionID>:<windowID> Enter
+func (e *RealTmuxExecutor) SendEnter(sessionID, windowID string) error {
+	target := sessionID + ":" + windowID
+
+	cmd := exec.Command("tmux", "send-keys", "-t", target, "Enter")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if cmd.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux send-keys (Enter) failed (target: %s): %w: %s",
+			target, err, strings.TrimSpace(string(output)))
+	}
+
+	return nil
+}
+
 // SendMessage delivers a text message to a specific window in a session.
 // The message is delivered to the first pane (.0) of the target window.
 // An Enter key is automatically appended to execute the message.
