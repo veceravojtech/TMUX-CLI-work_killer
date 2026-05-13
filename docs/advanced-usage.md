@@ -6,13 +6,14 @@ Run `tmux-cli setting` to open the TUI. Toggle with arrow keys and Enter.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Session Notify | on | Log session start/stop events |
+| Session Notify | off | Log session start/stop events |
 | Block Interactive | on | Block interactive commands in worker windows |
 | Commands Enabled | on | Install `/tmux:plan`, `/tmux:supervisor`, `/tmux:execute` slash commands |
-| Max Workers | 3 | Maximum parallel worker windows |
+| Max Workers | 4 | Maximum parallel worker windows |
+| Cycle Timeout (s) | 5 | Delay in seconds between supervisor cycles |
 | Unplanned Audit | on | Require audit before unplanned supervisor runs |
-| Plan Auto-Approve | off | Skip human approval of generated task plans |
-| Plan Auto-Execute | off | Automatically start implementation after planning |
+| Plan Auto-Approve | on | Skip human approval of generated task plans |
+| Plan Auto-Execute | on | Automatically start implementation after planning |
 
 Settings are stored in `.tmux-cli/setting.yaml` per project.
 
