@@ -17,17 +17,26 @@ A Go CLI tool and MCP server for managing tmux sessions. Built for AI agent coor
 - **tmux** 2.0+
 - **jq** (optional, used by hook scripts)
 
-## Installation
+## Install
 
 ```bash
-# Build
-make build
+curl -fsSL https://tmux.vojta.ai/install.sh | bash
+```
 
-# Install to ~/.local/bin
-make install
+### Manual install
 
-# Or build manually
-go build -ldflags "-s -w" -o bin/tmux-cli ./cmd/tmux-cli
+**Linux:**
+
+```bash
+curl -fSL https://tmux.vojta.ai/releases/tmux-cli-linux-amd64.tar.gz | tar -xz
+sudo mv tmux-cli /usr/local/bin/
+```
+
+**macOS:**
+
+```bash
+curl -fSL https://tmux.vojta.ai/releases/tmux-cli-darwin-arm64.tar.gz | tar -xz
+mv tmux-cli ~/.local/bin/
 ```
 
 ## Quick start
