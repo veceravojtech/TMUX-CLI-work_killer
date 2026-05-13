@@ -22,6 +22,15 @@ case "$ARCH" in
   *)             die "Unsupported architecture: $ARCH" ;;
 esac
 
+if ! command -v tmux &>/dev/null; then
+  echo "tmux is not installed."
+  case "$OS" in
+    Linux)  echo "Install it with:  sudo apt install tmux" ;;
+    Darwin) echo "Install it with:  brew install tmux" ;;
+  esac
+  die "Install tmux first, then re-run this script."
+fi
+
 ASSET="${BINARY}-${OS_TAG}-${ARCH_TAG}.tar.gz"
 URL="${BASE_URL}/${ASSET}"
 
@@ -43,6 +52,12 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
   echo ""
   echo "Add to your PATH:"
   echo "  export PATH=\"\$PATH:${INSTALL_DIR}\""
+fi
+
+TMUX_CONF="$HOME/.tmux.conf"
+if ! grep -q 'set.*mouse.*on' "$TMUX_CONF" 2>/dev/null; then
+  echo "set -g mouse on" >> "$TMUX_CONF"
+  echo "Enabled mouse support in ~/.tmux.conf"
 fi
 
 CLAUDE_JSON="$HOME/.claude.json"
