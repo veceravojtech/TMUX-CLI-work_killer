@@ -32,6 +32,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "hooks.block_interactive", label: "Block Interactive", kind: "bool", value: settings.Hooks.BlockInteractive},
 			{key: "commands.enabled", label: "Commands Enabled", kind: "bool", value: settings.Commands.Enabled},
 			{key: "supervisor.max_workers", label: "Max Workers", kind: "int", intVal: settings.Supervisor.MaxWorkers},
+			{key: "supervisor.cycle_delay", label: "Cycle Timeout (s)", kind: "int", intVal: settings.Supervisor.CycleDelay},
 			{key: "supervisor.unplanned_audit", label: "Unplanned Audit", kind: "bool", value: settings.Supervisor.UnplannedAudit},
 			{key: "plan.auto_approve", label: "Plan Auto-Approve", kind: "bool", value: settings.Plan.AutoApprove},
 			{key: "plan.auto_execute", label: "Plan Auto-Execute", kind: "bool", value: settings.Plan.AutoExecute},
@@ -136,6 +137,8 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Commands.Enabled = item.value
 		case "supervisor.max_workers":
 			s.Supervisor.MaxWorkers = item.intVal
+		case "supervisor.cycle_delay":
+			s.Supervisor.CycleDelay = item.intVal
 		case "supervisor.unplanned_audit":
 			s.Supervisor.UnplannedAudit = item.value
 		case "plan.auto_approve":

@@ -170,7 +170,7 @@ commands:
 
 func TestDefaultSettings_MaxWorkers(t *testing.T) {
 	s := DefaultSettings()
-	assert.Equal(t, 0, s.Supervisor.MaxWorkers, "default max_workers should be 0 (unlimited)")
+	assert.Equal(t, 4, s.Supervisor.MaxWorkers, "default max_workers should be 4")
 }
 
 func TestLoadSettings_SupervisorMaxWorkers(t *testing.T) {
@@ -212,8 +212,8 @@ func TestSaveSettings_MaxWorkersRoundTrip(t *testing.T) {
 func TestDefaultSettings_PlanFields(t *testing.T) {
 	s := DefaultSettings()
 
-	assert.False(t, s.Plan.AutoApprove)
-	assert.False(t, s.Plan.AutoExecute)
+	assert.True(t, s.Plan.AutoApprove)
+	assert.True(t, s.Plan.AutoExecute)
 }
 
 func TestLoadSettings_WithPlanFields(t *testing.T) {

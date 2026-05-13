@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 7)
+	assert.Len(t, m.items, 8)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -39,7 +39,8 @@ commands:
 	assert.Equal(t, "commands.enabled", m.items[2].key)
 	assert.True(t, m.items[2].value)
 	assert.Equal(t, "supervisor.max_workers", m.items[3].key)
-	assert.Equal(t, "supervisor.unplanned_audit", m.items[4].key)
+	assert.Equal(t, "supervisor.cycle_delay", m.items[4].key)
+	assert.Equal(t, "supervisor.unplanned_audit", m.items[5].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -90,14 +91,18 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 6, m.cursor)
 
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 7, m.cursor)
+
 	// Can't go past last item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 6, m.cursor)
+	assert.Equal(t, 7, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 5, m.cursor)
+	assert.Equal(t, 6, m.cursor)
 
 	// Can't go above first item
 	for i := 0; i < 10; i++ {
@@ -262,16 +267,16 @@ func TestToSettings_PlanAutoApprove(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	// Find plan.auto_approve and toggle it on
+	// Toggle auto_approve off (default is true)
 	for i, item := range m.items {
 		if item.key == "plan.auto_approve" {
-			m.items[i].value = true
+			m.items[i].value = false
 		}
 	}
 
 	result := m.ToSettings()
-	assert.True(t, result.Plan.AutoApprove)
-	assert.False(t, result.Plan.AutoExecute)
+	assert.False(t, result.Plan.AutoApprove)
+	assert.True(t, result.Plan.AutoExecute)
 }
 
 func TestToSettings_PlanAutoExecute(t *testing.T) {
@@ -279,15 +284,16 @@ func TestToSettings_PlanAutoExecute(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
+	// Toggle auto_execute off (default is true)
 	for i, item := range m.items {
 		if item.key == "plan.auto_execute" {
-			m.items[i].value = true
+			m.items[i].value = false
 		}
 	}
 
 	result := m.ToSettings()
-	assert.False(t, result.Plan.AutoApprove)
-	assert.True(t, result.Plan.AutoExecute)
+	assert.True(t, result.Plan.AutoApprove)
+	assert.False(t, result.Plan.AutoExecute)
 }
 
 func TestToSettings_PreservesBaseSettings_WithPlan(t *testing.T) {
@@ -398,7 +404,7 @@ func TestNewModel_IncludesNumericItems(t *testing.T) {
 		if item.key == "supervisor.max_workers" {
 			found = true
 			assert.Equal(t, "int", item.kind)
-			assert.Equal(t, 0, item.intVal)
+			assert.Equal(t, 4, item.intVal)
 		}
 	}
 	assert.True(t, found, "supervisor.max_workers must be in TUI items")
@@ -424,26 +430,28 @@ func TestModel_NumericItem_IncrementDecrement(t *testing.T) {
 		m = updated.(Model)
 	}
 
+	start := m.items[idx].intVal
+
 	// Increment with right arrow
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	m = updated.(Model)
-	assert.Equal(t, 1, m.items[idx].intVal)
+	assert.Equal(t, start+1, m.items[idx].intVal)
 
 	// Increment more
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	m = updated.(Model)
-	assert.Equal(t, 2, m.items[idx].intVal)
+	assert.Equal(t, start+2, m.items[idx].intVal)
 
 	// Decrement with left arrow
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	m = updated.(Model)
-	assert.Equal(t, 1, m.items[idx].intVal)
+	assert.Equal(t, start+1, m.items[idx].intVal)
 
 	// Can't go below 0
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	m = updated.(Model)
+	for i := 0; i < start+5; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		m = updated.(Model)
+	}
 	assert.Equal(t, 0, m.items[idx].intVal)
 }
 
@@ -467,10 +475,11 @@ func TestModel_NumericItem_SpaceEnterNoToggle(t *testing.T) {
 		m = updated.(Model)
 	}
 
+	original := m.items[idx].intVal
 	// Space/enter should not change numeric item
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	m = updated.(Model)
-	assert.Equal(t, 0, m.items[idx].intVal)
+	assert.Equal(t, original, m.items[idx].intVal)
 }
 
 func TestModel_ToSettings_MaxWorkers(t *testing.T) {

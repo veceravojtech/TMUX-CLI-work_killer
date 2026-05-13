@@ -56,12 +56,13 @@ func DefaultSettings() *Settings {
 		},
 		Supervisor: SupervisorSettings{
 			MaxCycles:      0,
+			MaxWorkers:     4,
 			CycleDelay:     5,
 			UnplannedAudit: true,
 		},
 		Plan: PlanSettings{
-			AutoApprove: false,
-			AutoExecute: false,
+			AutoApprove: true,
+			AutoExecute: true,
 		},
 	}
 }
