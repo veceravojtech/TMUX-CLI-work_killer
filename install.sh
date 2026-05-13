@@ -44,3 +44,26 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
   echo "Add to your PATH:"
   echo "  export PATH=\"\$PATH:${INSTALL_DIR}\""
 fi
+
+CLAUDE_JSON="$HOME/.claude.json"
+BINARY_PATH="${INSTALL_DIR}/${BINARY}"
+if [ -f "$CLAUDE_JSON" ]; then
+  if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if 'tmux-cli' in d.get('mcpServers',{}) else 1)" "$CLAUDE_JSON" 2>/dev/null; then
+    echo "MCP server already registered in Claude Code."
+  else
+    python3 -c "
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d.setdefault('mcpServers', {})['tmux-cli'] = {'type': 'stdio', 'command': sys.argv[2], 'args': ['mcp'], 'env': {}}
+json.dump(d, open(p, 'w'), indent=2)
+" "$CLAUDE_JSON" "$BINARY_PATH"
+    echo "Registered tmux-cli MCP server in Claude Code."
+  fi
+else
+  python3 -c "
+import json, sys
+json.dump({'mcpServers': {'tmux-cli': {'type': 'stdio', 'command': sys.argv[1], 'args': ['mcp'], 'env': {}}}}, open(sys.argv[2], 'w'), indent=2)
+" "$BINARY_PATH" "$CLAUDE_JSON"
+  echo "Created Claude Code config with tmux-cli MCP server."
+fi
