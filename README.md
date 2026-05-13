@@ -46,17 +46,7 @@ Once inside Claude Code, two slash commands are available:
 
 Both spawn parallel worker windows that run independently and report back.
 
-## CLI reference
-
-```bash
-tmux-cli start-attach    # Create session and attach
-tmux-cli setting         # Open settings TUI
-tmux-cli status          # Show session status
-tmux-cli list            # List all sessions
-tmux-cli kill            # Kill current session
-```
-
-See [docs/advanced-usage.md](docs/advanced-usage.md) for full command reference, settings, and MCP tools.
+See [docs/advanced-usage.md](docs/advanced-usage.md) for settings reference and internals.
 
 ## Support
 
