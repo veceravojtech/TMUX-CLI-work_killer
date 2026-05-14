@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"fmt"
@@ -8,9 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"os/exec"
 
 	"github.com/console/tmux-cli/internal/session"
 	"github.com/console/tmux-cli/internal/setup"
+	"github.com/console/tmux-cli/internal/sudo"
 	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/console/tmux-cli/internal/tui"
 	"github.com/spf13/cobra"
@@ -170,6 +175,19 @@ var settingCmd = &cobra.Command{
 	},
 }
 
+var sudoCmd = &cobra.Command{
+	Use:   "sudo",
+	Short: "Run a command with root privileges",
+	Long: `Run a shell command with root privileges using the cached sudo password.
+The command streams stdout/stderr in real-time. Requires a session started with --sudo.
+
+Example:
+  tmux-cli sudo "apt update"
+  tmux-cli sudo --timeout 120 "apt upgrade -y"`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSudo,
+}
+
 var windowsMessageCmd = &cobra.Command{
 	Use:   "windows-message",
 	Short: "Send a formatted message to another window",
@@ -222,6 +240,9 @@ func init() {
 	startCmd.Flags().Bool("sudo", false, "Prompt for sudo password and cache it for the session")
 	startAttachCmd.Flags().Bool("sudo", false, "Prompt for sudo password and cache it for the session")
 
+	// Add --timeout flag to sudo command
+	sudoCmd.Flags().Int("timeout", 0, "Timeout in seconds (0 = no timeout; omit for config default, which is 30s)")
+
 	// Add --clean flag to start and start-attach commands
 	startCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
 	startAttachCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
@@ -239,6 +260,7 @@ func init() {
 	rootCmd.AddCommand(windowsUuidCmd)
 	rootCmd.AddCommand(windowsMessageCmd)
 	rootCmd.AddCommand(settingCmd)
+	rootCmd.AddCommand(sudoCmd)
 	rootCmd.AddCommand(mcpCmd)
 }
 
@@ -808,6 +830,54 @@ func runWindowsUuid(cmd *cobra.Command, args []string) error {
 
 	fmt.Println(uuid)
 	return nil
+}
+
+func runSudo(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	executor := tmux.NewTmuxExecutor()
+	sessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", cwd)
+	if sessionID == "" {
+		return fmt.Errorf("no tmux-cli session found for this directory")
+	}
+
+	password, err := executor.GetSessionEnvironment(sessionID, "TMUX_CLI_SUDO_PASS")
+	if err != nil || password == "" {
+		return fmt.Errorf("sudo not configured — start session with --sudo flag")
+	}
+
+	var timeoutInput *int
+	if cmd.Flags().Changed("timeout") {
+		v, _ := cmd.Flags().GetInt("timeout")
+		timeoutInput = &v
+	}
+	timeout := sudo.ResolveTimeout(timeoutInput, cwd)
+
+	sudoExec := sudo.NewExecutor(password, time.Duration(timeout)*time.Second)
+
+	start := time.Now()
+	execErr := sudoExec.ExecuteStream(context.Background(), args[0], os.Stdout, os.Stderr)
+	logSudoResult(cwd, args[0], execErr, time.Since(start))
+	return execErr
+}
+
+func logSudoResult(workDir, command string, execErr error, elapsed time.Duration) {
+	entry := sudo.LogEntry{
+		Command:    command,
+		DurationMs: elapsed.Milliseconds(),
+	}
+	if execErr != nil {
+		entry.Error = execErr.Error()
+		entry.ExitCode = 1
+		var exitErr *exec.ExitError
+		if errors.As(execErr, &exitErr) {
+			entry.ExitCode = exitErr.ExitCode()
+		}
+	}
+	sudo.LogExecution(workDir, entry)
 }
 
 func runAutoSetup(projectPath string) error {

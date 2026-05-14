@@ -285,6 +285,27 @@ commands:
 	assert.Contains(t, string(raw), "supervisor:")
 }
 
+func TestDefaultSettings_SudoTimeout(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 30, s.Sudo.Timeout, "default sudo timeout should be 30")
+}
+
+func TestSettings_SudoYAMLRoundTrip(t *testing.T) {
+	root := t.TempDir()
+
+	original := &Settings{
+		Hooks:    HooksSettings{BlockInteractive: true},
+		Commands: CommandsSettings{Enabled: true},
+		Sudo:     SudoSettings{Timeout: 60},
+	}
+
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, 60, loaded.Sudo.Timeout)
+}
+
 func TestSaveSettings_WritesYAML(t *testing.T) {
 	root := t.TempDir()
 

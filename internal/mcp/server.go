@@ -4,9 +4,10 @@
 // The server discovers sessions by matching project path stored in tmux session
 // environment variables. No session file is needed.
 //
-// The server provides ten tools: windows-list, windows-create,
+// The server provides eleven tools: windows-list, windows-create,
 // windows-kill, windows-send, windows-message, windows-spawn-worker,
-// windows-recover-workers, tasks-validate, spec-validate, and hooks-config.
+// windows-recover-workers, tasks-validate, spec-validate, hooks-config,
+// and sudo-execute.
 package mcp
 
 import (
@@ -125,13 +126,11 @@ type WindowsListOutput struct {
 type WindowsSendInput struct {
 	WindowID string `json:"windowId" jsonschema:"Window identifier to send command to (e.g. '@0' or '@1')"`
 	Command  string `json:"command" jsonschema:"Command text to execute in the window (sent exactly as provided)"`
-	Sudo     bool   `json:"sudo,omitempty" jsonschema:"When true, automatically creates a temp window, runs the command with sudo using cached password, captures output, and destroys the temp window. Do NOT manually create a window for sudo."`
 }
 
 // WindowsSendOutput defines the output schema for windows-send tool
 type WindowsSendOutput struct {
-	Success bool   `json:"success" jsonschema:"True if command was sent successfully"`
-	Output  string `json:"output,omitempty" jsonschema:"Captured output from sudo command execution (only present when sudo=true)"`
+	Success bool `json:"success" jsonschema:"True if command was sent successfully"`
 }
 
 // WindowsMessageInput defines the input schema for windows-message tool
@@ -215,6 +214,26 @@ type HooksConfigOutput struct {
 	Changed bool                 `json:"changed"`
 }
 
+// SudoExecuteInput defines the input schema for sudo-execute tool
+type SudoExecuteInput struct {
+	Command string `json:"command" jsonschema:"Shell command (ignored — tool is disabled, use tmux-cli sudo instead)"`
+}
+
+// SudoExecuteOutput defines the output schema for sudo-execute tool
+type SudoExecuteOutput struct {
+	Message string `json:"message" jsonschema:"Guidance message"`
+}
+
+// SudoExecuteHandler is the MCP tool handler for sudo-execute operation.
+func (s *Server) SudoExecuteHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input SudoExecuteInput) (
+	*sdkmcp.CallToolResult,
+	SudoExecuteOutput,
+	error,
+) {
+	_, err := s.SudoExecute(input.Command)
+	return nil, SudoExecuteOutput{}, err
+}
+
 // HooksConfigHandler is the MCP tool handler for hooks-config operation.
 func (s *Server) HooksConfigHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input HooksConfigInput) (
 	*sdkmcp.CallToolResult,
@@ -249,12 +268,12 @@ func (s *Server) WindowsSendHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	WindowsSendOutput,
 	error,
 ) {
-	success, output, err := s.WindowsSend(input.WindowID, input.Command, input.Sudo)
+	success, err := s.WindowsSend(input.WindowID, input.Command)
 	if err != nil {
 		return nil, WindowsSendOutput{}, err
 	}
 
-	return nil, WindowsSendOutput{Success: success, Output: output}, nil
+	return nil, WindowsSendOutput{Success: success}, nil
 }
 
 // WindowsMessageHandler is the MCP tool handler for windows-message operation.
@@ -346,7 +365,7 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "windows-send",
-		Description: "Send a text command to a specific window for execution without manual switching. Supports multi-window orchestration workflows by sending commands in sequence. When sudo=true, a persistent 'sudo' shell window is automatically created (or reused if it exists), the command runs with elevated privileges using the cached password (from --sudo session flag), and output is captured and returned. Do NOT create a separate window for sudo commands — it is handled automatically.",
+		Description: "Send a text command to a specific window for execution without manual switching. Supports multi-window orchestration workflows by sending commands in sequence.",
 		Annotations: &sdkmcp.ToolAnnotations{
 			ReadOnlyHint:   false,
 			IdempotentHint: false,
@@ -424,6 +443,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.TasksValidateHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "sudo-execute",
+		Description: "DISABLED — use the CLI command instead: tmux-cli sudo \"<command>\". The CLI streams output in real-time and supports long-running operations. Example: tmux-cli sudo \"apt upgrade -y\"",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, s.SudoExecuteHandler)
 
 	return nil
 }

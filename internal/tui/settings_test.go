@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 8)
+	assert.Len(t, m.items, 10)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -40,7 +40,8 @@ commands:
 	assert.True(t, m.items[2].value)
 	assert.Equal(t, "supervisor.max_workers", m.items[3].key)
 	assert.Equal(t, "supervisor.cycle_delay", m.items[4].key)
-	assert.Equal(t, "supervisor.unplanned_audit", m.items[5].key)
+	assert.Equal(t, "supervisor.max_cycles", m.items[5].key)
+	assert.Equal(t, "supervisor.unplanned_audit", m.items[6].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -95,14 +96,22 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 7, m.cursor)
 
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 8, m.cursor)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 9, m.cursor)
+
 	// Can't go past last item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 7, m.cursor)
+	assert.Equal(t, 9, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 6, m.cursor)
+	assert.Equal(t, 8, m.cursor)
 
 	// Can't go above first item
 	for i := 0; i < 10; i++ {
@@ -529,6 +538,68 @@ func TestModel_NumericItem_View(t *testing.T) {
 	view := m.View()
 	assert.Contains(t, view, "Max Workers")
 	assert.Contains(t, view, "4")
+}
+
+func TestModel_SudoTimeoutItem(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	var found bool
+	for _, item := range m.items {
+		if item.key == "sudo.timeout" {
+			found = true
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 30, item.intVal)
+		}
+	}
+	assert.True(t, found, "sudo.timeout must be in TUI items")
+}
+
+func TestToSettings_SudoTimeout(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "sudo.timeout" {
+			m.items[i].intVal = 120
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 120, result.Sudo.Timeout)
+}
+
+func TestModel_MaxCyclesItem(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	var found bool
+	for _, item := range m.items {
+		if item.key == "supervisor.max_cycles" {
+			found = true
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 0, item.intVal, "default max_cycles should be 0 (unlimited)")
+		}
+	}
+	assert.True(t, found, "supervisor.max_cycles must be in TUI items")
+}
+
+func TestToSettings_MaxCycles(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "supervisor.max_cycles" {
+			m.items[i].intVal = 5
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 5, result.Supervisor.MaxCycles)
 }
 
 func TestModel_VimKeys(t *testing.T) {

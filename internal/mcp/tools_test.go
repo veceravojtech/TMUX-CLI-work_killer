@@ -83,11 +83,10 @@ func TestServer_WindowsSend_Success(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@0", "echo hello").Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	success, output, err := server.WindowsSend("@0", "echo hello", false)
+	success, err := server.WindowsSend("@0", "echo hello")
 
 	require.NoError(t, err)
 	assert.True(t, success)
-	assert.Empty(t, output)
 }
 
 // TestServer_WindowsSend_ByName verifies send by window name
@@ -101,11 +100,10 @@ func TestServer_WindowsSend_ByName(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", "echo hello").Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	success, output, err := server.WindowsSend("worker", "echo hello", false)
+	success, err := server.WindowsSend("worker", "echo hello")
 
 	require.NoError(t, err)
 	assert.True(t, success)
-	assert.Empty(t, output)
 }
 
 // TestServer_WindowsSend_EmptyWindowID verifies error for empty window ID
@@ -113,7 +111,7 @@ func TestServer_WindowsSend_EmptyWindowID(t *testing.T) {
 	mockExec := new(testutil.MockTmuxExecutor)
 	server := newTestServer(mockExec, "/test/dir")
 
-	success, _, err := server.WindowsSend("", "echo hello", false)
+	success, err := server.WindowsSend("", "echo hello")
 
 	require.Error(t, err)
 	assert.False(t, success)
@@ -125,7 +123,7 @@ func TestServer_WindowsSend_EmptyCommand(t *testing.T) {
 	mockExec := new(testutil.MockTmuxExecutor)
 	server := newTestServer(mockExec, "/test/dir")
 
-	success, _, err := server.WindowsSend("@0", "", false)
+	success, err := server.WindowsSend("@0", "")
 
 	require.Error(t, err)
 	assert.False(t, success)
@@ -419,98 +417,6 @@ func TestResolveWindowIdentifier_Empty(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidWindowID)
 }
 
-// TestServer_WindowsSend_WithSudo_NewWindow verifies sudo creates persistent window on first call
-func TestServer_WindowsSend_WithSudo_NewWindow(t *testing.T) {
-	mockExec := new(testutil.MockTmuxExecutor)
-	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
-	// No "sudo" window exists yet
-	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@1", Name: "worker"},
-	}, nil)
-	mockExec.On("GetSessionEnvironment", "test-session", "TMUX_CLI_SUDO_PASS").Return("mypassword", nil)
-	mockExec.On("CreateWindow", "test-session", "sudo", "zsh").Return("@99", nil)
-	mockExec.On("SendMessage", "test-session", "@99", mock.MatchedBy(func(s string) bool {
-		return strings.HasPrefix(s, "export _SP=")
-	})).Return(nil)
-	mockExec.On("SendMessageWithDelay", "test-session", "@99", mock.MatchedBy(func(s string) bool {
-		return strings.Contains(s, "sudo -S") && strings.Contains(s, "echo hello")
-	})).Return(nil)
-	mockExec.On("CaptureWindowOutput", "test-session", "@99").Return("root\n", nil)
-
-	server := newTestServer(mockExec, "/test/dir")
-	success, output, err := server.WindowsSend("@0", "echo hello", true)
-
-	require.NoError(t, err)
-	assert.True(t, success)
-	assert.Equal(t, "root", output)
-	mockExec.AssertCalled(t, "CreateWindow", "test-session", "sudo", "zsh")
-}
-
-// TestServer_WindowsSend_WithSudo_ExistingWindow verifies sudo reuses existing persistent window
-func TestServer_WindowsSend_WithSudo_ExistingWindow(t *testing.T) {
-	mockExec := new(testutil.MockTmuxExecutor)
-	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
-	// "sudo" window already exists
-	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@1", Name: "worker"},
-		{TmuxWindowID: "@5", Name: "sudo"},
-	}, nil)
-	mockExec.On("GetSessionEnvironment", "test-session", "TMUX_CLI_SUDO_PASS").Return("mypassword", nil)
-	mockExec.On("SendMessageWithDelay", "test-session", "@5", mock.MatchedBy(func(s string) bool {
-		return strings.Contains(s, "sudo -S") && strings.Contains(s, "echo hello")
-	})).Return(nil)
-	mockExec.On("CaptureWindowOutput", "test-session", "@5").Return("root\n", nil)
-
-	server := newTestServer(mockExec, "/test/dir")
-	success, output, err := server.WindowsSend("@0", "echo hello", true)
-
-	require.NoError(t, err)
-	assert.True(t, success)
-	assert.Equal(t, "root", output)
-	mockExec.AssertNotCalled(t, "CreateWindow", mock.Anything, mock.Anything, mock.Anything)
-}
-
-// TestServer_WindowsSend_WithSudo_CreateWindowFails verifies error when persistent window creation fails
-func TestServer_WindowsSend_WithSudo_CreateWindowFails(t *testing.T) {
-	mockExec := new(testutil.MockTmuxExecutor)
-	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
-	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@1", Name: "worker"},
-	}, nil)
-	mockExec.On("GetSessionEnvironment", "test-session", "TMUX_CLI_SUDO_PASS").Return("mypassword", nil)
-	mockExec.On("CreateWindow", "test-session", "sudo", "zsh").Return("", errors.New("tmux new-window failed"))
-
-	server := newTestServer(mockExec, "/test/dir")
-	success, _, err := server.WindowsSend("@0", "echo hello", true)
-
-	require.Error(t, err)
-	assert.False(t, success)
-	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
-	assert.Contains(t, err.Error(), "failed to create sudo window")
-}
-
-// TestServer_WindowsSend_WithSudo_NoPassword verifies error when sudo password not configured
-func TestServer_WindowsSend_WithSudo_NoPassword(t *testing.T) {
-	mockExec := new(testutil.MockTmuxExecutor)
-	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
-	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@1", Name: "worker"},
-	}, nil)
-	mockExec.On("GetSessionEnvironment", "test-session", "TMUX_CLI_SUDO_PASS").Return("", errors.New("not set"))
-
-	server := newTestServer(mockExec, "/test/dir")
-	success, _, err := server.WindowsSend("@0", "echo hello", true)
-
-	require.Error(t, err)
-	assert.False(t, success)
-	assert.ErrorIs(t, err, ErrInvalidInput)
-	assert.Contains(t, err.Error(), "sudo not configured")
-}
-
 // --- nextExecuteN tests ---
 
 func TestNextExecuteN_EmptyList(t *testing.T) {
@@ -745,7 +651,7 @@ func TestServer_WindowsRecoverWorkers_SkipsNonExecuteWindows(t *testing.T) {
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@1", Name: "sudo"},
+		{TmuxWindowID: "@1", Name: "monitor"},
 		{TmuxWindowID: "@2", Name: "execute-1"},
 		{TmuxWindowID: "@3", Name: "main"},
 	}, nil)

@@ -70,27 +70,27 @@ func resolveWindowIdentifier(windows []tmux.WindowInfo, identifier string) (stri
 }
 
 // WindowsSend sends a text command to a specific window for execution.
-func (s *Server) WindowsSend(windowIdentifier, command string, sudo bool) (bool, string, error) {
+func (s *Server) WindowsSend(windowIdentifier, command string) (bool, error) {
 	if windowIdentifier == "" {
-		return false, "", fmt.Errorf("%w: windowIdentifier cannot be empty", ErrInvalidWindowID)
+		return false, fmt.Errorf("%w: windowIdentifier cannot be empty", ErrInvalidWindowID)
 	}
 	if command == "" {
-		return false, "", fmt.Errorf("%w: command cannot be empty", ErrInvalidInput)
+		return false, fmt.Errorf("%w: command cannot be empty", ErrInvalidInput)
 	}
 
 	sessionID, err := s.discoverSession()
 	if err != nil {
-		return false, "", err
+		return false, err
 	}
 
 	windows, err := s.executor.ListWindows(sessionID)
 	if err != nil {
-		return false, "", fmt.Errorf("%w: %w", ErrTmuxCommandFailed, err)
+		return false, fmt.Errorf("%w: %w", ErrTmuxCommandFailed, err)
 	}
 
 	windowID, err := resolveWindowIdentifier(windows, windowIdentifier)
 	if err != nil {
-		return false, "", err
+		return false, err
 	}
 
 	// Verify window exists
@@ -102,59 +102,17 @@ func (s *Server) WindowsSend(windowIdentifier, command string, sudo bool) (bool,
 		}
 	}
 	if !windowExists {
-		return false, "", fmt.Errorf("%w: windowID=%s session=%s",
+		return false, fmt.Errorf("%w: windowID=%s session=%s",
 			ErrWindowNotFound, windowID, sessionID)
-	}
-
-	if sudo {
-		password, err := s.executor.GetSessionEnvironment(sessionID, "TMUX_CLI_SUDO_PASS")
-		if err != nil || password == "" {
-			return false, "", fmt.Errorf("%w: sudo not configured — start session with --sudo flag", ErrInvalidInput)
-		}
-
-		// Find or create persistent sudo window
-		sudoWindowID := ""
-		for i := range windows {
-			if windows[i].Name == "sudo" {
-				sudoWindowID = windows[i].TmuxWindowID
-				break
-			}
-		}
-		if sudoWindowID == "" {
-			sudoWindowID, err = s.executor.CreateWindow(sessionID, "sudo", "zsh")
-			if err != nil {
-				return false, "", fmt.Errorf("%w: failed to create sudo window: %w", ErrTmuxCommandFailed, err)
-			}
-			// Export password as env var in the persistent window
-			escapedPW := strings.ReplaceAll(password, "'", "'\\''")
-			err = s.executor.SendMessage(sessionID, sudoWindowID, "export _SP='"+escapedPW+"'")
-			if err != nil {
-				return false, "", fmt.Errorf("%w: failed to set sudo password: %w", ErrTmuxCommandFailed, err)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		// Execute command with sudo -S (reads password from stdin)
-		sudoCmd := fmt.Sprintf("echo \"$_SP\" | sudo -S %s 2>/dev/null", command)
-		err = s.executor.SendMessageWithDelay(sessionID, sudoWindowID, sudoCmd)
-		if err != nil {
-			return false, "", fmt.Errorf("%w: sudo send failed: %w", ErrTmuxCommandFailed, err)
-		}
-
-		time.Sleep(2 * time.Second)
-
-		output, _ := s.executor.CaptureWindowOutput(sessionID, sudoWindowID)
-
-		return true, strings.TrimSpace(output), nil
 	}
 
 	err = s.executor.SendMessageWithDelay(sessionID, windowID, command)
 	if err != nil {
-		return false, "", fmt.Errorf("%w: session=%s window=%s command=%q: %w",
+		return false, fmt.Errorf("%w: session=%s window=%s command=%q: %w",
 			ErrTmuxCommandFailed, sessionID, windowID, command, err)
 	}
 
-	return true, "", nil
+	return true, nil
 }
 
 // WindowsMessage sends a formatted message to another window with auto-detected sender.

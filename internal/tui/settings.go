@@ -33,9 +33,11 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "commands.enabled", label: "Commands Enabled", kind: "bool", value: settings.Commands.Enabled},
 			{key: "supervisor.max_workers", label: "Max Workers", kind: "int", intVal: settings.Supervisor.MaxWorkers},
 			{key: "supervisor.cycle_delay", label: "Cycle Timeout (s)", kind: "int", intVal: settings.Supervisor.CycleDelay},
+			{key: "supervisor.max_cycles", label: "Max Cycles (0=∞)", kind: "int", intVal: settings.Supervisor.MaxCycles},
 			{key: "supervisor.unplanned_audit", label: "Unplanned Audit", kind: "bool", value: settings.Supervisor.UnplannedAudit},
 			{key: "plan.auto_approve", label: "Plan Auto-Approve", kind: "bool", value: settings.Plan.AutoApprove},
 			{key: "plan.auto_execute", label: "Plan Auto-Execute", kind: "bool", value: settings.Plan.AutoExecute},
+			{key: "sudo.timeout", label: "Sudo Timeout (0=∞)", kind: "int", intVal: settings.Sudo.Timeout},
 		},
 	}
 }
@@ -139,12 +141,16 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Supervisor.MaxWorkers = item.intVal
 		case "supervisor.cycle_delay":
 			s.Supervisor.CycleDelay = item.intVal
+		case "supervisor.max_cycles":
+			s.Supervisor.MaxCycles = item.intVal
 		case "supervisor.unplanned_audit":
 			s.Supervisor.UnplannedAudit = item.value
 		case "plan.auto_approve":
 			s.Plan.AutoApprove = item.value
 		case "plan.auto_execute":
 			s.Plan.AutoExecute = item.value
+		case "sudo.timeout":
+			s.Sudo.Timeout = item.intVal
 		}
 	}
 	return &s

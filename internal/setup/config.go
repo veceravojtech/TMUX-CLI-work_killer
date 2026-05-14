@@ -38,11 +38,16 @@ type PlanSettings struct {
 	AutoExecute bool `yaml:"auto_execute"`
 }
 
+type SudoSettings struct {
+	Timeout int `yaml:"timeout"`
+}
+
 type Settings struct {
 	Hooks      HooksSettings      `yaml:"hooks"`
 	Commands   CommandsSettings   `yaml:"commands"`
 	Supervisor SupervisorSettings `yaml:"supervisor"`
 	Plan       PlanSettings       `yaml:"plan"`
+	Sudo       SudoSettings       `yaml:"sudo"`
 }
 
 func DefaultSettings() *Settings {
@@ -63,6 +68,9 @@ func DefaultSettings() *Settings {
 		Plan: PlanSettings{
 			AutoApprove: true,
 			AutoExecute: true,
+		},
+		Sudo: SudoSettings{
+			Timeout: 30,
 		},
 	}
 }

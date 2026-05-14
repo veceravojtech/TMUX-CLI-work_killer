@@ -33,12 +33,12 @@ cmd/tmux-cli/
   session_helper.go    ResolveWindowIdentifier helper
   mcp.go               MCP server CLI command (stdio transport)
   embedded/            Go-embedded assets
-    *.sh               hook shell scripts (3 files)
+    *.sh               hook shell scripts (5 files)
     commands/tmux/     command templates installed to .claude/commands/tmux/
 
 internal/
   setup/               auto-setup system (setting.yaml → hooks, settings.json, commands, gitexclude)
-    config.go          Settings YAML model, Load/Save/Default (includes supervisor.max_cycles)
+    config.go          Settings YAML model, Load/Save/Default (Supervisor, Plan, Sudo, Hooks, Commands)
     hooks.go           WriteHookScripts → .tmux-cli/hooks/
     claude_settings.go ClaudeSettings JSON model, Generate/Write → .claude/settings.json
     commands.go        WriteCommands → .claude/commands/tmux/ (clean-slate)
@@ -47,7 +47,12 @@ internal/
   mcp/
     server.go          MCP Server struct, handlers, RegisterTools()
     tools.go           tool implementations (WindowsList/Create/Send/Message/Kill, HooksConfig)
+    tools_sudo.go      SudoExecute disabled stub (returns guidance to use tmux-cli sudo CLI)
     errors.go          sentinel errors
+  sudo/
+    executor.go        Executor struct, Execute() + ExecuteStream() via sudo -S bash -c
+    timeout.go         ResolveTimeout helper (input > config > 30s default)
+    logger.go          JSON-lines audit log (.tmux-cli/logs/sudo.log)
   session/
     manager.go         SessionManager.CreateSession/KillSession
     postcommand.go     PostCommandConfig, ExecutePostCommandWithFallback (3-level fallback)
@@ -112,13 +117,13 @@ internal/
 - `PostCommandConfig` has a 3-level fallback chain for launching Claude in new windows — errors from one level trigger the next
 - The `install` command was removed — all setup is automatic via `start`/`start-attach`
 
-## MCP tools (10 total)
+## MCP tools (11 total)
 
 | Tool | Read-only | Idempotent | Purpose |
 |------|-----------|-----------|---------|
 | windows-list | yes | yes | List window names |
 | windows-create | no | no | Create window + postcommand |
-| windows-send | no | no | Send command (with optional sudo) |
+| windows-send | no | no | Send command to window |
 | windows-message | no | no | Formatted inter-window message |
 | windows-kill | no | yes | Kill window by name |
 | windows-spawn-worker | no | no | Atomic worker spawn (create + /tmux:execute + task message) |
@@ -126,6 +131,7 @@ internal/
 | tasks-validate | yes | yes | Validate tasks.yaml lean format (no extra fields) |
 | spec-validate | yes | yes | Validate spec .md against S0-S8 quality catalogue |
 | hooks-config | no | yes | List/enable/disable hooks in setting.yaml |
+| sudo-execute | yes | yes | DISABLED — returns guidance to use `tmux-cli sudo` CLI instead |
 
 ## Post-task requirement
 
