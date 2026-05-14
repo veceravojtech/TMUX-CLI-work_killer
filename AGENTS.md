@@ -137,6 +137,30 @@ internal/
 
 Always run `make install` after completing any code changes. This builds the binary and copies it to `~/.local/bin/tmux-cli`, ensuring the running installation reflects the latest changes.
 
+## Deploy
+
+Binaries are served from `https://tmux.vojta.ai/releases/`. Users install with:
+
+```bash
+curl -fsSL https://tmux.vojta.ai/install.sh | bash
+```
+
+To deploy a new version, build cross-platform binaries and SCP to the server:
+
+```bash
+mkdir -p release
+for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+  OS="${pair%/*}"; ARCH="${pair#*/}"
+  GOOS="$OS" GOARCH="$ARCH" go build -ldflags "-s -w" -o tmux-cli ./cmd/tmux-cli
+  tar -czf "release/tmux-cli-${OS}-${ARCH}.tar.gz" tmux-cli && rm tmux-cli
+done
+scp release/* deploy@178.105.96.42:/var/www/tmux-web/shared/public/releases/
+scp install.sh deploy@178.105.96.42:/var/www/tmux-web/shared/public/install.sh
+rm -rf release/
+```
+
+A GitHub Actions workflow (`.github/workflows/release.yml`) automates this on tag push (`v*`), but no tags have been created yet — deploys are manual for now.
+
 ## Supervisor/execute protocol
 
 The `/supervisor` command spawns parallel `/execute` workers via tmux-cli MCP. Workers have full read+write access. Communication uses tagged messages (`[EXECUTE:DONE]`, `[EXECUTE:NEED_INPUT]`, `[EXECUTE:FAILED]`). Command templates live in `cmd/tmux-cli/embedded/commands/tmux/` and are installed to `.claude/commands/tmux/` in target projects.

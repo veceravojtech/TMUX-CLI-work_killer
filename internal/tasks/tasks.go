@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -134,6 +135,19 @@ var allowedTaskKeys = map[string]bool{
 	"depends_on": true,
 }
 
+var widPattern = regexp.MustCompile(`^execute-\d+$`)
+
+var validTaskStatuses = map[string]bool{
+	StatusPending:    true,
+	StatusInProgress: true,
+	StatusDone:       true,
+}
+
+var validFileStatuses = map[string]bool{
+	FileStatusPlanning: true,
+	FileStatusReady:    true,
+}
+
 func ValidateTasksFile(path string) []string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -141,28 +155,55 @@ func ValidateTasksFile(path string) []string {
 	}
 
 	var raw struct {
-		Tasks []yaml.Node `yaml:"tasks"`
+		Status string      `yaml:"status"`
+		Tasks  []yaml.Node `yaml:"tasks"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return []string{fmt.Sprintf("invalid YAML: %v", err)}
 	}
 
 	var errs []string
+
+	if !validFileStatuses[raw.Status] {
+		errs = append(errs, fmt.Sprintf("invalid file status %q (must be planning or ready)", raw.Status))
+	}
+
+	wids := make(map[string]bool)
 	for _, node := range raw.Tasks {
 		if node.Kind != yaml.MappingNode {
 			continue
 		}
-		var name, wid, context string
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == "wid" {
+				wids[node.Content[i+1].Value] = true
+			}
+		}
+	}
+
+	for _, node := range raw.Tasks {
+		if node.Kind != yaml.MappingNode {
+			continue
+		}
+		var name, wid, status, context string
+		var dependsOn []string
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			key := node.Content[i].Value
-			val := node.Content[i+1].Value
+			valNode := node.Content[i+1]
 			switch key {
 			case "name":
-				name = val
+				name = valNode.Value
 			case "wid":
-				wid = val
+				wid = valNode.Value
+			case "status":
+				status = valNode.Value
 			case "context":
-				context = val
+				context = valNode.Value
+			case "depends_on":
+				if valNode.Kind == yaml.SequenceNode {
+					for _, item := range valNode.Content {
+						dependsOn = append(dependsOn, item.Value)
+					}
+				}
 			}
 		}
 		id := wid
@@ -175,6 +216,17 @@ func ValidateTasksFile(path string) []string {
 		}
 		if context == "" {
 			errs = append(errs, fmt.Sprintf("task %s: missing context field — every task must point to a context .md file", id))
+		}
+		if !validTaskStatuses[status] {
+			errs = append(errs, fmt.Sprintf("task %q: invalid status %q (must be pending, in_progress, or done)", id, status))
+		}
+		if !widPattern.MatchString(wid) {
+			errs = append(errs, fmt.Sprintf("task %q: invalid wid format %q (must be execute-N)", id, wid))
+		}
+		for _, dep := range dependsOn {
+			if !wids[dep] {
+				errs = append(errs, fmt.Sprintf("task %q: depends_on references unknown wid %q", id, dep))
+			}
 		}
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			key := node.Content[i].Value

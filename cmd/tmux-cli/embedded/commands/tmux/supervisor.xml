@@ -303,11 +303,11 @@ DELIVERABLE (write these sections INSIDE the report .md; do NOT paste them into 
 
 RESPONSE PROTOCOL (MANDATORY):
 1. Save the full report to .tmux-cli/research/{y-m-d-hh}/execute-&lt;N&gt;-&lt;slug&gt;.md
-   with headings ## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES plus any supporting detail.
+   using the sections specified in DELIVERABLE above (or ## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES when no custom deliverable is set).
    Pick a descriptive &lt;slug&gt; (kebab-case, ≤40 chars).
 2. Reply via windows-message to SUPERVISOR_WID with ONLY:
    [EXECUTE:DONE wid=&lt;self&gt; sup=&lt;supervisor&gt; file=&lt;abs-path-to-your-md&gt;]
-   Do NOT inline FINDINGS/RISKS/RECOMMENDATION/FILES in the tmux message. The file IS the report.
+   Do NOT inline report content in the tmux message. The file IS the report.
 3. [EXECUTE:NEED_INPUT wid=&lt;self&gt; sup=&lt;supervisor&gt; ...] and [EXECUTE:FAILED wid=&lt;self&gt; sup=&lt;supervisor&gt; reason=...] may carry a short (&lt;200 char) inline reason.
 4. If the supervisor sends [EXECUTE:PUSHBACK ...], update the SAME .md file and re-tag [EXECUTE:DONE wid=&lt;self&gt; sup=&lt;supervisor&gt; file=&lt;same-path&gt;].
     </template>

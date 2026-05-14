@@ -596,6 +596,229 @@ tasks:
 	assert.Contains(t, errs[0], "context .md file")
 }
 
+func TestValidateTasksFile_DependsOnUnknownWid(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "task a"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+    depends_on:
+      - execute-99
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "depends_on references unknown wid")
+	assert.Contains(t, errs[0], "execute-99")
+}
+
+func TestValidateTasksFile_DependsOnValidRefs(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "task a"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+    depends_on:
+      - execute-2
+  - name: "task b"
+    wid: "execute-2"
+    status: pending
+    context: "ctx2.md"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	assert.Empty(t, errs)
+}
+
+func TestValidateTasksFile_InvalidTaskStatus(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "task a"
+    wid: "execute-1"
+    status: running
+    context: "ctx.md"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "invalid status")
+	assert.Contains(t, errs[0], "running")
+}
+
+func TestValidateTasksFile_ValidTaskStatuses(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "pending task"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+  - name: "in progress task"
+    wid: "execute-2"
+    status: in_progress
+    context: "ctx2.md"
+  - name: "done task"
+    wid: "execute-3"
+    status: done
+    context: "ctx3.md"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	assert.Empty(t, errs)
+}
+
+func TestValidateTasksFile_InvalidWidFormat(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "bad wid"
+    wid: "worker-1"
+    status: pending
+    context: "ctx.md"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "invalid wid format")
+	assert.Contains(t, errs[0], "worker-1")
+}
+
+func TestValidateTasksFile_InvalidWidFormatVariants(t *testing.T) {
+	tests := []struct {
+		name  string
+		wid   string
+		valid bool
+	}{
+		{"valid execute-1", "execute-1", true},
+		{"valid execute-99", "execute-99", true},
+		{"missing number", "execute-", false},
+		{"no dash", "execute1", false},
+		{"uppercase", "Execute-1", false},
+		{"extra suffix", "execute-1-abc", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, ".tmux-cli")
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+
+			yamlData := fmt.Sprintf(`status: ready
+cycle: 1
+tasks:
+  - name: "task"
+    wid: "%s"
+    status: pending
+    context: "ctx.md"
+`, tt.wid)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+			errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+			if tt.valid {
+				assert.Empty(t, errs, "wid %q should be valid", tt.wid)
+			} else {
+				require.NotEmpty(t, errs, "wid %q should be invalid", tt.wid)
+				assert.Contains(t, errs[0], "invalid wid format")
+			}
+		})
+	}
+}
+
+func TestValidateTasksFile_InvalidFileStatus(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: active
+cycle: 1
+tasks:
+  - name: "task"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "invalid file status")
+	assert.Contains(t, errs[0], "active")
+}
+
+func TestValidateTasksFile_ValidFileStatuses(t *testing.T) {
+	for _, status := range []string{"planning", "ready"} {
+		t.Run(status, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, ".tmux-cli")
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+
+			yamlData := fmt.Sprintf(`status: %s
+cycle: 1
+tasks:
+  - name: "task"
+    wid: "execute-1"
+    status: pending
+    context: "ctx.md"
+`, status)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+			errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+			assert.Empty(t, errs)
+		})
+	}
+}
+
+func TestValidateTasksFile_MultipleNewErrors(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: bogus
+cycle: 1
+tasks:
+  - name: "task"
+    wid: "worker-1"
+    status: running
+    context: "ctx.md"
+    depends_on:
+      - execute-999
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	assert.GreaterOrEqual(t, len(errs), 4)
+}
+
 func TestCreateContextFile(t *testing.T) {
 	root := t.TempDir()
 	researchDir := "2026-05-11-20"

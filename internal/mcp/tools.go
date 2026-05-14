@@ -436,11 +436,15 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 	}
 	b.WriteString("\nRESPONSE PROTOCOL (MANDATORY):\n")
 	fmt.Fprintf(&b, "1. Save the full report to .tmux-cli/research/%s/%s-<slug>.md\n", researchDir, workerName)
-	b.WriteString("   with headings ## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES plus any supporting detail.\n")
+	if deliverable != "" {
+		b.WriteString("   using the sections specified in DELIVERABLE above.\n")
+	} else {
+		b.WriteString("   with headings ## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES plus any supporting detail.\n")
+	}
 	b.WriteString("   Pick a descriptive <slug> (kebab-case, <=40 chars).\n")
 	fmt.Fprintf(&b, "2. Reply via windows-message to %s with ONLY:\n", supervisorWid)
 	fmt.Fprintf(&b, "   [EXECUTE:DONE wid=%s sup=%s file=<abs-path-to-your-md>]\n", workerName, supervisorWid)
-	b.WriteString("   Do NOT inline FINDINGS/RISKS/RECOMMENDATION/FILES in the tmux message. The file IS the report.\n")
+	b.WriteString("   Do NOT inline report content in the tmux message. The file IS the report.\n")
 	fmt.Fprintf(&b, "3. [EXECUTE:NEED_INPUT wid=%s sup=%s ...] and [EXECUTE:FAILED wid=%s sup=%s reason=...] may carry a short (<200 char) inline reason.\n", workerName, supervisorWid, workerName, supervisorWid)
 	b.WriteString("4. If the supervisor sends [EXECUTE:PUSHBACK n=<N> gap=<SX>]:\n")
 	b.WriteString("   a. Before amending: identify what currently works well in the cited section and adjacent sections (KEEP list).\n")

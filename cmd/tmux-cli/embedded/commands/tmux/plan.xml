@@ -1,5 +1,5 @@
 <task id="plan" name="Planning supervisor — parallel spec-writing orchestrator">
-  <objective>Spawn N parallel /tmux:execute workers via tmux-cli to produce implementation-ready specification files. Read a plan/spec file, decompose it into modules, create research-task context files, spawn spec-writing workers, verify spec quality against the S1–S8 pushback catalogue, present specs for interactive user approval, and finalize approved specs into tasks.yaml for /tmux:supervisor.</objective>
+  <objective>Spawn N parallel /tmux:execute workers via tmux-cli to produce implementation-ready specification files. Read a plan/spec file, decompose it into modules, create research-task context files, spawn spec-writing workers, verify spec quality against the S1–S9 pushback catalogue, present specs for interactive user approval, and finalize approved specs into tasks.yaml for /tmux:supervisor.</objective>
 
   <input>
     <arg name="$ARGUMENTS">Path to a plan/spec file OR inline task description. The planning supervisor reads it, derives module decomposition, and spawns parallel spec-writing workers.</arg>
@@ -27,7 +27,7 @@
     <term name="FRESH mode">No usable tasks.yaml exists — derive everything from scratch.</term>
     <term name="INCREMENTAL mode">tasks.yaml exists with status: planning — preserve existing tasks, append new spec tasks.</term>
     <term name="ranking heuristic">Priority ordering for decomposition: (1) closest to user-facing surface or critical path, (2) closest to impact target, (3) smallest budget before completion, (4) overturns prior assumption if confirmed. Break ties by lowest budget.</term>
-    <term name="pushback catalogue">The S1–S8 taxonomy in step 6 used to gate spec quality before acceptance.</term>
+    <term name="pushback catalogue">The S1–S9 taxonomy in step 6 used to gate spec quality before acceptance.</term>
   </glossary>
 
   <message-tags>
@@ -36,7 +36,7 @@
     <tag name="[EXECUTE:NEED_INPUT wid=... sup=... &lt;short reason&gt;]" from="worker">Worker cannot proceed without a fact. Reason ≤ 200 chars inline. Planning supervisor answers via windows-message, or replies [SUPERVISOR:NARROW-SCOPE].</tag>
     <tag name="[EXECUTE:FAILED wid=... sup=... reason=&lt;short&gt;]" from="worker">Worker hit terminal failure. Reason ≤ 200 chars inline. Planning supervisor respawns with narrowed scope (first attempt) or escalates (second).</tag>
     <tag name="[SUPERVISOR:REMIND &lt;what to do&gt;]" from="plan-supervisor">Protocol reminder to worker. Does not advance state.</tag>
-    <tag name="[EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S8&gt;]" from="plan-supervisor">Spec quality gap per pushback catalogue. Worker updates the SAME .md and re-tags DONE.</tag>
+    <tag name="[EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S9&gt;]" from="plan-supervisor">Spec quality gap per pushback catalogue. Worker updates the SAME .md and re-tags DONE.</tag>
     <tag name="[SUPERVISOR:AMEND &lt;new scope&gt;]" from="plan-supervisor">Amend a running worker's scope mid-run.</tag>
     <tag name="[SUPERVISOR:AMEND-PROTOCOL &lt;new rule&gt;]" from="plan-supervisor">Amend response protocol mid-run.</tag>
     <tag name="[SUPERVISOR:KILL]" from="plan-supervisor">Instruct worker to exit cleanly — scope now pointless.</tag>
@@ -47,7 +47,7 @@
     <rule>The planning supervisor operates AUTONOMOUSLY during the SPEC-WRITING PHASE (steps 0–8): spawning workers, routing messages, pushing back on gaps, replanning. No user gates during worker management.</rule>
     <rule>The planning supervisor is INTERACTIVE during the APPROVAL PHASE (steps 9–10): the user reviews, edits, adds, removes, or re-specs modules before finalization.</rule>
     <rule>NEVER finalize (step 11) without explicit user "approve" from step 10 — UNLESS AUTO_APPROVE is true.</rule>
-    <rule>When AUTO_APPROVE is true, the planning supervisor operates FULLY AUTONOMOUSLY — no user interaction at any step. Specs are accepted after S1-S8 verification and immediately finalized.</rule>
+    <rule>When AUTO_APPROVE is true, the planning supervisor operates FULLY AUTONOMOUSLY — no user interaction at any step. Specs are accepted after S1-S9 verification and immediately finalized.</rule>
     <rule>For ambiguity during spec-writing: pick the highest-yield interpretation per &lt;ranking&gt; and record the chosen rationale so the user can redirect in step 10.</rule>
     <rule>Escalate to user ONLY for: (a) zero executable workers constructable from input, (b) user-only knowledge (credentials, intent, out-of-band facts), or (c) the mandatory approval phase (steps 9–10).</rule>
   </autonomy-policy>
@@ -58,7 +58,7 @@
     <mandate>NEVER skip user review (steps 9–10 are mandatory) — UNLESS AUTO_APPROVE is true</mandate>
     <mandate>When AUTO_EXECUTE is true, ALWAYS send /clear + /tmux:supervisor to PLAN_WID after finalization — this is the handoff to the implementation supervisor</mandate>
     <mandate>ALWAYS use windows-spawn-worker for spawning — never assemble manually via windows-create + windows-send</mandate>
-    <mandate>ALWAYS verify spec quality against S1–S8 before accepting a worker's DONE</mandate>
+    <mandate>ALWAYS verify spec quality against S1–S9 before accepting a worker's DONE</mandate>
     <mandate>Default to MAXIMUM parallelism for spec workers — implementation dependency does NOT block spec-writing</mandate>
     <mandate>NEVER spawn a worker before tasks.yaml is written and verified (step 3b gate)</mandate>
     <mandate>NEVER call /worker:execute — use /tmux:execute which is the correct skill name</mandate>
@@ -87,8 +87,9 @@ DELIVERABLE (write these sections INSIDE the spec .md; do NOT paste them into tm
   Cover: happy path, error cases, boundary conditions. Each row must be specific enough to become a test case.
 - ## Dependencies: Which modules must be complete first and what they provide. Write "none" if independent.
 - ## Code Map: Annotated file paths that prevent blind codebase searching during implementation. Format: `FILE:LINE` — ROLE_OR_RELEVANCE. Each entry answers: what does the implementation worker need this file for? MUST cite specific files, functions, and line numbers from the source code.
+  For files being MODIFIED (listed under Files to Modify), also annotate: `FILE:LINE` — CURRENT: &lt;what it does now&gt; | CHANGE: &lt;what this spec changes&gt; | PRESERVE: &lt;what must not break&gt;.
 - ## Implementation Plan:
-  - ### Files to Create/Modify: path and purpose for each file. One task per file preferred; group tightly-coupled changes when splitting would be artificial.
+  - ### Files to Create/Modify: path and purpose for each file. For MODIFIED files, state what the file does today and what changes. One task per file preferred; group tightly-coupled changes when splitting would be artificial.
   - ### Key Classes/Functions: name, purpose, signature, key logic.
   - ### API Endpoints (if applicable): method, path, description, request/response format.
   - ### Frontend Pages (if applicable): template name, description, key UI elements.
@@ -107,6 +108,7 @@ Verify the spec against the Ready for Development standard:
 - Logical: tasks are ordered by dependency — no task references something created by a later task
 - Testable: all Acceptance Criteria use Given/When/Then format
 - Complete: no placeholders, no TBDs, no "to be determined", no empty sections (except optional ones marked DELETE)
+- Preservation-safe: every MODIFIED file in Code Map has CURRENT/CHANGE/PRESERVE annotations
 If any criterion fails, fix before submitting DONE.
 
 EXPLORATION:
@@ -142,6 +144,10 @@ Always: &lt;invariant rules from the plan/project context — conventions, patte
 Never: &lt;explicit non-goals for this module — what is OUT of scope, forbidden approaches&gt;
 Ask First: &lt;decisions the implementation worker should escalate to human — architectural choices, risky tradeoffs&gt;
 &lt;additional project conventions, architecture patterns, technology choices&gt;
+
+## Prior Learnings
+&lt;distilled insights from previous planning cycles relevant to this module — patterns, problems, decisions, gotchas&gt;
+(or "none — first planning cycle" if no prior research exists)
     </template>
   </research-task-template>
 
@@ -186,6 +192,11 @@ Ask First: &lt;decisions the implementation worker should escalate to human — 
       <check condition="plan.auto_execute is true">
         <action>Set internal flag AUTO_EXECUTE=true. Log: "Auto-execute mode enabled (plan.auto_execute=true)."</action>
       </check>
+      <action>Scan .tmux-cli/research/ for prior cycle directories ({y-m-d-hh}/ that are NOT the current session's research-root).</action>
+      <check condition="prior research directories exist">
+        <action>Read up to 3 most recent directories (newest first). For each, scan spec files (execute-*.md) and extract: module names (## Intent), patterns (## Design Notes), gotchas (## Implementation Notes), decisions made. Distill into a prior-learnings summary (max 500 tokens).</action>
+        <action>Store prior-learnings summary for use in step 3.</action>
+      </check>
       <rule>This context MUST inform your decomposition decisions, task scoping, and research-task context file content throughout the session.</rule>
     </step>
 
@@ -219,6 +230,7 @@ Ask First: &lt;decisions the implementation worker should escalate to human — 
       </parallelism>
       <action>Create research-root directory if it does not exist.</action>
       <action>For each module, create a research-task context file in research-root using the &lt;research-task-template&gt;. File path: .tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md. Populate with module-specific source files, description, dependencies, and constraints from the plan and project context.</action>
+      <action>If prior-learnings summary exists (from step 1b), include relevant learnings in each research-task context file under "## Prior Learnings". Filter by relevance: matching file paths, module names, or technology overlap with the current module.</action>
       <incremental condition="INCREMENTAL mode">
         <action>Load existing tasks from tasks.yaml. New modules from $ARGUMENTS are derived and added alongside existing ones.</action>
         <action>Assign wid values starting after the highest existing execute-N.</action>
@@ -273,7 +285,7 @@ tasks:
       <rule>NEVER use sleep. NEVER poll windows-list while idle.</rule>
       <rule>Stop-hook idle notifications ("Idling — awaiting supervisor task payload" / "Report delivered to supervisor. Idling for accept or pushback") are expected /tmux:execute lifecycle output. Do not REMIND, do not advance state — wait for the next real message.</rule>
       <branch tag="[EXECUTE:DONE ...]">
-        <action>Proceed to step 6 — Read the spec file and verify against S1–S8.</action>
+        <action>Proceed to step 6 — Read the spec file and verify against S1–S9.</action>
       </branch>
       <branch tag="[EXECUTE:NEED_INPUT ...]">
         <action>Answer with windows-message to that wid, drawing from (a) the task's SCOPE/CONTEXT, (b) prior accepted specs in research-root, (c) files on disk. If still unanswerable, reply [SUPERVISOR:NARROW-SCOPE] with a reduced problem statement. Escalate to user ONLY for user-only knowledge.</action>
@@ -300,15 +312,16 @@ tasks:
       <when>Fire this check after EVERY accepted DONE. Do not skip.</when>
     </step>
 
-    <step n="6" title="Verify spec quality — pushback catalogue S1–S8">
+    <step n="6" title="Verify spec quality — pushback catalogue S1–S9">
       <action>If the file= path cited in the DONE tag does not exist, reply [SUPERVISOR:REMIND] file= path does not exist — resave and re-tag, and wait.</action>
       <action>Call spec-validate MCP tool with the file= path. The tool checks S0 (Intent), S1 (Code Map), S2 (Implementation Plan), S3 (Test Plan), S4 (Acceptance Criteria), S7 (Boundaries), S8 (RFD/placeholders) automatically.</action>
       <action>After spec-validate, also check these gaps manually (they require judgment the tool cannot perform):</action>
       <gap id="S5">Dependencies not specified when the module clearly depends on others (check the plan's dependency graph)</gap>
       <gap id="S6">I/O Matrix missing when module has meaningful interfaces (APIs, CLI commands, message protocols, file formats) — if module has no I/O interfaces, this gap does not apply</gap>
+      <gap id="S9">Modified files in Code Map lack current-state annotations (CURRENT/CHANGE/PRESERVE) — implementation worker needs to know what exists before changing it</gap>
       <rule>Pushback at most 3x per worker. Each pushback MUST cite exactly one gap.</rule>
-      <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S8&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
-      <check condition="spec-validate returns valid=true AND S5/S6 manual checks pass">
+      <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S9&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
+      <check condition="spec-validate returns valid=true AND S5/S6/S9 manual checks pass">
         <action>Accept. Proceed to step 7.</action>
       </check>
       <check condition="3 pushbacks already sent to this worker">
@@ -333,6 +346,40 @@ tasks:
       <action>If no changes needed, continue to check if all workers are done.</action>
     </step>
 
+    <step n="8b" title="Coverage verification">
+      <condition>All workers completed (all tasks status=done). Step 8 produced no new workers.</condition>
+      <action>Re-read the original input ($ARGUMENTS — plan file or inline description).</action>
+      <action>Extract all identifiable requirements, goals, or deliverables. Number them as a checklist.</action>
+      <action>For each requirement, check whether at least one accepted spec's ## Intent addresses it. Build mapping: requirement → spec file(s).</action>
+      <check condition="all requirements covered">
+        <action>Log coverage map. Proceed to step 8c.</action>
+      </check>
+      <check condition="uncovered requirements exist AND coverage-pass &lt; 2">
+        <action>For each gap: create research-task context file, add to tasks.yaml, spawn new spec worker.</action>
+        <action>Loop back to step 5 (idle and route). After new workers complete, re-run step 8b.</action>
+      </check>
+      <check condition="uncovered requirements exist AND coverage-pass = 2">
+        <action>Log remaining gaps for step 9 summary. Proceed to step 8c.</action>
+      </check>
+      <rule>Coverage verification runs at most 2 times per session to prevent loops.</rule>
+    </step>
+
+    <step n="8c" title="File-overlap detection">
+      <condition>Coverage verification (step 8b) complete.</condition>
+      <action>Read all accepted spec files. Extract file paths from "### Files to Create/Modify" sections.</action>
+      <action>Build mapping: file_path → [spec1, spec2, ...]. Flag paths appearing in 2+ specs.</action>
+      <check condition="no overlaps">
+        <action>Proceed to step 9.</action>
+      </check>
+      <check condition="overlaps found">
+        <action>For each overlap, read both specs' Code Map and Implementation Plan to classify:
+          - NON-CONFLICTING (different functions/sections) → add depends_on between tasks in tasks.yaml (earlier wid first). Log ordering.
+          - CONFLICTING (same function/section) → flag for step 9 summary with recommendation (consolidate or re-spec one).
+          - CONSOLIDATION-CANDIDATE (specs so coupled they should merge) → merge context files, remove redundant task, re-validate merged spec.</action>
+      </check>
+      <action>Proceed to step 9.</action>
+    </step>
+
     <step n="9" title="All specs collected → present to user">
       <condition>All workers have completed (all tasks status=done, all windows killed).</condition>
       <check condition="AUTO_APPROVE is true">
@@ -342,11 +389,19 @@ tasks:
       </check>
       <action>Read all accepted spec files. Compile a summary table:</action>
       <format>
-| # | Module | Spec File | Files to Create | Test Cases | Unresolved Gaps |
-|---|--------|-----------|-----------------|------------|-----------------|
-| 1 | ...    | .tmux-cli/research/.../execute-N-slug.md | N | M | none / S2 |
+| # | Module | Spec File | Files to Create | Test Cases | Unresolved Gaps | Coverage |
+|---|--------|-----------|-----------------|------------|-----------------|----------|
+| 1 | ...    | .tmux-cli/research/.../execute-N-slug.md | N | M | none / S2 | R1,R3 |
       </format>
+      <action>Print: Uncovered Requirements: [list] or none</action>
       <action>Print the dependency graph from the plan (if applicable), showing implementation order.</action>
+      <action>Print file overlap report:</action>
+      <format>
+File Overlaps:
+| File | Specs | Resolution |
+|------|-------|------------|
+(or "No file overlaps detected.")
+      </format>
       <action>Print instructions:</action>
       <template>
 Reply: **approve** | **edit &lt;N&gt;** | **add &lt;description&gt;** | **remove &lt;N&gt;** | **re-spec &lt;N&gt;** [feedback]
@@ -422,11 +477,11 @@ Run `/tmux:supervisor` to execute the plan.
     <rule>NEVER assemble spawn steps manually — always use windows-spawn-worker</rule>
     <rule>windows-message: all planning supervisor↔worker communication (answers, pushbacks, reminders, amends, kills)</rule>
     <rule>windows-kill: only on accepted spec or terminal FAILED; never on PLAN_WID; pass window NAME</rule>
-    <rule>Always Read the file cited in a DONE before applying the S1–S8 catalogue; never rely on inline body</rule>
+    <rule>Always Read the file cited in a DONE before applying the S1–S9 catalogue; never rely on inline body</rule>
     <rule>If a worker sends DONE without file=, REMIND once; do not accept inline-body DONE</rule>
     <rule>tasks.yaml status transitions: missing → planning (step 3b) → ready (step 11 only, after user approval)</rule>
     <rule>Research-task context files are created BEFORE tasks.yaml references them</rule>
-    <rule>Spec files are created BY workers, verified BY the planning supervisor against S1–S8</rule>
+    <rule>Spec files are created BY workers, verified BY the planning supervisor against S1–S9</rule>
     <rule>All scope and context detail lives in the context .md file — tasks.yaml entries are lean (name, wid, status, context path, depends_on). The context file IS the spec — ensure it is complete and self-contained for /tmux:supervisor consumption</rule>
     <rule>The deliverable parameter on windows-spawn-worker overrides the standard FINDINGS/RISKS/RECOMMENDATION/FILES format with the spec template</rule>
     <rule>windows-send: used ONLY for auto-execute self-restart commands to PLAN_WID in step 11 (/clear, /tmux:supervisor)</rule>
@@ -434,7 +489,7 @@ Run `/tmux:supervisor` to execute the plan.
 
   <stop-conditions>
     <rule>STOP and present specs to user (step 9) ONLY when:
-      - All spec workers completed AND findings-driven replan produced no new workers.
+      - All spec workers completed AND findings-driven replan produced no new workers AND coverage verification (step 8b) satisfied or exhausted.
       - User approval phase: steps 9–10 are interactive; the user controls the pace.</rule>
     <rule>Escalate to user during spec-writing ONLY when:
       - Zero executable workers constructable from input.
@@ -461,7 +516,7 @@ Run `/tmux:supervisor` to execute the plan.
       • DO NOT spawn any worker (step 4) before tasks.yaml is written and verified (step 3b) — blocking gate, no exceptions
       • DO NOT serialize spec-writing for implementation dependencies — specs are written by reading source, not by depending on other implementations
       • ALWAYS create research-task context files before writing tasks.yaml entries that reference them
-      • ALWAYS verify spec quality against S1–S8 before accepting a worker's DONE
+      • ALWAYS verify spec quality against S1–S9 before accepting a worker's DONE
       • ALWAYS use windows-spawn-worker with the custom deliverable parameter — never use the default FINDINGS format for spec workers
       • DO NOT use AskUserQuestion — all user interaction via text output and waiting for messages
       • NEVER use batch Bash scripts (grep loops, for-each shell commands) to validate or process specs — ALWAYS use the proper flow: spec-validate MCP tool per file, workers for spec writing. Batch shortcuts bypass quality gates. Token cost is irrelevant — precision is the goal.

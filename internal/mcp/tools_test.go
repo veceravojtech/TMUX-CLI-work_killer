@@ -779,6 +779,8 @@ func TestServer_WindowsSpawnWorker_WithCustomDeliverable(t *testing.T) {
 	assert.Contains(t, taskMessage, customDeliverable)
 	assert.NotContains(t, taskMessage, ">=3 bullets")
 	assert.Contains(t, taskMessage, "RESPONSE PROTOCOL")
+	assert.Contains(t, taskMessage, "sections specified in DELIVERABLE above")
+	assert.NotContains(t, taskMessage, "## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES")
 }
 
 func TestServer_WindowsSpawnWorker_WithoutDeliverable(t *testing.T) {
@@ -811,6 +813,8 @@ func TestServer_WindowsSpawnWorker_WithoutDeliverable(t *testing.T) {
 	assert.Contains(t, taskMessage, "RISKS")
 	assert.Contains(t, taskMessage, "RECOMMENDATION")
 	assert.Contains(t, taskMessage, "FILES")
+	assert.Contains(t, taskMessage, "## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES")
+	assert.NotContains(t, taskMessage, "sections specified in DELIVERABLE above")
 }
 
 func TestServer_WindowsSpawnWorker_ExecuteSendFails_CleansUp(t *testing.T) {
