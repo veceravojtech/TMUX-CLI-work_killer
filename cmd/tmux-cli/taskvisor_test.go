@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/console/tmux-cli/internal/taskvisor"
@@ -47,6 +48,11 @@ func TestTaskvisorCommandHierarchy(t *testing.T) {
 		{"taskvisor goal", []string{"taskvisor", "goal"}, "goal"},
 		{"taskvisor goal add", []string{"taskvisor", "goal", "add"}, "add"},
 		{"taskvisor goal list", []string{"taskvisor", "goal", "list"}, "list"},
+		{"taskvisor goal delete", []string{"taskvisor", "goal", "delete"}, "delete [goal-id]"},
+		{"taskvisor goal reset", []string{"taskvisor", "goal", "reset"}, "reset [goal-id]"},
+		{"taskvisor goal skip", []string{"taskvisor", "goal", "skip"}, "skip [goal-id]"},
+		{"taskvisor goal stop", []string{"taskvisor", "goal", "stop"}, "stop"},
+		{"taskvisor goal prune", []string{"taskvisor", "goal", "prune"}, "prune"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,14 +89,16 @@ func TestGoalAddCmd_RequiresDescription(t *testing.T) {
 
 func TestGoalAddCmd_Success(t *testing.T) {
 	withTempCwd(t, func(dir string) {
-		oldDesc, oldAcc, oldVal, oldRetries := goalDescription, goalAcceptance, goalValidate, goalMaxRetries
+		oldDesc, oldAcc, oldVal, oldCtx, oldNIS, oldRetries := goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope, goalMaxRetries
 		defer func() {
-			goalDescription, goalAcceptance, goalValidate, goalMaxRetries = oldDesc, oldAcc, oldVal, oldRetries
+			goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope, goalMaxRetries = oldDesc, oldAcc, oldVal, oldCtx, oldNIS, oldRetries
 		}()
 
 		goalDescription = "Implement feature X"
 		goalAcceptance = nil
 		goalValidate = nil
+		goalContext = ""
+		goalNotInScope = ""
 		goalMaxRetries = 3
 
 		output := captureStdout(t, func() {
@@ -113,14 +121,16 @@ func TestGoalAddCmd_Success(t *testing.T) {
 
 func TestGoalAddCmd_WithAllFlags(t *testing.T) {
 	withTempCwd(t, func(dir string) {
-		oldDesc, oldAcc, oldVal, oldRetries := goalDescription, goalAcceptance, goalValidate, goalMaxRetries
+		oldDesc, oldAcc, oldVal, oldCtx, oldNIS, oldRetries := goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope, goalMaxRetries
 		defer func() {
-			goalDescription, goalAcceptance, goalValidate, goalMaxRetries = oldDesc, oldAcc, oldVal, oldRetries
+			goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope, goalMaxRetries = oldDesc, oldAcc, oldVal, oldCtx, oldNIS, oldRetries
 		}()
 
 		goalDescription = "Build API endpoint"
 		goalAcceptance = []string{"Returns 200 on success", "Validates input"}
 		goalValidate = []string{"go test ./...", "curl http://localhost/api"}
+		goalContext = ""
+		goalNotInScope = ""
 		goalMaxRetries = 5
 
 		err := runTaskvisorGoalAdd(nil, nil)
@@ -133,9 +143,66 @@ func TestGoalAddCmd_WithAllFlags(t *testing.T) {
 
 		g := gf.Goals[0]
 		assert.Equal(t, "Build API endpoint", g.Description)
-		assert.Equal(t, []string{"Returns 200 on success", "Validates input"}, g.Acceptance)
-		assert.Equal(t, []string{"go test ./...", "curl http://localhost/api"}, g.Validate)
+		assert.Empty(t, g.Acceptance, "acceptance should not be in goals.yaml")
+		assert.Empty(t, g.Validate, "validate should not be in goals.yaml")
 		assert.Equal(t, 5, g.MaxRetries)
+
+		mdData, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "goal.md"))
+		require.NoError(t, err)
+		mdContent := string(mdData)
+		assert.Contains(t, mdContent, "# Build API endpoint")
+		assert.Contains(t, mdContent, "- Returns 200 on success")
+		assert.Contains(t, mdContent, "- Validates input")
+		assert.Contains(t, mdContent, "- go test ./...")
+		assert.Contains(t, mdContent, "- curl http://localhost/api")
+	})
+}
+
+func TestGoalAddCmd_WithContextFlags(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		oldDesc, oldAcc, oldVal, oldCtx, oldNIS, oldRetries := goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope, goalMaxRetries
+		defer func() {
+			goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope, goalMaxRetries = oldDesc, oldAcc, oldVal, oldCtx, oldNIS, oldRetries
+		}()
+
+		goalDescription = "Refactor auth"
+		goalAcceptance = []string{"Tests pass"}
+		goalValidate = nil
+		goalContext = "Legacy code needs cleanup"
+		goalNotInScope = "Performance tuning"
+		goalMaxRetries = 3
+
+		err := runTaskvisorGoalAdd(nil, nil)
+		require.NoError(t, err)
+
+		mdData, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "goal.md"))
+		require.NoError(t, err)
+		mdContent := string(mdData)
+		assert.Contains(t, mdContent, "## Context")
+		assert.Contains(t, mdContent, "Legacy code needs cleanup")
+		assert.Contains(t, mdContent, "## Not In Scope")
+		assert.Contains(t, mdContent, "Performance tuning")
+	})
+}
+
+func TestGoalAddCmd_DescriptionTooLong(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		oldDesc, oldAcc, oldVal, oldCtx, oldNIS, oldRetries := goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope, goalMaxRetries
+		defer func() {
+			goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope, goalMaxRetries = oldDesc, oldAcc, oldVal, oldCtx, oldNIS, oldRetries
+		}()
+
+		goalDescription = strings.Repeat("x", 121)
+		goalAcceptance = nil
+		goalValidate = nil
+		goalContext = ""
+		goalNotInScope = ""
+		goalMaxRetries = 3
+
+		err := runTaskvisorGoalAdd(nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "120")
+		assert.Contains(t, err.Error(), "--acceptance")
 	})
 }
 
@@ -207,6 +274,371 @@ func TestTaskvisorStartCmd_NoPendingGoals(t *testing.T) {
 		signalPath := filepath.Join(dir, ".tmux-cli", "taskvisor-start")
 		_, statErr := os.Stat(signalPath)
 		assert.True(t, os.IsNotExist(statErr), "signal file should not exist")
+	})
+}
+
+func TestGoalDeleteCmd_Success(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "First", Status: taskvisor.GoalPending, MaxRetries: 3},
+				{ID: "goal-002", Description: "Second", Status: taskvisor.GoalDone, MaxRetries: 3},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+		goalDir, err := taskvisor.EnsureGoalDir(dir, "goal-001")
+		require.NoError(t, err)
+
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalDelete(nil, []string{"goal-001"})
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "goal-001")
+		assert.Contains(t, output, "deleted")
+
+		loaded, err := taskvisor.LoadGoals(dir)
+		require.NoError(t, err)
+		require.Len(t, loaded.Goals, 1)
+		assert.Equal(t, "goal-002", loaded.Goals[0].ID)
+
+		_, statErr := os.Stat(goalDir)
+		assert.True(t, os.IsNotExist(statErr), "goal dir should be removed")
+	})
+}
+
+func TestGoalDeleteCmd_RunningGoal(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Running", Status: taskvisor.GoalRunning, MaxRetries: 3},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		err := runTaskvisorGoalDelete(nil, []string{"goal-001"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "currently running")
+
+		loaded, err := taskvisor.LoadGoals(dir)
+		require.NoError(t, err)
+		require.Len(t, loaded.Goals, 1)
+	})
+}
+
+func TestGoalDeleteCmd_NotFound(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "First", Status: taskvisor.GoalPending},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		err := runTaskvisorGoalDelete(nil, []string{"goal-999"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+	})
+}
+
+func TestGoalDeleteCmd_MissingDir(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "First", Status: taskvisor.GoalPending},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalDelete(nil, []string{"goal-001"})
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "deleted")
+
+		loaded, err := taskvisor.LoadGoals(dir)
+		require.NoError(t, err)
+		require.Len(t, loaded.Goals, 0)
+	})
+}
+
+func TestGoalResetCmd_Success(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Failed goal", Status: taskvisor.GoalFailed, Retries: 2, MaxRetries: 3, FinishedAt: "2026-05-20T15:00:00Z"},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalReset(nil, []string{"goal-001"})
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "goal-001")
+		assert.Contains(t, output, "reset")
+
+		loaded, err := taskvisor.LoadGoals(dir)
+		require.NoError(t, err)
+		require.Len(t, loaded.Goals, 1)
+		assert.Equal(t, taskvisor.GoalPending, loaded.Goals[0].Status)
+		assert.Equal(t, 0, loaded.Goals[0].Retries)
+		assert.Equal(t, "", loaded.Goals[0].FinishedAt)
+	})
+}
+
+func TestGoalResetCmd_NotFailed(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Pending goal", Status: taskvisor.GoalPending},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		err := runTaskvisorGoalReset(nil, []string{"goal-001"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not in failed status")
+	})
+}
+
+func TestGoalResetCmd_NotFound(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Status: taskvisor.GoalFailed},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		err := runTaskvisorGoalReset(nil, []string{"goal-999"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+	})
+}
+
+func TestGoalStopCmd_FilesPresent(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		tmuxDir := filepath.Join(dir, ".tmux-cli")
+		require.NoError(t, os.MkdirAll(tmuxDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-active"), nil, 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-start"), nil, 0o644))
+
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalStop(nil, nil)
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "stop signal sent")
+
+		_, err := os.Stat(filepath.Join(tmuxDir, "taskvisor-active"))
+		assert.True(t, os.IsNotExist(err))
+		_, err = os.Stat(filepath.Join(tmuxDir, "taskvisor-start"))
+		assert.True(t, os.IsNotExist(err))
+	})
+}
+
+func TestGoalStopCmd_Idempotent(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalStop(nil, nil)
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "stop signal sent")
+	})
+}
+
+// --- GoalPrune CLI tests ---
+
+func TestGoalPruneCmd_Success(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "First", Status: taskvisor.GoalDone, MaxRetries: 3},
+				{ID: "goal-002", Description: "Second", Status: taskvisor.GoalPending, MaxRetries: 3},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+		_, err := taskvisor.EnsureGoalDir(dir, "goal-001")
+		require.NoError(t, err)
+		_, err = taskvisor.EnsureGoalDir(dir, "goal-002")
+		require.NoError(t, err)
+
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalPrune(nil, nil)
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "Pruned 2")
+
+		_, statErr := os.Stat(filepath.Join(dir, ".tmux-cli", "goals.yaml"))
+		assert.True(t, os.IsNotExist(statErr), "goals.yaml should be removed")
+
+		_, statErr = os.Stat(filepath.Join(dir, ".tmux-cli", "goals"))
+		assert.True(t, os.IsNotExist(statErr), "goals/ dir should be removed")
+	})
+}
+
+func TestGoalPruneCmd_Idempotent(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalPrune(nil, nil)
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "Pruned 0")
+	})
+}
+
+func TestGoalPruneCmd_DaemonActive(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		tmuxDir := filepath.Join(dir, ".tmux-cli")
+		require.NoError(t, os.MkdirAll(tmuxDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-active"), nil, 0o644))
+
+		err := runTaskvisorGoalPrune(nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "active")
+	})
+}
+
+func TestGoalPruneCmd_CleansSignalFiles(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		tmuxDir := filepath.Join(dir, ".tmux-cli")
+		require.NoError(t, os.MkdirAll(tmuxDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-goal"), []byte("goal-001"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-start"), nil, 0o644))
+
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalPrune(nil, nil)
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "Pruned 0")
+
+		_, statErr := os.Stat(filepath.Join(tmuxDir, "taskvisor-current-goal"))
+		assert.True(t, os.IsNotExist(statErr), "taskvisor-current-goal should be removed")
+
+		_, statErr = os.Stat(filepath.Join(tmuxDir, "taskvisor-start"))
+		assert.True(t, os.IsNotExist(statErr), "taskvisor-start should be removed")
+	})
+}
+
+// --- GoalSkip CLI tests ---
+
+func TestGoalSkipCmd_Success(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			CurrentGoal: "goal-001",
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Running goal", Status: taskvisor.GoalRunning, MaxRetries: 3, StartedAt: "2026-05-20T14:00:00Z"},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalSkip(nil, []string{"goal-001"})
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "skipped")
+		assert.Contains(t, output, "goal-001")
+
+		loaded, err := taskvisor.LoadGoals(dir)
+		require.NoError(t, err)
+		require.Len(t, loaded.Goals, 1)
+		assert.Equal(t, taskvisor.GoalDone, loaded.Goals[0].Status)
+		assert.NotEmpty(t, loaded.Goals[0].FinishedAt)
+
+		skippedPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "skipped.md")
+		data, err := os.ReadFile(skippedPath)
+		require.NoError(t, err)
+		assert.Equal(t, "manually skipped", string(data))
+	})
+}
+
+func TestGoalSkipCmd_NotRunning(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Pending goal", Status: taskvisor.GoalPending},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		err := runTaskvisorGoalSkip(nil, []string{"goal-001"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not running")
+	})
+}
+
+func TestGoalSkipCmd_NotFound(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Status: taskvisor.GoalRunning},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		err := runTaskvisorGoalSkip(nil, []string{"goal-999"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+	})
+}
+
+func TestGoalSkipCmd_WritesSkippedMd(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Running goal", Status: taskvisor.GoalRunning, MaxRetries: 3},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		oldReason := skipReason
+		defer func() { skipReason = oldReason }()
+		skipReason = "blocked by infra"
+
+		output := captureStdout(t, func() {
+			err := runTaskvisorGoalSkip(nil, []string{"goal-001"})
+			require.NoError(t, err)
+		})
+
+		assert.Contains(t, output, "skipped")
+
+		skippedPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "skipped.md")
+		data, err := os.ReadFile(skippedPath)
+		require.NoError(t, err)
+		assert.Equal(t, "blocked by infra", string(data))
+	})
+}
+
+func TestGoalSkipCmd_CustomReason(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Running goal", Status: taskvisor.GoalRunning, MaxRetries: 3},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		oldReason := skipReason
+		defer func() { skipReason = oldReason }()
+		skipReason = "no longer relevant"
+
+		captureStdout(t, func() {
+			err := runTaskvisorGoalSkip(nil, []string{"goal-001"})
+			require.NoError(t, err)
+		})
+
+		skippedPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "skipped.md")
+		data, err := os.ReadFile(skippedPath)
+		require.NoError(t, err)
+		assert.Equal(t, "no longer relevant", string(data))
 	})
 }
 

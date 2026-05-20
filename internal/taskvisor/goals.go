@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -27,6 +28,8 @@ type Goal struct {
 	Status      string   `yaml:"status"`
 	Retries     int      `yaml:"retries"`
 	MaxRetries  int      `yaml:"max_retries"`
+	StartedAt   string   `yaml:"started_at,omitempty"`
+	FinishedAt  string   `yaml:"finished_at,omitempty"`
 }
 
 type GoalsFile struct {
@@ -108,6 +111,33 @@ func EnsureGoalDir(projectRoot, goalID string) (string, error) {
 	return dir, nil
 }
 
+func WriteGoalMD(goalDir, description string, acceptance, validate []string, context, notInScope string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n", description)
+
+	b.WriteString("\n## Acceptance Criteria\n\n")
+	for _, a := range acceptance {
+		fmt.Fprintf(&b, "- %s\n", a)
+	}
+
+	if len(validate) > 0 {
+		b.WriteString("\n## Validation Rules\n\n")
+		for _, v := range validate {
+			fmt.Fprintf(&b, "- %s\n", v)
+		}
+	}
+
+	if context != "" {
+		fmt.Fprintf(&b, "\n## Context\n\n%s\n", context)
+	}
+
+	if notInScope != "" {
+		fmt.Fprintf(&b, "\n## Not In Scope\n\n%s\n", notInScope)
+	}
+
+	return atomicWrite(filepath.Join(goalDir, "goal.md"), []byte(b.String()), 0o644)
+}
+
 func (gf *GoalsFile) GoalByID(id string) (*Goal, bool) {
 	for i := range gf.Goals {
 		if gf.Goals[i].ID == id {
@@ -134,6 +164,41 @@ func (gf *GoalsFile) SetStatus(id, status string) bool {
 		}
 	}
 	return false
+}
+
+func (gf *GoalsFile) DeleteGoal(id string) (*Goal, bool) {
+	for i := range gf.Goals {
+		if gf.Goals[i].ID == id {
+			removed := gf.Goals[i]
+			gf.Goals = append(gf.Goals[:i], gf.Goals[i+1:]...)
+			if gf.CurrentGoal == id {
+				gf.CurrentGoal = ""
+			}
+			return &removed, true
+		}
+	}
+	return nil, false
+}
+
+func (gf *GoalsFile) ResetGoal(id string) bool {
+	g, ok := gf.GoalByID(id)
+	if !ok || g.Status != GoalFailed {
+		return false
+	}
+	g.Status = GoalPending
+	g.Retries = 0
+	g.FinishedAt = ""
+	return true
+}
+
+func (gf *GoalsFile) SkipGoal(id string) bool {
+	g, ok := gf.GoalByID(id)
+	if !ok || g.Status != GoalRunning {
+		return false
+	}
+	g.Status = GoalDone
+	g.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	return true
 }
 
 func (g *Goal) IncrementRetries() int {

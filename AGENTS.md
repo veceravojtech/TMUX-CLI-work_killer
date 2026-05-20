@@ -107,6 +107,7 @@ internal/
 
 ## Invariants
 
+- **Goal description is a short title (max 120 chars)**: Detailed criteria belong in `--acceptance` and `--validate`. Both the MCP `goal-create` tool and the `goal add` CLI command enforce this limit at write time. `LoadGoals` does NOT validate length (read tolerance).
 - **TUI settings must reflect all fields in `setting.yaml`**: Every field in the `Settings` struct (`internal/setup/config.go`) must be editable in the TUI (`internal/tui/settings.go`). If a new field is added to `Settings`/`setting.yaml`, the TUI `items` list and `ToSettings()` must be updated in the same PR — including tests. `ToSettings()` must overlay displayed fields onto the loaded settings (not `DefaultSettings()`), so undisplayed fields are preserved. If this invariant is broken, fix it immediately including tests.
 
 ## Common pitfalls

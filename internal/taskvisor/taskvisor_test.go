@@ -1,8 +1,10 @@
 package taskvisor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1330,4 +1332,659 @@ func TestWriteDispatchMd_ExcludesValidateRules(t *testing.T) {
 	assert.NotContains(t, content, "check price format")
 	assert.NotContains(t, content, "validate")
 	assert.NotContains(t, content, "Validate")
+}
+
+func TestWriteDispatchMd_GoalMdPresent(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	goal := &Goal{
+		ID:          "goal-001",
+		Description: "Fix pricing display",
+		Acceptance:  []string{"inline criterion"},
+	}
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	goalMdContent := "# Fix pricing display\n\n## Acceptance Criteria\n\n- Price matches API response\n- Currency symbol shown\n\n## Context\n\nPricing page redesign"
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "goal.md"), []byte(goalMdContent), 0o644))
+
+	err = d.writeDispatchMd(goal)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "dispatch.md"))
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, "Price matches API response")
+	assert.Contains(t, content, "Currency symbol shown")
+	assert.Contains(t, content, "Pricing page redesign")
+	assert.NotContains(t, content, "- inline criterion")
+}
+
+func TestWriteDispatchMd_GoalMdEmpty_FallsBackToInline(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	goal := &Goal{
+		ID:          "goal-001",
+		Description: "Fix pricing display",
+		Acceptance:  []string{"criterion A"},
+	}
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "goal.md"), []byte(""), 0o644))
+
+	err = d.writeDispatchMd(goal)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "dispatch.md"))
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, "- criterion A")
+}
+
+func TestWriteDispatchMd_GoalMdTakesPrecedence(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	goal := &Goal{
+		ID:          "goal-001",
+		Description: "Fix pricing display",
+		Acceptance:  []string{"inline criterion"},
+	}
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	goalMdContent := "# Fix pricing display\n\n## Acceptance Criteria\n\n- goal.md criterion\n"
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "goal.md"), []byte(goalMdContent), 0o644))
+
+	err = d.writeDispatchMd(goal)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "dispatch.md"))
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, "goal.md criterion")
+	assert.NotContains(t, content, "inline criterion")
+}
+
+func TestWriteDispatchMd_GoalMdPreservesCorrections(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	goal := &Goal{
+		ID:          "goal-001",
+		Description: "Fix pricing display",
+	}
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	goalMdContent := "# Fix pricing display\n\n## Acceptance Criteria\n\n- goal.md criterion\n"
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "goal.md"), []byte(goalMdContent), 0o644))
+
+	correctionsDir := filepath.Join(goalDir, "corrections")
+	require.NoError(t, os.WriteFile(filepath.Join(correctionsDir, "cycle-1.md"), []byte("First correction"), 0o644))
+
+	err = d.writeDispatchMd(goal)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "dispatch.md"))
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, "goal.md criterion")
+	assert.Contains(t, content, "First correction")
+	assert.NotContains(t, content, "None (first attempt)")
+}
+
+// --- validate.sh gate tests ---
+
+func TestRunValidateScript_NoScript(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	goal := &Goal{ID: "goal-001"}
+	passed, stderr, err := d.runValidateScript(goal)
+
+	require.NoError(t, err)
+	assert.False(t, passed)
+	assert.Empty(t, stderr)
+}
+
+func TestRunValidateScript_ExitZero(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\necho ok\nexit 0\n"), 0o755))
+
+	goal := &Goal{ID: "goal-001"}
+	passed, stderr, err := d.runValidateScript(goal)
+
+	require.NoError(t, err)
+	assert.True(t, passed)
+	assert.Empty(t, stderr)
+}
+
+func TestRunValidateScript_ExitNonZero(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'test failed' >&2\nexit 1\n"), 0o755))
+
+	goal := &Goal{ID: "goal-001"}
+	passed, stderr, err := d.runValidateScript(goal)
+
+	require.NoError(t, err)
+	assert.False(t, passed)
+	assert.Contains(t, stderr, "test failed")
+}
+
+func TestRunValidateScript_Timeout(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	d.scriptTimeout = 100 * time.Millisecond
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\nsleep 60\n"), 0o755))
+
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		select {
+		case <-ctx.Done():
+			return "", "signal: killed", 137, nil
+		case <-time.After(60 * time.Second):
+			return "", "", 0, nil
+		}
+	})
+
+	goal := &Goal{ID: "goal-001"}
+	start := time.Now()
+	passed, stderr, err := d.runValidateScript(goal)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.False(t, passed)
+	assert.Contains(t, stderr, "killed")
+	assert.Less(t, elapsed, 5*time.Second)
+}
+
+func TestRunValidateScript_NotExecutable(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 0\n"), 0o644))
+
+	goal := &Goal{ID: "goal-001"}
+	passed, stderr, err := d.runValidateScript(goal)
+
+	require.NoError(t, err)
+	assert.False(t, passed)
+	assert.Empty(t, stderr)
+}
+
+func TestRunValidateScript_EnvAndCwd(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\necho \"GOAL_ID=$GOAL_ID\"\necho \"CWD=$(pwd)\"\n"), 0o755))
+
+	var capturedStdout string
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		stdout, stderr, code, err := defaultScriptRunner(ctx, sp, wd, env)
+		capturedStdout = stdout
+		return stdout, stderr, code, err
+	})
+
+	goal := &Goal{ID: "goal-001"}
+	passed, _, err := d.runValidateScript(goal)
+
+	require.NoError(t, err)
+	assert.True(t, passed)
+	assert.Contains(t, capturedStdout, "GOAL_ID=goal-001")
+	assert.Contains(t, capturedStdout, fmt.Sprintf("CWD=%s", dir))
+}
+
+func TestCheckProgress_SupervisorDone_ValidateShPass(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseSupervising
+	d.validatorSendDelay = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test goal", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	// killWindowsByPrefix("execute-") + killWindowByName("supervisor") — no workers
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
+	// deactivate mocks: kill supervisor, execute-, validator + create supervisor window
+	setupDeactivateMocks(exec, testSession, "@9")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@9"))
+
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		return "", "", 0, nil
+	})
+
+	goal := &gf.Goals[0]
+	err = d.checkProgress(goal, gf)
+	require.NoError(t, err)
+
+	reloaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+	assert.Equal(t, GoalDone, reloaded.Goals[0].Status)
+	assert.NotEqual(t, phaseValidating, d.phase)
+}
+
+func TestCheckProgress_SupervisorDone_ValidateShFail_ValidateMdExists(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseSupervising
+	d.validatorSendDelay = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test goal", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 1\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.md"), []byte("- check tests pass\n"), 0o644))
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	// killWindowsByPrefix("execute-") + killWindowByName("supervisor")
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	setupValidatorMocks(exec, testSession, "@5")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
+
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		return "", "some error", 1, nil
+	})
+
+	goal := &gf.Goals[0]
+	err = d.checkProgress(goal, gf)
+	require.NoError(t, err)
+
+	assert.Equal(t, phaseValidating, d.phase)
+}
+
+func TestCheckProgress_SupervisorDone_ValidateShFail_NoValidateMd(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseSupervising
+	d.validatorSendDelay = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test goal", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 1\n"), 0o755))
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	// killWindowsByPrefix("execute-") + killWindowByName("supervisor")
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
+
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		return "", "validation error details", 1, nil
+	})
+
+	goal := &gf.Goals[0]
+	err = d.checkProgress(goal, gf)
+	require.NoError(t, err)
+
+	reloaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+	assert.Equal(t, GoalPending, reloaded.Goals[0].Status)
+	assert.Equal(t, 1, reloaded.Goals[0].Retries)
+
+	correctionPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "cycle-1.md")
+	data, readErr := os.ReadFile(correctionPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "validation error details")
+}
+
+func TestRecoverAfterCrash_RetriesExhausted_SetsFinishedAt(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+
+	writeGuardFile(t, dir)
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{
+				ID:          "goal-001",
+				Description: "Crash test goal",
+				Status:      GoalRunning,
+				StartedAt:   time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339),
+				Retries:     3,
+				MaxRetries:  3,
+			},
+		},
+	}
+	writeGoals(t, dir, gf)
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+
+	err := d.crashRecovery()
+	require.NoError(t, err)
+
+	reloaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+
+	g := reloaded.Goals[0]
+	assert.Equal(t, GoalFailed, g.Status)
+	assert.NotEmpty(t, g.FinishedAt, "FinishedAt must be set for crash-failed goals")
+
+	_, parseErr := time.Parse(time.RFC3339, g.FinishedAt)
+	assert.NoError(t, parseErr, "FinishedAt must be valid RFC3339")
+}
+
+func TestCheckProgress_SupervisorDone_NoValidateSh(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseSupervising
+	d.validatorSendDelay = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test goal", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	// killWindowsByPrefix("execute-") + killWindowByName("supervisor")
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	setupValidatorMocks(exec, testSession, "@5")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
+
+	goal := &gf.Goals[0]
+	err = d.checkProgress(goal, gf)
+	require.NoError(t, err)
+
+	assert.Equal(t, phaseValidating, d.phase)
+}
+
+// --- transition logging tests ---
+
+func captureLog(t *testing.T, fn func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	origOutput := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(origOutput) })
+	fn()
+	return buf.String()
+}
+
+func TestPhaseName_AllValues(t *testing.T) {
+	assert.Equal(t, "idle", phaseName(phaseNone))
+	assert.Equal(t, "supervising", phaseName(phaseSupervising))
+	assert.Equal(t, "validating", phaseName(phaseValidating))
+}
+
+func TestGoalDuration_ValidTimestamps(t *testing.T) {
+	g := &Goal{
+		StartedAt:  "2026-05-20T10:00:00Z",
+		FinishedAt: "2026-05-20T10:12:34Z",
+	}
+	assert.Equal(t, "12m34s", goalDuration(g))
+}
+
+func TestGoalDuration_EmptyTimestamps(t *testing.T) {
+	assert.Equal(t, "", goalDuration(&Goal{}))
+	assert.Equal(t, "", goalDuration(&Goal{StartedAt: "2026-05-20T10:00:00Z"}))
+	assert.Equal(t, "", goalDuration(&Goal{FinishedAt: "2026-05-20T10:00:00Z"}))
+	assert.Equal(t, "", goalDuration(&Goal{StartedAt: "bad", FinishedAt: "2026-05-20T10:00:00Z"}))
+}
+
+func TestDispatch_LogsStateTransition(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		Goals: []Goal{{ID: "goal-001", Description: "test", Status: GoalPending}},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	setupDispatchMocks(exec, testSession, "@0")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+
+	output := captureLog(t, func() {
+		err = d.dispatch(&gf.Goals[0], gf)
+	})
+	require.NoError(t, err)
+	assert.Contains(t, output, "goal-001: pending -> running")
+}
+
+func TestDispatch_LogsPhaseTransition(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseNone
+
+	gf := &GoalsFile{
+		Goals: []Goal{{ID: "goal-001", Description: "test", Status: GoalPending}},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	setupDispatchMocks(exec, testSession, "@0")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+
+	output := captureLog(t, func() {
+		err = d.dispatch(&gf.Goals[0], gf)
+	})
+	require.NoError(t, err)
+	assert.Contains(t, output, "goal-001: phase idle -> supervising")
+}
+
+func TestCheckSupervisingPhase_Done_LogsGoalDone(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseSupervising
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-05-20T10:00:00Z", MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
+	setupDeactivateMocks(exec, testSession, "@9")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@9"))
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		return "", "", 0, nil
+	})
+
+	goal := &gf.Goals[0]
+	output := captureLog(t, func() {
+		err = d.checkSupervisingPhase(goal, gf)
+	})
+	require.NoError(t, err)
+	assert.Contains(t, output, "goal-001: running -> done")
+	assert.Regexp(t, `running -> done \(\d+`, output)
+}
+
+func TestCheckSupervisingPhase_LogsPhaseToValidating(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseSupervising
+	d.validatorSendDelay = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	setupValidatorMocks(exec, testSession, "@5")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
+
+	goal := &gf.Goals[0]
+	output := captureLog(t, func() {
+		err = d.checkSupervisingPhase(goal, gf)
+	})
+	require.NoError(t, err)
+	assert.Contains(t, output, "goal-001: phase supervising -> validating")
+}
+
+func TestCheckValidatingPhase_Pass_LogsGoalDone(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseValidating
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-05-20T10:00:00Z", MaxRetries: 3},
+			{ID: "goal-002", Description: "next", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: "pass", Timestamp: "2026-05-20T14:35:00Z",
+	}))
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@5", Name: "validator"},
+	}, nil).Once()
+	exec.On("KillWindow", testSession, "@5").Return(nil)
+
+	goal := &gf.Goals[0]
+	output := captureLog(t, func() {
+		err = d.checkValidatingPhase(goal, gf)
+	})
+	require.NoError(t, err)
+	assert.Contains(t, output, "goal-001: running -> done")
+	assert.Regexp(t, `running -> done \(\d+`, output)
+}
+
+func TestHandleFailedCycle_RetriesExhausted_LogsGoalFailed(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseValidating
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-05-20T10:00:00Z", Retries: 2, MaxRetries: 3},
+			{ID: "goal-002", Description: "next", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	setupDeactivateMocks(exec, testSession, "@0")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+	writeSettings(t, dir, true, true)
+	writeGuardFile(t, dir)
+
+	goal := &gf.Goals[0]
+	output := captureLog(t, func() {
+		err = d.handleFailedCycle(goal, gf, "give up")
+	})
+	require.NoError(t, err)
+	assert.Contains(t, output, "goal-001: running -> failed")
+	assert.Regexp(t, `running -> failed \(\d+`, output)
+}
+
+func TestHandleFailedCycle_Retry_LogsPendingAndPhase(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.phase = phaseValidating
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, Retries: 0, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	goal := &gf.Goals[0]
+	output := captureLog(t, func() {
+		err = d.handleFailedCycle(goal, gf, "fix it")
+	})
+	require.NoError(t, err)
+	assert.Contains(t, output, "goal-001: running -> pending (retry 1/3)")
+	assert.Contains(t, output, "goal-001: phase validating -> supervising")
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/console/tmux-cli/internal/taskvisor"
 	"github.com/console/tmux-cli/internal/tmux"
 	"gopkg.in/yaml.v3"
 )
@@ -112,10 +113,15 @@ func (s *Server) TaskvisorStart() (*TaskvisorStartOutput, error) {
 	return &TaskvisorStartOutput{Started: true}, nil
 }
 
-// GoalCreate generates a sequential goal ID, appends the goal to goals.yaml, and creates the goal directory.
-func (s *Server) GoalCreate(description string, acceptance, validate []string, maxRetries int) (*GoalCreateOutput, error) {
+const MaxGoalDescriptionLength = 120
+
+// GoalCreate generates a sequential goal ID, appends the goal to goals.yaml, creates the goal directory, and writes goal.md.
+func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope string, maxRetries int) (*GoalCreateOutput, error) {
 	if description == "" {
 		return nil, fmt.Errorf("%w: description cannot be empty", ErrInvalidInput)
+	}
+	if len(description) > MaxGoalDescriptionLength {
+		return nil, fmt.Errorf("%w: description exceeds %d characters (got %d); use --acceptance for detailed criteria", ErrInvalidInput, MaxGoalDescriptionLength, len(description))
 	}
 
 	if maxRetries == 0 {
@@ -135,8 +141,6 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, m
 	goal := tvGoal{
 		ID:          goalID,
 		Description: description,
-		Acceptance:  acceptance,
-		Validate:    validate,
 		Status:      "pending",
 		Retries:     0,
 		MaxRetries:  maxRetries,
@@ -150,6 +154,10 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, m
 	goalDir := filepath.Join(s.workingDir, ".tmux-cli", "goals", goalID)
 	if err := os.MkdirAll(filepath.Join(goalDir, "corrections"), 0o755); err != nil {
 		return nil, fmt.Errorf("%w: failed to create goal directory: %w", ErrInvalidInput, err)
+	}
+
+	if err := taskvisor.WriteGoalMD(goalDir, description, acceptance, validate, context, notInScope); err != nil {
+		return nil, fmt.Errorf("%w: failed to write goal.md: %w", ErrInvalidInput, err)
 	}
 
 	return &GoalCreateOutput{ID: goalID}, nil
@@ -235,6 +243,42 @@ func (s *Server) GoalValidationDone(goalID, verdict string, findings []Validatio
 	}
 
 	return &GoalValidationDoneOutput{Written: true}, nil
+}
+
+// GoalPrune atomically removes all taskvisor goal state.
+func (s *Server) GoalPrune() (*GoalPruneOutput, error) {
+	activePath := filepath.Join(s.workingDir, ".tmux-cli", "taskvisor-active")
+	if _, err := os.Stat(activePath); err == nil {
+		return nil, fmt.Errorf("%w: taskvisor daemon is active — stop it first", ErrInvalidInput)
+	}
+
+	gf, err := tvLoadGoals(s.workingDir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to load goals.yaml: %w", ErrInvalidInput, err)
+	}
+	count := 0
+	if gf != nil {
+		count = len(gf.Goals)
+	}
+
+	goalsFile := tvGoalsFilePath(s.workingDir)
+	if err := os.Remove(goalsFile); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("%w: failed to remove goals.yaml: %w", ErrInvalidInput, err)
+	}
+
+	goalsDir := filepath.Join(s.workingDir, ".tmux-cli", "goals")
+	if err := os.RemoveAll(goalsDir); err != nil {
+		return nil, fmt.Errorf("%w: failed to remove goals directory: %w", ErrInvalidInput, err)
+	}
+
+	for _, name := range []string{"taskvisor-current-goal", "taskvisor-start"} {
+		p := filepath.Join(s.workingDir, ".tmux-cli", name)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: failed to remove %s: %w", ErrInvalidInput, name, err)
+		}
+	}
+
+	return &GoalPruneOutput{Pruned: true, GoalsRemoved: count}, nil
 }
 
 type validatorSignalJSON struct {

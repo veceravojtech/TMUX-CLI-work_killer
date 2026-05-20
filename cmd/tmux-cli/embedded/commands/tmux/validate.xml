@@ -44,8 +44,20 @@
       </check>
     </step>
 
+    <step n="2b" title="Resolve validate rules from file or payload">
+      <action>Construct path: `.tmux-cli/goals/&lt;goal_id&gt;/validate.md` using the parsed goal_id.</action>
+      <action>Use the Read tool to check if this file exists.</action>
+      <check condition="validate.md exists and is non-empty">
+        <action>Read its content. Each bullet line (starting with `-`) becomes one validate rule, replacing the inline validate array from the payload.</action>
+      </check>
+      <check condition="validate.md does not exist or is empty">
+        <action>Use the inline validate array from the parsed payload as-is.</action>
+      </check>
+      <rule>The resolved validate rules (from either source) are used in all subsequent steps.</rule>
+    </step>
+
     <step n="3" title="Check each validate rule">
-      <action>For each rule in the validate list, execute independently:</action>
+      <action>For each rule in the resolved validate rules list, execute independently:</action>
       <substep title="Interpret the rule">Determine what tool to use: Read for file checks, Bash for command output (read-only commands only: grep, cat, go test, make test, curl, etc.), browser tools for UI checks.</substep>
       <substep title="Execute the check">Run the appropriate tool(s) and observe the result.</substep>
       <substep title="Record finding">Create a ValidationFinding:

@@ -265,9 +265,11 @@ func (s *Server) TaskvisorStartHandler(ctx context.Context, req *sdkmcp.CallTool
 
 // GoalCreateInput defines the input schema for goal-create tool
 type GoalCreateInput struct {
-	Description string   `json:"description" jsonschema:"Goal description — what should be achieved"`
+	Description string   `json:"description" jsonschema:"Goal description — what should be achieved (max 120 chars; use acceptance for detail)"`
 	Acceptance  []string `json:"acceptance,omitempty" jsonschema:"Acceptance criteria the goal must satisfy"`
 	Validate    []string `json:"validate,omitempty" jsonschema:"Validation steps to verify the goal"`
+	Context     string   `json:"context,omitempty" jsonschema:"Background context for the goal"`
+	NotInScope  string   `json:"not_in_scope,omitempty" jsonschema:"What is explicitly out of scope"`
 	MaxRetries  int      `json:"max_retries,omitempty" jsonschema:"Maximum retry attempts before failing (default 3)"`
 }
 
@@ -282,9 +284,31 @@ func (s *Server) GoalCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequ
 	GoalCreateOutput,
 	error,
 ) {
-	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.MaxRetries)
+	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.MaxRetries)
 	if err != nil {
 		return nil, GoalCreateOutput{}, err
+	}
+	return nil, *output, nil
+}
+
+// GoalPruneInput defines the input schema for goal-prune tool (no parameters needed)
+type GoalPruneInput struct{}
+
+// GoalPruneOutput defines the output schema for goal-prune tool
+type GoalPruneOutput struct {
+	Pruned       bool `json:"pruned" jsonschema:"True if prune operation completed"`
+	GoalsRemoved int  `json:"goals_removed" jsonschema:"Number of goals that were in goals.yaml before deletion"`
+}
+
+// GoalPruneHandler is the MCP tool handler for goal-prune operation.
+func (s *Server) GoalPruneHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input GoalPruneInput) (
+	*sdkmcp.CallToolResult,
+	GoalPruneOutput,
+	error,
+) {
+	output, err := s.GoalPrune()
+	if err != nil {
+		return nil, GoalPruneOutput{}, err
 	}
 	return nil, *output, nil
 }
@@ -559,6 +583,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: false,
 		},
 	}, s.GoalCreateHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "goal-prune",
+		Description: "Remove all taskvisor goal state (goals.yaml, goals/ directory, signal files) for a clean restart. Idempotent — safe to call when no goals exist. Rejects if the taskvisor daemon is active.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: true,
+		},
+	}, s.GoalPruneHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "goal-validation-done",

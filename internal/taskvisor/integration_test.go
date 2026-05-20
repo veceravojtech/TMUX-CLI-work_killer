@@ -2,15 +2,12 @@ package taskvisor
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/console/tmux-cli/internal/mcp"
 	"github.com/console/tmux-cli/internal/testutil"
 	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
@@ -506,65 +503,4 @@ func TestIntegration_HookGuardSkip(t *testing.T) {
 	require.NoError(t, os.Remove(guardPath))
 	_, err = os.Stat(guardPath)
 	assert.True(t, os.IsNotExist(err), "guard file removed — hook should run")
-}
-
-func TestIntegration_GoalCreateConcurrent(t *testing.T) {
-	dir := t.TempDir()
-	mockExec := new(testutil.MockTmuxExecutor)
-
-	server := &mcp.Server{}
-	_ = server
-	// Use the MCP server constructor with mock executor injected
-	server = newMCPTestServer(mockExec, dir)
-
-	const goroutines = 10
-	var wg sync.WaitGroup
-	wg.Add(goroutines)
-
-	errs := make([]error, goroutines)
-	ids := make([]string, goroutines)
-
-	for i := 0; i < goroutines; i++ {
-		go func(idx int) {
-			defer wg.Done()
-			output, err := server.GoalCreate(
-				fmt.Sprintf("Goal %d", idx),
-				[]string{fmt.Sprintf("criterion-%d", idx)},
-				nil,
-				0,
-			)
-			errs[idx] = err
-			if output != nil {
-				ids[idx] = output.ID
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	// Concurrent read-modify-write is racy in v1 (no locking).
-	// We verify: no panics (test reaching this point proves it), and
-	// the final file is valid YAML with at least 1 goal persisted.
-	successCount := 0
-	for i := 0; i < goroutines; i++ {
-		if errs[i] == nil {
-			successCount++
-		}
-	}
-	assert.Greater(t, successCount, 0, "at least one goroutine should succeed")
-
-	gf, err := tvLoadGoalsForTest(dir)
-	require.NoError(t, err, "goals.yaml must be valid YAML (no corruption)")
-	require.NotNil(t, gf)
-	assert.GreaterOrEqual(t, len(gf.Goals), 1, "at least 1 goal should be persisted")
-}
-
-// newMCPTestServer creates an MCP server with mock executor for testing.
-func newMCPTestServer(exec *testutil.MockTmuxExecutor, workingDir string) *mcp.Server {
-	return mcp.NewServerWithExecutor(exec, workingDir)
-}
-
-// tvLoadGoalsForTest loads goals.yaml using the internal taskvisor loader.
-func tvLoadGoalsForTest(dir string) (*GoalsFile, error) {
-	return LoadGoals(dir)
 }

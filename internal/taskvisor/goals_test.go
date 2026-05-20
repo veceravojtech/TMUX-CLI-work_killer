@@ -1,9 +1,12 @@
 package taskvisor
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,6 +62,26 @@ goals:
 	assert.Equal(t, GoalPending, g.Status)
 	assert.Equal(t, 0, g.Retries)
 	assert.Equal(t, 3, g.MaxRetries)
+}
+
+func TestLoadGoals_LongDescriptionReadTolerance(t *testing.T) {
+	root := t.TempDir()
+	p := GoalsFilePath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	longDesc := strings.Repeat("z", 200)
+	content := fmt.Sprintf(`goals:
+  - id: "goal-001"
+    description: "%s"
+    status: pending
+    max_retries: 3
+`, longDesc)
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+
+	gf, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.Len(t, gf.Goals, 1)
+	assert.Equal(t, longDesc, gf.Goals[0].Description)
 }
 
 func TestSaveGoals_CreatesDir(t *testing.T) {
@@ -252,4 +275,342 @@ func TestIncrementRetries(t *testing.T) {
 	n := g.IncrementRetries()
 	assert.Equal(t, 2, n)
 	assert.Equal(t, 2, g.Retries)
+}
+
+func TestDeleteGoal_Found(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Description: "First"},
+			{ID: "goal-002", Description: "Second"},
+			{ID: "goal-003", Description: "Third"},
+		},
+	}
+	removed, ok := gf.DeleteGoal("goal-002")
+	assert.True(t, ok)
+	require.NotNil(t, removed)
+	assert.Equal(t, "goal-002", removed.ID)
+	assert.Equal(t, "Second", removed.Description)
+	require.Len(t, gf.Goals, 2)
+	assert.Equal(t, "goal-001", gf.Goals[0].ID)
+	assert.Equal(t, "goal-003", gf.Goals[1].ID)
+}
+
+func TestDeleteGoal_NotFound(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Description: "First"},
+		},
+	}
+	removed, ok := gf.DeleteGoal("goal-999")
+	assert.False(t, ok)
+	assert.Nil(t, removed)
+	require.Len(t, gf.Goals, 1)
+}
+
+func TestDeleteGoal_ClearsCurrentGoal(t *testing.T) {
+	gf := &GoalsFile{
+		CurrentGoal: "goal-002",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "First"},
+			{ID: "goal-002", Description: "Second"},
+		},
+	}
+	removed, ok := gf.DeleteGoal("goal-002")
+	assert.True(t, ok)
+	require.NotNil(t, removed)
+	assert.Equal(t, "", gf.CurrentGoal)
+	require.Len(t, gf.Goals, 1)
+}
+
+func TestDeleteGoal_PreservesCurrentGoal(t *testing.T) {
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "First"},
+			{ID: "goal-002", Description: "Second"},
+		},
+	}
+	removed, ok := gf.DeleteGoal("goal-002")
+	assert.True(t, ok)
+	require.NotNil(t, removed)
+	assert.Equal(t, "goal-001", gf.CurrentGoal)
+	require.Len(t, gf.Goals, 1)
+}
+
+func TestResetGoal_FailedGoal(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:         "goal-001",
+				Status:     GoalFailed,
+				Retries:    2,
+				FinishedAt: "2026-05-20T15:00:00Z",
+			},
+		},
+	}
+	ok := gf.ResetGoal("goal-001")
+	assert.True(t, ok)
+	assert.Equal(t, GoalPending, gf.Goals[0].Status)
+	assert.Equal(t, 0, gf.Goals[0].Retries)
+	assert.Equal(t, "", gf.Goals[0].FinishedAt)
+}
+
+func TestResetGoal_NotFailed(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Status: GoalDone, Retries: 1},
+		},
+	}
+	ok := gf.ResetGoal("goal-001")
+	assert.False(t, ok)
+	assert.Equal(t, GoalDone, gf.Goals[0].Status)
+	assert.Equal(t, 1, gf.Goals[0].Retries)
+}
+
+func TestResetGoal_NotFound(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Status: GoalFailed},
+		},
+	}
+	ok := gf.ResetGoal("goal-999")
+	assert.False(t, ok)
+}
+
+func TestResetGoal_PreservesOtherFields(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:          "goal-001",
+				Description: "My goal",
+				Acceptance:  []string{"A1", "A2"},
+				Validate:    []string{"V1"},
+				Status:      GoalFailed,
+				Retries:     3,
+				MaxRetries:  5,
+				StartedAt:   "2026-05-20T14:00:00Z",
+				FinishedAt:  "2026-05-20T15:00:00Z",
+			},
+		},
+	}
+	ok := gf.ResetGoal("goal-001")
+	assert.True(t, ok)
+	g := gf.Goals[0]
+	assert.Equal(t, "My goal", g.Description)
+	assert.Equal(t, []string{"A1", "A2"}, g.Acceptance)
+	assert.Equal(t, []string{"V1"}, g.Validate)
+	assert.Equal(t, 5, g.MaxRetries)
+	assert.Equal(t, "2026-05-20T14:00:00Z", g.StartedAt)
+	assert.Equal(t, GoalPending, g.Status)
+	assert.Equal(t, 0, g.Retries)
+	assert.Equal(t, "", g.FinishedAt)
+}
+
+func TestSkipGoal_RunningGoal(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:        "goal-001",
+				Status:    GoalRunning,
+				StartedAt: "2026-05-20T14:00:00Z",
+			},
+		},
+	}
+	ok := gf.SkipGoal("goal-001")
+	assert.True(t, ok)
+	assert.Equal(t, GoalDone, gf.Goals[0].Status)
+	assert.NotEmpty(t, gf.Goals[0].FinishedAt)
+}
+
+func TestSkipGoal_NotRunning(t *testing.T) {
+	for _, status := range []string{GoalPending, GoalDone, GoalFailed} {
+		t.Run(status, func(t *testing.T) {
+			gf := &GoalsFile{
+				Goals: []Goal{
+					{ID: "goal-001", Status: status},
+				},
+			}
+			ok := gf.SkipGoal("goal-001")
+			assert.False(t, ok)
+			assert.Equal(t, status, gf.Goals[0].Status)
+		})
+	}
+}
+
+func TestSkipGoal_NotFound(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Status: GoalRunning},
+		},
+	}
+	ok := gf.SkipGoal("goal-999")
+	assert.False(t, ok)
+}
+
+func TestSkipGoal_SetsFinishedAt(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Status: GoalRunning},
+		},
+	}
+	before := time.Now().UTC()
+	ok := gf.SkipGoal("goal-001")
+	after := time.Now().UTC()
+	require.True(t, ok)
+
+	parsed, err := time.Parse(time.RFC3339, gf.Goals[0].FinishedAt)
+	require.NoError(t, err)
+	assert.False(t, parsed.Before(before.Add(-2*time.Second)))
+	assert.False(t, parsed.After(after.Add(2*time.Second)))
+}
+
+func TestGoalTimingFields_Roundtrip(t *testing.T) {
+	root := t.TempDir()
+	now := "2026-05-20T15:00:00Z"
+	later := "2026-05-20T15:30:00Z"
+	original := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{{
+			ID:         "goal-001",
+			Status:     GoalDone,
+			StartedAt:  now,
+			FinishedAt: later,
+		}},
+	}
+	require.NoError(t, SaveGoals(root, original))
+
+	loaded, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	require.Len(t, loaded.Goals, 1)
+	assert.Equal(t, now, loaded.Goals[0].StartedAt)
+	assert.Equal(t, later, loaded.Goals[0].FinishedAt)
+}
+
+func TestWriteGoalMD_AllSections(t *testing.T) {
+	dir := t.TempDir()
+	err := WriteGoalMD(dir, "Fix prices", []string{"Price matches API", "No rounding errors"}, []string{"go test ./...", "curl check"}, "We need accurate pricing", "UI redesign")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "# Fix prices")
+	assert.Contains(t, content, "## Acceptance Criteria")
+	assert.Contains(t, content, "- Price matches API")
+	assert.Contains(t, content, "- No rounding errors")
+	assert.Contains(t, content, "## Validation Rules")
+	assert.Contains(t, content, "- go test ./...")
+	assert.Contains(t, content, "- curl check")
+	assert.Contains(t, content, "## Context")
+	assert.Contains(t, content, "We need accurate pricing")
+	assert.Contains(t, content, "## Not In Scope")
+	assert.Contains(t, content, "UI redesign")
+}
+
+func TestWriteGoalMD_AcceptanceOnly(t *testing.T) {
+	dir := t.TempDir()
+	err := WriteGoalMD(dir, "Build API", []string{"Returns 200"}, nil, "", "")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "# Build API")
+	assert.Contains(t, content, "## Acceptance Criteria")
+	assert.Contains(t, content, "- Returns 200")
+	assert.NotContains(t, content, "## Validation Rules")
+	assert.NotContains(t, content, "## Context")
+	assert.NotContains(t, content, "## Not In Scope")
+}
+
+func TestWriteGoalMD_NoCriteria(t *testing.T) {
+	dir := t.TempDir()
+	err := WriteGoalMD(dir, "Simple goal", nil, nil, "", "")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "# Simple goal")
+	assert.Contains(t, content, "## Acceptance Criteria")
+	assert.NotContains(t, content, "## Validation Rules")
+	assert.NotContains(t, content, "## Context")
+	assert.NotContains(t, content, "## Not In Scope")
+}
+
+func TestWriteGoalMD_ContextAndNotInScope(t *testing.T) {
+	dir := t.TempDir()
+	err := WriteGoalMD(dir, "Refactor module", nil, nil, "Legacy code needs cleanup", "Performance tuning")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "## Acceptance Criteria")
+	assert.Contains(t, content, "## Context")
+	assert.Contains(t, content, "Legacy code needs cleanup")
+	assert.Contains(t, content, "## Not In Scope")
+	assert.Contains(t, content, "Performance tuning")
+	assert.NotContains(t, content, "## Validation Rules")
+}
+
+func TestWriteGoalMD_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	err := WriteGoalMD(dir, "Test atomic", []string{"A1"}, nil, "", "")
+	require.NoError(t, err)
+
+	tmpPath := filepath.Join(dir, "goal.md.tmp")
+	_, err = os.Stat(tmpPath)
+	assert.True(t, os.IsNotExist(err), "tmp file should not remain after write")
+}
+
+func TestWriteGoalMD_MarkdownFormat(t *testing.T) {
+	dir := t.TempDir()
+	err := WriteGoalMD(dir, "Format check", []string{"Criterion A", "Criterion B"}, []string{"validate cmd"}, "Some context", "Out of scope")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	lines := strings.Split(string(data), "\n")
+
+	assert.Equal(t, "# Format check", lines[0])
+	assert.Equal(t, "", lines[1])
+	assert.Equal(t, "## Acceptance Criteria", lines[2])
+	assert.Equal(t, "", lines[3])
+	assert.Equal(t, "- Criterion A", lines[4])
+	assert.Equal(t, "- Criterion B", lines[5])
+	assert.Equal(t, "", lines[6])
+	assert.Equal(t, "## Validation Rules", lines[7])
+	assert.Equal(t, "", lines[8])
+	assert.Equal(t, "- validate cmd", lines[9])
+	assert.Equal(t, "", lines[10])
+	assert.Equal(t, "## Context", lines[11])
+	assert.Equal(t, "", lines[12])
+	assert.Equal(t, "Some context", lines[13])
+	assert.Equal(t, "", lines[14])
+	assert.Equal(t, "## Not In Scope", lines[15])
+	assert.Equal(t, "", lines[16])
+	assert.Equal(t, "Out of scope", lines[17])
+}
+
+func TestGoalTimingFields_OmitEmpty(t *testing.T) {
+	root := t.TempDir()
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{{
+			ID:     "goal-001",
+			Status: GoalPending,
+		}},
+	}
+	require.NoError(t, SaveGoals(root, gf))
+
+	data, err := os.ReadFile(GoalsFilePath(root))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "started_at")
+	assert.NotContains(t, string(data), "finished_at")
 }

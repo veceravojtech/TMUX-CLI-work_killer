@@ -118,6 +118,7 @@ func (e *RealTmuxExecutor) ListSessions() ([]string, error) {
 func (e *RealTmuxExecutor) CreateWindow(sessionID, name, command string) (string, error) {
 	args := []string{
 		"new-window",
+		"-d",
 		"-t", sessionID,
 		"-n", name,
 		"-P",

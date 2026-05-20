@@ -1,10 +1,13 @@
 package taskvisor
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -15,6 +18,10 @@ import (
 	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/tmux"
 )
+
+type ScriptRunnerFunc func(ctx context.Context, scriptPath, dir string, env []string) (stdout, stderr string, exitCode int, err error)
+
+const validateScriptTimeout = 30 * time.Second
 
 type mode int
 
@@ -59,6 +66,8 @@ type Daemon struct {
 	currentGoal             string
 	exitFunc                func(int)
 	signalCh                chan os.Signal
+	scriptRunnerFn          ScriptRunnerFunc
+	scriptTimeout           time.Duration
 }
 
 func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
@@ -70,11 +79,100 @@ func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
 		dispatchTimeout:    time.Hour,
 		validateTimeout:    5 * time.Minute,
 		validatorSendDelay: 2 * time.Second,
+		scriptRunnerFn:     defaultScriptRunner,
+		scriptTimeout:      validateScriptTimeout,
+	}
+}
+
+func defaultScriptRunner(ctx context.Context, scriptPath, dir string, env []string) (stdout, stderr string, exitCode int, err error) {
+	cmd := exec.CommandContext(ctx, scriptPath)
+	cmd.Env = env
+	cmd.Dir = dir
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	runErr := cmd.Run()
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
+		}
+		return outBuf.String(), errBuf.String(), -1, runErr
+	}
+	return outBuf.String(), errBuf.String(), 0, nil
+}
+
+func goalDuration(goal *Goal) string {
+	if goal.StartedAt == "" || goal.FinishedAt == "" {
+		return ""
+	}
+	start, err := time.Parse(time.RFC3339, goal.StartedAt)
+	if err != nil {
+		return ""
+	}
+	end, err := time.Parse(time.RFC3339, goal.FinishedAt)
+	if err != nil {
+		return ""
+	}
+	return end.Sub(start).Round(time.Second).String()
+}
+
+func phaseName(p phase) string {
+	switch p {
+	case phaseSupervising:
+		return "supervising"
+	case phaseValidating:
+		return "validating"
+	default:
+		return "idle"
 	}
 }
 
 func (d *Daemon) SetWindowCreateFunc(fn WindowCreateFunc) {
 	d.createWindowFn = fn
+}
+
+func (d *Daemon) SetScriptRunnerFunc(fn ScriptRunnerFunc) {
+	d.scriptRunnerFn = fn
+}
+
+func (d *Daemon) runValidateScript(goal *Goal) (passed bool, stderr string, err error) {
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+
+	info, statErr := os.Stat(scriptPath)
+	if statErr != nil {
+		return false, "", nil
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		log.Printf("warning: validate.sh exists but is not executable for goal %s", goal.ID)
+		return false, "", nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), d.scriptTimeout)
+	defer cancel()
+
+	env := append(os.Environ(), "GOAL_ID="+goal.ID)
+	_, stderrOut, exitCode, runErr := d.scriptRunnerFn(ctx, scriptPath, d.workDir, env)
+	if runErr != nil {
+		log.Printf("error: validate.sh exec error for goal %s: %v", goal.ID, runErr)
+		return false, "", nil
+	}
+
+	if exitCode == 0 {
+		return true, "", nil
+	}
+
+	if len(stderrOut) > 500 {
+		stderrOut = stderrOut[:500]
+	}
+	return false, stderrOut, nil
+}
+
+func (d *Daemon) hasValidateMd(goalID string) bool {
+	mdPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goalID, "validate.md")
+	_, err := os.Stat(mdPath)
+	return err == nil
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -314,7 +412,9 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	log.Printf("dispatch: prompt detected, sending command")
 
 	d.bootConfirmedAt = time.Now()
+	oldPhase := d.phase
 	d.phase = phaseSupervising
+	log.Printf("%s: phase %s -> supervising", goal.ID, phaseName(oldPhase))
 
 	dispatchPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "dispatch.md")
 	planCmd := fmt.Sprintf("/tmux:plan %s", dispatchPath)
@@ -325,6 +425,7 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	log.Printf("dispatch: SendMessage returned successfully")
 
 	goal.Status = GoalRunning
+	log.Printf("%s: pending -> running", goal.ID)
 	if goal.StartedAt == "" {
 		goal.StartedAt = time.Now().UTC().Format(time.RFC3339)
 	}
@@ -491,7 +592,14 @@ func (d *Daemon) writeDispatchMd(goal *Goal) error {
 	sb.WriteString("# Dispatch: " + goal.Description + "\n\n")
 
 	sb.WriteString("## Acceptance Criteria\n\n")
-	if len(goal.Acceptance) > 0 {
+	goalMdPath := filepath.Join(goalDir, "goal.md")
+	goalMdData, goalMdErr := os.ReadFile(goalMdPath)
+	if goalMdErr == nil && strings.TrimSpace(string(goalMdData)) != "" {
+		sb.WriteString(string(goalMdData))
+		if !strings.HasSuffix(string(goalMdData), "\n") {
+			sb.WriteString("\n")
+		}
+	} else if len(goal.Acceptance) > 0 {
 		for _, a := range goal.Acceptance {
 			sb.WriteString("- " + a + "\n")
 		}
@@ -647,6 +755,7 @@ func (d *Daemon) crashRecovery() error {
 	if runningGoal.Retries < runningGoal.MaxRetries {
 		runningGoal.Status = GoalPending
 	} else {
+		runningGoal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 		runningGoal.Status = GoalFailed
 	}
 	return SaveGoals(d.workDir, goals)
@@ -704,10 +813,34 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 		return err
 	}
 
+	passed, stderr, err := d.runValidateScript(goal)
+	if err != nil {
+		return fmt.Errorf("validate script: %w", err)
+	}
+	if passed {
+		if err := SaveValidatorSignal(d.workDir, goal.ID, &ValidatorSignal{
+			Verdict:   "pass",
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}); err != nil {
+			return err
+		}
+		goal.Status = GoalDone
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		log.Printf("%s: running -> done (%s)", goal.ID, goalDuration(goal))
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals)
+	}
+	if stderr != "" && !d.hasValidateMd(goal.ID) {
+		return d.handleFailedCycle(goal, goals, stderr)
+	}
+
 	if err := d.createValidatorAndSendPayload(goal); err != nil {
 		return err
 	}
 
+	log.Printf("%s: phase supervising -> validating", goal.ID)
 	d.phase = phaseValidating
 	d.currentGoalValidateTime = time.Now()
 	return nil
@@ -754,6 +887,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 	if valSig.Verdict == "pass" {
 		goal.Status = GoalDone
 		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		log.Printf("%s: running -> done (%s)", goal.ID, goalDuration(goal))
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
@@ -792,6 +926,7 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason string) 
 	if goal.Retries >= goal.MaxRetries {
 		goal.Status = GoalFailed
 		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
@@ -799,7 +934,10 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason string) 
 	}
 
 	goal.Status = GoalPending
+	log.Printf("%s: running -> pending (retry %d/%d)", goal.ID, goal.Retries, goal.MaxRetries)
+	oldPhase := d.phase
 	d.phase = phaseSupervising
+	log.Printf("%s: phase %s -> supervising", goal.ID, phaseName(oldPhase))
 	return SaveGoals(d.workDir, goals)
 }
 

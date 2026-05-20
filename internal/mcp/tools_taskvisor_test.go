@@ -2,8 +2,11 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -99,7 +102,7 @@ func TestGoalCreate_FirstGoal(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Fix prices", []string{"Price matches API"}, []string{"Check price"}, 0)
+	output, err := server.GoalCreate("Fix prices", []string{"Price matches API"}, []string{"Check price"}, "", "", 0)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -112,12 +115,19 @@ func TestGoalCreate_FirstGoal(t *testing.T) {
 	assert.Equal(t, "pending", gf.Goals[0].Status)
 	assert.Equal(t, 0, gf.Goals[0].Retries)
 	assert.Equal(t, 3, gf.Goals[0].MaxRetries)
-	assert.Equal(t, []string{"Price matches API"}, gf.Goals[0].Acceptance)
-	assert.Equal(t, []string{"Check price"}, gf.Goals[0].Validate)
+	assert.Empty(t, gf.Goals[0].Acceptance, "acceptance should not be in goals.yaml")
+	assert.Empty(t, gf.Goals[0].Validate, "validate should not be in goals.yaml")
 
 	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", "goal-001")
 	_, statErr := os.Stat(goalDir)
 	assert.NoError(t, statErr)
+
+	mdData, err := os.ReadFile(filepath.Join(goalDir, "goal.md"))
+	require.NoError(t, err)
+	mdContent := string(mdData)
+	assert.Contains(t, mdContent, "# Fix prices")
+	assert.Contains(t, mdContent, "- Price matches API")
+	assert.Contains(t, mdContent, "- Check price")
 }
 
 func TestGoalCreate_SequentialID(t *testing.T) {
@@ -132,7 +142,7 @@ func TestGoalCreate_SequentialID(t *testing.T) {
 `)
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Third", nil, nil, 0)
+	output, err := server.GoalCreate("Third", nil, nil, "", "", 0)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-003", output.ID)
@@ -142,7 +152,7 @@ func TestGoalCreate_ExplicitMaxRetries(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Custom retries", nil, nil, 5)
+	output, err := server.GoalCreate("Custom retries", nil, nil, "", "", 5)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -156,7 +166,7 @@ func TestGoalCreate_DefaultMaxRetries(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Default retries", nil, nil, 0)
+	output, err := server.GoalCreate("Default retries", nil, nil, "", "", 0)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -170,11 +180,40 @@ func TestGoalCreate_EmptyDescription(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("", nil, nil, 0)
+	_, err := server.GoalCreate("", nil, nil, "", "", 0)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 	assert.Contains(t, err.Error(), "description cannot be empty")
+}
+
+func TestGoalCreate_DescriptionTooLong(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	longDesc := strings.Repeat("a", 121)
+	_, err := server.GoalCreate(longDesc, nil, nil, "", "", 0)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Contains(t, err.Error(), "120")
+	assert.Contains(t, err.Error(), "--acceptance")
+}
+
+func TestGoalCreate_DescriptionExactlyAtLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	exactDesc := strings.Repeat("b", 120)
+	output, err := server.GoalCreate(exactDesc, nil, nil, "", "", 0)
+
+	require.NoError(t, err)
+	assert.Equal(t, "goal-001", output.ID)
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, gf.Goals, 1)
+	assert.Equal(t, exactDesc, gf.Goals[0].Description)
 }
 
 func TestGoalCreate_AppendsToExisting(t *testing.T) {
@@ -187,7 +226,7 @@ func TestGoalCreate_AppendsToExisting(t *testing.T) {
 `)
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Second", nil, nil, 0)
+	_, err := server.GoalCreate("Second", nil, nil, "", "", 0)
 	require.NoError(t, err)
 
 	gf, err := tvLoadGoals(tmpDir)
@@ -203,12 +242,50 @@ func TestGoalCreate_AtomicWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Test atomic", nil, nil, 0)
+	_, err := server.GoalCreate("Test atomic", nil, nil, "", "", 0)
 	require.NoError(t, err)
 
 	tmpFile := filepath.Join(tmpDir, ".tmux-cli", "goals.yaml.tmp")
 	_, statErr := os.Stat(tmpFile)
 	assert.True(t, os.IsNotExist(statErr), "temp file should not remain after atomic write")
+}
+
+func TestGoalCreate_WithContext(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	output, err := server.GoalCreate("Refactor auth", []string{"Tests pass"}, nil, "Legacy code", "Performance", 0)
+
+	require.NoError(t, err)
+	assert.Equal(t, "goal-001", output.ID)
+
+	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", "goal-001")
+	mdData, err := os.ReadFile(filepath.Join(goalDir, "goal.md"))
+	require.NoError(t, err)
+	mdContent := string(mdData)
+	assert.Contains(t, mdContent, "## Context")
+	assert.Contains(t, mdContent, "Legacy code")
+	assert.Contains(t, mdContent, "## Not In Scope")
+	assert.Contains(t, mdContent, "Performance")
+}
+
+func TestGoalCreate_NoAcceptance(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	output, err := server.GoalCreate("Simple task", nil, nil, "", "", 0)
+
+	require.NoError(t, err)
+	assert.Equal(t, "goal-001", output.ID)
+
+	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", "goal-001")
+	mdData, err := os.ReadFile(filepath.Join(goalDir, "goal.md"))
+	require.NoError(t, err)
+	mdContent := string(mdData)
+	assert.Contains(t, mdContent, "## Acceptance Criteria")
+	assert.NotContains(t, mdContent, "## Validation Rules")
+	assert.NotContains(t, mdContent, "## Context")
+	assert.NotContains(t, mdContent, "## Not In Scope")
 }
 
 // --- GoalValidationDone tests ---
@@ -349,6 +426,126 @@ func TestGoalValidationDone_UnknownGoalID(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 	assert.Contains(t, err.Error(), "goal not found")
+}
+
+// --- GoalPrune tests ---
+
+func TestGoalPrune_WithGoals(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestGoalsYaml(t, tmpDir, `goals:
+- id: goal-001
+  description: First
+  status: done
+  max_retries: 3
+- id: goal-002
+  description: Second
+  status: pending
+  max_retries: 3
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, ".tmux-cli", "goals", "goal-001", "corrections"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, ".tmux-cli", "goals", "goal-002", "corrections"), 0o755))
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	output, err := server.GoalPrune()
+
+	require.NoError(t, err)
+	assert.True(t, output.Pruned)
+	assert.Equal(t, 2, output.GoalsRemoved)
+
+	_, statErr := os.Stat(filepath.Join(tmpDir, ".tmux-cli", "goals.yaml"))
+	assert.True(t, os.IsNotExist(statErr), "goals.yaml should be removed")
+
+	_, statErr = os.Stat(filepath.Join(tmpDir, ".tmux-cli", "goals"))
+	assert.True(t, os.IsNotExist(statErr), "goals/ dir should be removed")
+}
+
+func TestGoalPrune_NoGoals(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	output, err := server.GoalPrune()
+
+	require.NoError(t, err)
+	assert.True(t, output.Pruned)
+	assert.Equal(t, 0, output.GoalsRemoved)
+}
+
+func TestGoalPrune_DaemonActive(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmuxDir := filepath.Join(tmpDir, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(tmuxDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-active"), nil, 0o644))
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	_, err := server.GoalPrune()
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Contains(t, err.Error(), "active")
+}
+
+func TestGoalPrune_CleansSignalFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmuxDir := filepath.Join(tmpDir, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(tmuxDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-goal"), []byte("goal-001"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-start"), nil, 0o644))
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	output, err := server.GoalPrune()
+
+	require.NoError(t, err)
+	assert.True(t, output.Pruned)
+
+	_, statErr := os.Stat(filepath.Join(tmuxDir, "taskvisor-current-goal"))
+	assert.True(t, os.IsNotExist(statErr), "taskvisor-current-goal should be removed")
+
+	_, statErr = os.Stat(filepath.Join(tmuxDir, "taskvisor-start"))
+	assert.True(t, os.IsNotExist(statErr), "taskvisor-start should be removed")
+}
+
+func TestGoalCreate_Concurrent(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	errs := make([]error, goroutines)
+	ids := make([]string, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			output, err := server.GoalCreate(
+				fmt.Sprintf("Goal %d", idx),
+				[]string{fmt.Sprintf("criterion-%d", idx)},
+				nil, "", "",
+				0,
+			)
+			errs[idx] = err
+			if output != nil {
+				ids[idx] = output.ID
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	successCount := 0
+	for i := 0; i < goroutines; i++ {
+		if errs[i] == nil {
+			successCount++
+		}
+	}
+	assert.Greater(t, successCount, 0, "at least one goroutine should succeed")
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err, "goals.yaml must be valid YAML (no corruption)")
+	require.NotNil(t, gf)
+	assert.GreaterOrEqual(t, len(gf.Goals), 1, "at least 1 goal should be persisted")
 }
 
 func TestGoalValidationDone_AtomicWrite(t *testing.T) {

@@ -233,6 +233,41 @@ var taskvisorGoalListCmd = &cobra.Command{
 	RunE:  runTaskvisorGoalList,
 }
 
+var taskvisorGoalDeleteCmd = &cobra.Command{
+	Use:   "delete [goal-id]",
+	Short: "Delete a goal from goals.yaml",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskvisorGoalDelete,
+}
+
+var taskvisorGoalResetCmd = &cobra.Command{
+	Use:   "reset [goal-id]",
+	Short: "Reset a failed goal back to pending",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskvisorGoalReset,
+}
+
+var taskvisorGoalStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Send stop signal to taskvisor daemon",
+	Args:  cobra.NoArgs,
+	RunE:  runTaskvisorGoalStop,
+}
+
+var taskvisorGoalSkipCmd = &cobra.Command{
+	Use:   "skip [goal-id]",
+	Short: "Skip a running goal (mark as done)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskvisorGoalSkip,
+}
+
+var taskvisorGoalPruneCmd = &cobra.Command{
+	Use:   "prune",
+	Short: "Remove all goals and daemon state for a fresh start",
+	Args:  cobra.NoArgs,
+	RunE:  runTaskvisorGoalPrune,
+}
+
 var (
 	windowName      string
 	windowIDFlag    string
@@ -244,9 +279,12 @@ var (
 
 var (
 	taskvisorRun    bool
+	skipReason      string
 	goalDescription string
 	goalAcceptance  []string
 	goalValidate    []string
+	goalContext     string
+	goalNotInScope  string
 	goalMaxRetries  int
 )
 
@@ -302,12 +340,20 @@ func init() {
 	taskvisorGoalAddCmd.Flags().StringVar(&goalDescription, "description", "", "Goal description (required)")
 	taskvisorGoalAddCmd.Flags().StringArrayVar(&goalAcceptance, "acceptance", nil, "Acceptance criteria (repeatable)")
 	taskvisorGoalAddCmd.Flags().StringArrayVar(&goalValidate, "validate", nil, "Validation commands (repeatable)")
+	taskvisorGoalAddCmd.Flags().StringVar(&goalContext, "context", "", "Background context for the goal")
+	taskvisorGoalAddCmd.Flags().StringVar(&goalNotInScope, "not-in-scope", "", "What is explicitly out of scope")
 	taskvisorGoalAddCmd.Flags().IntVar(&goalMaxRetries, "max-retries", 3, "Max retry attempts")
 	taskvisorGoalAddCmd.MarkFlagRequired("description")
 
 	taskvisorCmd.AddCommand(taskvisorStartCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalAddCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalListCmd)
+	taskvisorGoalCmd.AddCommand(taskvisorGoalDeleteCmd)
+	taskvisorGoalCmd.AddCommand(taskvisorGoalResetCmd)
+	taskvisorGoalSkipCmd.Flags().StringVar(&skipReason, "reason", "manually skipped", "Reason for skipping")
+	taskvisorGoalCmd.AddCommand(taskvisorGoalSkipCmd)
+	taskvisorGoalCmd.AddCommand(taskvisorGoalStopCmd)
+	taskvisorGoalCmd.AddCommand(taskvisorGoalPruneCmd)
 	taskvisorCmd.AddCommand(taskvisorGoalCmd)
 
 	// Add all commands directly to root
@@ -983,6 +1029,10 @@ func runTaskvisorStart(cmd *cobra.Command, args []string) error {
 }
 
 func runTaskvisorGoalAdd(cmd *cobra.Command, args []string) error {
+	if len(goalDescription) > 120 {
+		return fmt.Errorf("description exceeds 120 characters (got %d); use --acceptance for detailed criteria", len(goalDescription))
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
@@ -1000,8 +1050,6 @@ func runTaskvisorGoalAdd(cmd *cobra.Command, args []string) error {
 	goal := taskvisor.Goal{
 		ID:          id,
 		Description: goalDescription,
-		Acceptance:  goalAcceptance,
-		Validate:    goalValidate,
 		Status:      taskvisor.GoalPending,
 		MaxRetries:  goalMaxRetries,
 	}
@@ -1011,8 +1059,13 @@ func runTaskvisorGoalAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("save goals: %w", err)
 	}
 
-	if _, err := taskvisor.EnsureGoalDir(cwd, id); err != nil {
+	goalDir, err := taskvisor.EnsureGoalDir(cwd, id)
+	if err != nil {
 		return fmt.Errorf("create goal directory: %w", err)
+	}
+
+	if err := taskvisor.WriteGoalMD(goalDir, goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope); err != nil {
+		return fmt.Errorf("write goal.md: %w", err)
 	}
 
 	fmt.Printf("Goal created: %s\n", id)
@@ -1039,6 +1092,189 @@ func runTaskvisorGoalList(cmd *cobra.Command, args []string) error {
 	for _, g := range gf.Goals {
 		fmt.Printf("%-10s %-10s %d/%-8d %s\n", g.ID, g.Status, g.Retries, g.MaxRetries, g.Description)
 	}
+	return nil
+}
+
+func runTaskvisorGoalDelete(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	goalID := args[0]
+	gf, err := taskvisor.LoadGoals(cwd)
+	if err != nil {
+		return fmt.Errorf("load goals: %w", err)
+	}
+	if gf == nil {
+		return fmt.Errorf("goal not found: %s", goalID)
+	}
+
+	g, ok := gf.GoalByID(goalID)
+	if !ok {
+		return fmt.Errorf("goal not found: %s", goalID)
+	}
+	if g.Status == taskvisor.GoalRunning {
+		return fmt.Errorf("goal is currently running, stop the daemon first")
+	}
+
+	gf.DeleteGoal(goalID)
+
+	if err := taskvisor.SaveGoals(cwd, gf); err != nil {
+		return fmt.Errorf("save goals: %w", err)
+	}
+
+	goalDir := filepath.Join(cwd, ".tmux-cli", "goals", goalID)
+	if err := os.RemoveAll(goalDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove goal directory: %w", err)
+	}
+
+	fmt.Printf("Goal deleted: %s\n", goalID)
+	return nil
+}
+
+func runTaskvisorGoalReset(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	goalID := args[0]
+	gf, err := taskvisor.LoadGoals(cwd)
+	if err != nil {
+		return fmt.Errorf("load goals: %w", err)
+	}
+	if gf == nil {
+		return fmt.Errorf("goal not found: %s", goalID)
+	}
+
+	g, ok := gf.GoalByID(goalID)
+	if !ok {
+		return fmt.Errorf("goal not found: %s", goalID)
+	}
+	if g.Status != taskvisor.GoalFailed {
+		return fmt.Errorf("goal is not in failed status (current: %s)", g.Status)
+	}
+
+	gf.ResetGoal(goalID)
+
+	if err := taskvisor.SaveGoals(cwd, gf); err != nil {
+		return fmt.Errorf("save goals: %w", err)
+	}
+
+	fmt.Printf("Goal reset to pending: %s\n", goalID)
+	return nil
+}
+
+func runTaskvisorGoalSkip(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	goalID := args[0]
+	gf, err := taskvisor.LoadGoals(cwd)
+	if err != nil {
+		return fmt.Errorf("load goals: %w", err)
+	}
+	if gf == nil {
+		return fmt.Errorf("goal not found: %s", goalID)
+	}
+
+	g, ok := gf.GoalByID(goalID)
+	if !ok {
+		return fmt.Errorf("goal not found: %s", goalID)
+	}
+	if g.Status != taskvisor.GoalRunning {
+		return fmt.Errorf("goal is not running (current: %s)", g.Status)
+	}
+
+	gf.SkipGoal(goalID)
+
+	if err := taskvisor.SaveGoals(cwd, gf); err != nil {
+		return fmt.Errorf("save goals: %w", err)
+	}
+
+	executor := tmux.NewTmuxExecutor()
+	sessionID, err := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", cwd)
+	if err == nil && sessionID != "" {
+		windows, err := executor.ListWindows(sessionID)
+		if err == nil {
+			for _, w := range windows {
+				if w.Name == "supervisor" || w.Name == "validator" || strings.HasPrefix(w.Name, "execute-") {
+					_ = executor.KillWindow(sessionID, w.TmuxWindowID)
+				}
+			}
+		}
+	}
+
+	if _, err := taskvisor.EnsureGoalDir(cwd, goalID); err != nil {
+		return fmt.Errorf("ensure goal dir: %w", err)
+	}
+	skippedPath := filepath.Join(cwd, ".tmux-cli", "goals", goalID, "corrections", "skipped.md")
+	if err := os.WriteFile(skippedPath, []byte(skipReason), 0o644); err != nil {
+		return fmt.Errorf("write skipped.md: %w", err)
+	}
+
+	fmt.Printf("Goal skipped: %s\n", goalID)
+	return nil
+}
+
+func runTaskvisorGoalStop(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	for _, name := range []string{"taskvisor-active", "taskvisor-start"} {
+		p := filepath.Join(cwd, ".tmux-cli", name)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", name, err)
+		}
+	}
+
+	fmt.Println("Taskvisor stop signal sent")
+	return nil
+}
+
+func runTaskvisorGoalPrune(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	activePath := filepath.Join(cwd, ".tmux-cli", "taskvisor-active")
+	if _, err := os.Stat(activePath); err == nil {
+		return fmt.Errorf("taskvisor daemon is active — stop it first")
+	}
+
+	gf, err := taskvisor.LoadGoals(cwd)
+	if err != nil {
+		return fmt.Errorf("load goals: %w", err)
+	}
+	count := 0
+	if gf != nil {
+		count = len(gf.Goals)
+	}
+
+	goalsFile := taskvisor.GoalsFilePath(cwd)
+	if err := os.Remove(goalsFile); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove goals.yaml: %w", err)
+	}
+
+	goalsDir := filepath.Join(cwd, ".tmux-cli", "goals")
+	if err := os.RemoveAll(goalsDir); err != nil {
+		return fmt.Errorf("remove goals directory: %w", err)
+	}
+
+	for _, name := range []string{"taskvisor-current-goal", "taskvisor-start"} {
+		p := filepath.Join(cwd, ".tmux-cli", name)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", name, err)
+		}
+	}
+
+	fmt.Printf("Pruned %d goal(s)\n", count)
 	return nil
 }
 
