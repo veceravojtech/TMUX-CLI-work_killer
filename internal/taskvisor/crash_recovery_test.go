@@ -29,7 +29,7 @@ func TestCrashRecovery_GuardWithSupervisorWindow(t *testing.T) {
 	writeGuardFile(t, dir)
 	writeGoals(t, dir, &GoalsFile{
 		CurrentGoal: "goal-001",
-		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning}},
+		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning, MaxRetries: 3}},
 	})
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
@@ -42,10 +42,13 @@ func TestCrashRecovery_GuardWithSupervisorWindow(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
-	assert.Equal(t, phaseSupervising, d.phase)
-	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
-	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
 	assert.Equal(t, "goal-001", d.currentGoal)
+	// Crash recovery now resets supervisor-phase goals to pending for re-dispatch
+	goals, err2 := LoadGoals(dir)
+	require.NoError(t, err2)
+	g, _ := goals.GoalByID("goal-001")
+	assert.Equal(t, GoalPending, g.Status)
+	_ = before
 }
 
 func TestCrashRecovery_GuardWithValidatorWindow(t *testing.T) {

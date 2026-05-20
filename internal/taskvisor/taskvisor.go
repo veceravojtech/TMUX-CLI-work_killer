@@ -78,6 +78,14 @@ func (d *Daemon) SetWindowCreateFunc(fn WindowCreateFunc) {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	logDir := filepath.Join(d.workDir, ".tmux-cli", "logs")
+	_ = os.MkdirAll(logDir, 0o755)
+	logFile, err := os.OpenFile(filepath.Join(logDir, "taskvisor.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err == nil {
+		log.SetOutput(logFile)
+		defer logFile.Close()
+	}
+
 	settings, err := setup.LoadSettings(d.workDir)
 	if err != nil {
 		log.Printf("warning: failed to load settings: %v", err)
@@ -110,6 +118,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-ticker.C:
 			if err := d.poll(d.ctx); err != nil {
 				log.Printf("poll error: %v", err)
+			}
+			if err := d.renderDashboard(os.Stdout); err != nil {
+				log.Printf("dashboard render error: %v", err)
 			}
 		}
 	}
@@ -219,6 +230,9 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	}
 
 	d.mode = modeActive
+	if err := d.renderDashboard(os.Stdout); err != nil {
+		log.Printf("dashboard render error: %v", err)
+	}
 	return nil
 }
 
@@ -250,6 +264,9 @@ func (d *Daemon) deactivate() error {
 	_ = os.Remove(guardPath)
 
 	d.mode = modeIdle
+	if err := d.renderDashboard(os.Stdout); err != nil {
+		log.Printf("dashboard render error: %v", err)
+	}
 	return nil
 }
 
@@ -290,20 +307,27 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 		return fmt.Errorf("waitClaudeBoot: %w", err)
 	}
 
+	log.Printf("dispatch: waitClaudeBoot done, waiting for prompt...")
 	if err := d.waitForPrompt("supervisor", 30*time.Second); err != nil {
 		log.Printf("warning: waitForPrompt: %v (proceeding anyway)", err)
 	}
+	log.Printf("dispatch: prompt detected, sending command")
 
 	d.bootConfirmedAt = time.Now()
 	d.phase = phaseSupervising
 
 	dispatchPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "dispatch.md")
 	planCmd := fmt.Sprintf("/tmux:plan %s", dispatchPath)
+	log.Printf("dispatch: sending to session=%s window=%s cmd=%s", d.session, winInfo.TmuxWindowID, planCmd)
 	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, planCmd); err != nil {
 		return fmt.Errorf("send plan command: %w", err)
 	}
+	log.Printf("dispatch: SendMessage returned successfully")
 
 	goal.Status = GoalRunning
+	if goal.StartedAt == "" {
+		goal.StartedAt = time.Now().UTC().Format(time.RFC3339)
+	}
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
 	}
@@ -407,6 +431,7 @@ func (d *Daemon) waitForPrompt(windowName string, timeout time.Duration) (retErr
 			return nil
 		}
 		if strings.Contains(output, "❯") {
+			time.Sleep(3 * time.Second)
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -601,24 +626,22 @@ func (d *Daemon) crashRecovery() error {
 	}
 
 	hasValidator := false
-	hasSupervisor := false
 	for _, w := range windows {
 		if w.Name == "validator" {
 			hasValidator = true
-		}
-		if w.Name == "supervisor" {
-			hasSupervisor = true
 		}
 	}
 	if hasValidator {
 		d.phase = phaseValidating
 		d.phaseStartedAt = time.Now()
+		log.Printf("crash recovery: validator window found, resuming validating phase")
 		return nil
 	}
-	if hasSupervisor {
-		d.phase = phaseSupervising
-		d.phaseStartedAt = time.Now()
-		return nil
+
+	log.Printf("crash recovery: re-dispatching %s (supervisor state unknown after crash)", runningGoal.ID)
+	runningGoal.Status = GoalPending
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
 	}
 
 	if runningGoal.Retries < runningGoal.MaxRetries {
@@ -730,6 +753,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 
 	if valSig.Verdict == "pass" {
 		goal.Status = GoalDone
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
@@ -767,6 +791,7 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason string) 
 	goal.Retries++
 	if goal.Retries >= goal.MaxRetries {
 		goal.Status = GoalFailed
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
