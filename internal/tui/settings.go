@@ -38,6 +38,9 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "plan.auto_approve", label: "Plan Auto-Approve", kind: "bool", value: settings.Plan.AutoApprove},
 			{key: "plan.auto_execute", label: "Plan Auto-Execute", kind: "bool", value: settings.Plan.AutoExecute},
 			{key: "sudo.timeout", label: "Sudo Timeout (0=∞)", kind: "int", intVal: settings.Sudo.Timeout},
+			{key: "taskvisor.dispatch_timeout", label: "Taskvisor Dispatch Timeout", kind: "int", intVal: settings.Taskvisor.DispatchTimeout},
+			{key: "taskvisor.validate_timeout", label: "Taskvisor Validate Timeout", kind: "int", intVal: settings.Taskvisor.ValidateTimeout},
+			{key: "taskvisor.poll_interval", label: "Taskvisor Poll Interval", kind: "int", intVal: settings.Taskvisor.PollInterval},
 		},
 	}
 }
@@ -151,6 +154,12 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Plan.AutoExecute = item.value
 		case "sudo.timeout":
 			s.Sudo.Timeout = item.intVal
+		case "taskvisor.dispatch_timeout":
+			s.Taskvisor.DispatchTimeout = item.intVal
+		case "taskvisor.validate_timeout":
+			s.Taskvisor.ValidateTimeout = item.intVal
+		case "taskvisor.poll_interval":
+			s.Taskvisor.PollInterval = item.intVal
 		}
 	}
 	return &s

@@ -42,12 +42,19 @@ type SudoSettings struct {
 	Timeout int `yaml:"timeout"`
 }
 
+type TaskvisorSettings struct {
+	DispatchTimeout int `yaml:"dispatch_timeout"`
+	ValidateTimeout int `yaml:"validate_timeout"`
+	PollInterval    int `yaml:"poll_interval"`
+}
+
 type Settings struct {
 	Hooks      HooksSettings      `yaml:"hooks"`
 	Commands   CommandsSettings   `yaml:"commands"`
 	Supervisor SupervisorSettings `yaml:"supervisor"`
 	Plan       PlanSettings       `yaml:"plan"`
 	Sudo       SudoSettings       `yaml:"sudo"`
+	Taskvisor  TaskvisorSettings  `yaml:"taskvisor"`
 }
 
 func DefaultSettings() *Settings {
@@ -71,6 +78,11 @@ func DefaultSettings() *Settings {
 		},
 		Sudo: SudoSettings{
 			Timeout: 30,
+		},
+		Taskvisor: TaskvisorSettings{
+			DispatchTimeout: 3600,
+			ValidateTimeout: 300,
+			PollInterval:    5,
 		},
 	}
 }

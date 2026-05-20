@@ -260,6 +260,42 @@ func TestServer_WindowsKill_WindowNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, ErrWindowNotFound)
 }
 
+// TestServer_WindowsKill_RejectsTaskvisorWindow verifies kill protection for taskvisor window
+func TestServer_WindowsKill_RejectsTaskvisorWindow(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "taskvisor"},
+	}, nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	success, err := server.WindowsKill("taskvisor")
+
+	require.Error(t, err)
+	assert.False(t, success)
+	assert.ErrorIs(t, err, ErrWindowKillFailed)
+	assert.Contains(t, err.Error(), "kill-protected")
+}
+
+// TestServer_WindowsKill_AllowsNonProtectedWindow verifies non-protected windows can still be killed
+func TestServer_WindowsKill_AllowsNonProtectedWindow(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "taskvisor"},
+		{TmuxWindowID: "@2", Name: "execute-1"},
+	}, nil)
+	mockExec.On("KillWindow", "test-session", "@2").Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	success, err := server.WindowsKill("execute-1")
+
+	require.NoError(t, err)
+	assert.True(t, success)
+}
+
 // TestServer_WindowsMessage_Success verifies message sending
 func TestServer_WindowsMessage_Success(t *testing.T) {
 	// Ensure no UUID in environment (may be set when running inside tmux-cli session)

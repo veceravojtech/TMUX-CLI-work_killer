@@ -21,6 +21,7 @@ if [[ -z "$WINDOW_UUID" ]]; then
 fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
+[[ -f "$PROJECT_DIR/.tmux-cli/taskvisor-active" ]] && exit 0
 SESSION_ID=""
 WINDOW_NAME=""
 TMUX_WINDOW_ID=""

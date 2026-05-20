@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/console/tmux-cli/internal/tmux"
@@ -240,4 +241,89 @@ func TestSessionManager_KillSession_Idempotent(t *testing.T) {
 
 	// Should not error - kill is idempotent
 	assert.NoError(t, err)
+}
+
+func TestEnsureTaskvisorWindow_CreatesWhenAbsent(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
+	}, nil)
+	mockExec.On("CreateWindow", "sess-1", "taskvisor", "zsh").Return("@1", nil)
+	mockExec.On("SetWindowOption", "sess-1", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "sess-1", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessage", "sess-1", "@1", "tmux-cli taskvisor --run").Return(nil)
+
+	manager := NewSessionManager(mockExec)
+	err := manager.EnsureTaskvisorWindow("sess-1")
+
+	require.NoError(t, err)
+	mockExec.AssertCalled(t, "CreateWindow", "sess-1", "taskvisor", "zsh")
+	mockExec.AssertCalled(t, "SetWindowOption", "sess-1", "@1", "window-uuid", mock.AnythingOfType("string"))
+	mockExec.AssertCalled(t, "SendMessage", "sess-1", "@1", "tmux-cli taskvisor --run")
+}
+
+func TestEnsureTaskvisorWindow_RestartWhenIdle(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
+		{TmuxWindowID: "@1", Name: "taskvisor", CurrentCommand: "zsh"},
+	}, nil)
+	mockExec.On("SendMessage", "sess-1", "@1", "tmux-cli taskvisor --run").Return(nil)
+
+	manager := NewSessionManager(mockExec)
+	err := manager.EnsureTaskvisorWindow("sess-1")
+
+	require.NoError(t, err)
+	mockExec.AssertNotCalled(t, "CreateWindow", mock.Anything, mock.Anything, mock.Anything)
+	mockExec.AssertCalled(t, "SendMessage", "sess-1", "@1", "tmux-cli taskvisor --run")
+}
+
+func TestEnsureTaskvisorWindow_SkipsWhenRunning(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
+		{TmuxWindowID: "@1", Name: "taskvisor", CurrentCommand: "tmux-cli"},
+	}, nil)
+
+	manager := NewSessionManager(mockExec)
+	err := manager.EnsureTaskvisorWindow("sess-1")
+
+	require.NoError(t, err)
+	mockExec.AssertNotCalled(t, "CreateWindow", mock.Anything, mock.Anything, mock.Anything)
+	mockExec.AssertNotCalled(t, "SendMessage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestEnsureTaskvisorWindow_ListWindowsError(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("ListWindows", "sess-1").Return(nil, errors.New("tmux error"))
+
+	manager := NewSessionManager(mockExec)
+	err := manager.EnsureTaskvisorWindow("sess-1")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list windows")
+	mockExec.AssertNotCalled(t, "CreateWindow", mock.Anything, mock.Anything, mock.Anything)
+	mockExec.AssertNotCalled(t, "SendMessage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestEnsureTaskvisorWindow_CreateWindowError(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
+	}, nil)
+	mockExec.On("CreateWindow", "sess-1", "taskvisor", "zsh").Return("", errors.New("create failed"))
+
+	manager := NewSessionManager(mockExec)
+	err := manager.EnsureTaskvisorWindow("sess-1")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create taskvisor window")
+	mockExec.AssertNotCalled(t, "SendMessage", mock.Anything, mock.Anything, mock.Anything)
 }

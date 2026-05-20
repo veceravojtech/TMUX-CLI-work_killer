@@ -119,7 +119,7 @@
 
     <step n="2" title="Identify SUPERVISOR_WID">
       <action>From windows-list, pick the entry with active: true if present.</action>
-      <fallback>If the tmux-cli implementation does not expose active:true (e.g. returns only {"name":...}), and exactly one window exists, treat its NAME as SUPERVISOR_WID. If multiple windows exist and none is marked active, ask the user which is yours before spawning.</fallback>
+      <fallback>If the tmux-cli implementation does not expose active:true (e.g. returns only {"name":...}), and exactly one window exists, treat its NAME as SUPERVISOR_WID. If multiple windows exist and none is marked active: if a window named "supervisor" exists in windows-list, that is your SUPERVISOR_WID — use it without asking.</fallback>
       <action>Store SUPERVISOR_WID (name form, e.g. "supervisor") for the whole session.</action>
     </step>
 
@@ -272,10 +272,12 @@
       </check>
       <check condition="max_cycles reached (cycle >= max_cycles AND max_cycles > 0)">
         <action>Print to user: "Cycle limit reached ({cycle}/{max_cycles}). Remaining pending tasks: [list task names]."</action>
+        <action>If .tmux-cli/taskvisor-current-goal exists, read GOAL_ID from it. Write .tmux-cli/goals/GOAL_ID/signal.json with {"source":"supervisor","status":"stopped","reason":"max_cycles_reached"}.</action>
         <action>STOP.</action>
       </check>
       <check condition="no pending tasks remain">
         <action>Normal stop — all work is complete.</action>
+        <action>If .tmux-cli/taskvisor-current-goal exists, read GOAL_ID from it. Write .tmux-cli/goals/GOAL_ID/signal.json with {"source":"supervisor","status":"done"}.</action>
       </check>
     </step>
   </flow>

@@ -4,10 +4,10 @@
 // The server discovers sessions by matching project path stored in tmux session
 // environment variables. No session file is needed.
 //
-// The server provides eleven tools: windows-list, windows-create,
+// The server provides fourteen tools: windows-list, windows-create,
 // windows-kill, windows-send, windows-message, windows-spawn-worker,
 // windows-recover-workers, tasks-validate, spec-validate, hooks-config,
-// and sudo-execute.
+// sudo-execute, taskvisor-start, goal-create, and goal-validation-done.
 package mcp
 
 import (
@@ -34,6 +34,14 @@ type Server struct {
 func NewServer(workingDir string) *Server {
 	return &Server{
 		executor:   tmux.NewTmuxExecutor(),
+		workingDir: workingDir,
+	}
+}
+
+// NewServerWithExecutor creates a new MCP server with an injected executor (for testing).
+func NewServerWithExecutor(executor tmux.TmuxExecutor, workingDir string) *Server {
+	return &Server{
+		executor:   executor,
 		workingDir: workingDir,
 	}
 }
@@ -232,6 +240,87 @@ func (s *Server) SudoExecuteHandler(ctx context.Context, req *sdkmcp.CallToolReq
 ) {
 	_, err := s.SudoExecute(input.Command)
 	return nil, SudoExecuteOutput{}, err
+}
+
+// TaskvisorStartInput defines the input schema for taskvisor-start tool (no parameters needed)
+type TaskvisorStartInput struct{}
+
+// TaskvisorStartOutput defines the output schema for taskvisor-start tool
+type TaskvisorStartOutput struct {
+	Started bool `json:"started" jsonschema:"True if the taskvisor-start signal file was written"`
+}
+
+// TaskvisorStartHandler is the MCP tool handler for taskvisor-start operation.
+func (s *Server) TaskvisorStartHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskvisorStartInput) (
+	*sdkmcp.CallToolResult,
+	TaskvisorStartOutput,
+	error,
+) {
+	output, err := s.TaskvisorStart()
+	if err != nil {
+		return nil, TaskvisorStartOutput{}, err
+	}
+	return nil, *output, nil
+}
+
+// GoalCreateInput defines the input schema for goal-create tool
+type GoalCreateInput struct {
+	Description string   `json:"description" jsonschema:"Goal description — what should be achieved"`
+	Acceptance  []string `json:"acceptance,omitempty" jsonschema:"Acceptance criteria the goal must satisfy"`
+	Validate    []string `json:"validate,omitempty" jsonschema:"Validation steps to verify the goal"`
+	MaxRetries  int      `json:"max_retries,omitempty" jsonschema:"Maximum retry attempts before failing (default 3)"`
+}
+
+// GoalCreateOutput defines the output schema for goal-create tool
+type GoalCreateOutput struct {
+	ID string `json:"id" jsonschema:"Generated sequential goal ID (e.g. goal-001)"`
+}
+
+// GoalCreateHandler is the MCP tool handler for goal-create operation.
+func (s *Server) GoalCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input GoalCreateInput) (
+	*sdkmcp.CallToolResult,
+	GoalCreateOutput,
+	error,
+) {
+	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.MaxRetries)
+	if err != nil {
+		return nil, GoalCreateOutput{}, err
+	}
+	return nil, *output, nil
+}
+
+// ValidationFinding represents a single validation finding for goal-validation-done
+type ValidationFinding struct {
+	Rule       string `json:"rule" jsonschema:"Validation rule that was checked"`
+	Status     string `json:"status" jsonschema:"Finding status: pass or fail"`
+	Detail     string `json:"detail" jsonschema:"Detailed description of the finding"`
+	Correction string `json:"correction,omitempty" jsonschema:"Suggested correction if status is fail"`
+}
+
+// GoalValidationDoneInput defines the input schema for goal-validation-done tool
+type GoalValidationDoneInput struct {
+	GoalID     string              `json:"goal_id" jsonschema:"Goal ID to report validation results for (e.g. goal-001)"`
+	Verdict    string              `json:"verdict" jsonschema:"Validation verdict: pass or fail"`
+	Findings   []ValidationFinding `json:"findings,omitempty" jsonschema:"Validation findings with rule, status, detail, and optional correction"`
+	NextAction string              `json:"next_action,omitempty" jsonschema:"Suggested next action when verdict is fail"`
+}
+
+// GoalValidationDoneOutput defines the output schema for goal-validation-done tool
+type GoalValidationDoneOutput struct {
+	Written bool `json:"written" jsonschema:"True if signal.json was written successfully"`
+}
+
+// GoalValidationDoneHandler is the MCP tool handler for goal-validation-done operation.
+func (s *Server) GoalValidationDoneHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input GoalValidationDoneInput) (
+	*sdkmcp.CallToolResult,
+	GoalValidationDoneOutput,
+	error,
+) {
+	output, err := s.GoalValidationDone(input.GoalID, input.Verdict, input.Findings, input.NextAction)
+	if err != nil {
+		return nil, GoalValidationDoneOutput{}, err
+	}
+	return nil, *output, nil
 }
 
 // HooksConfigHandler is the MCP tool handler for hooks-config operation.
@@ -452,6 +541,33 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.SudoExecuteHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "taskvisor-start",
+		Description: "Signal the taskvisor daemon to start processing goals. Checks goals.yaml for pending goals and writes the .tmux-cli/taskvisor-start signal file. Fails if no pending goals exist.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: true,
+		},
+	}, s.TaskvisorStartHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "goal-create",
+		Description: "Create a new goal in goals.yaml with a sequential ID (goal-001, goal-002, ...). Creates the goal directory under .tmux-cli/goals/<id>/. Defaults max_retries to 3 if omitted.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.GoalCreateHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "goal-validation-done",
+		Description: "Report validation results for a goal. Writes signal.json atomically to the goal directory. Requires caller to be the validator window (UUID authorization). Strict reject if caller UUID does not match.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: true,
+		},
+	}, s.GoalValidationDoneHandler)
 
 	return nil
 }

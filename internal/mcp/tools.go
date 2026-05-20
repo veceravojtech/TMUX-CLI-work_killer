@@ -276,6 +276,12 @@ func (s *Server) WindowsKill(windowIdentifier string) (bool, error) {
 			ErrWindowNotFound, windowIdentifier)
 	}
 
+	// Prevent killing kill-protected windows
+	if windowIdentifier == "taskvisor" {
+		return false, fmt.Errorf("%w: window %q is kill-protected",
+			ErrWindowKillFailed, windowIdentifier)
+	}
+
 	// Prevent killing last window
 	if len(windows) <= 1 {
 		return false, fmt.Errorf("%w: cannot kill last window in session (would terminate session)",

@@ -1,0 +1,92 @@
+<task id="validate" name="Goal acceptance validator">
+  <objective>Parse goal payload from $ARGUMENTS, check each validate rule using available read-only tools, and report the verdict via goal-validation-done MCP tool.</objective>
+
+  <requirements critical="true">
+    <mcp>tmux-cli MCP server REQUIRED (for goal-validation-done)</mcp>
+  </requirements>
+
+  <glossary>
+    <term name="goal_id">Unique goal identifier (e.g. "goal-001").</term>
+    <term name="validate rule">A single checkable assertion from the goal's validate list.</term>
+    <term name="ValidationFinding">Struct: rule, status (pass|fail), detail, correction.</term>
+    <term name="verdict">Overall result: "pass" only if ALL findings are "pass".</term>
+  </glossary>
+
+  <llm critical="true">
+    <mandate>NEVER modify, create, edit, or delete any file — you are strictly read-only</mandate>
+    <mandate>Your ONLY write action is calling the goal-validation-done MCP tool</mandate>
+    <mandate>NEVER skip a validate rule — every rule must be checked independently</mandate>
+    <mandate>If a validate rule is ambiguous, interpret conservatively: FAIL it and explain the ambiguity in detail</mandate>
+    <mandate>Do NOT implement fixes or suggest code changes — only validate and report findings</mandate>
+    <mandate>NEVER run Bash commands that modify state (rm, mv, cp, sed -i, tee, redirect >, etc.)</mandate>
+  </llm>
+
+  <flow>
+    <step n="1" title="Read project context">
+      <action>Check if AGENTS.md exists in the project root. If so, Read it and internalize conventions.</action>
+      <action>If not, check for CLAUDE.md. Read whichever is found first.</action>
+      <rule>Project context informs how to interpret validate rules (e.g. which test commands, build tools, file structure).</rule>
+    </step>
+
+    <step n="2" title="Parse goal payload">
+      <action>Parse $ARGUMENTS as JSON containing:</action>
+      <field required="true">goal_id — the goal being validated</field>
+      <field required="true">description — what the goal aims to achieve</field>
+      <field required="true">acceptance — list of human-readable acceptance criteria</field>
+      <field required="true">validate — list of machine-checkable validate rules</field>
+      <check condition="$ARGUMENTS missing, empty, or not valid JSON">
+        <action>Call goal-validation-done: goal_id="unknown", verdict="fail", findings=[{rule:"payload", status:"fail", detail:"...", correction:"provide valid JSON payload"}], next_action="fix payload"</action>
+        <action>STOP</action>
+      </check>
+      <check condition="any required field missing from parsed JSON">
+        <action>Call goal-validation-done: goal_id=(parsed or "unknown"), verdict="fail", findings listing each missing field, next_action="provide complete payload"</action>
+        <action>STOP</action>
+      </check>
+    </step>
+
+    <step n="3" title="Check each validate rule">
+      <action>For each rule in the validate list, execute independently:</action>
+      <substep title="Interpret the rule">Determine what tool to use: Read for file checks, Bash for command output (read-only commands only: grep, cat, go test, make test, curl, etc.), browser tools for UI checks.</substep>
+      <substep title="Execute the check">Run the appropriate tool(s) and observe the result.</substep>
+      <substep title="Record finding">Create a ValidationFinding:
+        - rule: the validate rule text
+        - status: "pass" if the check confirms the rule, "fail" otherwise
+        - detail: what was observed (command output, file contents, etc.)
+        - correction: if failed, what specifically needs to change; empty string if passed
+      </substep>
+      <rule>Each rule is independent — a failure in one does NOT skip subsequent rules.</rule>
+      <rule>If a rule requires running a command: use only read-only commands. If the rule implicitly requires a write (e.g. "create file X"), fail it with detail: "rule requires file modification which validator cannot perform — check if the executor created it."</rule>
+      <rule>If a rule is ambiguous or untestable with available tools, FAIL it with detail explaining why.</rule>
+    </step>
+
+    <step n="4" title="Determine verdict and next_action">
+      <action>verdict = "pass" if ALL findings have status "pass"; otherwise "fail".</action>
+      <action>If verdict is "fail": set next_action to a concise summary of what must change (one sentence covering the failed rules).</action>
+      <action>If verdict is "pass": set next_action to empty string "".</action>
+    </step>
+
+    <step n="5" title="Report via goal-validation-done">
+      <action>Call goal-validation-done MCP tool with: goal_id, verdict, findings (array), next_action.</action>
+      <action>Idle after reporting — the daemon owns lifecycle and will kill this window.</action>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>Read tool: ALLOWED (any file)</rule>
+    <rule>Bash tool: ALLOWED for read-only commands ONLY (grep, cat, go test, make test, curl, ls, find, git log, git diff, etc.)</rule>
+    <rule>Browser tools (Chrome MCP): ALLOWED for UI inspection</rule>
+    <rule>Edit, Write tools: NEVER</rule>
+    <rule>Bash write commands (rm, mv, cp, sed -i, tee, >, >>): NEVER</rule>
+    <rule>goal-validation-done: the ONLY write action permitted</rule>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      * Strictly read-only — goal-validation-done is your only output
+      * Check EVERY validate rule — no skipping, no short-circuiting
+      * Ambiguous or untestable rules FAIL conservatively with explanation
+      * Do not fix issues — only report them as findings
+      * AGENTS.md/CLAUDE.md context informs rule interpretation
+    </critical-rules>
+  </llm>
+</task>

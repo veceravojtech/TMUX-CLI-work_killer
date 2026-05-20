@@ -306,6 +306,83 @@ func TestSettings_SudoYAMLRoundTrip(t *testing.T) {
 	assert.Equal(t, 60, loaded.Sudo.Timeout)
 }
 
+func TestDefaultSettings_TaskvisorDefaults(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 3600, s.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 300, s.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 5, s.Taskvisor.PollInterval)
+}
+
+func TestLoadSettings_TaskvisorRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+taskvisor:
+  dispatch_timeout: 7200
+  validate_timeout: 600
+  poll_interval: 10
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+
+	assert.Equal(t, 7200, s.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 600, s.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 10, s.Taskvisor.PollInterval)
+}
+
+func TestSaveLoadRoundTrip_TaskvisorFields(t *testing.T) {
+	root := t.TempDir()
+
+	original := &Settings{
+		Hooks:    HooksSettings{BlockInteractive: true},
+		Commands: CommandsSettings{Enabled: true},
+		Taskvisor: TaskvisorSettings{
+			DispatchTimeout: 1800,
+			ValidateTimeout: 120,
+			PollInterval:    3,
+		},
+	}
+
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1800, loaded.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 120, loaded.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 3, loaded.Taskvisor.PollInterval)
+}
+
+func TestLoadSettings_BackfillsTaskvisor(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlContent := `hooks:
+  session_notify: true
+  block_interactive: false
+commands:
+  enabled: false
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yamlContent), 0o644))
+
+	_, err := LoadSettings(root)
+	require.NoError(t, err)
+
+	raw, err := os.ReadFile(settingFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "taskvisor:")
+}
+
 func TestSaveSettings_WritesYAML(t *testing.T) {
 	root := t.TempDir()
 

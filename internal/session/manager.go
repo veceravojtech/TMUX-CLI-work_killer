@@ -88,6 +88,43 @@ func (m *SessionManager) CreateSession(id, path string) error {
 	return nil
 }
 
+// EnsureTaskvisorWindow creates or restarts the taskvisor window idempotently.
+// If absent: creates window, sets UUID, sends daemon command.
+// If present but idle (CurrentCommand=="zsh"): re-sends daemon command.
+// If present and running: no-op.
+func (m *SessionManager) EnsureTaskvisorWindow(sessionID string) error {
+	windows, err := m.executor.ListWindows(sessionID)
+	if err != nil {
+		return fmt.Errorf("list windows for taskvisor: %w", err)
+	}
+
+	for _, w := range windows {
+		if w.Name == "taskvisor" {
+			if w.CurrentCommand != "zsh" {
+				return nil
+			}
+			return m.executor.SendMessage(sessionID, w.TmuxWindowID, "tmux-cli taskvisor --run")
+		}
+	}
+
+	windowID, err := m.executor.CreateWindow(sessionID, "taskvisor", "zsh")
+	if err != nil {
+		return fmt.Errorf("create taskvisor window: %w", err)
+	}
+
+	uuid := GenerateUUID()
+	if err := m.executor.SetWindowOption(sessionID, windowID, tmux.WindowUUIDOption, uuid); err != nil {
+		return fmt.Errorf("set taskvisor window UUID: %w", err)
+	}
+
+	exportCmd := fmt.Sprintf("export TMUX_WINDOW_UUID=\"%s\"", uuid)
+	if err := m.executor.SendMessage(sessionID, windowID, exportCmd); err != nil {
+		return fmt.Errorf("export TMUX_WINDOW_UUID in taskvisor: %w", err)
+	}
+
+	return m.executor.SendMessage(sessionID, windowID, "tmux-cli taskvisor --run")
+}
+
 // KillSession kills a tmux session by ID
 // This is an idempotent operation - killing an already-dead session is not an error
 func (m *SessionManager) KillSession(id string) error {

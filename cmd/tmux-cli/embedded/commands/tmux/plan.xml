@@ -50,6 +50,7 @@
     <rule>When AUTO_APPROVE is true, the planning supervisor operates FULLY AUTONOMOUSLY — no user interaction at any step. Specs are accepted after S1-S9 verification and immediately finalized.</rule>
     <rule>For ambiguity during spec-writing: pick the highest-yield interpretation per &lt;ranking&gt; and record the chosen rationale so the user can redirect in step 10.</rule>
     <rule>Escalate to user ONLY for: (a) zero executable workers constructable from input, (b) user-only knowledge (credentials, intent, out-of-band facts), or (c) the mandatory approval phase (steps 9–10).</rule>
+    <rule>The planning supervisor does NOT have autonomy to change the number or boundaries of tasks when working from a user-approved decomposition. The user approved the structure; the planner fills in the detail.</rule>
   </autonomy-policy>
 
   <llm critical="true">
@@ -68,6 +69,7 @@
     <mandate>Execute steps ONE BY ONE in EXACT ORDER</mandate>
     <mandate>NEVER use AskUserQuestion — all interaction is via text output and waiting for user messages (ensures compatibility inside tmux windows)</mandate>
     <mandate>NEVER use batch Bash scripts to validate, revalidate, or process multiple specs — ALWAYS use the proper agent flow: spawn workers, route messages, call MCP tools (spec-validate, tasks-validate) per-file. Batch shortcuts bypass quality gates and miss context-dependent gaps. Token cost is irrelevant — precision is the goal.</mandate>
+    <mandate>NEVER merge, squash, or recompose tasks when the input references a user-approved task breakdown — preserve the exact count and boundaries. You may add detail and context to each task but not change the decomposition structure.</mandate>
   </llm>
 
   <spec-deliverable-template>
@@ -214,7 +216,7 @@ Ask First: &lt;decisions the implementation worker should escalate to human — 
 
     <step n="2" title="Identify PLAN_WID">
       <action>From windows-list, pick the entry with active: true if present.</action>
-      <fallback>If the tmux-cli implementation does not expose active:true (e.g. returns only {"name":...}), and exactly one window exists, treat its NAME as PLAN_WID. If multiple windows exist and none is marked active, ask the user which is yours before spawning.</fallback>
+      <fallback>If the tmux-cli implementation does not expose active:true (e.g. returns only {"name":...}), and exactly one window exists, treat its NAME as PLAN_WID. If multiple windows exist and none is marked active: if a window named "supervisor" exists in windows-list, that is your PLAN_WID — use it without asking.</fallback>
       <action>Store PLAN_WID (name form, e.g. "supervisor") for the whole session.</action>
     </step>
 
@@ -223,6 +225,7 @@ Ask First: &lt;decisions the implementation worker should escalate to human — 
       <action>Identify N modules/aspects/components from the plan.</action>
       <action>For each module determine: name, scope summary, source files to analyze, dependencies on other modules.</action>
       <action>Respect the dependency graph if present in the plan — record it for tasks.yaml and the final dependency ordering in step 11.</action>
+      <rule critical="true">When $ARGUMENTS references a user-approved task decomposition (numbered list, table, explicit breakdown from prior conversation), PRESERVE the exact task count and boundaries. Create research-task context files and add implementation detail for each task, but NEVER merge, squash, split, or recompose the approved tasks. The user approved the structure; the planner fills in the detail.</rule>
       <parallelism>
         <rule critical="true">Default to MAXIMUM parallelism for spec-writing. Implementation dependencies do NOT block parallel spec-writing. Each spec worker reads source code independently — it does not need another module to be IMPLEMENTED first.</rule>
         <rule>Serialize spec-writing ONLY when a later worker's research scope is literally unconstructable without the prior worker's spec output (rare — usually only for meta-modules that define shared conventions).</rule>
@@ -520,6 +523,7 @@ Run `/tmux:supervisor` to execute the plan.
       • ALWAYS use windows-spawn-worker with the custom deliverable parameter — never use the default FINDINGS format for spec workers
       • DO NOT use AskUserQuestion — all user interaction via text output and waiting for messages
       • NEVER use batch Bash scripts (grep loops, for-each shell commands) to validate or process specs — ALWAYS use the proper flow: spec-validate MCP tool per file, workers for spec writing. Batch shortcuts bypass quality gates. Token cost is irrelevant — precision is the goal.
+      • NEVER merge, squash, or recompose a user-approved task decomposition — preserve exact count and boundaries. Add detail per task, never change the structure the user approved.
     </critical-rules>
   </llm>
 </task>

@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 10)
+	assert.Len(t, m.items, 13)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -42,6 +42,9 @@ commands:
 	assert.Equal(t, "supervisor.cycle_delay", m.items[4].key)
 	assert.Equal(t, "supervisor.max_cycles", m.items[5].key)
 	assert.Equal(t, "supervisor.unplanned_audit", m.items[6].key)
+	assert.Equal(t, "taskvisor.dispatch_timeout", m.items[10].key)
+	assert.Equal(t, "taskvisor.validate_timeout", m.items[11].key)
+	assert.Equal(t, "taskvisor.poll_interval", m.items[12].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -104,17 +107,29 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 9, m.cursor)
 
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 10, m.cursor)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 11, m.cursor)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 12, m.cursor)
+
 	// Can't go past last item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 9, m.cursor)
+	assert.Equal(t, 12, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 8, m.cursor)
+	assert.Equal(t, 11, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 15; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -600,6 +615,104 @@ func TestToSettings_MaxCycles(t *testing.T) {
 
 	result := m.ToSettings()
 	assert.Equal(t, 5, result.Supervisor.MaxCycles)
+}
+
+func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	assert.Len(t, m.items, 13)
+
+	keys := make([]string, len(m.items))
+	for i, item := range m.items {
+		keys[i] = item.key
+	}
+	assert.Contains(t, keys, "taskvisor.dispatch_timeout")
+	assert.Contains(t, keys, "taskvisor.validate_timeout")
+	assert.Contains(t, keys, "taskvisor.poll_interval")
+
+	for _, item := range m.items {
+		switch item.key {
+		case "taskvisor.dispatch_timeout":
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 3600, item.intVal)
+		case "taskvisor.validate_timeout":
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 300, item.intVal)
+		case "taskvisor.poll_interval":
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 5, item.intVal)
+		}
+	}
+}
+
+func TestToSettings_TaskvisorDispatchTimeout(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.dispatch_timeout" {
+			m.items[i].intVal = 7200
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 7200, result.Taskvisor.DispatchTimeout)
+}
+
+func TestToSettings_TaskvisorValidateTimeout(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.validate_timeout" {
+			m.items[i].intVal = 600
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 600, result.Taskvisor.ValidateTimeout)
+}
+
+func TestToSettings_TaskvisorPollInterval(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.poll_interval" {
+			m.items[i].intVal = 10
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 10, result.Taskvisor.PollInterval)
+}
+
+func TestToSettings_PreservesTaskvisorFromBase(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+taskvisor:
+  dispatch_timeout: 1800
+  validate_timeout: 120
+  poll_interval: 3
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+
+	m := NewModel(dir, settings)
+	result := m.ToSettings()
+
+	assert.Equal(t, 1800, result.Taskvisor.DispatchTimeout, "dispatch_timeout must be preserved from base")
+	assert.Equal(t, 120, result.Taskvisor.ValidateTimeout, "validate_timeout must be preserved from base")
+	assert.Equal(t, 3, result.Taskvisor.PollInterval, "poll_interval must be preserved from base")
 }
 
 func TestModel_VimKeys(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 	"github.com/console/tmux-cli/internal/session"
 	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/sudo"
+	"github.com/console/tmux-cli/internal/taskvisor"
 	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/console/tmux-cli/internal/tui"
 	"github.com/spf13/cobra"
@@ -202,6 +203,36 @@ Examples:
 	RunE: runWindowsMessage,
 }
 
+var taskvisorCmd = &cobra.Command{
+	Use:   "taskvisor",
+	Short: "Manage the taskvisor daemon and goals",
+	Run:   func(cmd *cobra.Command, args []string) { cmd.Help() },
+}
+
+var taskvisorStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Trigger taskvisor daemon from IDLE to ACTIVE",
+	RunE:  runTaskvisorStart,
+}
+
+var taskvisorGoalCmd = &cobra.Command{
+	Use:   "goal",
+	Short: "Manage taskvisor goals",
+	Run:   func(cmd *cobra.Command, args []string) { cmd.Help() },
+}
+
+var taskvisorGoalAddCmd = &cobra.Command{
+	Use:   "add",
+	Short: "Add a new goal",
+	RunE:  runTaskvisorGoalAdd,
+}
+
+var taskvisorGoalListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all goals with status",
+	RunE:  runTaskvisorGoalList,
+}
+
 var (
 	windowName      string
 	windowIDFlag    string
@@ -209,6 +240,14 @@ var (
 	sendMessage     string
 	messageReceiver string
 	messageText     string
+)
+
+var (
+	taskvisorRun    bool
+	goalDescription string
+	goalAcceptance  []string
+	goalValidate    []string
+	goalMaxRetries  int
 )
 
 func init() {
@@ -247,6 +286,30 @@ func init() {
 	startCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
 	startAttachCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
 
+	// Taskvisor commands
+	taskvisorCmd.Flags().BoolVar(&taskvisorRun, "run", false, "Start daemon loop (internal)")
+	taskvisorCmd.Flags().MarkHidden("run")
+	taskvisorCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if taskvisorRun {
+			if err := runTaskvisorDaemon(cmd, args); err != nil {
+				return err
+			}
+			os.Exit(0)
+		}
+		return nil
+	}
+
+	taskvisorGoalAddCmd.Flags().StringVar(&goalDescription, "description", "", "Goal description (required)")
+	taskvisorGoalAddCmd.Flags().StringArrayVar(&goalAcceptance, "acceptance", nil, "Acceptance criteria (repeatable)")
+	taskvisorGoalAddCmd.Flags().StringArrayVar(&goalValidate, "validate", nil, "Validation commands (repeatable)")
+	taskvisorGoalAddCmd.Flags().IntVar(&goalMaxRetries, "max-retries", 3, "Max retry attempts")
+	taskvisorGoalAddCmd.MarkFlagRequired("description")
+
+	taskvisorCmd.AddCommand(taskvisorStartCmd)
+	taskvisorGoalCmd.AddCommand(taskvisorGoalAddCmd)
+	taskvisorGoalCmd.AddCommand(taskvisorGoalListCmd)
+	taskvisorCmd.AddCommand(taskvisorGoalCmd)
+
 	// Add all commands directly to root
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(startAttachCmd)
@@ -262,6 +325,7 @@ func init() {
 	rootCmd.AddCommand(settingCmd)
 	rootCmd.AddCommand(sudoCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(taskvisorCmd)
 }
 
 // UsageError represents an error in command usage or arguments
@@ -346,6 +410,10 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	mgr := session.NewSessionManager(executor)
+	if err := mgr.EnsureTaskvisorWindow(sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: taskvisor setup: %v\n", err)
+	}
 	sudoFlag, _ := cmd.Flags().GetBool("sudo")
 	if sudoFlag {
 		if err := promptAndStoreSudoPassword(executor, sessionID); err != nil {
@@ -372,6 +440,10 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	sessionID, err := startOrReuseSession(executor, projectPath)
 	if err != nil {
 		return err
+	}
+	mgr := session.NewSessionManager(executor)
+	if err := mgr.EnsureTaskvisorWindow(sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: taskvisor setup: %v\n", err)
 	}
 	sudoFlag, _ := cmd.Flags().GetBool("sudo")
 	if sudoFlag {
@@ -878,6 +950,132 @@ func logSudoResult(workDir, command string, execErr error, elapsed time.Duration
 		}
 	}
 	sudo.LogExecution(workDir, entry)
+}
+
+func runTaskvisorStart(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	gf, err := taskvisor.LoadGoals(cwd)
+	if err != nil {
+		return fmt.Errorf("load goals: %w", err)
+	}
+	if gf == nil {
+		return fmt.Errorf("no goals.yaml found — add goals first with 'taskvisor goal add'")
+	}
+
+	if _, hasPending := gf.NextPendingGoal(); !hasPending {
+		return fmt.Errorf("no pending goals — all goals are done or failed")
+	}
+
+	signalPath := filepath.Join(cwd, ".tmux-cli", "taskvisor-start")
+	if err := os.MkdirAll(filepath.Dir(signalPath), 0o755); err != nil {
+		return fmt.Errorf("create .tmux-cli dir: %w", err)
+	}
+	if err := os.WriteFile(signalPath, nil, 0o644); err != nil {
+		return fmt.Errorf("write signal file: %w", err)
+	}
+
+	fmt.Println("Taskvisor start signal written — daemon will activate on next poll")
+	return nil
+}
+
+func runTaskvisorGoalAdd(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	gf, err := taskvisor.LoadGoals(cwd)
+	if err != nil {
+		return fmt.Errorf("load goals: %w", err)
+	}
+	if gf == nil {
+		gf = &taskvisor.GoalsFile{}
+	}
+
+	id := taskvisor.NextGoalID(gf.Goals)
+	goal := taskvisor.Goal{
+		ID:          id,
+		Description: goalDescription,
+		Acceptance:  goalAcceptance,
+		Validate:    goalValidate,
+		Status:      taskvisor.GoalPending,
+		MaxRetries:  goalMaxRetries,
+	}
+	gf.Goals = append(gf.Goals, goal)
+
+	if err := taskvisor.SaveGoals(cwd, gf); err != nil {
+		return fmt.Errorf("save goals: %w", err)
+	}
+
+	if _, err := taskvisor.EnsureGoalDir(cwd, id); err != nil {
+		return fmt.Errorf("create goal directory: %w", err)
+	}
+
+	fmt.Printf("Goal created: %s\n", id)
+	return nil
+}
+
+func runTaskvisorGoalList(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	gf, err := taskvisor.LoadGoals(cwd)
+	if err != nil {
+		return fmt.Errorf("load goals: %w", err)
+	}
+	if gf == nil || len(gf.Goals) == 0 {
+		fmt.Println("No goals")
+		return nil
+	}
+
+	fmt.Printf("%-10s %-10s %-10s %s\n", "ID", "Status", "Retries", "Description")
+	fmt.Printf("%-10s %-10s %-10s %s\n", "---", "---", "---", "---")
+	for _, g := range gf.Goals {
+		fmt.Printf("%-10s %-10s %d/%-8d %s\n", g.ID, g.Status, g.Retries, g.MaxRetries, g.Description)
+	}
+	return nil
+}
+
+func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	executor := tmux.NewTmuxExecutor()
+	daemon := taskvisor.New(cwd, executor)
+
+	sessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", cwd)
+	if sessionID == "" {
+		return fmt.Errorf("no tmux-cli session found for this directory")
+	}
+
+	daemon.SetWindowCreateFunc(func(name, command string) (*taskvisor.CreatedWindow, error) {
+		windowUUID := session.GenerateUUID()
+		windowID, err := executor.CreateWindow(sessionID, name, "zsh")
+		if err != nil {
+			return nil, fmt.Errorf("create window: %w", err)
+		}
+		if err := executor.SetWindowOption(sessionID, windowID, tmux.WindowUUIDOption, windowUUID); err != nil {
+			_ = executor.KillWindow(sessionID, windowID)
+			return nil, fmt.Errorf("set window UUID: %w", err)
+		}
+		exportCmd := fmt.Sprintf("export TMUX_WINDOW_UUID=\"%s\"", windowUUID)
+		_ = executor.SendMessage(sessionID, windowID, exportCmd)
+
+		postCmdConfig := session.DefaultPostCommandConfig()
+		_ = session.ExecutePostCommandWithFallback(executor, sessionID, windowID, postCmdConfig)
+
+		return &taskvisor.CreatedWindow{TmuxWindowID: windowID, Name: name}, nil
+	})
+
+	return daemon.Run(cmd.Context())
 }
 
 func runAutoSetup(projectPath string) error {
