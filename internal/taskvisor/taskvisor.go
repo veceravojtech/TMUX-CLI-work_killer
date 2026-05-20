@@ -290,6 +290,10 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 		return fmt.Errorf("waitClaudeBoot: %w", err)
 	}
 
+	if err := d.waitForPrompt("supervisor", 30*time.Second); err != nil {
+		log.Printf("warning: waitForPrompt: %v (proceeding anyway)", err)
+	}
+
 	d.bootConfirmedAt = time.Now()
 	d.phase = phaseSupervising
 
@@ -384,6 +388,45 @@ func (d *Daemon) waitWindowsGone(names []string, timeout time.Duration) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (d *Daemon) waitForPrompt(windowName string, timeout time.Duration) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = nil
+		}
+	}()
+	deadline := time.Now().Add(timeout)
+	winInfo, err := d.findWindowByName(windowName)
+	if err != nil {
+		return nil
+	}
+	for {
+		output, err := d.executor.CaptureWindowOutput(d.session, winInfo.TmuxWindowID)
+		if err != nil {
+			return nil
+		}
+		if strings.Contains(output, "❯") {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for prompt in %q", windowName)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func (d *Daemon) findWindowByName(name string) (*tmux.WindowInfo, error) {
+	windows, err := d.listWindows()
+	if err != nil {
+		return nil, err
+	}
+	for i := range windows {
+		if windows[i].Name == name {
+			return &windows[i], nil
+		}
+	}
+	return nil, fmt.Errorf("window %q not found", name)
 }
 
 func (d *Daemon) waitClaudeBoot(windowName string, timeout time.Duration) error {
@@ -752,6 +795,10 @@ func (d *Daemon) createValidatorAndSendPayload(goal *Goal) error {
 
 	if err := d.waitClaudeBoot("validator", 30*time.Second); err != nil {
 		return fmt.Errorf("waitClaudeBoot validator: %w", err)
+	}
+
+	if err := d.waitForPrompt("validator", 30*time.Second); err != nil {
+		log.Printf("warning: waitForPrompt validator: %v (proceeding anyway)", err)
 	}
 
 	d.bootConfirmedAt = time.Now()
