@@ -137,7 +137,7 @@ func TestServer_WindowsCreate_Success(t *testing.T) {
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	mockExec.On("CreateWindow", "test-session", "worker", "zsh").Return("@1", nil)
+	mockExec.On("CreateWindow", "test-session", "worker", "").Return("@1", nil)
 	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
@@ -729,7 +729,7 @@ func TestServer_WindowsSpawnWorker_Success(t *testing.T) {
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	mockExec.On("CreateWindow", "test-session", "execute-1", "zsh").Return("@1", nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "").Return("@1", nil)
 	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
@@ -792,7 +792,7 @@ func TestServer_WindowsSpawnWorker_WithCustomDeliverable(t *testing.T) {
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	mockExec.On("CreateWindow", "test-session", "execute-1", "zsh").Return("@1", nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "").Return("@1", nil)
 	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
@@ -825,7 +825,7 @@ func TestServer_WindowsSpawnWorker_WithoutDeliverable(t *testing.T) {
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	mockExec.On("CreateWindow", "test-session", "execute-1", "zsh").Return("@1", nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "").Return("@1", nil)
 	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
@@ -859,7 +859,7 @@ func TestServer_WindowsSpawnWorker_ExecuteSendFails_CleansUp(t *testing.T) {
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	mockExec.On("CreateWindow", "test-session", "execute-1", "zsh").Return("@1", nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "").Return("@1", nil)
 	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
@@ -882,7 +882,7 @@ func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	mockExec.On("CreateWindow", "test-session", "execute-1", "zsh").Return("@1", nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "").Return("@1", nil)
 	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")

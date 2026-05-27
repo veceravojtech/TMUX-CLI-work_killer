@@ -25,12 +25,7 @@ func NewTmuxExecutor() *RealTmuxExecutor {
 // -n: name for the first window (supervisor)
 // The supervisor window exports TMUX_WINDOW_UUID then exec's into an interactive shell
 func (e *RealTmuxExecutor) CreateSession(id, path string) error {
-	// Create a command that exports TMUX_WINDOW_UUID and exec's into an interactive shell
-	// Using exec ensures the shell inherits the exported environment variable
-	// The command: zsh -c 'export TMUX_WINDOW_UUID="$(tmux show-options -wv @window-uuid 2>/dev/null || echo "")"; exec zsh'
-	initCommand := `zsh -c 'export TMUX_WINDOW_UUID="$(tmux show-options -wv @` + WindowUUIDOption + ` 2>/dev/null || echo "")"; exec zsh'`
-
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", id, "-c", path, "-n", "supervisor", initCommand)
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", id, "-c", path, "-n", "supervisor")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Check if tmux not found

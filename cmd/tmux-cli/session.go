@@ -650,7 +650,7 @@ func runWindowsCreate(cmd *cobra.Command, args []string) error {
 	windowUUID := session.GenerateUUID()
 
 	// Create window
-	windowID, err := executor.CreateWindow(sessionID, windowName, "zsh")
+	windowID, err := executor.CreateWindow(sessionID, windowName, "")
 	if err != nil {
 		return fmt.Errorf("create window: %w", err)
 	}
@@ -1294,7 +1294,7 @@ func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
 
 	daemon.SetWindowCreateFunc(func(name, command string) (*taskvisor.CreatedWindow, error) {
 		windowUUID := session.GenerateUUID()
-		windowID, err := executor.CreateWindow(sessionID, name, "zsh")
+		windowID, err := executor.CreateWindow(sessionID, name, "")
 		if err != nil {
 			return nil, fmt.Errorf("create window: %w", err)
 		}

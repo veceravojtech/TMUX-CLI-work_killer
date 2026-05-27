@@ -194,8 +194,7 @@ func (s *Server) WindowsCreate(name, command string) (*WindowInfo, error) {
 	// Generate UUID
 	windowUUID := session.GenerateUUID()
 
-	// Create window with "zsh" shell
-	windowID, err := s.executor.CreateWindow(sessionID, name, "zsh")
+	windowID, err := s.executor.CreateWindow(sessionID, name, "")
 	if err != nil {
 		return nil, fmt.Errorf("%w: session=%s name=%q: %w",
 			ErrWindowCreateFailed, sessionID, name, err)

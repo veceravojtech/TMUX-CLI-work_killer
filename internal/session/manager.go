@@ -3,20 +3,38 @@ package session
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/console/tmux-cli/internal/tmux"
 )
 
 // SessionManager orchestrates session operations across tmux
 type SessionManager struct {
-	executor tmux.TmuxExecutor
+	executor             tmux.TmuxExecutor
+	sessionReadyAttempts int
+	sessionReadyInterval time.Duration
 }
 
 // NewSessionManager creates a new SessionManager with the given dependencies
 func NewSessionManager(executor tmux.TmuxExecutor) *SessionManager {
 	return &SessionManager{
-		executor: executor,
+		executor:             executor,
+		sessionReadyAttempts: 10,
+		sessionReadyInterval: 50 * time.Millisecond,
 	}
+}
+
+// waitForSession polls HasSession until the newly created session is reachable.
+// Handles the race where the tmux server socket isn't ready immediately after
+// a fresh server start via new-session -d.
+func (m *SessionManager) waitForSession(id string) error {
+	for i := 0; i < m.sessionReadyAttempts; i++ {
+		if exists, _ := m.executor.HasSession(id); exists {
+			return nil
+		}
+		time.Sleep(m.sessionReadyInterval)
+	}
+	return fmt.Errorf("session %s not reachable after creation", id)
 }
 
 // CreateSession creates a new tmux session and stores project path in tmux environment
@@ -42,6 +60,12 @@ func (m *SessionManager) CreateSession(id, path string) error {
 	// 3. Create tmux session
 	if err := m.executor.CreateSession(id, path); err != nil {
 		return fmt.Errorf("create tmux session: %w", err)
+	}
+
+	// 3.5. Wait for tmux server to accept connections (fresh server race condition)
+	if err := m.waitForSession(id); err != nil {
+		_ = m.executor.KillSession(id)
+		return err
 	}
 
 	// 4. Store project path in tmux session environment
@@ -107,7 +131,7 @@ func (m *SessionManager) EnsureTaskvisorWindow(sessionID string) error {
 		}
 	}
 
-	windowID, err := m.executor.CreateWindow(sessionID, "taskvisor", "zsh")
+	windowID, err := m.executor.CreateWindow(sessionID, "taskvisor", "")
 	if err != nil {
 		return fmt.Errorf("create taskvisor window: %w", err)
 	}

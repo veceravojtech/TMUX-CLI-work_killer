@@ -123,8 +123,9 @@ func TestNewSessionManager_ReturnsInstance(t *testing.T) {
 func TestSessionManager_CreateSession_Success(t *testing.T) {
 	mockExec := new(MockTmuxExecutor)
 
-	mockExec.On("HasSession", "test-id").Return(false, nil)
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
 	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
 	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
 	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
@@ -195,8 +196,9 @@ func TestSessionManager_CreateSession_TmuxCreateFails(t *testing.T) {
 // TestSessionManager_CreateSession_ListWindowsFails tests cleanup when ListWindows fails
 func TestSessionManager_CreateSession_ListWindowsFails(t *testing.T) {
 	mockExec := new(MockTmuxExecutor)
-	mockExec.On("HasSession", "test-id").Return(false, nil)
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
 	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
 	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
 	mockExec.On("ListWindows", "test-id").Return(nil, errors.New("failed to list windows"))
 	mockExec.On("KillSession", "test-id").Return(nil)
@@ -207,6 +209,52 @@ func TestSessionManager_CreateSession_ListWindowsFails(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "list windows")
 	mockExec.AssertCalled(t, "KillSession", "test-id")
+}
+
+// TestSessionManager_CreateSession_WaitsForServerReady tests retry when server is slow to start
+func TestSessionManager_CreateSession_WaitsForServerReady(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once() // pre-create check
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once() // readiness poll 1: not ready
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once() // readiness poll 2: not ready
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()  // readiness poll 3: ready
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
+	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	mockExec.On("SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return len(s) > 0
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-id", "@0", mock.Anything).Return("", nil)
+
+	manager := NewSessionManager(mockExec)
+	manager.sessionReadyInterval = 0
+	err := manager.CreateSession("test-id", "/tmp")
+
+	assert.NoError(t, err)
+	mockExec.AssertExpectations(t)
+}
+
+// TestSessionManager_CreateSession_ServerNeverReady tests error when server never becomes reachable
+func TestSessionManager_CreateSession_ServerNeverReady(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("HasSession", "test-id").Return(false, nil)
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("KillSession", "test-id").Return(nil)
+
+	manager := NewSessionManager(mockExec)
+	manager.sessionReadyAttempts = 3
+	manager.sessionReadyInterval = 0
+	err := manager.CreateSession("test-id", "/tmp")
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not reachable after creation")
+	mockExec.AssertCalled(t, "KillSession", "test-id")
+	mockExec.AssertNotCalled(t, "SetSessionEnvironment", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestSessionManager_KillSession_Success tests successful kill
@@ -249,7 +297,7 @@ func TestEnsureTaskvisorWindow_CreatesWhenAbsent(t *testing.T) {
 	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
-	mockExec.On("CreateWindow", "sess-1", "taskvisor", "zsh").Return("@1", nil)
+	mockExec.On("CreateWindow", "sess-1", "taskvisor", "").Return("@1", nil)
 	mockExec.On("SetWindowOption", "sess-1", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
 	mockExec.On("SendMessage", "sess-1", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
@@ -260,7 +308,7 @@ func TestEnsureTaskvisorWindow_CreatesWhenAbsent(t *testing.T) {
 	err := manager.EnsureTaskvisorWindow("sess-1")
 
 	require.NoError(t, err)
-	mockExec.AssertCalled(t, "CreateWindow", "sess-1", "taskvisor", "zsh")
+	mockExec.AssertCalled(t, "CreateWindow", "sess-1", "taskvisor", "")
 	mockExec.AssertCalled(t, "SetWindowOption", "sess-1", "@1", "window-uuid", mock.AnythingOfType("string"))
 	mockExec.AssertCalled(t, "SendMessage", "sess-1", "@1", "tmux-cli taskvisor --run")
 }
@@ -318,7 +366,7 @@ func TestEnsureTaskvisorWindow_CreateWindowError(t *testing.T) {
 	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
-	mockExec.On("CreateWindow", "sess-1", "taskvisor", "zsh").Return("", errors.New("create failed"))
+	mockExec.On("CreateWindow", "sess-1", "taskvisor", "").Return("", errors.New("create failed"))
 
 	manager := NewSessionManager(mockExec)
 	err := manager.EnsureTaskvisorWindow("sess-1")
