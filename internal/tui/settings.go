@@ -35,6 +35,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "supervisor.cycle_delay", label: "Cycle Timeout (s)", kind: "int", intVal: settings.Supervisor.CycleDelay},
 			{key: "supervisor.max_cycles", label: "Max Cycles (0=∞)", kind: "int", intVal: settings.Supervisor.MaxCycles},
 			{key: "supervisor.unplanned_audit", label: "Unplanned Audit", kind: "bool", value: settings.Supervisor.UnplannedAudit},
+			{key: "supervisor.worker_boot_timeout", label: "Worker Boot Timeout (s)", kind: "int", intVal: settings.Supervisor.WorkerBootTimeout},
 			{key: "plan.auto_approve", label: "Plan Auto-Approve", kind: "bool", value: settings.Plan.AutoApprove},
 			{key: "plan.auto_execute", label: "Plan Auto-Execute", kind: "bool", value: settings.Plan.AutoExecute},
 			{key: "sudo.timeout", label: "Sudo Timeout (0=∞)", kind: "int", intVal: settings.Sudo.Timeout},
@@ -148,6 +149,8 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Supervisor.MaxCycles = item.intVal
 		case "supervisor.unplanned_audit":
 			s.Supervisor.UnplannedAudit = item.value
+		case "supervisor.worker_boot_timeout":
+			s.Supervisor.WorkerBootTimeout = item.intVal
 		case "plan.auto_approve":
 			s.Plan.AutoApprove = item.value
 		case "plan.auto_execute":

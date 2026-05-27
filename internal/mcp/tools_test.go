@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -985,6 +986,160 @@ func TestServer_WindowsSpawnWorker_MaxWorkersZeroUnlimited(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-4", name)
+}
+
+func TestServer_WaitForWorkerBoot_HappyPath(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+
+	// Phase 1: first call returns zsh, second returns claude
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@1", Name: "execute-1", CurrentCommand: "zsh"},
+	}, nil).Once()
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@1", Name: "execute-1", CurrentCommand: "claude"},
+	}, nil)
+
+	// Phase 2: prompt appears on first check
+	mockExec.On("CaptureWindowOutput", "test-session", "@1").Return("some output ❯", nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	window := &WindowInfo{TmuxWindowID: "@1", Name: "execute-1"}
+
+	start := time.Now()
+	server.waitForWorkerBoot("test-session", window, 5*time.Second)
+	elapsed := time.Since(start)
+
+	// Should complete well before timeout (1s post-delay + poll intervals)
+	assert.Less(t, elapsed, 3*time.Second)
+	mockExec.AssertCalled(t, "CaptureWindowOutput", "test-session", "@1")
+}
+
+func TestServer_WaitForWorkerBoot_Timeout(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+
+	// Always returns zsh — Claude never boots
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@1", Name: "execute-1", CurrentCommand: "zsh"},
+	}, nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	window := &WindowInfo{TmuxWindowID: "@1", Name: "execute-1"}
+
+	start := time.Now()
+	server.waitForWorkerBoot("test-session", window, 200*time.Millisecond)
+	elapsed := time.Since(start)
+
+	// Should timeout around 200ms, not hang
+	assert.Less(t, elapsed, 1*time.Second)
+	mockExec.AssertNotCalled(t, "CaptureWindowOutput", mock.Anything, mock.Anything)
+}
+
+func TestServer_WaitForWorkerBoot_BootButNoPrompt(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+
+	// Phase 1: Claude boots immediately
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@1", Name: "execute-1", CurrentCommand: "claude"},
+	}, nil)
+
+	// Phase 2: prompt never appears
+	mockExec.On("CaptureWindowOutput", "test-session", "@1").Return("loading...", nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	window := &WindowInfo{TmuxWindowID: "@1", Name: "execute-1"}
+
+	start := time.Now()
+	server.waitForWorkerBoot("test-session", window, 200*time.Millisecond)
+	elapsed := time.Since(start)
+
+	// Should timeout, not hang
+	assert.Less(t, elapsed, 1*time.Second)
+	mockExec.AssertCalled(t, "CaptureWindowOutput", "test-session", "@1")
+}
+
+func TestServer_WaitForWorkerBoot_WindowDisappears(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+
+	// Window not in list
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{}, nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	window := &WindowInfo{TmuxWindowID: "@1", Name: "execute-1"}
+
+	start := time.Now()
+	server.waitForWorkerBoot("test-session", window, 5*time.Second)
+	elapsed := time.Since(start)
+
+	// Should return immediately
+	assert.Less(t, elapsed, 100*time.Millisecond)
+	mockExec.AssertNotCalled(t, "CaptureWindowOutput", mock.Anything, mock.Anything)
+}
+
+func TestServer_WaitForWorkerBoot_ListWindowsError(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+
+	mockExec.On("ListWindows", "test-session").Return(nil, errors.New("tmux error"))
+
+	server := newTestServer(mockExec, "/test/dir")
+	window := &WindowInfo{TmuxWindowID: "@1", Name: "execute-1"}
+
+	start := time.Now()
+	server.waitForWorkerBoot("test-session", window, 5*time.Second)
+	elapsed := time.Since(start)
+
+	// Should return immediately on error
+	assert.Less(t, elapsed, 100*time.Millisecond)
+}
+
+func TestServer_WaitForWorkerBoot_CaptureOutputError(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@1", Name: "execute-1", CurrentCommand: "claude"},
+	}, nil)
+	mockExec.On("CaptureWindowOutput", "test-session", "@1").Return("", errors.New("capture error"))
+
+	server := newTestServer(mockExec, "/test/dir")
+	window := &WindowInfo{TmuxWindowID: "@1", Name: "execute-1"}
+
+	start := time.Now()
+	server.waitForWorkerBoot("test-session", window, 5*time.Second)
+	elapsed := time.Since(start)
+
+	// Should return immediately on capture error
+	assert.Less(t, elapsed, 100*time.Millisecond)
+}
+
+func TestServer_LoadWorkerBootTimeout_Default(t *testing.T) {
+	server := newTestServer(new(testutil.MockTmuxExecutor), "/nonexistent/dir")
+	timeout := server.loadWorkerBootTimeout()
+	assert.Equal(t, 30*time.Second, timeout)
+}
+
+func TestServer_LoadWorkerBootTimeout_FromSettings(t *testing.T) {
+	root := t.TempDir()
+	settingsDir := root + "/.tmux-cli"
+	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
+	require.NoError(t, os.WriteFile(settingsDir+"/setting.yaml", []byte(`supervisor:
+  worker_boot_timeout: 45
+`), 0o644))
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), root)
+	timeout := server.loadWorkerBootTimeout()
+	assert.Equal(t, 45*time.Second, timeout)
+}
+
+func TestServer_LoadWorkerBootTimeout_ZeroFallsBackToDefault(t *testing.T) {
+	root := t.TempDir()
+	settingsDir := root + "/.tmux-cli"
+	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
+	require.NoError(t, os.WriteFile(settingsDir+"/setting.yaml", []byte(`supervisor:
+  worker_boot_timeout: 0
+`), 0o644))
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), root)
+	timeout := server.loadWorkerBootTimeout()
+	assert.Equal(t, 30*time.Second, timeout)
 }
 
 func TestServer_TasksValidate_Clean(t *testing.T) {

@@ -383,6 +383,50 @@ commands:
 	assert.Contains(t, string(raw), "taskvisor:")
 }
 
+func TestDefaultSettings_WorkerBootTimeout(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 30, s.Supervisor.WorkerBootTimeout, "default worker_boot_timeout should be 30")
+}
+
+func TestLoadSettings_WorkerBootTimeout(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  worker_boot_timeout: 45
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, 45, s.Supervisor.WorkerBootTimeout)
+}
+
+func TestSaveLoadRoundTrip_WorkerBootTimeout(t *testing.T) {
+	root := t.TempDir()
+
+	original := &Settings{
+		Hooks:    HooksSettings{BlockInteractive: true},
+		Commands: CommandsSettings{Enabled: true},
+		Supervisor: SupervisorSettings{
+			MaxWorkers:        4,
+			WorkerBootTimeout: 60,
+		},
+	}
+
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, 60, loaded.Supervisor.WorkerBootTimeout)
+}
+
 func TestSaveSettings_WritesYAML(t *testing.T) {
 	root := t.TempDir()
 

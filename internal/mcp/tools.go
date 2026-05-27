@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -516,7 +517,7 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 			ErrTmuxCommandFailed, workerName, err)
 	}
 
-	time.Sleep(2 * time.Second)
+	s.waitForWorkerBoot(sessionID, window, s.loadWorkerBootTimeout())
 
 	researchDir := time.Now().Format("2006-01-02-15")
 	taskMessage := buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchDir, deliverable)
@@ -529,6 +530,65 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	}
 
 	return window, workerName, taskMessage, nil
+}
+
+func (s *Server) loadWorkerBootTimeout() time.Duration {
+	settings, err := setup.LoadSettings(s.workingDir)
+	if err != nil || settings == nil || settings.Supervisor.WorkerBootTimeout <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(settings.Supervisor.WorkerBootTimeout) * time.Second
+}
+
+func (s *Server) waitForWorkerBoot(sessionID string, window *WindowInfo, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+
+	// Phase 1: poll ListWindows for CurrentCommand != "zsh"
+	for {
+		windows, err := s.executor.ListWindows(sessionID)
+		if err != nil {
+			log.Printf("waitForWorkerBoot: ListWindows error, proceeding: %v", err)
+			return
+		}
+		var found bool
+		for _, w := range windows {
+			if w.TmuxWindowID == window.TmuxWindowID {
+				found = true
+				if w.CurrentCommand != "zsh" && w.CurrentCommand != "" {
+					goto phase2
+				}
+				break
+			}
+		}
+		if !found {
+			log.Printf("waitForWorkerBoot: window %s disappeared, proceeding", window.TmuxWindowID)
+			return
+		}
+		if time.Now().After(deadline) {
+			log.Printf("waitForWorkerBoot: timeout waiting for Claude boot in %s", window.Name)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+phase2:
+	// Phase 2: poll CaptureWindowOutput for "❯" prompt
+	for {
+		output, err := s.executor.CaptureWindowOutput(sessionID, window.TmuxWindowID)
+		if err != nil {
+			log.Printf("waitForWorkerBoot: CaptureWindowOutput error, proceeding: %v", err)
+			return
+		}
+		if strings.Contains(output, "❯") {
+			time.Sleep(1 * time.Second)
+			return
+		}
+		if time.Now().After(deadline) {
+			log.Printf("waitForWorkerBoot: timeout waiting for prompt in %s", window.Name)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func (s *Server) SpecValidate(file string) (*SpecValidateOutput, error) {
