@@ -27,10 +27,11 @@ type CommandsSettings struct {
 }
 
 type SupervisorSettings struct {
-	MaxCycles      int  `yaml:"max_cycles"`
-	MaxWorkers     int  `yaml:"max_workers"`
-	CycleDelay     int  `yaml:"cycle_delay"`
-	UnplannedAudit bool `yaml:"unplanned_audit"`
+	MaxCycles         int  `yaml:"max_cycles"`
+	MaxWorkers        int  `yaml:"max_workers"`
+	CycleDelay        int  `yaml:"cycle_delay"`
+	UnplannedAudit    bool `yaml:"unplanned_audit"`
+	WorkerBootTimeout int  `yaml:"worker_boot_timeout"`
 }
 
 type PlanSettings struct {
@@ -67,10 +68,11 @@ func DefaultSettings() *Settings {
 			Enabled: true,
 		},
 		Supervisor: SupervisorSettings{
-			MaxCycles:      0,
-			MaxWorkers:     4,
-			CycleDelay:     5,
-			UnplannedAudit: true,
+			MaxCycles:         0,
+			MaxWorkers:        4,
+			CycleDelay:        5,
+			UnplannedAudit:    true,
+			WorkerBootTimeout: 30,
 		},
 		Plan: PlanSettings{
 			AutoApprove: true,
