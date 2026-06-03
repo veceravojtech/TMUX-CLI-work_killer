@@ -12,6 +12,50 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestHasResumablePark(t *testing.T) {
+	tests := []struct {
+		name  string
+		goals []Goal
+		want  bool
+	}{
+		{
+			name:  "empty",
+			goals: nil,
+			want:  false,
+		},
+		{
+			name: "no resumable park",
+			goals: []Goal{
+				{ID: "goal-1", Status: GoalDone},
+				{ID: "goal-2", Status: GoalBlocked, BlockedBy: "external"},
+				{ID: "goal-3", Status: GoalPending},
+			},
+			want: false,
+		},
+		{
+			name: "one resumable park",
+			goals: []Goal{
+				{ID: "goal-1", Status: GoalDone},
+				{ID: "goal-2", Status: GoalBlocked, BlockedByPrecondition: true},
+			},
+			want: true,
+		},
+		{
+			name: "park flag set without explicit BlockedBy",
+			goals: []Goal{
+				{ID: "goal-1", Status: GoalBlocked, BlockedBy: "", BlockedByPrecondition: true},
+			},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gf := &GoalsFile{Goals: tt.goals}
+			assert.Equal(t, tt.want, gf.HasResumablePark())
+		})
+	}
+}
+
 func TestLoadGoals_Missing(t *testing.T) {
 	root := t.TempDir()
 	gf, err := LoadGoals(root)
@@ -128,15 +172,32 @@ func TestSaveGoals_Roundtrip(t *testing.T) {
 				Status:      GoalDone,
 				Retries:     1,
 				MaxRetries:  3,
+				// Per-class live counters decrement toward zero: live = REMAINING
+				// budget, Max… = configured start. LoadGoals seeds an unstarted
+				// goal's live counters to the full Max… budget. Pre-populating both
+				// live and Max to that budget (live == Max) keeps the save→load
+				// roundtrip exact: the non-zero live guard then skips migration.
+				CodeRetries:          3,
+				SpecRetries:          1,
+				ValidationRetries:    1,
+				MaxCodeRetries:       3,
+				MaxSpecRetries:       1,
+				MaxValidationRetries: 1,
 			},
 			{
-				ID:          "goal-002",
-				Description: "Second goal",
-				Acceptance:  []string{"B1"},
-				Validate:    []string{"V2", "V3"},
-				Status:      GoalPending,
-				Retries:     0,
-				MaxRetries:  5,
+				ID:                   "goal-002",
+				Description:          "Second goal",
+				Acceptance:           []string{"B1"},
+				Validate:             []string{"V2", "V3"},
+				Status:               GoalPending,
+				Retries:              0,
+				MaxRetries:           5,
+				CodeRetries:          5,
+				SpecRetries:          2,
+				ValidationRetries:    1,
+				MaxCodeRetries:       5,
+				MaxSpecRetries:       2,
+				MaxValidationRetries: 1,
 			},
 		},
 	}
@@ -400,7 +461,7 @@ func TestResetGoal_PreservesOtherFields(t *testing.T) {
 	assert.Equal(t, []string{"A1", "A2"}, g.Acceptance)
 	assert.Equal(t, []string{"V1"}, g.Validate)
 	assert.Equal(t, 5, g.MaxRetries)
-	assert.Equal(t, "2026-05-20T14:00:00Z", g.StartedAt)
+	assert.Equal(t, "", g.StartedAt)
 	assert.Equal(t, GoalPending, g.Status)
 	assert.Equal(t, 0, g.Retries)
 	assert.Equal(t, "", g.FinishedAt)
@@ -489,7 +550,7 @@ func TestGoalTimingFields_Roundtrip(t *testing.T) {
 
 func TestWriteGoalMD_AllSections(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Fix prices", []string{"Price matches API", "No rounding errors"}, []string{"go test ./...", "curl check"}, "We need accurate pricing", "UI redesign")
+	err := WriteGoalMD(dir, "Fix prices", "", []string{"Price matches API", "No rounding errors"}, []string{"go test ./...", "curl check"}, nil, "We need accurate pricing", "UI redesign", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -507,11 +568,48 @@ func TestWriteGoalMD_AllSections(t *testing.T) {
 	assert.Contains(t, content, "We need accurate pricing")
 	assert.Contains(t, content, "## Not In Scope")
 	assert.Contains(t, content, "UI redesign")
+	assert.NotContains(t, content, "## Phase")
+}
+
+func TestWriteGoalMD_WithPhase(t *testing.T) {
+	dir := t.TempDir()
+	err := WriteGoalMD(dir, "Setup DB", "infrastructure", []string{"Tables exist"}, []string{"check"}, nil, "", "", nil)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "## Phase")
+	assert.Contains(t, content, "infrastructure")
+	lines := strings.Split(content, "\n")
+	phaseIdx := -1
+	acIdx := -1
+	for i, l := range lines {
+		if l == "## Phase" {
+			phaseIdx = i
+		}
+		if l == "## Acceptance Criteria" {
+			acIdx = i
+		}
+	}
+	assert.Greater(t, phaseIdx, 0, "Phase section should exist")
+	assert.Greater(t, acIdx, phaseIdx, "Phase must appear before Acceptance Criteria")
+}
+
+func TestWriteGoalMD_EmptyPhaseOmitted(t *testing.T) {
+	dir := t.TempDir()
+	err := WriteGoalMD(dir, "No phase goal", "", []string{"AC1"}, []string{"check"}, nil, "", "", nil)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "## Phase")
 }
 
 func TestWriteGoalMD_AcceptanceOnly(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Build API", []string{"Returns 200"}, nil, "", "")
+	err := WriteGoalMD(dir, "Build API", "", []string{"Returns 200"}, nil, nil, "", "", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -521,14 +619,15 @@ func TestWriteGoalMD_AcceptanceOnly(t *testing.T) {
 	assert.Contains(t, content, "# Build API")
 	assert.Contains(t, content, "## Acceptance Criteria")
 	assert.Contains(t, content, "- Returns 200")
-	assert.NotContains(t, content, "## Validation Rules")
+	assert.Contains(t, content, "## Validation Rules")
+	assert.Contains(t, content, "(none)")
 	assert.NotContains(t, content, "## Context")
 	assert.NotContains(t, content, "## Not In Scope")
 }
 
 func TestWriteGoalMD_NoCriteria(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Simple goal", nil, nil, "", "")
+	err := WriteGoalMD(dir, "Simple goal", "", nil, nil, nil, "", "", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -537,14 +636,15 @@ func TestWriteGoalMD_NoCriteria(t *testing.T) {
 
 	assert.Contains(t, content, "# Simple goal")
 	assert.Contains(t, content, "## Acceptance Criteria")
-	assert.NotContains(t, content, "## Validation Rules")
+	assert.Contains(t, content, "## Validation Rules")
+	assert.Contains(t, content, "(none)")
 	assert.NotContains(t, content, "## Context")
 	assert.NotContains(t, content, "## Not In Scope")
 }
 
 func TestWriteGoalMD_ContextAndNotInScope(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Refactor module", nil, nil, "Legacy code needs cleanup", "Performance tuning")
+	err := WriteGoalMD(dir, "Refactor module", "", nil, nil, nil, "Legacy code needs cleanup", "Performance tuning", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -556,12 +656,13 @@ func TestWriteGoalMD_ContextAndNotInScope(t *testing.T) {
 	assert.Contains(t, content, "Legacy code needs cleanup")
 	assert.Contains(t, content, "## Not In Scope")
 	assert.Contains(t, content, "Performance tuning")
-	assert.NotContains(t, content, "## Validation Rules")
+	assert.Contains(t, content, "## Validation Rules")
+	assert.Contains(t, content, "(none)")
 }
 
 func TestWriteGoalMD_AtomicWrite(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Test atomic", []string{"A1"}, nil, "", "")
+	err := WriteGoalMD(dir, "Test atomic", "", []string{"A1"}, nil, nil, "", "", nil)
 	require.NoError(t, err)
 
 	tmpPath := filepath.Join(dir, "goal.md.tmp")
@@ -571,7 +672,7 @@ func TestWriteGoalMD_AtomicWrite(t *testing.T) {
 
 func TestWriteGoalMD_MarkdownFormat(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Format check", []string{"Criterion A", "Criterion B"}, []string{"validate cmd"}, "Some context", "Out of scope")
+	err := WriteGoalMD(dir, "Format check", "", []string{"Criterion A", "Criterion B"}, []string{"validate cmd"}, nil, "Some context", "Out of scope", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -598,6 +699,24 @@ func TestWriteGoalMD_MarkdownFormat(t *testing.T) {
 	assert.Equal(t, "Out of scope", lines[17])
 }
 
+func TestWriteGoalMD_MarkdownFormatWithPhase(t *testing.T) {
+	dir := t.TempDir()
+	err := WriteGoalMD(dir, "Phase check", "domain", []string{"Criterion A"}, []string{"validate cmd"}, nil, "", "", nil)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	lines := strings.Split(string(data), "\n")
+
+	assert.Equal(t, "# Phase check", lines[0])
+	assert.Equal(t, "", lines[1])
+	assert.Equal(t, "## Phase", lines[2])
+	assert.Equal(t, "", lines[3])
+	assert.Equal(t, "domain", lines[4])
+	assert.Equal(t, "", lines[5])
+	assert.Equal(t, "## Acceptance Criteria", lines[6])
+}
+
 func TestGoalTimingFields_OmitEmpty(t *testing.T) {
 	root := t.TempDir()
 	gf := &GoalsFile{
@@ -613,4 +732,476 @@ func TestGoalTimingFields_OmitEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "started_at")
 	assert.NotContains(t, string(data), "finished_at")
+}
+
+func TestMigrateRetries_LegacyGoal(t *testing.T) {
+	// old=4 → Spec=max(2,(4+1)/2)=max(2,2)=2, Val=2.
+	b := MigrateRetries(4)
+	assert.Equal(t, 4, b.CodeRetries)
+	assert.Equal(t, 2, b.SpecRetries)
+	assert.Equal(t, 2, b.ValidationRetries)
+	assert.Equal(t, 0, b.BlockRetries)
+}
+
+func TestMigrateRetries_CeilBoundary(t *testing.T) {
+	// old=3 → Spec=max(2,(3+1)/2)=max(2,2)=2 (Spec floor of 2 means no instant fail).
+	assert.Equal(t, 2, MigrateRetries(3).SpecRetries)
+
+	z := MigrateRetries(0)
+	assert.Equal(t, 0, z.CodeRetries)
+	assert.Equal(t, 2, z.SpecRetries)
+	assert.Equal(t, 2, z.ValidationRetries)
+	assert.Equal(t, 0, z.BlockRetries)
+}
+
+func TestMigrateRetries_NegativeClampsToZero(t *testing.T) {
+	b := MigrateRetries(-2)
+	assert.Equal(t, 0, b.CodeRetries)
+	assert.Equal(t, 2, b.SpecRetries)
+	assert.Equal(t, 2, b.ValidationRetries)
+	assert.Equal(t, 0, b.BlockRetries)
+}
+
+// TestMigrateRetries_DefaultFiveGivesCode5Spec3Val2 pins the new default:
+// old=5 → Code 5 / Spec max(2,3)=3 / Val 2 / Block 0.
+func TestMigrateRetries_DefaultFiveGivesCode5Spec3Val2(t *testing.T) {
+	b := MigrateRetries(5)
+	assert.Equal(t, 5, b.CodeRetries)
+	assert.Equal(t, 3, b.SpecRetries)
+	assert.Equal(t, 2, b.ValidationRetries)
+	assert.Equal(t, 0, b.BlockRetries)
+}
+
+// TestMigrateRetries_SpecFloorIsTwo proves even tiny legacy budgets never
+// produce a Spec=0/1 (the previo2 instant spec-fail bug); Val is always 2.
+func TestMigrateRetries_SpecFloorIsTwo(t *testing.T) {
+	for _, old := range []int{0, 1} {
+		b := MigrateRetries(old)
+		assert.Equalf(t, 2, b.SpecRetries, "old=%d Spec should floor at 2", old)
+		assert.Equalf(t, 2, b.ValidationRetries, "old=%d Val should be 2", old)
+	}
+}
+
+// TestMigrateRetries_LegacyThree: old=3 → {3,2,2,0}; no instant spec-fail.
+func TestMigrateRetries_LegacyThree(t *testing.T) {
+	b := MigrateRetries(3)
+	assert.Equal(t, 3, b.CodeRetries)
+	assert.Equal(t, 2, b.SpecRetries)
+	assert.Equal(t, 2, b.ValidationRetries)
+	assert.Equal(t, 0, b.BlockRetries)
+}
+
+// TestMigrateRetries_NegativeClamped: old=-2 → {0,2,2,0}.
+func TestMigrateRetries_NegativeClamped(t *testing.T) {
+	b := MigrateRetries(-2)
+	assert.Equal(t, 0, b.CodeRetries)
+	assert.Equal(t, 2, b.SpecRetries)
+	assert.Equal(t, 2, b.ValidationRetries)
+	assert.Equal(t, 0, b.BlockRetries)
+}
+
+func TestLoadGoals_MigratesLegacyRetries(t *testing.T) {
+	root := t.TempDir()
+	p := GoalsFilePath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	content := `current_goal: "goal-001"
+goals:
+  - id: "goal-001"
+    description: "Legacy goal"
+    status: pending
+    retries: 4
+    max_retries: 5
+`
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+
+	gf, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.Len(t, gf.Goals, 1)
+	g := gf.Goals[0]
+	// Unstarted legacy goal: live counters seed to the FULL Max… budget
+	// (decrement-toward-zero), NOT to the legacy used-count of 4. The Max…
+	// budget itself derives from max_retries (5).
+	assert.Equal(t, 5, g.CodeRetries)
+	assert.Equal(t, 3, g.SpecRetries)
+	assert.Equal(t, 2, g.ValidationRetries)
+	assert.Equal(t, 0, g.BlockRetries)
+	assert.Equal(t, 5, g.MaxCodeRetries)
+	assert.Equal(t, 3, g.MaxSpecRetries)
+	assert.Equal(t, 2, g.MaxValidationRetries)
+	assert.Equal(t, 0, g.MaxBlockRetries)
+	// Live == Max: full remaining budget for a goal that has not run yet.
+	assert.Equal(t, g.MaxCodeRetries, g.CodeRetries)
+	assert.Equal(t, g.MaxSpecRetries, g.SpecRetries)
+	assert.Equal(t, g.MaxValidationRetries, g.ValidationRetries)
+}
+
+func TestLoadGoals_AlreadyMigratedNotReSplit(t *testing.T) {
+	root := t.TempDir()
+	p := GoalsFilePath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	content := `current_goal: "goal-001"
+goals:
+  - id: "goal-001"
+    description: "Already migrated goal"
+    status: pending
+    retries: 4
+    code_retries: 7
+`
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+
+	gf, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.Len(t, gf.Goals, 1)
+	g := gf.Goals[0]
+	// A goal already carrying a non-zero live counter is mid-flight: the
+	// all-zero guard gates the WHOLE live block, so nothing is re-seeded —
+	// CodeRetries stays 7 and the other live counters stay at their loaded
+	// (zero) values rather than being topped up to Max. Idempotent on reload.
+	assert.Equal(t, 7, g.CodeRetries)
+	assert.Equal(t, 0, g.SpecRetries)
+	assert.Equal(t, 0, g.ValidationRetries)
+	assert.Equal(t, 0, g.BlockRetries)
+}
+
+func TestLoadGoals_SeedsFreshGoalToFullBudget(t *testing.T) {
+	root := t.TempDir()
+	p := GoalsFilePath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	content := `current_goal: "goal-001"
+goals:
+  - id: "goal-001"
+    description: "Fresh goal"
+    status: pending
+    retries: 0
+    max_retries: 5
+`
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+
+	gf, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.Len(t, gf.Goals, 1)
+	g := gf.Goals[0]
+	// Fresh goal (no per-class keys): live counters seed to the FULL Max…
+	// budget so the first code defect does NOT hard-halt the goal.
+	assert.Equal(t, 5, g.CodeRetries)
+	assert.Equal(t, 3, g.SpecRetries)
+	assert.Equal(t, 2, g.ValidationRetries)
+	assert.Equal(t, 0, g.BlockRetries)
+	assert.Equal(t, 5, g.MaxCodeRetries)
+	assert.Equal(t, 3, g.MaxSpecRetries)
+	assert.Equal(t, 2, g.MaxValidationRetries)
+	assert.Equal(t, 0, g.MaxBlockRetries)
+}
+
+func TestLoadGoals_DoesNotResurrectFailedGoal(t *testing.T) {
+	root := t.TempDir()
+	p := GoalsFilePath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	content := `current_goal: "goal-001"
+goals:
+  - id: "goal-001"
+    description: "Exhausted goal"
+    status: failed
+    retries: 0
+    max_retries: 5
+`
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+
+	gf, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.Len(t, gf.Goals, 1)
+	g := gf.Goals[0]
+	// A terminal (failed) goal with all-zero live counters must NOT be
+	// re-seeded — an exhausted goal is never resurrected to full budget.
+	assert.Equal(t, GoalFailed, g.Status)
+	assert.Equal(t, 0, g.CodeRetries)
+	assert.Equal(t, 0, g.SpecRetries)
+	assert.Equal(t, 0, g.ValidationRetries)
+	assert.Equal(t, 0, g.BlockRetries)
+	// The Max… budget is still derived (Max seeding is not status-gated); only
+	// the live seed is withheld for terminal goals.
+	assert.Equal(t, 5, g.MaxCodeRetries)
+	assert.Equal(t, 3, g.MaxSpecRetries)
+	assert.Equal(t, 2, g.MaxValidationRetries)
+}
+
+func TestLoadGoals_LegacyStillParses(t *testing.T) {
+	root := t.TempDir()
+	p := GoalsFilePath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	content := `current_goal: "goal-001"
+goals:
+  - id: "goal-001"
+    description: "Legacy goal"
+    status: pending
+    retries: 4
+    max_retries: 5
+`
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+
+	gf, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.Len(t, gf.Goals, 1)
+	assert.Equal(t, 4, gf.Goals[0].Retries)
+	assert.Equal(t, 5, gf.Goals[0].MaxRetries)
+}
+
+func TestLoadGoalLegacyNoPreconditions(t *testing.T) {
+	root := t.TempDir()
+	content := `current_goal: goal-001
+goals:
+  - id: goal-001
+    description: legacy goal
+    status: pending
+    retries: 0
+    max_retries: 3
+`
+	p := GoalsFilePath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+
+	gf, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.Len(t, gf.Goals, 1)
+
+	assert.Empty(t, gf.Goals[0].Preconditions, "legacy goal must have no preconditions")
+
+	d := New(root, nil)
+	ok, class, remedy := d.evaluatePreconditions(&gf.Goals[0])
+	assert.True(t, ok, "legacy goal with no preconditions must never block")
+	assert.Empty(t, class)
+	assert.Empty(t, remedy)
+}
+
+func TestLoadGoalEmptyPreconditionsSection(t *testing.T) {
+	root := t.TempDir()
+	content := `current_goal: goal-001
+goals:
+  - id: goal-001
+    description: empty preconditions goal
+    status: pending
+    retries: 0
+    max_retries: 3
+    preconditions: []
+`
+	p := GoalsFilePath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+
+	gf, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.Len(t, gf.Goals, 1)
+
+	assert.Empty(t, gf.Goals[0].Preconditions, "empty preconditions section yields empty slice")
+
+	d := New(root, nil)
+	ok, class, remedy := d.evaluatePreconditions(&gf.Goals[0])
+	assert.True(t, ok, "empty preconditions behaves identically to absent key")
+	assert.Empty(t, class)
+	assert.Empty(t, remedy)
+}
+
+func TestWriteGoalMD_PreconditionsSection(t *testing.T) {
+	dir := t.TempDir()
+	preconds := []Precondition{
+		{Kind: "env", Spec: "DB_USER", Remedy: "export DB_USER"},
+		{Kind: "service", Spec: "localhost:5432", Remedy: "start postgres"},
+	}
+	err := WriteGoalMD(dir, "With preconds", "", []string{"AC1"}, []string{"check"}, preconds, "ctx", "", nil)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "## Preconditions")
+	assert.Contains(t, content, "- [env] DB_USER — export DB_USER")
+	assert.Contains(t, content, "- [service] localhost:5432 — start postgres")
+
+	// ## Preconditions must sit between ## Validation Rules and ## Context.
+	valIdx := strings.Index(content, "## Validation Rules")
+	preIdx := strings.Index(content, "## Preconditions")
+	ctxIdx := strings.Index(content, "## Context")
+	require.NotEqual(t, -1, valIdx)
+	require.NotEqual(t, -1, preIdx)
+	require.NotEqual(t, -1, ctxIdx)
+	assert.Greater(t, preIdx, valIdx, "Preconditions must come after Validation Rules")
+	assert.Greater(t, ctxIdx, preIdx, "Context must come after Preconditions")
+
+	// Empty slice => section omitted (legacy goal.md byte-unchanged).
+	dir2 := t.TempDir()
+	require.NoError(t, WriteGoalMD(dir2, "No preconds", "", []string{"AC1"}, []string{"check"}, nil, "ctx", "", nil))
+	data2, err := os.ReadFile(filepath.Join(dir2, "goal.md"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data2), "## Preconditions")
+}
+
+// TestCurrentCycle verifies the one-indexed dispatch-attempt counter is derived
+// from CONSUMED retry budget (Max… − live counters), NOT the live remaining
+// sum. The live per-class counters decrement toward zero (seeded to Max… by
+// LoadGoals), so a fresh full-budget goal is cycle 1 and the number rises
+// monotonically as any class consumes budget. goal.Retries must never be read.
+func TestCurrentCycle(t *testing.T) {
+	cases := []struct {
+		name                                      string
+		maxCode, code, maxSpec, spec, maxVal, val int
+		want                                      int
+	}{
+		{"full budget => cycle 1", 3, 3, 2, 2, 1, 1, 1},
+		{"one code consumed => 2", 3, 2, 2, 2, 1, 1, 2},
+		{"code+spec consumed => 3", 3, 2, 2, 1, 1, 1, 3},
+		{"code2 spec3 val1 => 7", 2, 0, 3, 0, 1, 0, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &Goal{
+				Retries:              99, // legacy counter MUST be ignored
+				MaxCodeRetries:       tc.maxCode,
+				CodeRetries:          tc.code,
+				MaxSpecRetries:       tc.maxSpec,
+				SpecRetries:          tc.spec,
+				MaxValidationRetries: tc.maxVal,
+				ValidationRetries:    tc.val,
+			}
+			assert.Equal(t, tc.want, CurrentCycle(g))
+		})
+	}
+}
+
+// TestCycleResearchDir asserts the exact joined per-cycle research path beneath
+// the goal-scoped research root.
+func TestCycleResearchDir(t *testing.T) {
+	root := "/tmp/proj"
+	g := &Goal{ID: "goal-007", MaxCodeRetries: 3, CodeRetries: 2} // consumed code 1 => cycle 2
+	want := filepath.Join(root, ".tmux-cli", "goals", "goal-007", "research", "cycle-2")
+	assert.Equal(t, want, CycleResearchDir(root, g))
+
+	// EnsureCycleResearchDir mkdir -p's it idempotently and returns the dir.
+	realRoot := t.TempDir()
+	g2 := &Goal{ID: "goal-007", MaxCodeRetries: 3, CodeRetries: 2}
+	dir, err := EnsureCycleResearchDir(realRoot, g2)
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(dir, filepath.Join("goals", "goal-007", "research", "cycle-2")))
+	info, statErr := os.Stat(dir)
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir())
+	// idempotent second call
+	_, err = EnsureCycleResearchDir(realRoot, g2)
+	require.NoError(t, err)
+}
+
+// --- Investigation Config rendering (M1) ---
+
+func TestWriteGoalMD_RendersProvidedInvestigators(t *testing.T) {
+	dir := t.TempDir()
+	invs := []Investigator{
+		{Name: "Quality gate", Type: "quality-gate", Commands: []string{"phpstan analyse"}, Pass: "exit 0", Fail: "errors"},
+		{Name: "Test execution", Type: "test-execution", Commands: []string{"phpunit"}, Pass: "green", Fail: "red"},
+		{Name: "Architecture check", Type: "architecture-check", Commands: []string{"deptrac"}, Pass: "no violations", Fail: "violation"},
+	}
+	require.NoError(t, WriteGoalMD(dir, "Provided", "", []string{"AC1"}, []string{"x"}, nil, "", "", invs))
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Equal(t, 1, strings.Count(content, "## Investigation Config"))
+	assert.Contains(t, content, "### Investigator 1: Quality gate")
+	assert.Contains(t, content, "### Investigator 2: Test execution")
+	assert.Contains(t, content, "### Investigator 3: Architecture check")
+	assert.Contains(t, content, "- type: quality-gate")
+	assert.Contains(t, content, "- command: phpstan analyse")
+	assert.Contains(t, content, "- Pass: exit 0")
+	assert.Contains(t, content, "- Fail: errors")
+
+	cfgIdx := strings.Index(content, "## Investigation Config")
+	revalIdx := strings.Index(content, "## Re-validation")
+	assert.Greater(t, cfgIdx, 0)
+	assert.Greater(t, revalIdx, cfgIdx, "Investigation Config must come before Re-validation")
+
+	// In-order rendering
+	assert.Less(t, strings.Index(content, "Investigator 1:"), strings.Index(content, "Investigator 2:"))
+	assert.Less(t, strings.Index(content, "Investigator 2:"), strings.Index(content, "Investigator 3:"))
+}
+
+func TestWriteGoalMD_DerivesFallbackFromValidate(t *testing.T) {
+	dir := t.TempDir()
+	validate := []string{
+		"vendor/bin/phpstan analyse --level=9",
+		"php bin/phpunit --testsuite=unit",
+		"vendor/bin/deptrac analyse",
+	}
+	require.NoError(t, WriteGoalMD(dir, "Fallback", "", []string{"AC1"}, validate, nil, "", "", nil))
+
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	qg := strings.Index(content, "- type: quality-gate")
+	te := strings.Index(content, "- type: test-execution")
+	ac := strings.Index(content, "- type: architecture-check")
+	assert.Greater(t, qg, 0, "quality-gate present")
+	assert.Greater(t, te, 0, "test-execution present")
+	assert.Greater(t, ac, 0, "architecture-check present")
+	assert.Less(t, qg, te, "quality-gate before test-execution")
+	assert.Less(t, te, ac, "test-execution before architecture-check")
+}
+
+func TestWriteGoalMD_FallbackGuaranteesAtLeastTwo(t *testing.T) {
+	for _, validate := range [][]string{
+		{"vendor/bin/phpstan analyse"},
+		{},
+	} {
+		dir := t.TempDir()
+		require.NoError(t, WriteGoalMD(dir, "Few", "", []string{"AC1"}, validate, nil, "", "", nil))
+		data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, strings.Count(string(data), "### Investigator "), 2,
+			"validate=%v should yield >=2 investigators", validate)
+	}
+}
+
+func TestWriteGoalMD_CapsAtFourInvestigators(t *testing.T) {
+	dir := t.TempDir()
+	validate := []string{
+		"vendor/bin/phpstan analyse",
+		"php bin/phpunit",
+		"vendor/bin/deptrac analyse",
+		"vendor/bin/ecs check",
+		"npx eslint .",
+		"npx playwright test",
+	}
+	require.NoError(t, WriteGoalMD(dir, "Many", "", []string{"AC1"}, validate, nil, "", "", nil))
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	assert.Equal(t, 4, strings.Count(string(data), "### Investigator "))
+}
+
+func TestWriteGoalMD_SingleInvestigationConfigSection(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, WriteGoalMD(dir, "Single", "", []string{"AC1"}, []string{"go test ./..."}, nil, "", "", nil))
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(data), "## Investigation Config"))
+}
+
+func TestWriteGoalMD_OptionalConditionRendered(t *testing.T) {
+	dir := t.TempDir()
+	invs := []Investigator{
+		{Name: "With cond", Type: "static-analysis", Pass: "p", Fail: "f", Condition: "only when X"},
+		{Name: "No cond", Type: "static-analysis", Pass: "p", Fail: "f"},
+	}
+	require.NoError(t, WriteGoalMD(dir, "Cond", "", []string{"AC1"}, []string{"x"}, nil, "", "", invs))
+	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, "- condition: only when X")
+	assert.Equal(t, 1, strings.Count(content, "- condition:"), "exactly one condition line (the empty one omitted)")
 }

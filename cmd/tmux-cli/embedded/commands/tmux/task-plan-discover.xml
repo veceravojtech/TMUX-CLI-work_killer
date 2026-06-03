@@ -1,0 +1,728 @@
+<task id="task-plan-discover" name="Interactive project discovery — BMAD-style collaborative session">
+  <objective>Guide the user through collaborative project discovery. Detect language/framework, produce product brief, and collect domain model inputs. This is the ONLY interactive phase — all subsequent planning and implementation is autonomous.</objective>
+
+  <input>
+    <note>No $ARGUMENTS — discovery starts with the project directory as implicit input. The working directory IS the project.</note>
+  </input>
+
+  <output>
+    <primary>docs/architecture/product-brief.md — product brief with 5 required sections</primary>
+    <secondary>Language and framework detection stored as session state (LANG, FRAMEWORK, TEMPLATE_DIR) for subsequent steps</secondary>
+  </output>
+
+  <requirements critical="true">
+    <note>No MCP server required. Discovery is a pure conversational skill using filesystem access (Read, Bash) for scanning and Write for saving documents.</note>
+  </requirements>
+
+  <glossary>
+    <term name="LANG">Detected primary language slug (e.g. "php", "go", "python", "node"). Set in Step 1.</term>
+    <term name="FRAMEWORK">Detected framework (e.g. "symfony", "laravel", "express", "gin"). Set in Step 1.</term>
+    <term name="DETECTED_SOURCE">File path that triggered language detection (e.g. "composer.json"). Set in Step 1.</term>
+    <term name="TEMPLATE_DIR">Path to language-specific templates. Resolved in Step 1 via two-tier lookup: try .tmux-cli/templates/&lt;LANG&gt;-&lt;FRAMEWORK&gt;/ first (normalized to lowercase-kebab), then .tmux-cli/templates/&lt;LANG&gt;/, then fall back to BASE_TEMPLATE_DIR.</term>
+    <term name="BASE_TEMPLATE_DIR">Path to universal templates: .tmux-cli/templates/_base/. Always available.</term>
+  </glossary>
+
+  <llm critical="true">
+    <mandate>NEVER generate or modify source code — discovery produces documents only</mandate>
+    <mandate>NEVER skip user confirmation of language detection — Step 1 blocks until confirmed</mandate>
+    <mandate>NEVER use AskUserQuestion — all interaction via text output + waiting for user messages (tmux window compatibility)</mandate>
+    <mandate>ALWAYS present findings conversationally, then invite refinement — collaborative, not interrogative</mandate>
+    <mandate>ALWAYS validate product brief has all 5 sections non-empty (D-04) before saving</mandate>
+    <mandate>ALWAYS create docs/architecture/ directory if it does not exist before writing output files</mandate>
+  </llm>
+
+  <flow>
+    <step n="0" title="Read project context and templates">
+      <action>Check if AGENTS.md exists in the project root. If it does, Read it and internalize project conventions, architecture, and constraints.</action>
+      <action>If AGENTS.md does not exist, check for CLAUDE.md instead. Read whichever is found first.</action>
+      <action>If neither exists, proceed without project context.</action>
+      <action>Read the base discovery template at .tmux-cli/templates/_base/discovery.md. This defines the question structure for Steps 1 and 2. Internalize its sections but do NOT dump it to the user — use it as a reference for conversational flow.</action>
+      <rule>Project context and template content MUST inform your conversational style, question framing, and validation throughout all subsequent steps.</rule>
+    </step>
+
+    <step n="1" title="Language detection" acceptance="D-01, D-02, D-03">
+      <action>Scan project root for language indicator files:</action>
+      <detection-patterns>
+        <pattern file="composer.json" language="php" framework-hint="require keys containing symfony/*, laravel/*, etc."/>
+        <pattern file="package.json" language="node" framework-hint="dependencies containing react, next, express, etc."/>
+        <pattern file="go.mod" language="go" framework-hint="require lines containing gin, echo, fiber, etc."/>
+        <pattern file="Cargo.toml" language="rust" framework-hint="dependencies containing actix, rocket, axum, etc."/>
+        <pattern file="pyproject.toml" language="python" framework-hint="dependencies containing django, flask, fastapi, etc."/>
+        <pattern file="requirements.txt" language="python" framework-hint="lines containing django, flask, fastapi, etc."/>
+        <pattern file="Gemfile" language="ruby" framework-hint="gem lines containing rails, sinatra, etc."/>
+        <pattern file="pom.xml" language="java" framework-hint="dependency artifactIds containing spring-boot, etc."/>
+        <pattern file="build.gradle" language="kotlin" framework-hint="dependencies containing spring-boot, ktor, etc."/>
+      </detection-patterns>
+
+      <branch condition="manifest found">
+        <action>Read the manifest file. Extract LANG and FRAMEWORK from its contents.</action>
+        <action>Set DETECTED_SOURCE to the manifest filename.</action>
+        <action>Present finding conversationally with evidence:</action>
+        <template>
+I scanned the project and found **{{DETECTED_SOURCE}}**. Based on its contents, this looks like a **{{FRAMEWORK}}** project using **{{LANG}}**.
+
+[cite specific evidence — e.g. "composer.json lists symfony/framework-bundle in require"]
+
+Does this look right, or should I adjust?
+        </template>
+        <action>Wait for user confirmation.</action>
+      </branch>
+
+      <branch condition="no manifest found (empty or non-code project)">
+        <action>Present conversationally:</action>
+        <template>
+I didn't find any language indicator files (no package.json, composer.json, go.mod, etc.). This looks like a fresh project.
+
+What programming language and framework will this project use?
+        </template>
+        <action>Wait for user response. Set LANG and FRAMEWORK from their answer.</action>
+      </branch>
+
+      <action>On confirmation: normalize LANG and FRAMEWORK to lowercase-kebab (e.g. "Ruby on Rails" → LANG=ruby, FRAMEWORK=rails). Resolve TEMPLATE_DIR via two-tier lookup:
+        1. Check .tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/ — if it exists, use it.
+        2. Else check .tmux-cli/templates/{{LANG}}/ — if it exists, use it.
+        3. Else fall back to .tmux-cli/templates/_base/ (BASE_TEMPLATE_DIR).</action>
+      <action>Read TEMPLATE_DIR/discovery.md (if present) for language-specific follow-ups in later steps. If only _base/ was resolved, note that only base templates apply.</action>
+
+      <rule critical="true">Do NOT proceed to Step 2 until language is confirmed by the user.</rule>
+    </step>
+
+    <step n="2" title="Product brief" acceptance="D-04">
+      <action>Open with context-setting introduction:</action>
+      <template>
+Now let's define the product. I'll ask about five areas — feel free to be brief or detailed, we can refine as we go.
+      </template>
+
+      <action>Ask each question one at a time, conversationally. Do not dump all five as a numbered list. Reference the question intent from _base/discovery.md section 2 but phrase naturally:</action>
+      <questions>
+        <q order="1" section="Problem">What problem does this project solve? What pain point or gap exists today?</q>
+        <q order="2" section="Target Users">Who are the target users or personas? Who will use this and what are their roles?</q>
+        <q order="3" section="MVP Scope">What is the MVP scope — the minimum set of features for initial release?</q>
+        <q order="4" section="Out of Scope">What is explicitly out of scope for the MVP? What will you intentionally NOT build yet?</q>
+        <q order="5" section="Success Metrics">How will you know the MVP is working? What are the success metrics?</q>
+      </questions>
+      <rule>Ask ONE question, wait for answer, then ask the next. Do not batch.</rule>
+
+      <action>After all 5 answers collected, compose docs/architecture/product-brief.md:</action>
+      <output-format>
+# Product Brief
+
+## Problem
+{{user answer to q1}}
+
+## Target Users
+{{user answer to q2}}
+
+## MVP Scope
+{{user answer to q3}}
+
+## Out of Scope
+{{user answer to q4}}
+
+## Success Metrics
+{{user answer to q5}}
+      </output-format>
+
+      <action>Validate: check that all 5 sections are present and non-empty.</action>
+      <check condition="any section is empty">
+        <action>Ask a targeted follow-up for that specific section:</action>
+        <template>
+The **{{section_name}}** section is still empty. Could you share even a brief answer? For example: {{contextual hint based on the question}}.
+        </template>
+        <action>Wait for response and update that section.</action>
+      </check>
+
+      <action>Create docs/architecture/ directory if it does not exist (mkdir -p).</action>
+      <action>Present summary back to user before saving:</action>
+      <template>
+Here's the product brief I've assembled:
+
+**Problem:** {{summary}}
+**Target Users:** {{summary}}
+**MVP Scope:** {{summary}}
+**Out of Scope:** {{summary}}
+**Success Metrics:** {{summary}}
+
+Should I save this to `docs/architecture/product-brief.md`, or would you like to adjust anything?
+      </template>
+      <action>On confirmation, write the file.</action>
+
+      <rule critical="true">Do NOT save product-brief.md until user confirms the summary.</rule>
+      <rule>D-04 gate: product brief must contain Problem, Target Users, MVP Scope, Out of Scope, Success Metrics — all non-empty.</rule>
+    </step>
+
+    <step n="3" title="Domain Discovery" interactive="true">
+      <action>Read _base/discovery.md sections 3-5 and 7-8 to inform conversational question flow. Do NOT dump template content to the user — use it as reference for natural follow-up questions.</action>
+
+      <substep n="3.1" title="Bounded Context Identification" interactive="true" acceptance="D-05, D-07, D-27, D-28">
+        <action>Ask _base/discovery.md section 3 questions conversationally. Help the user identify the major domain areas (bounded contexts) in their project. For each BC, collect a short name and description.</action>
+        <action>Present collected BCs as a summary table and ask the user to confirm or adjust.</action>
+
+        <check condition="zero bounded contexts identified">
+          <action>Display error: "At least one bounded context is required to proceed. Please describe the main domain area of your project."</action>
+          <action>Loop back to the BC identification question. Do NOT proceed to substep 3.2 or any downstream step with zero BCs. (D-28)</action>
+        </check>
+
+        <action>Count confirmed BCs. If exactly one, set is_single_bc=true. Note this for later steps — context map and ACL questions will be skipped. (D-27)</action>
+
+        <action>For each BC, confirm no entity is shared across BC boundaries (D-07). Ask: "Are there any entities that live in more than one bounded context? If so, which ones, and how should they be separated?" Cross-BC references must use foreign ID value objects only.</action>
+
+        <action condition="LANG is php and FRAMEWORK is symfony">After base questions, ask php-symfony/discovery.md section 3a questions: map each BC to Symfony bundles, identify third-party bundles from config/bundles.php, and check for custom bundles under src/.</action>
+      </substep>
+
+      <substep n="3.2" title="Aggregates and Domain Events" interactive="true" acceptance="D-06, D-08">
+        <action>For each bounded context identified in 3.1, ask _base/discovery.md section 4 questions conversationally.</action>
+        <action>For each BC, identify aggregate roots — the main entity controlling a cluster of related objects. Capture: aggregate name, root entity, value objects, and invariants (business rules that must always hold). Every BC must have at least one aggregate root. (D-06)</action>
+        <action>For each aggregate, identify domain events — facts about things that happened. Capture: event name and trigger description. Do not skip domain events discovery. (D-08)</action>
+
+        <action condition="LANG is php and FRAMEWORK is symfony">After base questions, ask php-symfony/discovery.md section 4a questions: Doctrine mapping strategy (attributes/annotations/XML/YAML), custom DBAL types for value objects, Doctrine Migrations config, and entity manager count (read/write split, separate managers per BC).</action>
+      </substep>
+
+      <substep n="3.3" title="Domain Services" interactive="true" acceptance="D-22">
+        <action>For each bounded context, ask _base/discovery.md section 5 questions conversationally.</action>
+        <action>Identify operations that span multiple aggregates WITHIN the same BC but don't naturally belong to any one aggregate. These are domain services. (D-22)</action>
+        <action>For each domain service, capture: service name, which aggregates it spans, and operation description.</action>
+        <action>If no cross-aggregate operations exist in a BC, record "none" for that BC and move on.</action>
+      </substep>
+
+      <substep n="3.4" title="Context Mapping" interactive="true" condition="not is_single_bc" acceptance="D-21">
+        <action>Ask _base/discovery.md section 7 questions conversationally. This substep is skipped entirely for single-BC projects. (D-27)</action>
+        <action>For each pair of bounded contexts that communicate, capture: upstream BC, downstream BC, relationship type (Conformist, Customer-Supplier, Published Language, Shared Kernel, Anti-Corruption Layer, Open Host Service), and ACL interface name where applicable. (D-21)</action>
+        <action>Ask about isolated BCs — any bounded contexts that should have no direct communication with others.</action>
+      </substep>
+
+      <substep n="3.5" title="Share Namespace" interactive="true" acceptance="D-30">
+        <action>Ask _base/discovery.md section 8 questions conversationally.</action>
+        <action>Identify shared value objects, data types, and enums used across multiple bounded contexts (e.g., Money, DateRange, Address, Email, Status enums). These belong in a shared namespace outside any single BC.</action>
+        <action>For each shared type, confirm with the user whether it should be a single shared definition or duplicated per BC.</action>
+      </substep>
+
+      <output>
+        <file path="docs/architecture/domain-model.md" condition="always">Per-BC aggregate roots with entities, value objects, invariants, domain events with triggers, and domain services, share namespace. Uses _base/domain-model.md template as skeleton.</file>
+        <file path="docs/architecture/bounded-contexts.md" condition="always">BC inventory with relationships, ACL boundaries, share namespace, and dependency rules. Uses _base/bounded-contexts.md template as skeleton.</file>
+        <file path="docs/architecture/context-map.md" condition="not is_single_bc">Translation strategies, boundary error handling, event choreography, and consistency patterns between BCs. Uses _base/context-mapping.md template as skeleton. Not generated for single-BC projects.</file>
+      </output>
+
+      <rule>Create docs/architecture/ directory if it does not exist before writing output files.</rule>
+      <rule>Present a summary of the domain model to the user and ask for confirmation before saving files.</rule>
+    </step>
+
+    <step n="4" title="Architecture Decisions" interactive="true">
+      <action>Read _base/discovery.md sections 6 and 12 to inform conversational question flow. Do NOT dump template content to the user.</action>
+
+      <substep n="4.1" title="Core Infrastructure Decisions" interactive="true" acceptance="D-09, D-10">
+        <action>Ask _base/discovery.md section 6 questions conversationally. Cover key architecture decisions:</action>
+        <decisions>
+          <decision topic="database">Database choice (PostgreSQL, MySQL, SQLite, etc.)</decision>
+          <decision topic="multi-database">Multi-database setup, read replicas, separate DB per BC</decision>
+          <decision topic="caching">Caching strategy (Redis, in-memory, none)</decision>
+          <decision topic="authentication">Authentication method (JWT, session, OAuth)</decision>
+          <decision topic="api-style">API style (REST, GraphQL, gRPC)</decision>
+          <decision topic="message-bus">Message bus (synchronous, async with Messenger, RabbitMQ)</decision>
+          <decision topic="deployment">Deployment target (Docker, bare metal, cloud)</decision>
+          <decision topic="run-target" critical="true">Run target — ask EXPLICITLY: "Should the project run in Docker (containerized: Dockerfile + docker-compose) or locally on the host?" Capture a discrete value RUN_TARGET = docker | local. This drives Gate 0 (goal-001) prerequisite checks — do not infer, ask. If docker, also ask whether the database/services run as compose services (default) or are external.</decision>
+        </decisions>
+        <action>For each decision, capture: context (why this decision matters), alternatives considered with pros/cons, and the chosen rationale.</action>
+        <action>Ask about any open or unresolved architecture decisions that need further investigation.</action>
+
+        <action condition="LANG is php and FRAMEWORK is symfony">After base questions, ask php-symfony/discovery.md section 6a questions: Deptrac layer enforcement configuration, CQRS bus separation strategy (single bus, separate command/query/event buses), and domain event dispatch strategy (after flush, before flush, manual, Doctrine lifecycle events).</action>
+      </substep>
+
+      <substep n="4.2" title="Cross-Cutting Patterns" interactive="true" acceptance="D-23, D-24">
+        <action>Ask _base/discovery.md section 12 questions conversationally. Cover cross-cutting concerns that affect multiple BCs:</action>
+        <concerns>
+          <concern topic="pagination">Pagination strategy — cursor-based, offset-limit, or page-number</concern>
+          <concern topic="soft-delete">Soft-delete policy — which entities support soft-delete vs hard-delete</concern>
+          <concern topic="timezone">Timezone handling — UTC storage with user-local display, single timezone, etc.</concern>
+          <concern topic="i18n">Internationalisation and locale requirements — which languages, what content is translated</concern>
+          <concern topic="error-format">Error response format — RFC 7807 Problem Details, custom envelope, HTTP status only</concern>
+          <concern topic="middleware">Middleware and request/response filters — CORS, rate limiting, request logging, request ID</concern>
+        </concerns>
+        <action>For each cross-cutting concern, capture the chosen strategy and rationale.</action>
+      </substep>
+
+      <substep n="4.3" title="ADR Generation" interactive="true" acceptance="D-09, D-10">
+        <action>For each decision captured in substeps 4.1 and 4.2, generate one Architecture Decision Record (ADR) file using _base/adr.md template as skeleton.</action>
+        <action>Number ADRs sequentially starting at 001. Derive the filename slug from the decision topic (e.g., adr-001-database.md, adr-002-authentication.md, adr-003-caching.md).</action>
+        <action>Each ADR must contain: status (Accepted/Proposed), date, bounded context (which BC this decision primarily affects — use "Cross-Cutting" for decisions spanning multiple BCs), related ADRs (links to other ADRs this decision depends on or supersedes — use "None" if standalone), context (why the decision is needed), decision drivers (forces at play), the decision itself, consequences (positive, negative, and neutral), and alternatives considered with pros, cons, and rejection reason. These fields match the _base/adr.md template header and body sections. (D-09, D-10)</action>
+        <action>Note: language/framework-specific decisions from 4.1 (e.g., Deptrac layer enforcement, CQRS bus separation, event dispatch strategy for PHP/Symfony) also produce ADRs — they are included in "each decision captured in substeps 4.1 and 4.2" and must not be skipped.</action>
+        <rule critical="true">EXCEPTION: the run-target decision (topic="run-target") is recorded ONLY in docs/architecture/test-environment.md (Step 7.3), NEVER as an ADR. Reason: task-plan-generate.xml scans ADRs for the keyword "docker" to decide whether to generate the production deployment goal (step 3.26); a run-target ADR containing "docker" would falsely trigger that deployment goal for a project the user only wants to RUN in a container. The free-form deployment decision/ADR stays the sole trigger for step 3.26 — the two questions are independent.</rule>
+        <action>Create docs/architecture/adrs/ directory if it does not exist.</action>
+        <action>Present a summary of all ADRs to the user with decision topics and chosen options before saving files.</action>
+      </substep>
+
+      <output>
+        <file path="docs/architecture/adrs/adr-001-*.md" condition="always">One ADR file per architecture decision, numbered sequentially. Uses _base/adr.md template as skeleton. Minimum set typically includes database, authentication, caching, API style — actual count depends on user decisions.</file>
+      </output>
+
+      <rule>ADR numbering is sequential and gap-free — adr-001, adr-002, adr-003, etc.</rule>
+      <rule>Present all generated ADRs for user review before saving to disk.</rule>
+    </step>
+
+    <step n="5" title="API Endpoint Inventory" interactive="true">
+      <action>Read _base/discovery.md section 9 to inform conversational question flow. Do NOT dump template content to the user — use it as reference for natural follow-up questions.</action>
+
+      <substep n="5.1" title="Per-BC Endpoint Collection" interactive="true" acceptance="D-11">
+        <action>For each bounded context identified in Step 3.1, collect API endpoints conversationally. Present each BC in turn:</action>
+        <template>
+Let's map out the API endpoints for **{{bc_name}}**. What actions does this bounded context expose via API?
+
+For each endpoint, I need: HTTP method, path, a short description, and whether authentication is required.
+        </template>
+        <action>Wait for user response. Collect endpoints into a per-BC table:</action>
+        <table-format>
+          <column>#</column>
+          <column>HTTP Method</column>
+          <column>Path</column>
+          <column>Description</column>
+          <column>Auth Required</column>
+        </table-format>
+        <action>After collecting endpoints for one BC, present the table back and confirm before moving to the next BC.</action>
+        <rule>Ask ONE BC at a time. Do not batch all BCs into a single question.</rule>
+      </substep>
+
+      <substep n="5.2" title="Batch &amp; Webhook Endpoints" interactive="true" acceptance="D-11">
+        <action>Ask _base/discovery.md section 9 questions 2-3 conversationally:</action>
+        <template>
+Are there any batch or bulk endpoints needed? For example, endpoints that accept multiple items in a single request (bulk create, bulk update, bulk delete).
+        </template>
+        <action>Wait for response. Then ask about webhooks:</action>
+        <template>
+Are there any webhook or callback endpoints? For example, endpoints that receive notifications from external services (payment confirmations, delivery status updates).
+        </template>
+        <action>Wait for response. Add any batch or webhook endpoints to the endpoint tables from substep 5.1.</action>
+      </substep>
+
+      <substep n="5.3" title="API Conventions" interactive="true">
+        <action>Collect API-wide conventions that apply across all endpoints. Ask conversationally, one at a time:</action>
+        <questions>
+          <q order="1" topic="error-format">
+            <template>
+What error response format does the API use? For example: RFC 7807 Problem Details, a custom envelope format, or just HTTP status codes?
+            </template>
+          </q>
+          <q order="2" topic="pagination">
+            <template>
+What pagination strategy do list endpoints use? For example: cursor-based, offset-limit, or page-number?
+            </template>
+          </q>
+          <q order="3" topic="versioning">
+            <template>
+How is the API versioned? For example: URL prefix (/v1/...), header-based, or no versioning?
+            </template>
+          </q>
+          <q order="4" topic="rate-limiting">
+            <template>
+Is there any rate limiting? If so, what strategy — per-user, per-IP, per-endpoint?
+            </template>
+          </q>
+        </questions>
+        <rule>Ask ONE question, wait for answer, then ask the next. Do not batch.</rule>
+      </substep>
+
+      <output>
+        <file path="docs/architecture/api-endpoints.md" condition="always">Per-BC endpoint inventory tables, batch/webhook endpoints, and API conventions. Uses _base/api-endpoints.md template as skeleton.</file>
+      </output>
+
+      <rule>Create docs/architecture/ directory if it does not exist before writing output files.</rule>
+      <rule>Present a complete summary of all endpoints across all BCs to the user and ask for confirmation before saving to docs/architecture/api-endpoints.md.</rule>
+    </step>
+
+    <step n="6" title="Cross-Cutting Concerns" interactive="true">
+      <action>Read _base/discovery.md sections 10-11 and 13 to inform conversational question flow. Do NOT dump template content to the user — use it as reference for natural follow-up questions.</action>
+
+      <substep n="6.1" title="Frontend Presence Detection" interactive="true" acceptance="D-20">
+        <action>Ask _base/discovery.md section 13 questions conversationally. Determine whether a frontend exists and what type.</action>
+        <action>Present options conversationally:</action>
+        <template>
+Does this project have a frontend? If so, what kind?
+- Server-rendered (SSR / templates)
+- Single-page application (SPA)
+- Mobile app (native or cross-platform)
+- API-only (no frontend)
+- Something else?
+        </template>
+        <action>Wait for user response. Set frontend_type from their answer.</action>
+
+        <branch condition="frontend_type is API-only">
+          <action>Record frontend_type = "API-only" and skip remaining frontend questions (framework, protocol, shared contracts).</action>
+          <action>Proceed directly to substep 6.2.</action>
+        </branch>
+
+        <branch condition="frontend_type is NOT API-only">
+          <action>Ask follow-up questions one at a time:</action>
+          <questions>
+            <q order="1">What frontend framework or technology is used?</q>
+            <q order="2">How does the frontend communicate with the backend? (REST, GraphQL, gRPC, WebSocket, etc.)</q>
+            <q order="3">Are there any shared types or contracts between frontend and backend? (e.g., OpenAPI spec, generated types, shared schema)</q>
+          </questions>
+          <rule>Ask ONE question, wait for answer, then ask the next.</rule>
+        </branch>
+      </substep>
+
+      <substep n="6.2" title="Auth Flows" interactive="true" acceptance="D-12">
+        <action>Ask _base/discovery.md section 10 questions conversationally. This substep maps concrete auth flows — the auth METHOD was already decided in Step 4.1 ADR.</action>
+        <action>First, confirm the auth method chosen in Step 4.1:</action>
+        <template>
+In the architecture decisions we settled on {{auth_method}} for authentication. Now let's map out the specific flows. For each of these, what steps are involved?
+        </template>
+
+        <action>Collect a flow table covering all 5 flow types:</action>
+        <flows>
+          <flow name="Register">User registration steps</flow>
+          <flow name="Login">Login / sign-in steps</flow>
+          <flow name="Logout">Logout / sign-out steps</flow>
+          <flow name="Token Refresh">Token refresh or session renewal steps</flow>
+          <flow name="Password Reset">Password reset / recovery steps</flow>
+        </flows>
+        <rule>Ask about flows conversationally, not as a rigid form. Group related flows if the user prefers.</rule>
+
+        <action>Ask about user roles and permission levels:</action>
+        <template>
+Are there different user roles or permission levels? If so, what are they?
+        </template>
+        <action>Wait for response.</action>
+
+        <action>Ask about permission enforcement:</action>
+        <template>
+How should permissions be enforced? For example: middleware-based, per-handler checks, policy/voter objects, or attribute-based?
+        </template>
+        <action>Wait for response.</action>
+
+        <action condition="LANG is php and FRAMEWORK is symfony">After base auth questions, ask Symfony Security-specific questions from php-symfony/discovery.md section 10a:
+          - What firewalls are configured in security.yaml? (firewall name, URL pattern, authenticator)
+          - Are custom voters used for authorization decisions?
+          - What access decision strategy is configured? (affirmative, consensus, unanimous)</action>
+      </substep>
+
+      <substep n="6.3" title="Event Listeners" interactive="true" acceptance="D-13">
+        <action>Ask _base/discovery.md section 11 questions conversationally. This substep covers system-level events BEYOND domain events from Step 3.2.</action>
+        <action>Frame the distinction clearly:</action>
+        <template>
+In the domain model we identified domain events like {{example_domain_events}}. Now let's look at system-level events — things that trigger handlers outside the domain layer. For example: user registered triggers a welcome email, order placed triggers an inventory check.
+
+What system-level events does this project need?
+        </template>
+        <action>Wait for response.</action>
+
+        <action>Collect a trigger/handler/side-effect table:</action>
+        <table-format>
+          <column>Trigger Event</column>
+          <column>Handler</column>
+          <column>Side Effect</column>
+        </table-format>
+
+        <action>Ask about async vs sync classification:</action>
+        <template>
+For each of these handlers, should it run synchronously (inline) or asynchronously (queued)?
+        </template>
+        <action>Wait for response.</action>
+
+        <action condition="LANG is php and FRAMEWORK is symfony">After base event questions, ask Symfony Messenger-specific questions from php-symfony/discovery.md section 11a:
+          - What Messenger transports are configured? (transport name, DSN type, purpose)
+          - How are message types routed to transports?
+          - What retry strategy is configured for failed messages?
+          - How are permanently failed messages handled? (dead-letter queue, logging, manual review)</action>
+      </substep>
+
+      <substep n="6.4" title="Operational Concerns" interactive="true">
+        <action>Ask about operational concerns that affect the system as a whole. Cover four topics sequentially, one at a time:</action>
+
+        <questions>
+          <q order="1" topic="api-documentation">
+            <template>
+Does this project need API documentation? If so, what format — OpenAPI/Swagger spec, auto-generated docs, or something else?
+            </template>
+          </q>
+          <q order="2" topic="health-checks">
+            <template>
+Does the application need health check or readiness endpoints? If so, what should they verify — database connectivity, external service availability, queue status?
+            </template>
+          </q>
+          <q order="3" topic="scheduled-tasks">
+            <template>
+Are there any scheduled tasks or cron jobs the application needs to run? For example: cleanup jobs, report generation, cache warming, data syncs.
+            </template>
+          </q>
+          <q order="4" topic="external-integrations">
+            <template>
+What external services does this project integrate with? For example: payment gateways, email providers, SMS services, third-party APIs, cloud storage.
+            </template>
+          </q>
+        </questions>
+        <rule>Ask ONE question, wait for answer, then ask the next.</rule>
+      </substep>
+
+      <output>
+        <file path="docs/architecture/cross-cutting.md" condition="always">Four sections: Frontend Presence, Auth Flows, Event Listeners, Operational Concerns. Present summary to user and await confirmation before saving.</file>
+      </output>
+
+      <rule>Create docs/architecture/ directory if it does not exist before writing output files.</rule>
+      <rule>Present a complete summary of all four sections to the user and ask for confirmation before saving to docs/architecture/cross-cutting.md.</rule>
+    </step>
+
+    <step n="7" title="Test Environment" interactive="true" acceptance="D-14, D-15">
+      <action>Read _base/discovery.md section 14 to inform conversational question flow. Do NOT dump template content to the user — use it as reference for natural follow-up questions.</action>
+
+      <substep n="7.1" title="Base Test Environment" interactive="true" acceptance="D-14, D-15">
+        <action>Ask _base/discovery.md section 14 questions conversationally, one at a time. Cover all six topics:</action>
+
+        <questions>
+          <q order="1" topic="base-url">
+            <template>
+What is the base URL for the test/development environment? (e.g., http://localhost:8080, https://dev.example.com)
+            </template>
+          </q>
+          <q order="2" topic="test-credentials">
+            <template>
+What test user credentials are available? For example: admin username/password, regular user credentials, API tokens.
+            </template>
+          </q>
+          <q order="3" topic="test-db">
+            <template>
+What is the test database name? Is it a separate database from development?
+            </template>
+          </q>
+          <q order="4" topic="fixture-command">
+            <template>
+What command loads test fixtures or seeds the database? (e.g., `php bin/console doctrine:fixtures:load`, `npm run seed`, custom script)
+            </template>
+          </q>
+          <q order="5" topic="playwright">
+            <template>
+Is Playwright installed and available for E2E testing?
+- Installed and configured
+- Not installed — needs Gate 0 setup
+- Not applicable (API-only, no browser tests needed)
+            </template>
+          </q>
+          <q order="6" topic="ci-cd">
+            <template>
+What CI/CD environment does this project use? (e.g., GitHub Actions, GitLab CI, Jenkins, none)
+            </template>
+          </q>
+        </questions>
+        <rule>Ask ONE question, wait for answer, then ask the next. Do not batch.</rule>
+      </substep>
+
+      <substep n="7.2" title="Symfony Test Environment" interactive="true" condition="LANG is php and FRAMEWORK is symfony">
+        <action>Ask php-symfony/discovery.md section 14a questions conversationally. These extend the base test environment with Symfony-specific details.</action>
+
+        <questions>
+          <q order="1" topic="phpunit-config">
+            <template>
+What PHPUnit configuration is in use? Let me check for `phpunit.xml.dist` or `phpunit.xml` — do you have any custom configuration beyond the defaults?
+            </template>
+          </q>
+          <q order="2" topic="test-db-strategy">
+            <template>
+What database strategy is used for tests? For example:
+- Separate test database
+- SQLite in-memory
+- Transaction rollback per test
+- Fixtures with database reset
+            </template>
+          </q>
+          <q order="3" topic="test-base-classes">
+            <template>
+What Symfony test base classes are used? For example: `KernelTestCase`, `WebTestCase`, `ApiTestCase`, or a custom base class?
+            </template>
+          </q>
+        </questions>
+        <rule>Ask ONE question, wait for answer, then ask the next. Do not batch.</rule>
+      </substep>
+
+      <substep n="7.3" title="Validation and Save" acceptance="D-14, D-15">
+        <action>Validate that all required fields from substep 7.1 are non-empty: base URL, run target (docker|local, captured in Step 4.1), test credentials, DB name, fixture command, Playwright status.</action>
+        <check condition="any required field is empty">
+          <action>Ask a targeted follow-up for the missing field:</action>
+          <template>
+The **{{field_name}}** is still missing. Could you provide this? It's needed to ensure generated tests can run against the real environment.
+          </template>
+          <action>Wait for response and update that field.</action>
+        </check>
+
+        <action>Create docs/architecture/ directory if it does not exist (mkdir -p).</action>
+        <action>Present summary to user before saving:</action>
+        <template>
+Here's the test environment configuration I've captured:
+
+**Base URL:** {{test_base_url}}
+**Run Target:** {{run_target}}
+{{#if is_docker}}**DB/services location:** {{services_location}}
+{{/if}}**Test Credentials:** {{test_user_credentials}}
+**Test Database:** {{test_db_name}}
+**Fixture Command:** {{fixture_command}}
+**Playwright Status:** {{playwright_status}}
+**CI/CD:** {{ci_cd_environment}}
+{{#if symfony_sections}}
+
+**Symfony-specific:**
+- PHPUnit config: {{phpunit_config}}
+- Test DB strategy: {{test_db_strategy}}
+- Test base classes: {{symfony_test_patterns}}
+{{/if}}
+
+Should I save this to `docs/architecture/test-environment.md`, or would you like to adjust anything?
+        </template>
+        <action>On confirmation, write docs/architecture/test-environment.md.</action>
+
+        <rule critical="true">Do NOT save test-environment.md until user confirms the summary.</rule>
+        <rule>D-14 gate: test environment doc must contain base URL, test user credentials, DB name, fixture command, AND Run Target (docker|local) — all non-empty.</rule>
+        <rule>D-15 gate: Playwright status must explicitly state whether Playwright is installed, needs Gate 0 setup, or is not applicable.</rule>
+      </substep>
+
+      <output>
+        <file path="docs/architecture/test-environment.md" condition="always">Test environment configuration: base URL, run target (docker|local; plus DB/services location compose|external when docker), test credentials, DB name, fixture command, Playwright status, CI/CD environment. Plus Symfony-specific sections when applicable.</file>
+      </output>
+
+      <rule>Create docs/architecture/ directory if it does not exist before writing output files.</rule>
+      <rule>Present the complete test environment summary to the user and ask for confirmation before saving to docs/architecture/test-environment.md.</rule>
+    </step>
+
+    <step n="8" title="Inventory Generation" acceptance="D-16, D-26">
+      <action>Compile counts from all prior discovery steps:</action>
+      <counts>
+        <count var="bc_count" source="Step 3.1">Number of confirmed bounded contexts</count>
+        <count var="aggregate_count" source="Step 3.2">Number of aggregate roots across all BCs</count>
+        <count var="endpoint_count" source="Step 5">Number of API endpoints discovered</count>
+        <count var="auth_flow_count" source="Step 6.2">Number of auth flows mapped (Register, Login, Logout, Token Refresh, Password Reset)</count>
+        <count var="listener_count" source="Step 6.3">Number of system-level event listeners</count>
+        <count var="crosscutting_count" source="Step 6.4">Number of operational concerns (API docs, health checks, scheduled tasks, external integrations)</count>
+        <count var="decision_count" source="Step 4">Number of architecture decision records generated</count>
+        <count var="infrastructure" source="Step 7">Number of test environment infrastructure items (test framework setup, fixture seeding, CI pipeline, Playwright installation). When Step 7 collected zero items, infrastructure = 0.</count>
+      </counts>
+
+      <action>Present the inventory summary table:</action>
+      <template>
+| Category | Count |
+|----------|-------|
+| Bounded contexts | {{bc_count}} |
+| Aggregates | {{aggregate_count}} |
+| API endpoints | {{endpoint_count}} |
+| Auth flows | {{auth_flow_count}} |
+| Event listeners | {{listener_count}} |
+| Cross-cutting items | {{crosscutting_count}} |
+| Architecture decisions | {{decision_count}} |
+| **Estimated total goals** | **{{estimated_goal_count}}** |
+      </template>
+
+      <action>Calculate the estimated goal count using the formula: endpoints + auth_flows + listeners + cross_cutting + decisions + (aggregates * 2) + infrastructure</action>
+
+      <check condition="estimated_goal_count > 100">
+        <action>Display warning: "This inventory produces over 100 goals. Consider reducing MVP scope or splitting into phases before proceeding."</action>
+      </check>
+
+      <action>Present the confirmation gate:</action>
+      <template>
+The discovery phase identified **{{estimated_goal_count}}** goals. Do you want to proceed with goal generation, or would you like to adjust the scope first?
+
+Reply **proceed** to continue, or **adjust** to revisit earlier steps.
+      </template>
+      <action>Wait for user response before continuing.</action>
+
+      <branch condition="user confirms (proceed, yes, confirm, looks good)">
+        <action>Acknowledge confirmation and continue to the next step.</action>
+      </branch>
+
+      <branch condition="user requests adjustment (adjust, no, change, change scope)">
+        <action>Print guidance on which steps to revisit:</action>
+        <template>
+No problem — here are the steps you can revisit to adjust the scope:
+
+- **Step 2** — Change MVP scope or product brief
+- **Step 3** — Modify bounded contexts, aggregates, or domain events
+- **Step 5** — Adjust API endpoints
+- **Step 6** — Modify cross-cutting concerns, auth flows, or event listeners
+
+Tell me which step you'd like to revisit, and we'll pick up from there. When you're done adjusting, come back and I'll regenerate the inventory.
+        </template>
+        <action>Wait for user to revisit the chosen step. After adjustments, re-run inventory counts and re-present the confirmation gate.</action>
+      </branch>
+
+      <branch condition="ambiguous response (unclear intent)">
+        <action>Re-prompt with explicit options:</action>
+        <template>
+I didn't catch that — please reply **proceed** to continue with goal generation, or **adjust** to revisit earlier steps.
+        </template>
+        <action>Wait for user response.</action>
+      </branch>
+
+      <rule critical="true">Do NOT proceed to Step 9 without explicit user confirmation of the inventory. The user must reply "proceed", "confirm", "yes", or equivalent before goal generation can begin. (D-17)</rule>
+    </step>
+
+    <step n="9" title="Context Checkpoint &amp; Handoff" acceptance="D-25">
+      <action>Verify all expected discovery output files exist on disk. Run existence checks (test -f / test -d) for each file:</action>
+      <checklist>
+        <file path="docs/architecture/product-brief.md" source="Step 2" required="always"/>
+        <file path="docs/architecture/domain-model.md" source="Step 3" required="always"/>
+        <file path="docs/architecture/bounded-contexts.md" source="Step 3" required="always"/>
+        <file path="docs/architecture/context-map.md" source="Step 3.4" required="not is_single_bc"/>
+        <file path="docs/architecture/adrs/" source="Step 4" required="always" type="directory"/>
+        <file path="docs/architecture/api-endpoints.md" source="Step 5" required="always"/>
+        <file path="docs/architecture/cross-cutting.md" source="Step 6" required="always"/>
+        <file path="docs/architecture/test-environment.md" source="Step 7" required="always"/>
+      </checklist>
+
+      <rule>For context-map.md: skip this check when is_single_bc is true. (D-27)</rule>
+      <rule>For adrs/ directory: verify the directory exists AND contains at least one .md file.</rule>
+
+      <check condition="any required file is missing">
+        <action>Report each missing file with its source step:</action>
+        <template>
+Missing: {{filename}} — this was expected from {{source_step}} but was not found on disk. You may need to re-run the relevant step or create it manually.
+        </template>
+        <action>Do NOT print the handoff message. Wait for the user to address the gaps before proceeding.</action>
+      </check>
+
+      <branch condition="all required files exist">
+        <action>Run lightweight consistency spot-checks (hints, not blockers):</action>
+        <spot-checks>
+          <check>Every BC name in bounded-contexts.md appears in domain-model.md</check>
+          <check>Every BC with actions in api-endpoints.md exists in bounded-contexts.md</check>
+        </spot-checks>
+        <action>If mismatches found, print a warning but do NOT block the handoff:</action>
+        <template>
+Note: Found some inconsistencies across discovery files (these are warnings, not blockers — the generator will do full validation):
+{{list_of_mismatches}}
+        </template>
+
+        <action>Print the handoff message:</action>
+        <template>
+Discovery complete. Run /tmux:task-plan-generate to start goal generation.
+        </template>
+        <action>Skill ends here. Do NOT invoke /tmux:task-plan-generate or any code generation. (D-18)</action>
+        <action>Do NOT delete any files. (D-29)</action>
+      </branch>
+
+      <rule critical="true">The handoff message MUST be the last output. After printing it, the skill does nothing — no further prompts, no follow-up questions, no auto-invocation of the generator.</rule>
+    </step>
+
+    <!-- ================================================================
+         Steps 7-15 are added by subsequent tasks (3.3+).
+         Insert new <step> elements ABOVE this comment block, BEFORE </flow>.
+         ================================================================ -->
+  </flow>
+
+  <execution-rules>
+    <rule>All output is documents (product brief, bounded contexts, domain model, etc.) — never generate or modify source code</rule>
+    <rule>Language and framework detection requires explicit user confirmation before proceeding to the next step</rule>
+    <rule>Product brief requires all 5 sections non-empty (D-04) and user confirmation before saving</rule>
+    <rule>All user interaction via text output and wait — never use AskUserQuestion tool</rule>
+    <rule>Template content (discovery.md, overlay templates) used as conversational reference — never dumped verbatim to the user</rule>
+    <rule>Create docs/architecture/ directory before writing any output files — never assume it exists</rule>
+    <rule>User must explicitly confirm inventory before proceeding to context checkpoint (D-17)</rule>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      * Discovery produces DOCUMENTS ONLY — never generate or modify source code
+      * Language detection requires explicit user confirmation before proceeding
+      * Product brief requires all 5 sections non-empty (D-04) and user confirmation before saving
+      * All user interaction via text output + wait — never use AskUserQuestion
+      * Conversational tone — present findings and invite refinement, not rigid Q&amp;A
+      * Subsequent tasks append Steps 3+ above the closing comment in &lt;flow&gt;
+      * User must explicitly confirm inventory before proceeding to context checkpoint (D-17)
+    </critical-rules>
+  </llm>
+</task>

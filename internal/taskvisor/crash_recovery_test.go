@@ -93,6 +93,32 @@ func TestCrashRecovery_GuardWithSignalFile(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
+	assert.Equal(t, phaseSupervising, d.phase)
+	assert.Equal(t, "goal-001", d.currentGoal)
+	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
+	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	exec.AssertNotCalled(t, "ListWindows", mock.Anything)
+}
+
+func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning}},
+	})
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: "pass", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+
+	before := time.Now()
+	err := d.crashRecovery()
+	require.NoError(t, err)
+
+	assert.Equal(t, modeActive, d.mode)
+	assert.Equal(t, phaseValidating, d.phase)
 	assert.Equal(t, "goal-001", d.currentGoal)
 	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
 	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
@@ -201,6 +227,140 @@ func TestCrashRecovery_GuardNoRunningGoal(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeIdle, d.mode)
+}
+
+func TestCrashRecovery_GuardWithInvestigatorWindow(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning}},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "inv-goal-001"},
+	}, nil)
+
+	before := time.Now()
+	err := d.crashRecovery()
+	require.NoError(t, err)
+
+	assert.Equal(t, modeActive, d.mode)
+	assert.Equal(t, phaseValidating, d.phase)
+	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
+	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.Equal(t, "goal-001", d.currentGoal)
+}
+
+func TestCrashRecovery_GuardWithMultipleInvWindows(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning}},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "inv-goal-001"},
+		{TmuxWindowID: "@1", Name: "inv-goal-002"},
+	}, nil)
+
+	before := time.Now()
+	err := d.crashRecovery()
+	require.NoError(t, err)
+
+	assert.Equal(t, modeActive, d.mode)
+	assert.Equal(t, phaseValidating, d.phase)
+	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
+	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.Equal(t, "goal-001", d.currentGoal)
+}
+
+func TestCrashRecovery_GuardWithValidatorAndInvWindows(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning}},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "validator"},
+		{TmuxWindowID: "@1", Name: "inv-goal-001"},
+	}, nil)
+
+	before := time.Now()
+	err := d.crashRecovery()
+	require.NoError(t, err)
+
+	assert.Equal(t, modeActive, d.mode)
+	assert.Equal(t, phaseValidating, d.phase)
+	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
+	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.Equal(t, "goal-001", d.currentGoal)
+}
+
+func TestCrashRecovery_GuardWithSupervisorAndInvWindows(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning}},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@1", Name: "inv-goal-001"},
+	}, nil)
+
+	before := time.Now()
+	err := d.crashRecovery()
+	require.NoError(t, err)
+
+	assert.Equal(t, modeActive, d.mode)
+	assert.Equal(t, phaseValidating, d.phase)
+	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
+	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.Equal(t, "goal-001", d.currentGoal)
+}
+
+func TestCrashRecovery_ReDispatchSavesOnce(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning, Retries: 0, MaxRetries: 3}},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+
+	goalsPath := filepath.Join(dir, ".tmux-cli", "goals.yaml")
+	infoBefore, err := os.Stat(goalsPath)
+	require.NoError(t, err)
+	timeBefore := infoBefore.ModTime()
+
+	// Small sleep so any file write gets a distinct mtime
+	time.Sleep(10 * time.Millisecond)
+
+	err = d.crashRecovery()
+	require.NoError(t, err)
+
+	// Read the final saved state
+	goals, err := LoadGoals(dir)
+	require.NoError(t, err)
+	g, ok := goals.GoalByID("goal-001")
+	require.True(t, ok)
+	assert.Equal(t, GoalPending, g.Status, "retries left → status must be pending")
+
+	// Verify the file was written (mtime changed)
+	infoAfter, err := os.Stat(goalsPath)
+	require.NoError(t, err)
+	assert.True(t, infoAfter.ModTime().After(timeBefore), "goals file should have been saved")
 }
 
 // --- Signal Handler Tests ---

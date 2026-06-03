@@ -41,6 +41,10 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.dispatch_timeout", label: "Taskvisor Dispatch Timeout", kind: "int", intVal: settings.Taskvisor.DispatchTimeout},
 			{key: "taskvisor.validate_timeout", label: "Taskvisor Validate Timeout", kind: "int", intVal: settings.Taskvisor.ValidateTimeout},
 			{key: "taskvisor.poll_interval", label: "Taskvisor Poll Interval", kind: "int", intVal: settings.Taskvisor.PollInterval},
+			{key: "taskvisor.circuit_breaker_k", label: "Circuit Breaker K", kind: "int", intVal: settings.Taskvisor.CircuitBreakerK},
+			{key: "taskvisor.auto_resume_interval_sec", label: "Taskvisor Auto-Resume Interval (s)", kind: "int", intVal: settings.Taskvisor.AutoResumeIntervalSec},
+			{key: "taskvisor.transient_retry_max_attempts", label: "Taskvisor Transient Retry Max Attempts", kind: "int", intVal: settings.Taskvisor.TransientRetryMaxAttempts},
+			{key: "taskvisor.transient_retry_backoff_ms", label: "Taskvisor Transient Retry Backoff (ms)", kind: "int", intVal: settings.Taskvisor.TransientRetryBackoffMs},
 		},
 	}
 }
@@ -160,6 +164,14 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Taskvisor.ValidateTimeout = item.intVal
 		case "taskvisor.poll_interval":
 			s.Taskvisor.PollInterval = item.intVal
+		case "taskvisor.circuit_breaker_k":
+			s.Taskvisor.CircuitBreakerK = item.intVal
+		case "taskvisor.auto_resume_interval_sec":
+			s.Taskvisor.AutoResumeIntervalSec = item.intVal
+		case "taskvisor.transient_retry_max_attempts":
+			s.Taskvisor.TransientRetryMaxAttempts = item.intVal
+		case "taskvisor.transient_retry_backoff_ms":
+			s.Taskvisor.TransientRetryBackoffMs = item.intVal
 		}
 	}
 	return &s

@@ -1,0 +1,460 @@
+<task id="investigate" name="Parallel investigation orchestrator">
+  <objective>Read a goal's Investigation Config from goal.md, spawn 2-4 parallel read-only inv-* workers via windows-spawn-worker, collect their verdicts with a 10-minute timeout, aggregate findings, write corrections/cycle-N.md on failure, and call goal-validation-done with the final pass/fail verdict.</objective>
+
+  <input>
+    <arg name="$ARGUMENTS">Path to goal.md file (e.g. .tmux-cli/goals/goal-008/goal.md). Passed by the taskvisor daemon when creating the validator window.</arg>
+    <arg name="--full" optional="true">When present (force_full_revalidation=true), bypass the C10 incremental reuse gate and re-run EVERY investigator regardless of fingerprint. The daemon also forces a full sweep on the final cycle before overall pass.</arg>
+  </input>
+
+  <output>
+    <primary>goal-validation-done MCP call with pass or fail verdict and findings array.</primary>
+    <secondary>corrections/cycle-N.md in the goal directory (written only on fail verdict).</secondary>
+  </output>
+
+  <requirements critical="true">
+    <mcp>tmux-cli MCP server REQUIRED (for windows-spawn-worker, windows-message, windows-kill, goal-validation-done)</mcp>
+  </requirements>
+
+  <glossary>
+    <term name="VALIDATOR_WID">Name of this orchestrator's tmux window (always "validator"). Created by the taskvisor daemon with UUID authorization for goal-validation-done.</term>
+    <term name="INV_WID">Name of an investigation worker window (e.g. "inv-1", "inv-2"). Each worker gets a unique N via windows-spawn-worker with prefix: "inv-".</term>
+    <term name="GOAL_ID">Goal identifier extracted from the goal.md file path (e.g. "goal-008" from .tmux-cli/goals/goal-008/goal.md).</term>
+    <term name="GOAL_DIR">Directory containing the goal (e.g. .tmux-cli/goals/goal-008/). Derived from the goal.md path.</term>
+    <term name="Investigation Config">Section in goal.md (## Investigation Config) defining 2-4 investigators with type, paths, commands, pass/fail criteria, and optional condition/retry fields.</term>
+    <term name="investigator">A single check definition within the Investigation Config. Each active investigator becomes one inv-* worker.</term>
+    <term name="corrections file">GOAL_DIR/corrections/cycle-N.md — written when any investigator fails. Contains per-investigator findings, failing commands, and expected state.</term>
+    <term name="verdict">Overall result: "pass" only if ALL active investigators report pass. Any fail/timeout/error = "fail".</term>
+  </glossary>
+
+  <message-tags>
+    <note>Investigation workers use the standard [EXECUTE:...] tagged protocol. investigate.xml uses [SUPERVISOR:...] tags when communicating with workers. Semantics below are the source of truth.</note>
+    <tag name="[EXECUTE:DONE wid=inv-N sup=validator file=&lt;abs-path&gt;]" from="inv-worker">Worker reports investigation complete. The .md at file= contains VERDICT, FINDINGS, and EVIDENCE sections.</tag>
+    <tag name="[EXECUTE:NEED_INPUT wid=inv-N sup=validator &lt;short reason&gt;]" from="inv-worker">Worker cannot proceed without a fact. Reason ≤ 200 chars inline.</tag>
+    <tag name="[EXECUTE:FAILED wid=inv-N sup=validator reason=&lt;short&gt;]" from="inv-worker">Worker hit a terminal failure. Reason ≤ 200 chars inline.</tag>
+    <tag name="[SUPERVISOR:NARROW-SCOPE &lt;reduced problem&gt;]" from="investigate.xml">Narrow a NEED_INPUT-blocked worker's scope instead of escalating.</tag>
+    <tag name="[SUPERVISOR:KILL]" from="investigate.xml">Instruct worker to exit cleanly (used on timeout).</tag>
+    <tag name="[SUPERVISOR:REMIND &lt;what to do&gt;]" from="investigate.xml">Protocol reminder to worker. Does not advance state.</tag>
+  </message-tags>
+
+  <llm critical="true">
+    <mandate>NEVER modify any project files — investigation is strictly read-only (only corrections/cycle-N.md and goal-validation-done are write actions)</mandate>
+    <mandate>NEVER use windows-send — use windows-message for all replies to workers</mandate>
+    <mandate>NEVER use sleep — idle is the trigger for incoming windows-message</mandate>
+    <mandate>NEVER kill your own VALIDATOR_WID — the daemon owns lifecycle</mandate>
+    <mandate>NEVER accept partial results — every spawned worker must reach a terminal state (completed/failed/timeout) before aggregation</mandate>
+    <mandate>NEVER use pushback — workers report pass or fail, no revision loop</mandate>
+    <mandate>ALWAYS use windows-spawn-worker with prefix: "inv-" — never assemble spawn steps manually</mandate>
+    <mandate>ALWAYS call goal-validation-done exactly ONCE at the end with the aggregated verdict</mandate>
+    <mandate>Execute steps ONE BY ONE in EXACT ORDER</mandate>
+  </llm>
+
+  <flow>
+    <step n="1" title="MCP precondition and project context">
+      <action>Call windows-list to verify tmux-cli MCP is available.</action>
+      <check condition="tmux-cli not available">
+        <action>Print exactly: ERROR: tmux-cli MCP required but not available — enable it and retry.</action>
+        <action>STOP</action>
+      </check>
+      <action>Check if AGENTS.md exists in the project root. If it does, Read it and internalize project conventions.</action>
+      <action>If AGENTS.md does not exist, check for CLAUDE.md instead. Read whichever is found first.</action>
+      <action>If neither exists, proceed without project context.</action>
+      <action>From windows-list, identify VALIDATOR_WID. If a window named "validator" exists, that is your VALIDATOR_WID. Otherwise, use the active window.</action>
+    </step>
+
+    <step n="2" title="Parse Investigation Config from goal.md">
+      <action>Read the file at $ARGUMENTS (the goal.md path).</action>
+      <check condition="$ARGUMENTS is empty or file does not exist">
+        <action>Call goal-validation-done: goal_id="unknown", verdict="fail", findings=[{rule:"goal.md", status:"fail", detail:"goal.md path missing or file not found", correction:"provide valid goal.md path"}], next_action="fix goal.md path"</action>
+        <action>Idle — daemon kills this window.</action>
+      </check>
+
+      <action>Extract GOAL_ID from the file path pattern: .tmux-cli/goals/&lt;goal-id&gt;/goal.md → GOAL_ID = &lt;goal-id&gt;.</action>
+      <action>Set GOAL_DIR = .tmux-cli/goals/&lt;GOAL_ID&gt;/</action>
+
+      <action>Locate the ## Investigation Config section in goal.md.</action>
+      <check condition="section missing or has fewer than 2 investigator subsections">
+        <action>Call goal-validation-done: goal_id=GOAL_ID, verdict="fail", findings=[{rule:"Investigation Config", status:"fail", detail:"malformed or missing Investigation Config (need 2-4 investigators)", correction:"add ## Investigation Config with 2-4 ### Investigator subsections to goal.md"}], next_action="fix Investigation Config"</action>
+        <action>Idle — daemon kills this window.</action>
+      </check>
+
+      <action>For each ### Investigator N subsection, extract:</action>
+      <field>name — the investigator label after the colon (e.g. "DDD compliance")</field>
+      <field>type — investigation type (code-review, static-analysis, e2e-test, integration-test, etc.)</field>
+      <field>paths — file/directory paths to examine (from "Paths:" or "Path:" line)</field>
+      <field>commands — commands to run (from "Command:" or "Commands:" lines)</field>
+      <field>pass — pass criteria (from "Pass:" line)</field>
+      <field>fail — fail criteria (from "Fail:" line)</field>
+      <field optional="true">condition — prerequisite condition (from "Condition:" line, e.g. "Node/npm available")</field>
+      <field optional="true">retry — retry config (from "Retry:" line, e.g. "3 total attempts")</field>
+      <field>check — what to verify (from "Check:" line, if present)</field>
+
+      <action>Evaluate conditions for each investigator:</action>
+      <rule>If an investigator has a Condition field, evaluate it against the project state (e.g. check if package.json exists for "Node/npm available", check if a file exists for path-based conditions). If the condition is false, mark the investigator as SKIPPED and do not spawn a worker for it.</rule>
+      <rule>C4-cont: if a Condition is a probe-style reachability/health check (e.g. "service X reachable", "health endpoint ready") rather than a static presence check, evaluate it through the &lt;transient-retry-loop&gt; defined in step 2b BEFORE concluding it is false — a transient infra hiccup must not silently skip a real investigator. Static presence checks (file/package.json exists) are deterministic and are NOT retried.</rule>
+      <rule>Log each skipped investigator with its name and the reason the condition was false.</rule>
+
+      <action>After condition filtering, count active (non-skipped) investigators.</action>
+      <check condition="zero active investigators (all were conditional and all skipped)">
+        <action>Log warning: "all investigators skipped — no checks to fail, defaulting to pass"</action>
+        <action>Call goal-validation-done: goal_id=GOAL_ID, verdict="pass", findings=[{rule:"Investigation Config", status:"pass", detail:"all investigators skipped (conditions not met) — pass by default"}], next_action=""</action>
+        <action>Idle — daemon kills this window.</action>
+      </check>
+
+      <action>Also extract from goal.md: the goal description (first heading or first paragraph) and acceptance criteria (## Acceptance Criteria section) for worker context.</action>
+
+      <action>Build investigator tracking table:</action>
+      <format>
+| INV_WID | Investigator Name | Status | Report Path | Spawn Time |
+|---------|-------------------|--------|-------------|------------|
+| inv-1   | DDD compliance    | pending | null       | null       |
+| inv-2   | Architecture      | pending | null       | null       |
+      </format>
+    </step>
+
+    <!--
+      C7 per-cycle research-dir resolution. The taskvisor daemon writes two
+      SIBLING markers before spawning this validator: .tmux-cli/taskvisor-current-goal
+      (the active GOAL_ID) and .tmux-cli/taskvisor-current-cycle (the one-indexed
+      CurrentCycle number = consumed per-class retry budget + 1). In GOAL MODE,
+      reports are namespaced per cycle under the goal-scoped research root, so a
+      stale prior-cycle report can never be read as the current verdict. STANDALONE
+      (no active goal) keeps the flat timestamped dir with NO cycle layer.
+    -->
+    <step n="2a" title="Resolve per-cycle research dir (CYCLE_DIR)">
+      <action>Read .tmux-cli/taskvisor-current-goal (if present, trimmed → GOAL_ID_MARKER) and .tmux-cli/taskvisor-current-cycle (if present, trimmed integer → CYCLE_N).</action>
+      <rule>GOAL MODE — taskvisor-current-goal exists and is non-empty: use the GOAL_ID derived from the goal.md path in step 2 (the marker only corroborates it). If taskvisor-current-cycle is missing, empty, or non-numeric, default CYCLE_N=1. Set CYCLE_DIR = .tmux-cli/goals/&lt;GOAL_ID&gt;/research/cycle-&lt;CYCLE_N&gt;/ — a path BENEATH the already-existing goal-scoped research root; do NOT invent a parallel tree.</rule>
+      <rule>STANDALONE MODE — taskvisor-current-goal absent or empty: there is no daemon-tracked cycle. Set CYCLE_DIR = .tmux-cli/research/{y-m-d-hh}/ (current timestamp, NO cycle layer) and leave CYCLE_N unset.</rule>
+      <action>mkdir -p CYCLE_DIR (idempotent, defensive — the daemon pre-creates it in goal mode).</action>
+    </step>
+
+    <!--
+      Step 2b is a DEFENSIVE, belt-and-suspenders preflight fallback. The
+      taskvisor DAEMON is the AUTHORITATIVE precondition emitter: it evaluates a
+      goal's ## Preconditions BEFORE spawning any worker and, on failure, writes
+      the blocked signal.json itself (internal/taskvisor/taskvisor.go
+      evaluatePreconditions + the dispatch gate). This step therefore should
+      almost never fire — it exists only to re-route through the standard
+      validation channel if a worker is somehow reached with unmet
+      preconditions. It MUST NOT write signal.json (the daemon owns that
+      artifact); it re-emits via goal-validation-done ONLY.
+      NOTE (C1 dependency): verdict="blocked" depends on the goal-validation-done
+      verdict enum being expanded (C1). Until that lands, goal-validation-done may
+      reject "blocked"; in that case degrade to verdict="fail" while keeping the
+      same failure_class / owner / remedy in the finding detail+correction.
+    -->
+    <step n="2b" title="Preflight precondition re-check (defensive fallback)">
+      <action>Locate the ## Preconditions section in goal.md (it sits between ## Validation Rules and ## Context). If the section is absent or has zero items, SKIP this step entirely — empty preconditions are all-pass and must never block.</action>
+      <action>Each item has the form: "- [kind] spec — remedy". For each item, in order, evaluate:</action>
+      <rule>kind=env: FAIL if the environment variable named &lt;spec&gt; is unset OR set to the empty string. failure_class="env-config", owner="ops". DETERMINISTIC — never retried (an unset env var will not appear by retrying).</rule>
+      <rule>kind=service: parse &lt;spec&gt; as host:port and probe a TCP connection within ~2 seconds. A connection failure is a TRANSIENT candidate — run it through the &lt;transient-retry-loop&gt; below BEFORE concluding. The precondition FAILs (failure_class="infra-flake", owner="ops") ONLY after the retry budget is exhausted; if ANY attempt connects, the precondition PASSES with no finding.</rule>
+      <rule>any other kind: FAIL. failure_class="spec-defect", owner="planner". DETERMINISTIC — never retried.</rule>
+
+      <!--
+        C4-cont transient-failure retry. This is the SINGLE definition of the
+        retry loop and the transient-detection set for the whole orchestrator;
+        step 2's probe-style Condition evaluation references it by name. The loop
+        wraps ONLY transient-prone probes (the kind=service TCP probe here, and
+        probe-style Conditions in step 2). Deterministic failures (kind=env miss,
+        kind=other, assertion/exit-1 code defects) NEVER enter it.
+      -->
+      <transient-retry-loop>
+        <rule>Read transient_retry_max_attempts and transient_retry_backoff_ms from .tmux-cli/setting.yaml (the taskvisor: block). If either key is absent (legacy setting.yaml), fall back INLINE to 3 / 500 respectively.</rule>
+        <rule>Attempt the probe up to transient_retry_max_attempts TOTAL times. N attempts means N-1 sleeps: between consecutive attempts sleep transient_retry_backoff_ms milliseconds. transient_retry_max_attempts=1 means a single try with NO retry loop body.</rule>
+        <rule>On each failure, classify the cause against &lt;transient-detection-rules&gt;. Matches ANY rule ⇒ TRANSIENT: sleep the backoff and retry while attempts remain. Matches NONE ⇒ NOT transient: stop immediately and fall through to the leaf-4 code-defect catch-all (C1) — do NOT retry, do NOT emit infra-flake.</rule>
+        <rule>If ANY attempt SUCCEEDS: stop, mark the check pass, emit NO finding, and do NOT escalate or invoke ClassifyVerdict.</rule>
+        <rule>If a TRANSIENT cause persists through the FINAL attempt (budget exhausted): emit ONE finding status="blocked", failure_class="infra-flake", owner="ops" into step-5 aggregation. ClassifyVerdict (C1) runs ONLY here, after exhaustion — NEVER on the first transient failure and NEVER for a non-transient failure.</rule>
+      </transient-retry-loop>
+
+      <transient-detection-rules>
+        <rule>EXIT CODES (transient): a timeout exit, EHOSTUNREACH, or any connection-failure exit status from the probe.</rule>
+        <rule>MESSAGE PATTERNS (transient, case-insensitive substring of the failure output): "Connection refused", "timeout" / "timed out", "service unavailable" / "503", "DNS resolution failed" / "could not resolve host", "ECONNREFUSED", "connection reset".</rule>
+        <rule>PROBE MODES (transient): a health-check endpoint reporting not-ready, or a container still starting.</rule>
+        <rule>A failure matching NONE of the above is NOT transient: it is a real defect — route it to the leaf-4 code-defect catch-all (C1) and do NOT retry it. Do NOT extend this set with ad-hoc heuristics.</rule>
+      </transient-detection-rules>
+
+      <action>Short-circuit on the FIRST failing precondition — do not evaluate the rest. (A kind=service probe "fails" only after its transient-retry-loop is exhausted; a successful retry is not a failure.)</action>
+      <check condition="a precondition failed (env/other on first evaluation; service only after transient-retry-loop exhaustion)">
+        <action>Call goal-validation-done: goal_id=GOAL_ID, verdict="blocked", findings=[{rule:&lt;spec&gt;, status:"blocked", detail:&lt;remedy&gt;, correction:&lt;remedy&gt;, failure_class:&lt;class&gt;, owner:&lt;owner&gt;}], next_action=&lt;remedy&gt;. If goal-validation-done rejects verdict="blocked" (enum not yet expanded by C1), retry with verdict="fail", keeping the same detail/correction/failure_class/owner on the finding.</action>
+        <action>Do NOT write signal.json — the daemon is the authoritative emitter of the precondition signal.</action>
+        <action>Idle — daemon kills this window.</action>
+      </check>
+      <action>All preconditions satisfied (or none present) — proceed to step 2c.</action>
+    </step>
+
+    <!--
+      C10 incremental re-validation spawn-decision gate. The read-side seam is
+      the read-only `tmux-cli taskvisor revalidation-plan` CLI, which computes
+      each finding's input fingerprint in Go (deterministic, test-covered) and
+      compares it against the orchestrator-owned results.json ledger. This step
+      decides which investigators to RE-RUN (spawn a worker) versus REUSE (carry
+      a prior pass forward, no worker). It is READ-ONLY: results.json is written
+      only at cycle end via goal-validation-done (step 5a/5b), never here, so the
+      daemon stays out of the write path.
+    -->
+    <step n="2c" title="C10 re-validation spawn-decision gate">
+      <action>Decide which active investigators to RE-RUN and which to REUSE by running the read-only CLI:</action>
+      <cmd>tmux-cli taskvisor revalidation-plan &lt;GOAL_ID&gt; [--full] [--final]</cmd>
+      <rule>Pass --full when force_full_revalidation is set (the --full input). Pass --final when this is the final cycle before overall pass (all checks expected green). EITHER flag forces every investigator to RERUN for end-to-end regression safety.</rule>
+      <rule>The command prints a JSON array of {finding_id, action: "RERUN"|"REUSE", reused_from_cycle, fingerprint}. finding_id matches the investigator name.</rule>
+      <rule>If the command errors, prints an empty array, or there is no prior results.json (first cycle / fresh goal), treat EVERY active investigator as RERUN (safe degenerate full run). NEVER block on a missing or corrupt plan.</rule>
+      <action>Partition the active investigators: action="RERUN" ⇒ spawn an inv-* worker in step 3; action="REUSE" ⇒ do NOT spawn a worker — carry the prior pass forward as a status="pass" finding tagged with reused_from_cycle and reused_fingerprint (the unchanged fingerprint).</action>
+      <action>Record the REUSE set for steps 3, 5 and 5b. A reused investigator is never spawned, never times out, and always aggregates as "pass".</action>
+    </step>
+
+    <!--
+      C8 / M-06 binding cross-reference preflight. Sits AFTER C10's step 2c
+      spawn-decision gate and BEFORE step 3 (spawn). Per investigator, validate
+      the files/commands artifacts it references against the project's declared
+      bindings (reusing C3's AGENTS.md + docs/architecture/adrs/ parse). An
+      investigator whose referenced artifact contradicts a binding is a PLANNING
+      defect: short-circuit it to a spec-defect finding (status=blocked,
+      failure_class=spec-defect, owner=planner) and DO NOT spawn a worker for it,
+      so the daemon's C2 switch bounces the goal to goal-generation (decrementing
+      spec_retries) instead of charging the implementer a code retry. ABSENT
+      AGENTS.md/adrs ⇒ empty forbidden set ⇒ pure no-op (no investigator removed).
+    -->
+    <step n="2d" title="C8 cross-reference investigator artifacts against bindings (spec-defect preflight)">
+      <action>Reuse C3's binding parse: read the project-root AGENTS.md and docs/architecture/adrs/ to detect binding keywords. If neither exists (or no keyword matches), FORBIDDEN_ARTIFACTS is empty — skip this step entirely: spawn every active investigator as planned and emit no spec-defect finding. Never treat absent bindings as an error or a block.</action>
+      <action>Build FORBIDDEN_ARTIFACTS as the UNION of the forbidden-artifact patterns for every detected binding keyword, using the same binding-forbidden-map the planner uses (task-plan-generate.xml substep 1.45):</action>
+      <map>
+        - greenfield → composer.json, vendor/, package-lock.json, yarn.lock, Gemfile.lock, poetry.lock
+        - service-oriented / microservice → shared_db, single shared/monolithic schema.sql, one-DB-for-all-services references
+        - no-orm → doctrine.yaml, *.orm.xml, prisma/schema.prisma, ORM entity-mapping config
+      </map>
+      <action>For each ACTIVE investigator (after step 2c partitioning), match each of its referenced files and commands artifacts CONSERVATIVELY (basename / path-suffix) against FORBIDDEN_ARTIFACTS — a doc that merely mentions the word is NOT a match.</action>
+      <check condition="an investigator references an artifact in FORBIDDEN_ARTIFACTS">
+        <action>Short-circuit that investigator: do NOT spawn a worker for it. Record a spec-defect ValidationFinding for step-5 aggregation: {rule:"binding-cross-reference: &lt;artifact&gt; vs &lt;binding&gt;", status:"blocked", detail:"&lt;artifact&gt; contradicts &lt;binding&gt; binding", correction:"regenerate Config without &lt;artifact&gt;", failure_class:"spec-defect", owner:"planner"}.</action>
+        <rule>A binding contradiction is ALWAYS failure_class=spec-defect, owner=planner — NEVER a plain pass/fail investigator verdict. owner=planner tops C1's owner-priority order.</rule>
+      </check>
+      <rule>Investigators with NO forbidden reference are unaffected: they keep their step 2c RERUN/REUSE decision and proceed to step 3 normally. This step removes only contradicting investigators from the spawn set; it never alters the condition-skip logic, the inv- prefix, or a clean investigator's spawn.</rule>
+    </step>
+
+    <step n="3" title="Spawn inv-* workers">
+      <rule>C8: an investigator short-circuited to a spec-defect in step 2d is NOT spawned (its blocked finding is already recorded for step-5 aggregation). Worker count excludes both REUSE and spec-defect investigators.</rule>
+      <rule>C10: spawn a worker ONLY for investigators whose step 2c action is RERUN. REUSE investigators are NOT spawned — they carry forward their prior-cycle pass. Worker count == RERUN count.</rule>
+      <action>For each RERUN investigator, call windows-spawn-worker with:</action>
+      <params>
+        - supervisorWid: VALIDATOR_WID (i.e. "validator")
+        - subtask: "Investigate: &lt;investigator name&gt;"
+        - contextFile: path to goal.md ($ARGUMENTS)
+        - scope: investigator definition (type, paths, commands, check, pass/fail criteria, retry config if present)
+        - context: goal description + acceptance criteria from goal.md
+        - deliverable: custom investigation report format (see &lt;worker-deliverable&gt;)
+        - prefix: "inv-"
+      </params>
+      <rule>C7: inject the resolved report dir into EACH worker's task message — append "CYCLE_DIR=&lt;CYCLE_DIR&gt; CYCLE_N=&lt;CYCLE_N&gt; GOAL_ID=&lt;GOAL_ID&gt;" to the context AND state in scope: "Write your report to &lt;CYCLE_DIR&gt;/inv-&lt;N&gt;-&lt;slug&gt;.md". The worker writes ONLY within CYCLE_DIR — never a flat or prior-cycle path.</rule>
+      <action>Record from the response: workerName (inv-N), window info. Update tracking table: status=spawned, spawn_time=now.</action>
+      <critical>ALWAYS use windows-spawn-worker with prefix: "inv-" — never assemble manually via windows-create + windows-send.</critical>
+    </step>
+
+    <step n="4" title="Idle and collect reports (with timeout)">
+      <action>Do NOTHING. Wait for windows-message from workers.</action>
+      <rule>NEVER use sleep. NEVER poll windows-list while idle.</rule>
+      <rule>Stop-hook idle notifications ("Idling — awaiting supervisor task payload" / "Report delivered to supervisor. Idling for accept or pushback") are expected /tmux:execute lifecycle output. Do not REMIND, do not advance state — wait for the next real message.</rule>
+
+      <branch tag="[EXECUTE:DONE wid=inv-N sup=validator file=&lt;abs-path&gt;]">
+        <action>C7 path guard: accept the report ONLY if its path is within the current CYCLE_DIR. Clean both paths (resolve "." and "..") and require the report path to have CYCLE_DIR as a path prefix (equivalently, the relative path from CYCLE_DIR to the report contains no leading "../"). A path OUTSIDE CYCLE_DIR — e.g. a prior cycle's research/cycle-&lt;N-1&gt;/ or a flat research/{y-m-d-hh}/ — is treated as a MISSING report: mark this investigator status=error (failure_class=validator-error, owner=ops, detail "report path outside current cycle dir — possible stale prior-cycle report"), kill the worker via windows-kill, and do NOT draw a verdict from it. Continue waiting on the others.</action>
+        <action>Read the report file at the cited path.</action>
+        <action>Extract VERDICT (pass|fail|blocked|error) and FINDINGS (including failure_class/owner for non-pass checks) from the report.</action>
+        <action>Update tracking table: status=completed, report_path=file path.</action>
+        <action>Kill the worker window via windows-kill with the NAME (e.g. "inv-1").</action>
+        <action>Check if all workers have reached terminal status. If not, continue waiting.</action>
+      </branch>
+
+      <branch tag="[EXECUTE:NEED_INPUT wid=inv-N sup=validator &lt;reason&gt;]">
+        <action>Attempt to answer from goal.md context (acceptance criteria, description, investigation config).</action>
+        <action>If answerable: reply via windows-message to that INV_WID with the answer.</action>
+        <action>If unanswerable: reply via windows-message with [SUPERVISOR:NARROW-SCOPE &lt;reduced problem statement that the worker CAN answer without the missing info&gt;].</action>
+      </branch>
+
+      <branch tag="[EXECUTE:FAILED wid=inv-N sup=validator reason=&lt;reason&gt;]">
+        <action>Update tracking table: status=failed, store the failure reason.</action>
+        <action>Kill the worker window via windows-kill with the NAME.</action>
+        <action>This investigator is treated as an ERROR finding (failure_class=validator-error, owner=ops) in aggregation — the validator could not obtain its verdict.</action>
+        <action>Check if all workers have reached terminal status. If not, continue waiting.</action>
+      </branch>
+
+      <branch tag="worker emitted content without [EXECUTE:...] header AND not a stop-hook idle line">
+        <action>Reply ONCE via windows-message: [SUPERVISOR:REMIND] Respond only with [EXECUTE:DONE file=&lt;abs-path&gt;] or [EXECUTE:NEED_INPUT] or [EXECUTE:FAILED reason=...].</action>
+        <action>Do not advance state for that worker.</action>
+      </branch>
+
+      <!-- Worker budget: 10 min per worker. Daemon validate_timeout (config.go) must be >= (workerBudgetSec * ceil(workers / max_concurrent)) + margin. See C4/C7 for formula and config default. Any change here requires re-deriving the config.go default. -->
+      <timeout>
+        <rule>Track wall-clock time since each worker was spawned. If a worker has not reported within 10 minutes of its spawn time, it has timed out.</rule>
+        <action>Send [SUPERVISOR:KILL] via windows-message to the timed-out worker.</action>
+        <action>Wait briefly, then kill via windows-kill with the NAME.</action>
+        <action>Update tracking table: status=timeout.</action>
+        <action>This investigator is treated as an ERROR finding (failure_class=validator-error, owner=ops) with detail "investigation timeout — worker did not report within 10 minutes".</action>
+      </timeout>
+
+      <action>Continue routing messages until ALL spawned workers have a terminal status (completed, failed, or timeout).</action>
+    </step>
+
+    <!--
+      CONVERGENCE GUARD (self-learning across cycles). The dispatch→validate→correct
+      loop only converges if a correction that did NOT land is escalated, not
+      re-issued verbatim. Without this, an identical code-defect finding is
+      re-flagged every cycle and the daemon spends the whole code-retry budget on
+      the implementer while the spec/gate stays unactionable (the goal-003 failure:
+      3 implementer cycles on the same finding, code_retries 3→0, never bounced to
+      the planner). This step runs AFTER all workers are terminal and BEFORE the
+      step-5 roll-up, so a reclassified finding changes the verdict. Owner=planner
+      (spec-defect) is the daemon's C2 generation-bounce trigger (charges
+      spec_retries, re-plans) — see validate.xml step 2d.
+    -->
+    <step n="4c" title="Cross-cycle repeat escalation (convergence guard)">
+      <action>List GOAL_DIR/corrections/ and find the highest-numbered existing cycle-N.md (the PRIOR cycle's corrections — the current cycle has not written yet). If none exists (this is the first failing cycle), SKIP this step: every finding is first-occurrence.</action>
+      <action>Read that prior cycle-N.md and extract PRIOR_FAILS = the set of investigator names under its "## Failing Investigators" section (the "### &lt;name&gt;" headers).</action>
+      <action>For each finding failing THIS cycle with failure_class=code-defect (owner=implementer): if its investigator name is in PRIOR_FAILS, it is a REPEATED finding that an implementer cycle did not converge. Reclassify it IN PLACE before step 5: set failure_class="spec-defect", owner="planner", and PREPEND to its correction: "REPEATED across cycles — the implementer correction did not converge. Planner: make this criterion objectively buildable per GM-09b/GM-09c — decompose the acceptance item, add the exact presence-grep to the Investigation Config, and name the deliverable file(s) and the throwing exception so the next implementer cycle has a falsifiable target."</action>
+      <rule>Escalate ONLY code-defect/implementer findings. Leave env-config/infra-flake (owner=ops), validator-error (owner=ops), and findings already spec-defect/planner unchanged. A finding NOT in PRIOR_FAILS is first-occurrence — leave it code-defect so the implementer gets its first (now objective) correction before any escalation.</rule>
+      <rule>Match by investigator NAME (the stable "Investigator N: &lt;name&gt;" label). Do not escalate on a different investigator that merely shares a failure_class.</rule>
+      <rule>This step only mutates failure_class/owner/correction of already-failing findings; it never adds, removes, or passes a finding. The step-5 roll-up then sees the escalated owner and rolls the verdict to "blocked" (spec-defect outranks nothing that is still code-defect, but with the repeat now spec-defect the daemon re-plans instead of re-dispatching the implementer on the unchanged finding).</rule>
+    </step>
+
+    <step n="5" title="Aggregate findings">
+      <rule>C8: spec-defect investigators (step 2d) contribute a status="blocked", failure_class="spec-defect", owner="planner" ValidationFinding WITHOUT having spawned a worker. They force the overall verdict to "blocked" — a binding contradiction can never roll up to pass.</rule>
+      <rule>C10: REUSE investigators (step 2c) contribute a status="pass" ValidationFinding WITHOUT having spawned a worker — carry reused_from_cycle and reused_fingerprint on the finding. They never affect the verdict adversely (a reused pass is still a pass).</rule>
+      <rule>C4-cont: a transient-retry exhaustion (step 2b &lt;transient-retry-loop&gt;) contributes a status="blocked", failure_class="infra-flake", owner="ops" ValidationFinding WITHOUT a worker verdict. It rolls up to verdict "blocked"; ClassifyVerdict's owner-priority (planner&gt;ops) leaves owner=ops UNCHANGED unless a co-occurring spec-defect (planner) finding outranks it. The emitter's owner is never overwritten.</rule>
+      <action>Merge all worker results AND the reuse set into a findings array (one ValidationFinding per investigator):</action>
+      <format>
+For each investigator:
+  - rule: investigator name (e.g. "Investigator 1: DDD compliance")
+  - status: "pass", "fail", "blocked", or "error" (from worker's VERDICT; use "error" for failed/timed-out workers — the validator could not obtain a verdict)
+  - detail: summary of what was checked and the result (from worker's FINDINGS, or failure/timeout reason)
+  - correction: if failed, what needs to change (from worker's FINDINGS); empty if passed
+  - failure_class: REQUIRED for every non-pass finding — carry the worker's failure_class (code-defect|env-config|infra-flake|spec-defect|validator-error). Failed/timed-out workers → validator-error. Leaf-4 catch-all: a non-pass finding with no clear class → code-defect. Never drop this field.
+  - owner: REQUIRED for every non-pass finding — carry the worker's owner (implementer|ops|planner). Failed/timed-out workers → ops. Never drop this field.
+      </format>
+
+      <action>Determine overall verdict by roll-up precedence (highest first):</action>
+      <rule>If ANY finding is a code defect (status fail + failure_class code-defect, or the leaf-4 catch-all) → verdict "fail".</rule>
+      <rule>Else if ANY finding is "blocked" → verdict "blocked".</rule>
+      <rule>Else if ANY finding is "error" (failed/timed-out worker) → verdict "error".</rule>
+      <rule>Else (all investigators reported "pass") → verdict "pass".</rule>
+
+      <check condition="verdict is pass">
+        <action>Proceed to step 5a.</action>
+      </check>
+      <check condition="verdict is fail, blocked, or error">
+        <action>Proceed to step 5b.</action>
+      </check>
+    </step>
+
+    <step n="5a" title="All PASS — report success">
+      <action>Call goal-validation-done MCP with:</action>
+      <params>
+        - goal_id: GOAL_ID
+        - verdict: "pass"
+        - findings: array of ValidationFinding (one per active investigator, all status="pass"; reused investigators carry reused_from_cycle + reused_fingerprint)
+        - next_action: ""
+        - results: array of {id: investigator name, status: "pass", scope_files: the investigator's Paths, changed_files: files changed this cycle} — one per active investigator (RERUN and REUSE alike). The server computes each finding's input fingerprint and writes the orchestrator-owned results.json ledger for the NEXT cycle's reuse gate.
+      </params>
+      <action>Kill any remaining inv-* windows via windows-kill (should already be killed in step 4, but ensure cleanup).</action>
+      <action>Idle — daemon reads signal.json and manages lifecycle.</action>
+    </step>
+
+    <step n="5b" title="Any FAIL — write corrections and report failure">
+      <action>Determine the next cycle number:</action>
+      <substep>Scan GOAL_DIR/corrections/ for existing cycle-N.md files.</substep>
+      <substep>Find the highest N among existing files. Set next_N = highest_N + 1.</substep>
+      <substep>If no cycle files exist, set next_N = 1.</substep>
+      <substep>Create GOAL_DIR/corrections/ directory if it does not exist.</substep>
+
+      <action>Write GOAL_DIR/corrections/cycle-&lt;next_N&gt;.md with the following structure:</action>
+      <template>
+# Investigation Corrections — Cycle &lt;next_N&gt;
+
+Goal: &lt;GOAL_ID&gt;
+Timestamp: &lt;ISO 8601&gt;
+Attempt: &lt;next_N&gt;
+Verdict: FAIL
+
+## Summary
+&lt;1-2 sentences: what was investigated, how many passed, how many failed&gt;
+
+## Failing Investigators
+
+### &lt;Investigator Name&gt;
+**What was checked:** &lt;brief description from investigator config&gt;
+**What went wrong:** &lt;specific finding with file:line references where applicable&gt;
+**Failing command(s):**
+```
+&lt;exact command and output excerpt&gt;
+```
+**Expected state:** &lt;what "fixed" looks like — the pass criteria from the investigator config&gt;
+**Correction:** &lt;actionable fix description&gt;
+
+(repeat for each failing investigator)
+
+## Passing Investigators
+&lt;list names of investigators that passed THIS cycle (freshly re-run), one per line&gt;
+
+## Reused Findings
+&lt;C10: list each REUSE investigator (step 2c) on its own line, prefixed with its reuse marker, e.g. "[REUSED FROM CYCLE &lt;N&gt;] &lt;investigator name&gt; (fingerprint &lt;reused_fingerprint&gt;)". Omit this section entirely if there were no reused findings.&gt;
+      </template>
+      <rule>C10: the `[REUSED FROM CYCLE &lt;N&gt;]` marker is authored HERE into cycle-N.md by this orchestrator; the daemon's writeDispatchMd concatenates corrections/cycle-N.md verbatim, so the marker flows into dispatch.md unchanged. Do not expect the daemon to add it.</rule>
+      <rule>Each failing investigator's section MUST be summarized to max ~500 tokens to prevent context window exhaustion when the daemon re-dispatches with corrections.</rule>
+      <rule>Include exact failing commands and their output — the executor needs these to verify its fix.</rule>
+      <rule>Include expected state (pass criteria) — the executor needs to know what success looks like.</rule>
+
+      <action>Call goal-validation-done MCP with:</action>
+      <params>
+        - goal_id: GOAL_ID
+        - verdict: the aggregated verdict from step 5 — "fail", "blocked", or "error" (NOT hardcoded; the daemon routes by it: fail/blocked re-dispatch the implementer/owner, error re-runs validation only)
+        - findings: array of ValidationFinding (one per active investigator, with status, detail, correction, and — for every non-pass finding — failure_class and owner; reused investigators carry reused_from_cycle + reused_fingerprint)
+        - next_action: "re-dispatch with corrections"
+        - results: array of {id: investigator name, status, scope_files: the investigator's Paths, changed_files: files changed this cycle} — one per active investigator (RERUN and REUSE alike), so the server refreshes the orchestrator-owned results.json ledger for the next cycle's reuse gate.
+      </params>
+
+      <action>Kill any remaining inv-* windows via windows-kill.</action>
+      <action>Idle — daemon reads signal.json, checks retry limits, and re-dispatches if allowed.</action>
+    </step>
+  </flow>
+
+  <worker-deliverable>
+    <note>Custom deliverable format passed to windows-spawn-worker via the deliverable parameter. This REPLACES the standard FINDINGS/RISKS/RECOMMENDATION/FILES format. Investigation workers produce reports with these sections.</note>
+    <template>
+DELIVERABLE (write these sections INSIDE the report .md; do NOT paste them into tmux):
+- ## VERDICT: exactly one word — "pass", "fail", "blocked", or "error"
+- ## FINDINGS: What was checked and what was found. Include:
+  - Each check performed (command run, file inspected, etc.)
+  - Result of each check (output excerpt, pass/fail)
+  - For failures: file:line references where applicable
+  - For failures: exact command output (relevant excerpt)
+  - For failures: what the expected state should be (pass criteria)
+- ## EVIDENCE: Raw command output excerpts proving the verdict. Keep excerpts focused — include only the relevant lines, not full command output. Max 500 tokens for this section.
+    </template>
+  </worker-deliverable>
+
+  <execution-rules>
+    <rule>windows-spawn-worker: single atomic call per worker, with prefix: "inv-"</rule>
+    <rule>NEVER assemble spawn steps manually — always use windows-spawn-worker</rule>
+    <rule>windows-message: all outbound communication to workers (answers, narrow-scope, reminders, kill)</rule>
+    <rule>windows-kill: only on completed/failed/timed-out workers; never on VALIDATOR_WID; pass window NAME (e.g. "inv-1")</rule>
+    <rule>windows-send: NEVER</rule>
+    <rule>goal-validation-done: called exactly ONCE at the end with the aggregated verdict</rule>
+    <rule>No pushback cycle — workers report pass or fail, no revision loop</rule>
+    <rule>Always Read the file cited in a DONE before extracting verdict; never rely on inline body</rule>
+    <rule>If a worker sends DONE without file=, REMIND once; do not accept inline-body DONE</rule>
+    <rule>Corrections file is the ONLY file investigate.xml writes (besides goal-validation-done signal)</rule>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      * You run inside the "validator" window — the daemon owns your lifecycle
+      * NEVER kill VALIDATOR_WID — idle after goal-validation-done, daemon kills you
+      * NEVER use sleep — idle is the trigger for incoming messages
+      * NEVER use windows-send — use windows-message for all worker communication
+      * NEVER accept partial results — ALL spawned workers must reach terminal state before aggregation
+      * NEVER use pushback — investigation has no revision loop
+      * NEVER modify project files — corrections/cycle-N.md and goal-validation-done are the only writes
+      * ALWAYS spawn workers with prefix: "inv-"
+      * ALWAYS call goal-validation-done exactly ONCE
+      * ALWAYS kill inv-* workers after collecting their reports (or on timeout/failure)
+      * Pass window NAME to windows-kill (e.g. "inv-1"), not @id
+      * Each investigator section in corrections/cycle-N.md max ~500 tokens
+      * Timeout: 10 minutes per worker — kill and treat as FAIL
+    </critical-rules>
+  </llm>
+</task>

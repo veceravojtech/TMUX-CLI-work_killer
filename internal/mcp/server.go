@@ -17,6 +17,7 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/console/tmux-cli/internal/setup"
+	"github.com/console/tmux-cli/internal/taskvisor"
 	"github.com/console/tmux-cli/internal/tmux"
 )
 
@@ -179,6 +180,7 @@ type WindowsSpawnWorkerInput struct {
 	Scope         string `json:"scope" jsonschema:"Multi-line scope summary — files, directories, what to investigate or implement."`
 	Context       string `json:"context,omitempty" jsonschema:"Multi-line supporting context — prior findings, constraints, non-goals. Optional."`
 	Deliverable   string `json:"deliverable,omitempty" jsonschema:"Custom deliverable format to replace the default FINDINGS/RISKS/RECOMMENDATION/FILES sections. When empty, the standard deliverable is used. Use this for spec-writing workers that need a different output format."`
+	Prefix        string `json:"prefix,omitempty" jsonschema:"Window name prefix (e.g. 'inv-'). Defaults to 'execute-' if empty. Max workers limit applies per-prefix."`
 }
 
 // WindowsSpawnWorkerOutput defines the output schema for windows-spawn-worker tool
@@ -267,10 +269,31 @@ func (s *Server) TaskvisorStartHandler(ctx context.Context, req *sdkmcp.CallTool
 type GoalCreateInput struct {
 	Description string   `json:"description" jsonschema:"Goal description — what should be achieved (max 120 chars; use acceptance for detail)"`
 	Acceptance  []string `json:"acceptance,omitempty" jsonschema:"Acceptance criteria the goal must satisfy"`
-	Validate    []string `json:"validate,omitempty" jsonschema:"Validation steps to verify the goal"`
+	Validate    []string `json:"validate" jsonschema:"Validation steps to verify the goal"`
 	Context     string   `json:"context,omitempty" jsonschema:"Background context for the goal"`
 	NotInScope  string   `json:"not_in_scope,omitempty" jsonschema:"What is explicitly out of scope"`
-	MaxRetries  int      `json:"max_retries,omitempty" jsonschema:"Maximum retry attempts before failing (default 3)"`
+	Phase       string   `json:"phase,omitempty" jsonschema:"Development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final)"`
+	MaxRetries  int      `json:"max_retries,omitempty" jsonschema:"Maximum retry attempts before failing (default 5)"`
+	DependsOn   []string `json:"depends_on,omitempty" jsonschema:"IDs of goals this goal depends on (must exist in goals.yaml)"`
+
+	Preconditions []taskvisor.Precondition `json:"preconditions,omitempty" jsonschema:"Optional precondition gates ({kind:env|service, spec, remedy}); daemon parks the goal until each is met"`
+
+	InvestigationConfig []InvestigatorInput `json:"investigation_config,omitempty" jsonschema:"Optional 2–4 investigators for the goal's Investigation Config; omit to auto-derive from validate rules"`
+}
+
+// InvestigatorInput is the MCP wire schema for one entry of investigation_config.
+// It maps field-for-field onto taskvisor.Investigator. It exists separately so
+// the wire contract (lowercase json keys + per-field jsonschema descriptions) is
+// owned in the mcp package — taskvisor.Investigator carries no json tags and
+// adding them is out of scope (M1). jsonschema tags use bare description text.
+type InvestigatorInput struct {
+	Name      string   `json:"name" jsonschema:"Investigator title (e.g. Static analysis)"`
+	Type      string   `json:"type" jsonschema:"Investigation type from the Reference Table (static-analysis, quality-gate, test-execution, architecture-check, convention-audit, code-review, e2e-test, integration-test)"`
+	Paths     []string `json:"paths,omitempty" jsonschema:"Paths the investigator inspects"`
+	Commands  []string `json:"commands" jsonschema:"Commands to run (at least one)"`
+	Pass      string   `json:"pass" jsonschema:"What a pass looks like"`
+	Fail      string   `json:"fail,omitempty" jsonschema:"What a fail looks like"`
+	Condition string   `json:"condition,omitempty" jsonschema:"Optional condition under which this investigator applies"`
 }
 
 // GoalCreateOutput defines the output schema for goal-create tool
@@ -284,7 +307,26 @@ func (s *Server) GoalCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequ
 	GoalCreateOutput,
 	error,
 ) {
-	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.MaxRetries)
+	// Build the []taskvisor.Investigator only when the config is non-empty, so
+	// omission passes nil (not an empty slice) and GoalCreate/WriteGoalMD branch
+	// onto M1's deriveInvestigators fallback.
+	var investigators []taskvisor.Investigator
+	if len(input.InvestigationConfig) > 0 {
+		investigators = make([]taskvisor.Investigator, len(input.InvestigationConfig))
+		for i, in := range input.InvestigationConfig {
+			investigators[i] = taskvisor.Investigator{
+				Name:      in.Name,
+				Type:      in.Type,
+				Paths:     in.Paths,
+				Commands:  in.Commands,
+				Pass:      in.Pass,
+				Fail:      in.Fail,
+				Condition: in.Condition,
+			}
+		}
+	}
+
+	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.Phase, input.MaxRetries, input.DependsOn, input.Preconditions, investigators)
 	if err != nil {
 		return nil, GoalCreateOutput{}, err
 	}
@@ -313,20 +355,54 @@ func (s *Server) GoalPruneHandler(ctx context.Context, req *sdkmcp.CallToolReque
 	return nil, *output, nil
 }
 
-// ValidationFinding represents a single validation finding for goal-validation-done
+// ValidationFinding represents a single validation finding for goal-validation-done.
+//
+// SYNC: mirrored field-for-field (same json tags, same semantics) by
+// taskvisor.ValidationFinding in internal/taskvisor/signal.go. The two are kept
+// in lock-step by TestValidationFindingStructsInSync. Never add, rename or
+// retag a field here without doing the same there. jsonschema tags use bare
+// description text only (no `description=` prefix — the go-sdk panics otherwise).
 type ValidationFinding struct {
-	Rule       string `json:"rule" jsonschema:"Validation rule that was checked"`
-	Status     string `json:"status" jsonschema:"Finding status: pass or fail"`
-	Detail     string `json:"detail" jsonschema:"Detailed description of the finding"`
-	Correction string `json:"correction,omitempty" jsonschema:"Suggested correction if status is fail"`
+	Rule           string `json:"rule" jsonschema:"Validation rule that was checked"`
+	Status         string `json:"status" jsonschema:"Finding status: pass, fail, blocked, or error"`
+	Detail         string `json:"detail" jsonschema:"Detailed description of the finding"`
+	Correction     string `json:"correction,omitempty" jsonschema:"Concrete fix instruction; required and non-empty when status is fail; a contentless stub (e.g. fix it, none, n/a) is rejected"`
+	FailingCommand string `json:"failing_command,omitempty" jsonschema:"Exact command that failed; required and non-empty when status is fail"`
+	OutputExcerpt  string `json:"output_excerpt,omitempty" jsonschema:"Raw output excerpt from the failing command; required and non-empty when status is fail"`
+	ExpectedState  string `json:"expected_state,omitempty" jsonschema:"What should have been true; required and non-empty when status is fail"`
+	FailureClass   string `json:"failure_class,omitempty" jsonschema:"Failure classification when status is not pass: code-defect, env-config, infra-flake, spec-defect, or validator-error"`
+	Owner          string `json:"owner,omitempty" jsonschema:"Who owns the fix: implementer, planner, or ops"`
+
+	// C10 incremental re-validation fields. Mirrored from
+	// taskvisor.ValidationFinding to keep TestValidationFindingStructsInSync green
+	// (the signal.json wire contract is the json tag set). Validators rarely set
+	// these directly; the server derives fingerprints from the separate results
+	// input. All omitempty so the tool input shape is unchanged when unused.
+	Scope             []string `json:"scope,omitempty" jsonschema:"In-scope file paths for this finding (fingerprint input)"`
+	Preconditions     []string `json:"preconditions,omitempty" jsonschema:"Stringified preconditions denormalized onto this finding (fingerprint input)"`
+	InputFingerprint  string   `json:"input_fingerprint,omitempty" jsonschema:"Computed input fingerprint (server-derived; reuse decision output)"`
+	ReusedFromCycle   int      `json:"reused_from_cycle,omitempty" jsonschema:"Cycle a reused pass came from (reuse decision output)"`
+	ReusedFingerprint string   `json:"reused_fingerprint,omitempty" jsonschema:"Unchanged fingerprint echoed on reuse (reuse decision output)"`
+}
+
+// FindingResult is one optional per-finding re-validation input to
+// goal-validation-done. The server uses ScopeFiles + ChangedFiles to compute a
+// stable input fingerprint and persists the result into the orchestrator-owned
+// results.json ledger. Absent results leave results.json untouched.
+type FindingResult struct {
+	ID           string   `json:"id" jsonschema:"Finding identifier (the validation rule text)"`
+	Status       string   `json:"status" jsonschema:"Finding status: pass, fail, blocked, or error"`
+	ScopeFiles   []string `json:"scope_files,omitempty" jsonschema:"In-scope file paths for this finding"`
+	ChangedFiles []string `json:"changed_files,omitempty" jsonschema:"Files changed this cycle (intersected with scope to detect regressions)"`
 }
 
 // GoalValidationDoneInput defines the input schema for goal-validation-done tool
 type GoalValidationDoneInput struct {
 	GoalID     string              `json:"goal_id" jsonschema:"Goal ID to report validation results for (e.g. goal-001)"`
-	Verdict    string              `json:"verdict" jsonschema:"Validation verdict: pass or fail"`
-	Findings   []ValidationFinding `json:"findings,omitempty" jsonschema:"Validation findings with rule, status, detail, and optional correction"`
-	NextAction string              `json:"next_action,omitempty" jsonschema:"Suggested next action when verdict is fail"`
+	Verdict    string              `json:"verdict" jsonschema:"Validation verdict, one of: pass, fail, blocked, error"`
+	Findings   []ValidationFinding `json:"findings,omitempty" jsonschema:"Validation findings with rule, status, detail, failure_class and owner; every fail finding additionally requires non-empty failing_command, output_excerpt, expected_state and correction (a contentless correction stub is rejected)"`
+	NextAction string              `json:"next_action,omitempty" jsonschema:"Suggested next action when verdict is not pass"`
+	Results    []FindingResult     `json:"results,omitempty" jsonschema:"Optional per-finding re-validation inputs (id, status, scope_files, changed_files); when present the server computes input fingerprints and writes the orchestrator-owned results.json ledger"`
 }
 
 // GoalValidationDoneOutput defines the output schema for goal-validation-done tool
@@ -340,7 +416,7 @@ func (s *Server) GoalValidationDoneHandler(ctx context.Context, req *sdkmcp.Call
 	GoalValidationDoneOutput,
 	error,
 ) {
-	output, err := s.GoalValidationDone(input.GoalID, input.Verdict, input.Findings, input.NextAction)
+	output, err := s.GoalValidationDone(input.GoalID, input.Verdict, input.Findings, input.NextAction, input.Results)
 	if err != nil {
 		return nil, GoalValidationDoneOutput{}, err
 	}
@@ -452,7 +528,7 @@ func (s *Server) WindowsSpawnWorkerHandler(ctx context.Context, req *sdkmcp.Call
 	error,
 ) {
 	window, workerName, taskMessage, err := s.WindowsSpawnWorker(
-		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context, input.Deliverable,
+		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context, input.Deliverable, input.Prefix,
 	)
 	if err != nil {
 		return nil, WindowsSpawnWorkerOutput{}, err
@@ -577,7 +653,7 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "goal-create",
-		Description: "Create a new goal in goals.yaml with a sequential ID (goal-001, goal-002, ...). Creates the goal directory under .tmux-cli/goals/<id>/. Defaults max_retries to 3 if omitted.",
+		Description: "Create a new goal in goals.yaml with a sequential ID (goal-001, goal-002, ...). Creates the goal directory under .tmux-cli/goals/<id>/. Defaults max_retries to 5 if omitted.",
 		Annotations: &sdkmcp.ToolAnnotations{
 			ReadOnlyHint:   false,
 			IdempotentHint: false,

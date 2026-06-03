@@ -7,19 +7,22 @@
 
   <output>
     <primary>A finalized .tmux-cli/tasks.yaml with status: ready and N implementation tasks, each pointing to an approved spec .md file. Ready for /tmux:supervisor consumption.</primary>
-    <secondary>Spec .md files in .tmux-cli/research/{y-m-d-hh}/ — one per module, with Intent, Boundaries &amp; Constraints, I/O &amp; Edge-Case Matrix, Dependencies, Code Map, Implementation Plan, Test Plan, Acceptance Criteria, Design Notes, Implementation Notes, Verification, and Spec Change Log.</secondary>
-    <secondary>Research-task context .md files in .tmux-cli/research/{y-m-d-hh}/ — one per module, describing what the worker should research.</secondary>
+    <secondary>Spec .md files in research-root (resolved in step 0b) — one per module, with Intent, Boundaries &amp; Constraints, I/O &amp; Edge-Case Matrix, Dependencies, Code Map, Implementation Plan, Test Plan, Acceptance Criteria, Design Notes, Implementation Notes, Verification, and Spec Change Log.</secondary>
+    <secondary>Research-task context .md files in research-root (resolved in step 0b) — one per module, describing what the worker should research.</secondary>
   </output>
 
   <requirements critical="true">
     <mcp>tmux-cli MCP server REQUIRED</mcp>
-    <directory>research-root = .tmux-cli/research/{y-m-d-hh}/ (relative to project working directory; create if absent. {y-m-d-hh} expands to current timestamp, e.g. 2026-05-11-20)</directory>
+    <directory>research-root is resolved in step 0b (relative to project working directory; create if absent):
+      • Standalone (no active goal): .tmux-cli/research/{y-m-d-hh}/ — {y-m-d-hh} expands to current timestamp, e.g. 2026-05-11-20.
+      • Goal mode (.tmux-cli/taskvisor-current-goal exists): .tmux-cli/goals/{GOAL_ID}/research/ — NO timestamp subfolder.</directory>
+    <constraint>tasks.yaml is ALWAYS .tmux-cli/tasks.yaml regardless of mode — the taskvisor daemon reads it from that fixed path. Only research-task and spec .md files live under research-root; tasks.yaml stays put and its context: fields point at the (possibly goal-scoped) files.</constraint>
   </requirements>
 
   <glossary>
     <term name="PLAN_WID">Name of the planning supervisor's tmux window (e.g. "supervisor"). Stable for whole session.</term>
     <term name="SELF_WID">Name of a spec-writing worker's tmux window (e.g. "execute-3"). Each worker gets unique N.</term>
-    <term name="research-root">Primary directory for context and spec files: .tmux-cli/research/{y-m-d-hh}/ (timestamped). Defined in &lt;requirements&gt;.</term>
+    <term name="research-root">Primary directory for context and spec files. Resolved in step 0b: .tmux-cli/goals/{GOAL_ID}/research/ when a goal is active (no timestamp), else .tmux-cli/research/{y-m-d-hh}/ (timestamped). Defined in &lt;requirements&gt; / step 0b.</term>
     <term name="research-task context file">Markdown file the planning supervisor writes FOR a worker, telling it what to research and how to produce the spec. Named task-&lt;slug&gt;.md in research-root.</term>
     <term name="spec file">Markdown file a worker produces as its deliverable. Contains implementation-ready specification with mandatory sections (Intent through Spec Change Log). Named execute-&lt;N&gt;-&lt;slug&gt;.md in research-root.</term>
     <term name="AUTO_APPROVE">Internal flag set when plan.auto_approve=true in setting.yaml. Causes steps 9-10 to be skipped.</term>
@@ -53,6 +56,11 @@
     <rule>The planning supervisor does NOT have autonomy to change the number or boundaries of tasks when working from a user-approved decomposition. The user approved the structure; the planner fills in the detail.</rule>
   </autonomy-policy>
 
+  <decision-policy>
+    <rule critical="true">Decision-resolution policy (quality-in-scope). When planning or implementation reaches a decision point — an "Ask First" item, a verdict/correction presenting options, or any fork between a lower-effort waiver/shortcut and a higher-quality approach — do NOT halt for a human by default. Autonomously choose the option that MAXIMIZES correctness and quality (e.g. real domain types over asserted strings, no waivers, no shortcuts, no new tech-debt) PROVIDED it does NOT expand the goal's stated scope (no new files, features, endpoints, or surface beyond the goal's intent / acceptance criteria). Record the chosen option + a one-line rationale. Escalate to a human ONLY when the decision needs user-only knowledge no file or codebase inspection can supply — credentials, business intent, or out-of-band facts. A purely technical/architectural choice is NEVER user-only.</rule>
+    <rule>When a spec produces option-forks, the planner applies this policy: name the RECOMMENDED (highest-quality in-scope) option in the spec's Ask First / Boundaries so the implementation worker auto-applies it rather than halting. This is consistent with &lt;autonomy-policy&gt; rule (b) — escalate only for user-only knowledge.</rule>
+  </decision-policy>
+
   <llm critical="true">
     <mandate>NEVER implement code — produce specs only</mandate>
     <mandate>NEVER set tasks.yaml status to "ready" before user approves (step 11 only) — UNLESS AUTO_APPROVE is true (plan.auto_approve setting)</mandate>
@@ -82,7 +90,7 @@ DELIVERABLE (write these sections INSIDE the spec .md; do NOT paste them into tm
   This is the anchor — the rest of the spec must serve this intent.
 - ## Boundaries &amp; Constraints: Three tiers:
   **Always:** invariant rules this module must obey (e.g. "all public functions must have tests").
-  **Ask First:** decisions requiring human approval during implementation — the implementation worker MUST halt and ask before proceeding on these.
+  **Ask First:** decisions the implementation worker AUTO-RESOLVES per the Decision-resolution policy (quality-in-scope) — choose the highest-quality option that does NOT expand the goal's scope and record a one-line rationale; halt and ask ONLY for user-only facts (credentials / business intent / out-of-band) that no file or codebase inspection can supply.
   **Never:** explicit non-goals and forbidden approaches (e.g. "never modify the executor interface").
 - ## I/O &amp; Edge-Case Matrix (optional — DELETE entirely if no meaningful I/O interfaces exist, do NOT write "N/A"):
   Table with columns: Scenario | Input / State | Expected Output / Behavior | Error Handling.
@@ -144,7 +152,7 @@ Produce an implementation-ready spec for this module. Read the source files list
 ## Constraints &amp; Boundaries
 Always: &lt;invariant rules from the plan/project context — conventions, patterns that MUST be followed&gt;
 Never: &lt;explicit non-goals for this module — what is OUT of scope, forbidden approaches&gt;
-Ask First: &lt;decisions the implementation worker should escalate to human — architectural choices, risky tradeoffs&gt;
+Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope option (record rationale); escalate ONLY user-only facts (credentials/business-intent/out-of-band)&gt;
 &lt;additional project conventions, architecture patterns, technology choices&gt;
 
 ## Prior Learnings
@@ -175,6 +183,17 @@ Ask First: &lt;decisions the implementation worker should escalate to human — 
       </branch>
     </step>
 
+    <step n="0b" title="Resolve research-root">
+      <action>Check whether .tmux-cli/taskvisor-current-goal exists and is non-empty.</action>
+      <branch condition="exists and non-empty">
+        <action>GOAL mode. Read GOAL_ID from the file (trim whitespace). Set research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp). Create it if absent. Set internal flag GOAL_MODE=true. Log: "Goal mode: GOAL_ID={GOAL_ID}, research-root=.tmux-cli/goals/{GOAL_ID}/research/".</action>
+      </branch>
+      <branch condition="absent or empty">
+        <action>STANDALONE mode. Set research-root = .tmux-cli/research/{y-m-d-hh}/ ({y-m-d-hh} = current timestamp). Create it if absent. Set internal flag GOAL_MODE=false. Log: "Standalone mode: research-root=.tmux-cli/research/{y-m-d-hh}/".</action>
+      </branch>
+      <rule>Every later reference to research-root in this flow uses the value resolved here. tasks.yaml is NOT affected — it always stays at .tmux-cli/tasks.yaml.</rule>
+    </step>
+
     <step n="1" title="MCP precondition">
       <action>Call windows-list.</action>
       <check condition="tmux-cli not available">
@@ -194,7 +213,7 @@ Ask First: &lt;decisions the implementation worker should escalate to human — 
       <check condition="plan.auto_execute is true">
         <action>Set internal flag AUTO_EXECUTE=true. Log: "Auto-execute mode enabled (plan.auto_execute=true)."</action>
       </check>
-      <action>Scan .tmux-cli/research/ for prior cycle directories ({y-m-d-hh}/ that are NOT the current session's research-root).</action>
+      <action>Standalone mode only: scan .tmux-cli/research/ for prior cycle directories ({y-m-d-hh}/ that are NOT the current session's research-root). In goal mode skip this scan — there is a single goal research/ dir and prior corrections arrive via the dispatch file in $ARGUMENTS.</action>
       <check condition="prior research directories exist">
         <action>Read up to 3 most recent directories (newest first). For each, scan spec files (execute-*.md) and extract: module names (## Intent), patterns (## Design Notes), gotchas (## Implementation Notes), decisions made. Distill into a prior-learnings summary (max 500 tokens).</action>
         <action>Store prior-learnings summary for use in step 3.</action>
@@ -232,7 +251,7 @@ Ask First: &lt;decisions the implementation worker should escalate to human — 
         <rule>Example: M5–M7 depend on M4 for implementation, but their SPECS can be written in parallel because each worker reads the existing source code independently.</rule>
       </parallelism>
       <action>Create research-root directory if it does not exist.</action>
-      <action>For each module, create a research-task context file in research-root using the &lt;research-task-template&gt;. File path: .tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md. Populate with module-specific source files, description, dependencies, and constraints from the plan and project context.</action>
+      <action>For each module, create a research-task context file in research-root using the &lt;research-task-template&gt;. File path: {research-root}/task-&lt;slug&gt;.md (research-root resolved in step 0b). Populate with module-specific source files, description, dependencies, and constraints from the plan and project context.</action>
       <action>If prior-learnings summary exists (from step 1b), include relevant learnings in each research-task context file under "## Prior Learnings". Filter by relevance: matching file paths, module names, or technology overlap with the current module.</action>
       <incremental condition="INCREMENTAL mode">
         <action>Load existing tasks from tasks.yaml. New modules from $ARGUMENTS are derived and added alongside existing ones.</action>
@@ -249,9 +268,10 @@ tasks:
   - name: "&lt;module name&gt;"
     wid: "execute-N"
     status: pending
-    context: ".tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md"
+    context: "{research-root}/task-&lt;slug&gt;.md"
     depends_on: ["execute-M"]  # implementation dependency — from plan's dependency graph. Optional.
       </format>
+      <rule>The literal value written for context: is the RESOLVED research-root path (step 0b) — goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/task-&lt;slug&gt;.md) in goal mode, timestamped (.tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md) in standalone mode. tasks.yaml itself always stays at .tmux-cli/tasks.yaml.</rule>
       <action>Verify all context files referenced in tasks.yaml exist on disk.</action>
       <check condition="any context file is missing">
         <action>STOP. Create missing context files per step 3, then re-verify.</action>
@@ -297,7 +317,7 @@ tasks:
         <action>Read REASON. First attempt: kill and respawn with narrowed scope. If a second respawn on the same module FAILs with the same reason, escalate to user with the failure chain + a proposed pivot. NEVER silently retry the same prompt.</action>
       </branch>
       <branch tag="worker emitted spec content inline without a file= tag">
-        <action>Reply via windows-message: [SUPERVISOR:REMIND] Use the file= response protocol. Save your spec to .tmux-cli/research/{y-m-d-hh}/execute-&lt;N&gt;-&lt;slug&gt;.md and reply with only [EXECUTE:DONE file=&lt;abs-path&gt;].</action>
+        <action>Reply via windows-message: [SUPERVISOR:REMIND] Use the file= response protocol. Save your spec to {research-root}/execute-&lt;N&gt;-&lt;slug&gt;.md (research-root resolved in step 0b) and reply with only [EXECUTE:DONE file=&lt;abs-path&gt;].</action>
         <action>Do not advance state; wait for the file-form reply.</action>
       </branch>
       <branch tag="no [EXECUTE:...] header AND not a stop-hook idle line">
@@ -394,7 +414,7 @@ tasks:
       <format>
 | # | Module | Spec File | Files to Create | Test Cases | Unresolved Gaps | Coverage |
 |---|--------|-----------|-----------------|------------|-----------------|----------|
-| 1 | ...    | .tmux-cli/research/.../execute-N-slug.md | N | M | none / S2 | R1,R3 |
+| 1 | ...    | {research-root}/execute-N-slug.md | N | M | none / S2 | R1,R3 |
       </format>
       <action>Print: Uncovered Requirements: [list] or none</action>
       <action>Print the dependency graph from the plan (if applicable), showing implementation order.</action>
@@ -457,10 +477,23 @@ tasks:
       </format>
       <action>Respect the dependency graph from the specs — use depends_on fields or order tasks by implementation wave (prerequisites first).</action>
       <action>Set tasks.yaml top-level status to "ready".</action>
+      <action condition="GOAL_MODE is true">Append a research-file index to .tmux-cli/goals/{GOAL_ID}/goal.md so the goal records its plan artifacts. Use a section titled "## Research Files" with two subsections grouped by category, using markdown links RELATIVE to the goal dir:
+
+## Research Files
+
+### Specs
+- [&lt;module name&gt;](research/execute-&lt;N&gt;-&lt;slug&gt;.md)
+- ... one per accepted spec file ...
+
+### Context
+- [&lt;module name&gt;](research/task-&lt;slug&gt;.md)
+- ... one per research-task context file ...
+
+If a "## Research Files" section already exists in goal.md (re-plan), REPLACE that section in place rather than appending a duplicate. List every generated file in its category (all files, grouped). Omit a subsection if it has no files.</action>
       <action>Print summary:</action>
       <template>
 Plan finalized: N implementation tasks ready in .tmux-cli/tasks.yaml
-Research dir: .tmux-cli/research/{y-m-d-hh}/
+Research dir: {research-root} (resolved in step 0b)
 
 Run `/tmux:supervisor` to execute the plan.
       </template>

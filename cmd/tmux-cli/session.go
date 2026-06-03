@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,6 +44,9 @@ var hookUnplannedAudit string
 
 //go:embed embedded/commands/tmux
 var embeddedCommands embed.FS
+
+//go:embed embedded/templates
+var embeddedTemplates embed.FS
 
 var readPassword = func() (string, error) {
 	fmt.Print("Enter sudo password: ")
@@ -268,6 +273,13 @@ var taskvisorGoalPruneCmd = &cobra.Command{
 	RunE:  runTaskvisorGoalPrune,
 }
 
+var taskvisorRevalidationPlanCmd = &cobra.Command{
+	Use:   "revalidation-plan [goal-id]",
+	Short: "Print the incremental re-validation plan (RERUN/REUSE per finding) as JSON — read-only",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskvisorRevalidationPlan,
+}
+
 var (
 	windowName      string
 	windowIDFlag    string
@@ -285,7 +297,12 @@ var (
 	goalValidate    []string
 	goalContext     string
 	goalNotInScope  string
+	goalPhase       string
 	goalMaxRetries  int
+
+	revalForceFull    bool
+	revalFinalCycle   bool
+	revalChangedFiles []string
 )
 
 func init() {
@@ -342,7 +359,8 @@ func init() {
 	taskvisorGoalAddCmd.Flags().StringArrayVar(&goalValidate, "validate", nil, "Validation commands (repeatable)")
 	taskvisorGoalAddCmd.Flags().StringVar(&goalContext, "context", "", "Background context for the goal")
 	taskvisorGoalAddCmd.Flags().StringVar(&goalNotInScope, "not-in-scope", "", "What is explicitly out of scope")
-	taskvisorGoalAddCmd.Flags().IntVar(&goalMaxRetries, "max-retries", 3, "Max retry attempts")
+	taskvisorGoalAddCmd.Flags().StringVar(&goalPhase, "phase", "", "Development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final)")
+	taskvisorGoalAddCmd.Flags().IntVar(&goalMaxRetries, "max-retries", 5, "Max retry attempts")
 	taskvisorGoalAddCmd.MarkFlagRequired("description")
 
 	taskvisorCmd.AddCommand(taskvisorStartCmd)
@@ -355,6 +373,11 @@ func init() {
 	taskvisorGoalCmd.AddCommand(taskvisorGoalStopCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalPruneCmd)
 	taskvisorCmd.AddCommand(taskvisorGoalCmd)
+
+	taskvisorRevalidationPlanCmd.Flags().BoolVar(&revalForceFull, "full", false, "Force full re-validation — every check RERUN regardless of fingerprint")
+	taskvisorRevalidationPlanCmd.Flags().BoolVar(&revalFinalCycle, "final", false, "Final cycle before overall pass — re-run all checks for end-to-end verification")
+	taskvisorRevalidationPlanCmd.Flags().StringArrayVar(&revalChangedFiles, "changed-file", nil, "A file changed this cycle (repeatable); defaults to git diff --name-only HEAD")
+	taskvisorCmd.AddCommand(taskvisorRevalidationPlanCmd)
 
 	// Add all commands directly to root
 	rootCmd.AddCommand(startCmd)
@@ -1012,8 +1035,9 @@ func runTaskvisorStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no goals.yaml found — add goals first with 'taskvisor goal add'")
 	}
 
-	if _, hasPending := gf.NextPendingGoal(); !hasPending {
-		return fmt.Errorf("no pending goals — all goals are done or failed")
+	_, hasPending := gf.NextPendingGoal()
+	if !hasPending && !gf.HasRecoverableBlock() {
+		return fmt.Errorf("no pending or recoverable goals — all goals are done or failed")
 	}
 
 	signalPath := filepath.Join(cwd, ".tmux-cli", "taskvisor-start")
@@ -1032,31 +1056,38 @@ func runTaskvisorGoalAdd(cmd *cobra.Command, args []string) error {
 	if len(goalDescription) > 120 {
 		return fmt.Errorf("description exceeds 120 characters (got %d); use --acceptance for detailed criteria", len(goalDescription))
 	}
+	if len(goalValidate) == 0 {
+		return fmt.Errorf("at least one --validate flag is required")
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
 
-	gf, err := taskvisor.LoadGoals(cwd)
-	if err != nil {
-		return fmt.Errorf("load goals: %w", err)
-	}
-	if gf == nil {
-		gf = &taskvisor.GoalsFile{}
-	}
+	var id string
+	if err := taskvisor.WithGoalsLock(cwd, func() error {
+		gf, err := taskvisor.LoadGoals(cwd)
+		if err != nil {
+			return fmt.Errorf("load goals: %w", err)
+		}
+		if gf == nil {
+			gf = &taskvisor.GoalsFile{}
+		}
 
-	id := taskvisor.NextGoalID(gf.Goals)
-	goal := taskvisor.Goal{
-		ID:          id,
-		Description: goalDescription,
-		Status:      taskvisor.GoalPending,
-		MaxRetries:  goalMaxRetries,
-	}
-	gf.Goals = append(gf.Goals, goal)
+		id = taskvisor.NextGoalID(gf.Goals)
+		goal := taskvisor.Goal{
+			ID:          id,
+			Description: goalDescription,
+			Status:      taskvisor.GoalPending,
+			MaxRetries:  goalMaxRetries,
+			Phase:       goalPhase,
+		}
+		gf.Goals = append(gf.Goals, goal)
 
-	if err := taskvisor.SaveGoals(cwd, gf); err != nil {
-		return fmt.Errorf("save goals: %w", err)
+		return taskvisor.SaveGoals(cwd, gf)
+	}); err != nil {
+		return err
 	}
 
 	goalDir, err := taskvisor.EnsureGoalDir(cwd, id)
@@ -1064,7 +1095,7 @@ func runTaskvisorGoalAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create goal directory: %w", err)
 	}
 
-	if err := taskvisor.WriteGoalMD(goalDir, goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope); err != nil {
+	if err := taskvisor.WriteGoalMD(goalDir, goalDescription, goalPhase, goalAcceptance, goalValidate, nil, goalContext, goalNotInScope, nil); err != nil {
 		return fmt.Errorf("write goal.md: %w", err)
 	}
 
@@ -1095,6 +1126,150 @@ func runTaskvisorGoalList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// runTaskvisorRevalidationPlan is the read-only read-side seam of C10
+// incremental re-validation. It loads the orchestrator-owned results.json
+// ledger, derives the current cycle's findings (rule + scope + preconditions)
+// from goal.md, computes each finding's input fingerprint via the Go
+// ComputeInputFingerprint, and prints the PlanRevalidation JSON the orchestrator
+// consumes before spawning inv-* workers. It writes nothing.
+func runTaskvisorRevalidationPlan(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+	goalID := args[0]
+
+	prev, err := taskvisor.LoadResults(cwd, goalID)
+	if err != nil {
+		return fmt.Errorf("load results.json: %w", err)
+	}
+
+	goalMD := filepath.Join(cwd, ".tmux-cli", "goals", goalID, "goal.md")
+	findings, err := parseGoalFindings(goalMD)
+	if err != nil {
+		return fmt.Errorf("parse goal.md findings: %w", err)
+	}
+	// Degenerate fallback: if goal.md exposes no investigators (e.g. rule-based
+	// goal), seed the finding set from the prior ledger so the plan still covers
+	// known findings rather than emitting an empty plan.
+	if len(findings) == 0 && prev != nil {
+		for id := range prev.Results {
+			findings = append(findings, taskvisor.ValidationFinding{Rule: id})
+		}
+	}
+
+	changed := revalChangedFiles
+	if len(changed) == 0 {
+		changed = gitChangedFiles(cwd)
+	}
+
+	plan := taskvisor.PlanRevalidation(prev, findings, changed, revalForceFull, revalFinalCycle)
+	out, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal plan: %w", err)
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
+// parseGoalFindings extracts the current cycle's findings from goal.md: one
+// finding per ## Investigation Config investigator (rule = its name, scope = its
+// Paths line), each carrying the goal's stringified ## Preconditions for the
+// fingerprint. An absent goal.md returns an empty slice (no error) so the caller
+// can fall back to the prior ledger.
+func parseGoalFindings(goalMDPath string) ([]taskvisor.ValidationFinding, error) {
+	data, err := os.ReadFile(goalMDPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	lines := strings.Split(string(data), "\n")
+
+	var preconds []string
+	var findings []taskvisor.ValidationFinding
+	section := ""
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		switch {
+		case strings.HasPrefix(line, "## "):
+			section = strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			continue
+		case section == "Preconditions" && strings.HasPrefix(line, "- ["):
+			// "- [kind] spec — remedy" → "kind:spec"
+			rest := strings.TrimPrefix(line, "- [")
+			if idx := strings.IndexByte(rest, ']'); idx >= 0 {
+				kind := strings.TrimSpace(rest[:idx])
+				spec := strings.TrimSpace(rest[idx+1:])
+				if dash := strings.Index(spec, " — "); dash >= 0 {
+					spec = strings.TrimSpace(spec[:dash])
+				}
+				preconds = append(preconds, kind+":"+spec)
+			}
+		case section == "Investigation Config" && strings.HasPrefix(line, "### "):
+			name := strings.TrimSpace(strings.TrimPrefix(line, "### "))
+			if colon := strings.IndexByte(name, ':'); colon >= 0 && strings.HasPrefix(name, "Investigator") {
+				name = strings.TrimSpace(name[colon+1:])
+			}
+			f := taskvisor.ValidationFinding{Rule: name}
+			// Scan this investigator's body for a Paths:/Path: line until the next heading.
+			for j := i + 1; j < len(lines); j++ {
+				b := strings.TrimSpace(lines[j])
+				if strings.HasPrefix(b, "### ") || strings.HasPrefix(b, "## ") {
+					break
+				}
+				// Strip a leading markdown bullet ("- "/"* ") so the canonical
+				// rendered `- paths:` list item parses; bare `paths:` lines are
+				// unaffected (TrimLeft is a no-op on them).
+				stripped := strings.TrimLeft(b, "-* ")
+				low := strings.ToLower(stripped)
+				if strings.HasPrefix(low, "paths:") || strings.HasPrefix(low, "path:") {
+					val := stripped[strings.IndexByte(stripped, ':')+1:]
+					for _, p := range strings.FieldsFunc(val, func(r rune) bool { return r == ',' || r == ' ' }) {
+						if p = strings.TrimSpace(p); p != "" {
+							f.Scope = append(f.Scope, p)
+						}
+					}
+				}
+			}
+			findings = append(findings, f)
+		}
+	}
+
+	sort.Strings(preconds)
+	for i := range findings {
+		findings[i].Preconditions = preconds
+	}
+	return findings, nil
+}
+
+// gitChangedFiles returns repo-relative paths changed vs HEAD (staged, unstaged,
+// and untracked), best-effort. Any git error yields an empty set (treated as no
+// in-scope change), which the fingerprint handles as the baseline.
+func gitChangedFiles(root string) []string {
+	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		// porcelain format: "XY <path>" (path starts at column 3).
+		path := strings.TrimSpace(line[3:])
+		if arrow := strings.Index(path, " -> "); arrow >= 0 { // renames
+			path = path[arrow+4:]
+		}
+		if path != "" {
+			files = append(files, path)
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
 func runTaskvisorGoalDelete(cmd *cobra.Command, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -1102,26 +1277,28 @@ func runTaskvisorGoalDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	goalID := args[0]
-	gf, err := taskvisor.LoadGoals(cwd)
-	if err != nil {
-		return fmt.Errorf("load goals: %w", err)
-	}
-	if gf == nil {
-		return fmt.Errorf("goal not found: %s", goalID)
-	}
+	if err := taskvisor.WithGoalsLock(cwd, func() error {
+		gf, err := taskvisor.LoadGoals(cwd)
+		if err != nil {
+			return fmt.Errorf("load goals: %w", err)
+		}
+		if gf == nil {
+			return fmt.Errorf("goal not found: %s", goalID)
+		}
 
-	g, ok := gf.GoalByID(goalID)
-	if !ok {
-		return fmt.Errorf("goal not found: %s", goalID)
-	}
-	if g.Status == taskvisor.GoalRunning {
-		return fmt.Errorf("goal is currently running, stop the daemon first")
-	}
+		g, ok := gf.GoalByID(goalID)
+		if !ok {
+			return fmt.Errorf("goal not found: %s", goalID)
+		}
+		if g.Status == taskvisor.GoalRunning {
+			return fmt.Errorf("goal is currently running, stop the daemon first")
+		}
 
-	gf.DeleteGoal(goalID)
+		gf.DeleteGoal(goalID)
 
-	if err := taskvisor.SaveGoals(cwd, gf); err != nil {
-		return fmt.Errorf("save goals: %w", err)
+		return taskvisor.SaveGoals(cwd, gf)
+	}); err != nil {
+		return err
 	}
 
 	goalDir := filepath.Join(cwd, ".tmux-cli", "goals", goalID)
@@ -1140,26 +1317,28 @@ func runTaskvisorGoalReset(cmd *cobra.Command, args []string) error {
 	}
 
 	goalID := args[0]
-	gf, err := taskvisor.LoadGoals(cwd)
-	if err != nil {
-		return fmt.Errorf("load goals: %w", err)
-	}
-	if gf == nil {
-		return fmt.Errorf("goal not found: %s", goalID)
-	}
+	if err := taskvisor.WithGoalsLock(cwd, func() error {
+		gf, err := taskvisor.LoadGoals(cwd)
+		if err != nil {
+			return fmt.Errorf("load goals: %w", err)
+		}
+		if gf == nil {
+			return fmt.Errorf("goal not found: %s", goalID)
+		}
 
-	g, ok := gf.GoalByID(goalID)
-	if !ok {
-		return fmt.Errorf("goal not found: %s", goalID)
-	}
-	if g.Status != taskvisor.GoalFailed {
-		return fmt.Errorf("goal is not in failed status (current: %s)", g.Status)
-	}
+		g, ok := gf.GoalByID(goalID)
+		if !ok {
+			return fmt.Errorf("goal not found: %s", goalID)
+		}
+		if g.Status != taskvisor.GoalFailed {
+			return fmt.Errorf("goal is not in failed status (current: %s)", g.Status)
+		}
 
-	gf.ResetGoal(goalID)
+		gf.ResetGoal(goalID)
 
-	if err := taskvisor.SaveGoals(cwd, gf); err != nil {
-		return fmt.Errorf("save goals: %w", err)
+		return taskvisor.SaveGoals(cwd, gf)
+	}); err != nil {
+		return err
 	}
 
 	fmt.Printf("Goal reset to pending: %s\n", goalID)
@@ -1173,26 +1352,28 @@ func runTaskvisorGoalSkip(cmd *cobra.Command, args []string) error {
 	}
 
 	goalID := args[0]
-	gf, err := taskvisor.LoadGoals(cwd)
-	if err != nil {
-		return fmt.Errorf("load goals: %w", err)
-	}
-	if gf == nil {
-		return fmt.Errorf("goal not found: %s", goalID)
-	}
+	if err := taskvisor.WithGoalsLock(cwd, func() error {
+		gf, err := taskvisor.LoadGoals(cwd)
+		if err != nil {
+			return fmt.Errorf("load goals: %w", err)
+		}
+		if gf == nil {
+			return fmt.Errorf("goal not found: %s", goalID)
+		}
 
-	g, ok := gf.GoalByID(goalID)
-	if !ok {
-		return fmt.Errorf("goal not found: %s", goalID)
-	}
-	if g.Status != taskvisor.GoalRunning {
-		return fmt.Errorf("goal is not running (current: %s)", g.Status)
-	}
+		g, ok := gf.GoalByID(goalID)
+		if !ok {
+			return fmt.Errorf("goal not found: %s", goalID)
+		}
+		if g.Status != taskvisor.GoalRunning {
+			return fmt.Errorf("goal is not running (current: %s)", g.Status)
+		}
 
-	gf.SkipGoal(goalID)
+		gf.SkipGoal(goalID)
 
-	if err := taskvisor.SaveGoals(cwd, gf); err != nil {
-		return fmt.Errorf("save goals: %w", err)
+		return taskvisor.SaveGoals(cwd, gf)
+	}); err != nil {
+		return err
 	}
 
 	executor := tmux.NewTmuxExecutor()
@@ -1337,9 +1518,24 @@ func runAutoSetup(projectPath string) error {
 		return nil
 	})
 
+	tplMap := make(map[string]string)
+	fs.WalkDir(embeddedTemplates, "embedded/templates", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		content, readErr := embeddedTemplates.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		relPath := strings.TrimPrefix(path, "embedded/templates/")
+		tplMap[relPath] = string(content)
+		return nil
+	})
+
 	return setup.Run(&setup.SetupConfig{
 		ProjectRoot:      projectPath,
 		HookScripts:      hookScripts,
 		CommandTemplates: cmdTemplates,
+		Templates:        tplMap,
 	})
 }

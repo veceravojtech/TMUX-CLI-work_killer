@@ -14,6 +14,8 @@ Run `tmux-cli setting` to open the TUI. Toggle with arrow keys and Enter.
 | Unplanned Audit | on | Require audit before unplanned supervisor runs |
 | Plan Auto-Approve | on | Skip human approval of generated task plans |
 | Plan Auto-Execute | on | Automatically start implementation after planning |
+| Taskvisor Transient Retry Max Attempts | 3 | Total preflight/probe attempts before a transient infra failure escalates to a `blocked`/`infra-flake` finding (`transient_retry_max_attempts`; 1 = no retry) |
+| Taskvisor Transient Retry Backoff (ms) | 500 | Delay between transient-failure retry attempts in milliseconds (`transient_retry_backoff_ms`; N attempts ⇒ N-1 sleeps) |
 
 Settings are stored in `.tmux-cli/setting.yaml` per project.
 

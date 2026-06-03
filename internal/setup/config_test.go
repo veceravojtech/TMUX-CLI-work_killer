@@ -309,8 +309,82 @@ func TestSettings_SudoYAMLRoundTrip(t *testing.T) {
 func TestDefaultSettings_TaskvisorDefaults(t *testing.T) {
 	s := DefaultSettings()
 	assert.Equal(t, 3600, s.Taskvisor.DispatchTimeout)
-	assert.Equal(t, 300, s.Taskvisor.ValidateTimeout)
+	// ValidateTimeout is seeded from the worker budget via DeriveValidateTimeout,
+	// NOT a hardcoded literal — DeriveValidateTimeout(600,4,4) = 660.
+	assert.Equal(t, DeriveValidateTimeout(WorkerBudgetSec, DefaultMaxWorkers, DefaultMaxWorkers), s.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 660, s.Taskvisor.ValidateTimeout)
+	assert.Greater(t, s.Taskvisor.ValidateTimeout, 300)
 	assert.Equal(t, 5, s.Taskvisor.PollInterval)
+	// C4-cont transient-retry knobs.
+	assert.Equal(t, 3, s.Taskvisor.TransientRetryMaxAttempts)
+	assert.Equal(t, 500, s.Taskvisor.TransientRetryBackoffMs)
+}
+
+// TestLoadSettings_TransientRetryRoundTrip proves the C4-cont knobs load from an
+// explicit setting.yaml AND that a legacy yaml omitting them backfills to 3/500.
+func TestLoadSettings_TransientRetryRoundTrip(t *testing.T) {
+	t.Run("explicit values load", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, ".tmux-cli")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+
+		yaml := `taskvisor:
+  transient_retry_max_attempts: 5
+  transient_retry_backoff_ms: 250
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+		s, err := LoadSettings(root)
+		require.NoError(t, err)
+		assert.Equal(t, 5, s.Taskvisor.TransientRetryMaxAttempts)
+		assert.Equal(t, 250, s.Taskvisor.TransientRetryBackoffMs)
+	})
+
+	t.Run("legacy yaml without keys backfills to 3/500", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, ".tmux-cli")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+
+		yaml := `taskvisor:
+  dispatch_timeout: 3600
+  poll_interval: 5
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+		s, err := LoadSettings(root)
+		require.NoError(t, err)
+		assert.Equal(t, 3, s.Taskvisor.TransientRetryMaxAttempts)
+		assert.Equal(t, 500, s.Taskvisor.TransientRetryBackoffMs)
+	})
+}
+
+func TestDeriveValidateTimeout_SingleWorker(t *testing.T) {
+	// 600*ceil(1/1)+max(60,60) = 660
+	assert.Equal(t, 660, DeriveValidateTimeout(600, 1, 1))
+}
+
+func TestDeriveValidateTimeout_ParallelUnderMax(t *testing.T) {
+	// 600*ceil(3/3)+60 = 660
+	assert.Equal(t, 660, DeriveValidateTimeout(600, 3, 3))
+}
+
+func TestDeriveValidateTimeout_OverMax(t *testing.T) {
+	// 600*ceil(3/2)+max(60,120) = 600*2+120 = 1320
+	assert.Equal(t, 1320, DeriveValidateTimeout(600, 2, 3))
+}
+
+func TestDeriveValidateTimeout_ManyWavesFloor(t *testing.T) {
+	// 600*3+max(60,180) = 1980, which is >= 1800
+	got := DeriveValidateTimeout(600, 1, 3)
+	assert.GreaterOrEqual(t, got, 1800)
+	assert.Equal(t, 1980, got)
+}
+
+func TestDeriveValidateTimeout_ZeroMaxWorkers(t *testing.T) {
+	// maxWorkers<=0 coerced to 1: equivalent to (600,1,3) = 1980, no panic/div-zero
+	assert.NotPanics(t, func() {
+		assert.Equal(t, 1980, DeriveValidateTimeout(600, 0, 3))
+	})
 }
 
 func TestLoadSettings_TaskvisorRoundTrip(t *testing.T) {

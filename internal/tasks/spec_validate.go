@@ -27,11 +27,21 @@ type SpecValidationResult struct {
 var (
 	sectionRe    = regexp.MustCompile(`(?m)^## (.+)`)
 	subSectionRe = regexp.MustCompile(`(?m)^### (.+)`)
-	codeRefRe    = regexp.MustCompile("`[^`]+:\\d+`")
+	codeRefRe    = regexp.MustCompile(`\S+\.\w+:\d+(-\d+)?`)
 	givenRe      = regexp.MustCompile(`(?i)\bgiven\b.*\bwhen\b.*\bthen\b`)
 	checkboxRe   = regexp.MustCompile(`(?m)^- \[[ x]\] `)
-	testCaseRe   = regexp.MustCompile(`(?m)^- Test\w+|^- test_\w+`)
-	tdbRe        = regexp.MustCompile(`(?i)\bTBD\b|\bto be determined\b|\bTODO\b|\bPLACEHOLDER\b`)
+	testCaseRe   = regexp.MustCompile(`(?m)^[ \t]*(?:-[ \t]*|\|[ \t]*)` + "`?" + `(?:Test\w+|test_\w+|test[A-Z]\w*|TC-\d+)`)
+	tdbRe        = regexp.MustCompile(`(?m)^\s*(?:[-*]\s*)?(?:(?:\*\*)?[\w /\-]+:(?:\*\*)?\s*)?(?:\*\*)?\s*(?:TBD|TODO|PLACEHOLDER|(?i:to be determined))(?:\*\*)?\s*\.?\s*$`)
+
+	// S9 gate-objectivity. subjectiveGateRe matches vague adjectives that can
+	// never describe a command-decidable gate. coverageClauseRe matches the
+	// dangerous "coverage as a pass condition" forms ("with ... coverage",
+	// "missing ... coverage", "test coverage", "coverage of", "covers <thing>")
+	// while deliberately NOT matching meta-references like "not a coverage
+	// judgment call" or "uncovered". A numeric coverage threshold ("coverage >=
+	// 80%") is objective and is left to the caller's anchor (the % / digit).
+	subjectiveGateRe = regexp.MustCompile(`(?i)\b(appropriate(ly)?|properly|sufficient(ly)?|adequate(ly)?|reasonabl[ey]|demonstrabl[ey]|as needed|where applicable)\b`)
+	coverageClauseRe = regexp.MustCompile(`(?i)(with\s+[\w/ ,.-]*\bcoverage\b|missing[\w/ ,.-]*\bcoverage\b|\btests?\s+coverage\b|\bcoverage\s+of\b|\bcovers?\s+(creation|mutation|invariant|event|the|all|each|every))`)
 )
 
 func ValidateSpecFile(path string) (*SpecValidationResult, error) {
@@ -52,6 +62,7 @@ func ValidateSpecFile(path string) (*SpecValidationResult, error) {
 	checkAcceptanceCriteria(sections, result)
 	checkBoundaries(sections, result)
 	checkRFD(content, result)
+	checkGateObjectivity(sections, result)
 
 	result.Valid = len(result.Gaps) == 0
 	return result, nil
@@ -212,6 +223,48 @@ func checkRFD(content string, result *SpecValidationResult) {
 			Message: "Spec contains TBD/TODO/PLACEHOLDER text — all sections must be complete",
 		})
 	}
+}
+
+// checkGateObjectivity flags subjective gates (S9). A gate that hinges on a
+// coverage judgment or a vague adjective ("demonstrably", "properly", "missing
+// test coverage", "with invariant coverage") cannot be decided from a command's
+// exit status or output, so the dispatch→validate→correct loop cannot converge
+// on it: the validator flip-flops and the implementer receives prose it cannot
+// action. Gates must be objective — an exit code, a numeric threshold, or a
+// presence-grep (GM-09b). This scans only the machine-checkable gate sections
+// (Validation Rules, Investigation Config), so it is a no-op on worker tech-specs
+// that have neither.
+func checkGateObjectivity(sections map[string]string, result *SpecValidationResult) {
+	var offenders []string
+	for _, name := range []string{"Validation Rules", "Investigation Config"} {
+		body, ok := sections[name]
+		if !ok {
+			continue
+		}
+		for _, line := range strings.Split(body, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if subjectiveGateRe.MatchString(trimmed) || coverageClauseRe.MatchString(trimmed) {
+				offenders = append(offenders, trimmed)
+			}
+		}
+	}
+	if len(offenders) == 0 {
+		return
+	}
+	snippet := []rune(offenders[0])
+	if len(snippet) > 80 {
+		snippet = append(snippet[:80:80], '…')
+	}
+	result.Gaps = append(result.Gaps, SpecGap{
+		ID: "S9",
+		Message: fmt.Sprintf(
+			"Validation Rules / Investigation Config contain %d subjective gate(s) with no objective anchor — e.g. %q. A gate must be decidable from exit status, a numeric threshold, or a presence-grep (GM-09b); decompose coverage-style criteria into greppable checks.",
+			len(offenders), string(snippet),
+		),
+	})
 }
 
 func findSection(sections map[string]string, prefix string) (string, bool) {

@@ -87,6 +87,18 @@ func TestGoalAddCmd_RequiresDescription(t *testing.T) {
 	assert.Contains(t, err.Error(), "description")
 }
 
+// TestGoalAddDefaultMaxRetriesIsFive pins the `goal add --max-retries` flag
+// default at 5 (bumped from 3 so MigrateRetries yields Spec≥2, never an
+// instant spec-fail).
+func TestGoalAddDefaultMaxRetriesIsFive(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"taskvisor", "goal", "add"})
+	require.NoError(t, err)
+
+	flag := cmd.Flags().Lookup("max-retries")
+	require.NotNil(t, flag, "--max-retries flag should exist")
+	assert.Equal(t, "5", flag.DefValue)
+}
+
 func TestGoalAddCmd_Success(t *testing.T) {
 	withTempCwd(t, func(dir string) {
 		oldDesc, oldAcc, oldVal, oldCtx, oldNIS, oldRetries := goalDescription, goalAcceptance, goalValidate, goalContext, goalNotInScope, goalMaxRetries
@@ -96,7 +108,7 @@ func TestGoalAddCmd_Success(t *testing.T) {
 
 		goalDescription = "Implement feature X"
 		goalAcceptance = nil
-		goalValidate = nil
+		goalValidate = []string{"check"}
 		goalContext = ""
 		goalNotInScope = ""
 		goalMaxRetries = 3
@@ -167,7 +179,7 @@ func TestGoalAddCmd_WithContextFlags(t *testing.T) {
 
 		goalDescription = "Refactor auth"
 		goalAcceptance = []string{"Tests pass"}
-		goalValidate = nil
+		goalValidate = []string{"check"}
 		goalContext = "Legacy code needs cleanup"
 		goalNotInScope = "Performance tuning"
 		goalMaxRetries = 3
@@ -642,6 +654,74 @@ func TestGoalSkipCmd_CustomReason(t *testing.T) {
 	})
 }
 
+// TestRunTaskvisorStart_WritesSignalForRecoverableBlock guards the activation-side
+// recoverable-block fix: a graph whose only outstanding work is a GoalBlocked goal
+// blocked_by a now-Done goal (deps satisfied) has 0 pending goals, yet must still
+// activate so activate()'s reconcile can un-stick the frontier. Fails pre-fix
+// (errored "no pending goals"), passes after.
+func TestRunTaskvisorStart_WritesSignalForRecoverableBlock(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Done blocker", Status: taskvisor.GoalDone, MaxRetries: 3},
+				{ID: "goal-002", Description: "Recoverable block", Status: taskvisor.GoalBlocked, BlockedBy: "goal-001", MaxRetries: 3},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		err := runTaskvisorStart(nil, nil)
+		require.NoError(t, err)
+
+		signalPath := filepath.Join(dir, ".tmux-cli", "taskvisor-start")
+		_, statErr := os.Stat(signalPath)
+		assert.NoError(t, statErr, "signal file should exist for a recoverable-only graph")
+	})
+}
+
+// TestRunTaskvisorStart_WritesSignalForPending is a regression guard: a graph with
+// at least one pending goal keeps the original behavior (signal written, no error).
+func TestRunTaskvisorStart_WritesSignalForPending(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Pending goal", Status: taskvisor.GoalPending, MaxRetries: 3},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		err := runTaskvisorStart(nil, nil)
+		require.NoError(t, err)
+
+		signalPath := filepath.Join(dir, ".tmux-cli", "taskvisor-start")
+		_, statErr := os.Stat(signalPath)
+		assert.NoError(t, statErr, "signal file should exist when a pending goal exists")
+	})
+}
+
+// TestRunTaskvisorStart_RefusesTerminalGraph asserts the fix does NOT widen
+// activation to genuinely-terminal graphs: a GoalBlocked goal whose blocker is
+// GoalFailed (a hard block, not recoverable) plus only Done goals must still be
+// refused with no signal written.
+func TestRunTaskvisorStart_RefusesTerminalGraph(t *testing.T) {
+	withTempCwd(t, func(dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Done goal", Status: taskvisor.GoalDone, MaxRetries: 3},
+				{ID: "goal-002", Description: "Hard-blocked goal", Status: taskvisor.GoalBlocked, BlockedBy: "goal-003", MaxRetries: 3},
+				{ID: "goal-003", Description: "Failed blocker", Status: taskvisor.GoalFailed, MaxRetries: 3},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+		err := runTaskvisorStart(nil, nil)
+		require.Error(t, err)
+
+		signalPath := filepath.Join(dir, ".tmux-cli", "taskvisor-start")
+		_, statErr := os.Stat(signalPath)
+		assert.True(t, os.IsNotExist(statErr), "signal file should not exist for a terminal graph")
+	})
+}
+
 func TestTaskvisorStartCmd_NoGoalsFile(t *testing.T) {
 	withTempCwd(t, func(dir string) {
 		err := runTaskvisorStart(nil, nil)
@@ -651,4 +731,45 @@ func TestTaskvisorStartCmd_NoGoalsFile(t *testing.T) {
 		_, statErr := os.Stat(signalPath)
 		assert.True(t, os.IsNotExist(statErr), "signal file should not exist")
 	})
+}
+
+func TestInvestigateWorkerTemplate_ContainsRetryLogic(t *testing.T) {
+	xmlData, err := embeddedCommands.ReadFile("embedded/commands/tmux/investigate-worker.xml")
+	require.NoError(t, err)
+	xmlContent := string(xmlData)
+
+	assert.Contains(t, xmlContent, "<retry-logic>")
+	assert.Contains(t, xmlContent, "max_attempts")
+	assert.Contains(t, xmlContent, "re-run ONLY the failing command")
+	assert.Contains(t, xmlContent, "Pass on first success")
+	assert.Contains(t, xmlContent, "At max_attempts with no success")
+	assert.Contains(t, xmlContent, "Log each attempt in FINDINGS")
+
+	mdData, err := embeddedCommands.ReadFile("embedded/commands/tmux/investigate-worker.md")
+	require.NoError(t, err)
+	mdContent := string(mdData)
+
+	assert.Contains(t, mdContent, "Retry flaky commands per retry config")
+	assert.Contains(t, mdContent, "default: 1 attempt, no retry")
+}
+
+// TestParseGoalFindings_ReadsGeneratedConfig guards the bullet-tolerance fix:
+// a goal.md rendered by WriteGoalMD (with Paths) must parse into one finding per
+// investigator, Rule = the name after the colon, Scope populated from `- paths:`.
+func TestParseGoalFindings_ReadsGeneratedConfig(t *testing.T) {
+	dir := t.TempDir()
+	invs := []taskvisor.Investigator{
+		{Name: "Quality gate", Type: "quality-gate", Paths: []string{"src/Pricing.php", "src/Tax.php"}, Commands: []string{"phpstan analyse"}, Pass: "exit 0", Fail: "errors"},
+		{Name: "Test execution", Type: "test-execution", Paths: []string{"tests/PricingTest.php"}, Commands: []string{"phpunit"}, Pass: "green", Fail: "red"},
+	}
+	require.NoError(t, taskvisor.WriteGoalMD(dir, "Parse roundtrip", "", []string{"AC1"}, []string{"x"}, nil, "", "", invs))
+
+	findings, err := parseGoalFindings(filepath.Join(dir, "goal.md"))
+	require.NoError(t, err)
+	require.Len(t, findings, 2)
+
+	assert.Equal(t, "Quality gate", findings[0].Rule)
+	assert.Equal(t, []string{"src/Pricing.php", "src/Tax.php"}, findings[0].Scope)
+	assert.Equal(t, "Test execution", findings[1].Rule)
+	assert.Equal(t, []string{"tests/PricingTest.php"}, findings[1].Scope)
 }

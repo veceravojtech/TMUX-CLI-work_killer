@@ -28,6 +28,10 @@ func testConfig() *SetupConfig {
 			"supervisor.md": "---\ndescription: test\n---\ncontent",
 			"worker.md":     "---\ndescription: worker\n---\nworker content",
 		},
+		Templates: map[string]string{
+			"_base/test.md":       "# Base test template",
+			"php-symfony/test.md": "# Symfony test template",
+		},
 	}
 }
 
@@ -66,6 +70,15 @@ func TestRun_FullSetup(t *testing.T) {
 	for name := range cfg.CommandTemplates {
 		path := filepath.Join(dir, ".claude", "commands", "tmux", name)
 		assert.FileExists(t, path)
+	}
+
+	// templates created
+	for relPath, content := range cfg.Templates {
+		path := filepath.Join(dir, ".tmux-cli", "templates", relPath)
+		assert.FileExists(t, path)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, content, string(data))
 	}
 
 	// git exclude updated
@@ -126,6 +139,9 @@ func TestRun_Idempotent(t *testing.T) {
 	for name := range cfg.CommandTemplates {
 		assert.FileExists(t, filepath.Join(dir, ".claude", "commands", "tmux", name))
 	}
+	for relPath := range cfg.Templates {
+		assert.FileExists(t, filepath.Join(dir, ".tmux-cli", "templates", relPath))
+	}
 
 	excludeData, err := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
 	require.NoError(t, err)
@@ -165,6 +181,40 @@ func TestRun_NoGitDir(t *testing.T) {
 
 	// .git/info/exclude should NOT exist
 	assert.NoFileExists(t, filepath.Join(dir, ".git", "info", "exclude"))
+}
+
+func TestRun_TaskPlanSkillsDiscoverable(t *testing.T) {
+	dir := setupTestProject(t)
+	cfg := testConfig()
+	cfg.ProjectRoot = dir
+
+	cfg.CommandTemplates["task-plan-discover.md"] = "---\ndescription: Interactive project discovery\n---\nSee task-plan-discover.xml for full spec."
+	cfg.CommandTemplates["task-plan-discover.xml"] = `<task id="task-plan-discover" name="Interactive project discovery">\n  <objective>Guide discovery</objective>\n</task>`
+	cfg.CommandTemplates["task-plan-generate.md"] = "---\ndescription: Goal generation\n---\nSee task-plan-generate.xml for full spec."
+	cfg.CommandTemplates["task-plan-generate.xml"] = `<task id="task-plan-generate" name="Goal generation">\n  <objective>Generate goals</objective>\n</task>`
+
+	err := Run(cfg)
+	require.NoError(t, err)
+
+	cases := []struct {
+		file   string
+		marker string
+	}{
+		{"task-plan-discover.md", "task-plan-discover.xml"},
+		{"task-plan-discover.xml", `<task id="task-plan-discover"`},
+		{"task-plan-generate.md", "task-plan-generate.xml"},
+		{"task-plan-generate.xml", `<task id="task-plan-generate"`},
+	}
+
+	cmdDir := filepath.Join(dir, ".claude", "commands", "tmux")
+	for _, tc := range cases {
+		path := filepath.Join(cmdDir, tc.file)
+		assert.FileExists(t, path, "missing: %s", tc.file)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err, "read %s", tc.file)
+		assert.NotEmpty(t, data, "empty: %s", tc.file)
+		assert.Contains(t, string(data), tc.marker, "%s missing marker %q", tc.file, tc.marker)
+	}
 }
 
 func countOccurrences(s, sub string) int {

@@ -47,9 +47,11 @@
       <rule>Perform the task STRICTLY within SCOPE</rule>
       <rule>Use all available tools: Read, Write, Edit, Bash, Agent, and any MCP tools needed</rule>
       <rule>Do not exceed SCOPE — if you notice adjacent issues, mention them under RISKS instead</rule>
+      <rule critical="true">Decision-resolution policy (quality-in-scope): when work reaches a decidable fork — an "Ask First" item, a correction presenting options, or any choice between a lower-effort waiver/shortcut and a higher-quality approach — do NOT emit [EXECUTE:NEED_INPUT]. Autonomously pick the option that MAXIMIZES correctness and quality (real domain types over asserted strings, no waivers, no shortcuts, no new tech-debt) PROVIDED it does NOT expand SCOPE (no new files, features, endpoints, or surface beyond the task's stated scope), and record the chosen option + a one-line rationale in your report. A purely technical/architectural choice is NEVER user-only.</rule>
     </step>
 
     <step n="4" title="Ask only when blocked" condition="concrete gap blocks progress">
+      <rule critical="true">Reserve [EXECUTE:NEED_INPUT] for user-only facts that no file or codebase inspection can supply — credentials, business intent, or out-of-band facts. A decidable technical/architectural fork is NOT a blocker: apply the Decision-resolution policy (step 3) and proceed with the highest-quality in-scope option instead of asking.</rule>
       <action>windows-message to SUPERVISOR_WID:</action>
       <template>
 [EXECUTE:NEED_INPUT wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt;]
@@ -120,6 +122,7 @@ PARTIAL: &lt;what you have, or "none"&gt;
       • You are the worker — do not re-enter /worker:execute or workflow.xml
       • Supervisor owns lifecycle — never kill your own window
       • Stay within SCOPE — surface adjacent findings as RISKS, not expanded work
+      • Decidable forks are auto-resolved per the quality-in-scope policy (highest-quality option that keeps SCOPE; record rationale) — reserve NEED_INPUT for user-only facts (credentials/business-intent/out-of-band)
       • ALWAYS read AGENTS.md or CLAUDE.md before starting work — project conventions are mandatory context
       • One tagged message per reply; untagged output gets REMIND from the supervisor
     </critical-rules>

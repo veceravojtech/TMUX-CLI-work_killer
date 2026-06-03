@@ -49,6 +49,9 @@ npm-debug.log*
 pnpm-debug.log*
 .env
 .env.local
+# Throwaway test creds — committed on purpose; negate the broad *.test pattern (line 10).
+# See docs/architecture/test-environment.md.
+!.env.test
 .cache/
 .nyc_output/
 coverage/

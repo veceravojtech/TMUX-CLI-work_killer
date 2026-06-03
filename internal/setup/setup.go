@@ -6,6 +6,7 @@ type SetupConfig struct {
 	ProjectRoot      string
 	HookScripts      map[string]string
 	CommandTemplates map[string]string
+	Templates        map[string]string
 }
 
 func Run(cfg *SetupConfig) error {
@@ -25,6 +26,12 @@ func Run(cfg *SetupConfig) error {
 	if settings.Commands.Enabled && len(cfg.CommandTemplates) > 0 {
 		if err := WriteCommands(cfg.ProjectRoot, cfg.CommandTemplates); err != nil {
 			return fmt.Errorf("write commands: %w", err)
+		}
+	}
+
+	if len(cfg.Templates) > 0 {
+		if err := WriteTemplates(cfg.ProjectRoot, cfg.Templates); err != nil {
+			return fmt.Errorf("write templates: %w", err)
 		}
 	}
 

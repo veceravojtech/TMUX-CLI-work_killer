@@ -400,20 +400,59 @@ func (s *Server) WindowsRecoverWorkers(message string) (*WindowsRecoverWorkersOu
 	}, nil
 }
 
-func nextExecuteN(windows []WindowListItem) string {
+func nextExecuteN(windows []WindowListItem, prefix string) string {
 	maxN := 0
 	for _, w := range windows {
-		if strings.HasPrefix(w.Name, "execute-") {
-			suffix := w.Name[len("execute-"):]
+		if strings.HasPrefix(w.Name, prefix) {
+			suffix := w.Name[len(prefix):]
 			if n, err := strconv.Atoi(suffix); err == nil && n > maxN {
 				maxN = n
 			}
 		}
 	}
-	return fmt.Sprintf("execute-%d", maxN+1)
+	return fmt.Sprintf("%s%d", prefix, maxN+1)
 }
 
-func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchDir, deliverable string) string {
+// resolveResearchRoot returns the project-relative research-root path for worker
+// reports. In goal mode (a non-empty .tmux-cli/taskvisor-current-goal exists) it is
+// goal-scoped with NO timestamp: .tmux-cli/goals/<GOAL_ID>/research. When the daemon
+// has also written a valid .tmux-cli/taskvisor-current-cycle marker (C7), the path is
+// further namespaced per-cycle: .tmux-cli/goals/<GOAL_ID>/research/cycle-<N> — keeping
+// the MCP worker-spawn path consistent with the daemon / investigate.xml resolution.
+// Otherwise (no/empty/invalid cycle marker) it falls back to the goal-scoped no-cycle
+// path. With no active goal it is the standalone timestamped dir:
+// .tmux-cli/research/<YYYY-MM-DD-HH>. This mirrors supervisor.xml / plan.xml step 0b.
+func (s *Server) resolveResearchRoot() string {
+	goalPath := filepath.Join(s.workingDir, ".tmux-cli", "taskvisor-current-goal")
+	if data, err := os.ReadFile(goalPath); err == nil {
+		if goalID := strings.TrimSpace(string(data)); goalID != "" {
+			if n, ok := s.readCycleMarker(); ok {
+				return filepath.Join(".tmux-cli", "goals", goalID, "research", fmt.Sprintf("cycle-%d", n))
+			}
+			return filepath.Join(".tmux-cli", "goals", goalID, "research")
+		}
+	}
+	return filepath.Join(".tmux-cli", "research", time.Now().Format("2006-01-02-15"))
+}
+
+// readCycleMarker reads the .tmux-cli/taskvisor-current-cycle marker written by the
+// daemon (a bare integer string) and returns (N, true) only when it trims to a
+// positive integer (>=1). Absent, empty, or unparseable markers yield (0, false) so
+// callers fall back to the no-cycle path. It never errors or panics.
+func (s *Server) readCycleMarker() (int, bool) {
+	cyclePath := filepath.Join(s.workingDir, ".tmux-cli", "taskvisor-current-cycle")
+	data, err := os.ReadFile(cyclePath)
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
+}
+
+func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchRoot, deliverable string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "SUPERVISOR_WID=%s\n", supervisorWid)
 	fmt.Fprintf(&b, "SELF_WID=%s\n", workerName)
@@ -440,7 +479,7 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 		b.WriteString("- FILES: absolute paths touched or cited, one per line\n")
 	}
 	b.WriteString("\nRESPONSE PROTOCOL (MANDATORY):\n")
-	fmt.Fprintf(&b, "1. Save the full report to .tmux-cli/research/%s/%s-<slug>.md\n", researchDir, workerName)
+	fmt.Fprintf(&b, "1. Save the full report to %s/%s-<slug>.md\n", researchRoot, workerName)
 	if deliverable != "" {
 		b.WriteString("   using the sections specified in DELIVERABLE above.\n")
 	} else {
@@ -463,7 +502,10 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 
 // WindowsSpawnWorker atomically spawns a worker: creates window, sends /tmux:execute,
 // and sends the structured task message.
-func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, context, deliverable string) (*WindowInfo, string, string, error) {
+func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, context, deliverable, prefix string) (*WindowInfo, string, string, error) {
+	if prefix == "" {
+		prefix = "execute-"
+	}
 	if supervisorWid == "" {
 		return nil, "", "", fmt.Errorf("%w: supervisorWid cannot be empty", ErrInvalidInput)
 	}
@@ -486,17 +528,17 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	if settings != nil && settings.Supervisor.MaxWorkers > 0 {
 		var count int
 		for _, w := range windows {
-			if strings.HasPrefix(w.Name, "execute-") {
+			if strings.HasPrefix(w.Name, prefix) {
 				count++
 			}
 		}
 		if count >= settings.Supervisor.MaxWorkers {
-			return nil, "", "", fmt.Errorf("%w: %d execute workers already running (limit: %d) — wait for a worker to finish or increase supervisor.max_workers in setting.yaml",
-				ErrMaxWorkersExceeded, count, settings.Supervisor.MaxWorkers)
+			return nil, "", "", fmt.Errorf("%w: %d %sworkers already running (limit: %d) — wait for a worker to finish or increase supervisor.max_workers in setting.yaml",
+				ErrMaxWorkersExceeded, count, prefix, settings.Supervisor.MaxWorkers)
 		}
 	}
 
-	workerName := nextExecuteN(windows)
+	workerName := nextExecuteN(windows, prefix)
 
 	window, err := s.WindowsCreate(workerName, "")
 	if err != nil {
@@ -517,8 +559,9 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 
 	time.Sleep(2 * time.Second)
 
-	researchDir := time.Now().Format("2006-01-02-15")
-	taskMessage := buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchDir, deliverable)
+	researchRoot := s.resolveResearchRoot()
+	_ = os.MkdirAll(filepath.Join(s.workingDir, researchRoot), 0o755)
+	taskMessage := buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchRoot, deliverable)
 
 	err = s.executor.SendMessageWithDelay(sessionID, window.TmuxWindowID, taskMessage)
 	if err != nil {

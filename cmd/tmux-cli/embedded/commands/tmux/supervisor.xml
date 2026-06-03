@@ -13,13 +13,18 @@
 
   <requirements critical="true">
     <mcp>tmux-cli MCP server REQUIRED</mcp>
-    <directory>research-root = .tmux-cli/research/{y-m-d-hh}/ (relative to project working directory; create if absent. {y-m-d-hh} expands to current timestamp, e.g. 2026-05-11-20)</directory>
+    <directory>research-root is resolved in step 0b (relative to project working directory; create if absent):
+      • Standalone (no active goal): .tmux-cli/research/{y-m-d-hh}/ — {y-m-d-hh} expands to current timestamp, e.g. 2026-05-11-20.
+      • Goal mode (.tmux-cli/taskvisor-current-goal exists): .tmux-cli/goals/{GOAL_ID}/research/ — NO timestamp subfolder.</directory>
+    <constraint>tasks.yaml is ALWAYS .tmux-cli/tasks.yaml regardless of mode — the taskvisor daemon reads it from that fixed path. Only per-worker report and research-task context .md files live under research-root; tasks.yaml stays put and its context: fields point at the (possibly goal-scoped) files.</constraint>
   </requirements>
 
   <glossary>
     <term name="SUPERVISOR_WID">Name of the supervisor's tmux window (e.g. "supervisor"). Stable for whole session.</term>
     <term name="SELF_WID">Name of a worker's tmux window (e.g. "execute-7"). Each worker gets unique N.</term>
-    <term name="research-root">Primary directory where per-worker .md reports are saved: .tmux-cli/research/{y-m-d-hh}/ (timestamped). Defined in &lt;requirements&gt;.</term>
+    <term name="research-root">Primary directory where per-worker .md reports and research-task context files are saved. Resolved in step 0b: .tmux-cli/goals/{GOAL_ID}/research/ when a goal is active (no timestamp), else .tmux-cli/research/{y-m-d-hh}/ (timestamped). Defined in &lt;requirements&gt; / step 0b.</term>
+    <term name="GOAL_MODE">Internal flag set true in step 0b when .tmux-cli/taskvisor-current-goal exists and is non-empty. In goal mode research-root is goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/) and step 9b appends a research-file index to the goal's goal.md.</term>
+    <term name="GOAL_ID">The goal identifier read (trimmed) from .tmux-cli/taskvisor-current-goal in step 0b when GOAL_MODE is true. Names the goal folder under .tmux-cli/goals/.</term>
     <term name="subtask label">One-line human-readable description of what a worker is doing (e.g. "implement setup config parser").</term>
     <term name="sup=">Supervisor's window name in tag messages.</term>
     <term name="wid=">Worker's window name in tag messages.</term>
@@ -47,6 +52,7 @@
     <rule>Do NOT ask the user to: pick between options, sequence workers, approve continuation, confirm a findings-driven replan, amend a running worker, or spawn a new follow-up.</rule>
     <rule>For ambiguity: pick the highest-yield interpretation per &lt;ranking&gt; and record the chosen rationale in the step-9 synthesis so the user can redirect.</rule>
     <rule>Escalate to user ONLY at one of the two defined exits: (a) zero executable workers can be constructed from input, OR (b) a &lt;stop-conditions&gt; rule fires.</rule>
+    <rule>Decision-resolution policy (quality-in-scope): a worker decision/verdict/correction presenting RESOLVABLE options (a technical/architectural fork, a waiver-vs-quality choice) is auto-resolved — answer the worker with the highest-quality option that does NOT expand the goal's scope (real domain types over asserted strings, no waivers, no shortcuts, no new tech-debt), plus a one-line rationale. Consistent with the user-only-knowledge escalation below: bounce to the user ONLY for credentials, intent, or out-of-band facts no file-reading can supply; a purely technical/architectural choice is NEVER user-only.</rule>
     <rule>Synthesis output (§9) is NOT a stop gate — writing a session-synthesis .md is routine. After writing it, re-run &lt;step n="8a"&gt; replan against its own contents; any "proposed next wave" / "queue changes" / "follow-up workers" / "wave N+1" sections in the synthesis are executable-queue entries, spawn them per §3 fan-out.</rule>
     <rule>Self-imposed stage gates (plan documents saying "Stage 2 after Stage 1", "wave 6 after wave 5", "deferred to next session", numbered-wave boundaries) are ORGANIZATIONAL, not authorizational. The initial /supervisor invocation authorizes the entire chain until a real &lt;stop-conditions&gt; fires. Do NOT treat a stage gate you wrote yourself as a user-imposed pause.</rule>
   </autonomy-policy>
@@ -62,6 +68,7 @@
     <mandate>NEVER kill your own SUPERVISOR_WID</mandate>
     <mandate>windows-kill takes the window NAME (e.g. "execute-3"), not an @id. windows-send accepts @N; kill does not.</mandate>
     <mandate>When PRE_PLANNED is true, do NOT re-derive fan-out — trust the plan. Only verify context files exist (step 3b) and spawn (step 4).</mandate>
+    <mandate>Resolve research-root in step 0b before any worker spawn — every supervisor-created context file and worker report save path uses it (goal-scoped in GOAL_MODE, timestamped otherwise). tasks.yaml always stays at .tmux-cli/tasks.yaml; PRE_PLANNED context: paths from /tmux:plan are NOT overridden.</mandate>
   </llm>
 
   <flow>
@@ -69,6 +76,18 @@
       <action>Remove .tmux-cli/audit-done guard file if it exists (allows the unplanned-audit hook to fire at the end of this cycle).</action>
       <action>Remove .tmux-cli/auto-execute-guard if it exists (consumed by the Stop hook to prevent double-invocation after plan auto-execute).</action>
       <action>If .tmux-cli/tasks.yaml exists and is NOT a continuation cycle, set its top-level status field to "planning". If it doesn't exist yet, the status will be set when tasks.yaml is first created in step 3.</action>
+    </step>
+
+    <step n="0b" title="Resolve research-root">
+      <action>Check whether .tmux-cli/taskvisor-current-goal exists and is non-empty.</action>
+      <branch condition="exists and non-empty">
+        <action>GOAL mode. Read GOAL_ID from the file (trim whitespace). Set research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp). Create it if absent. Set internal flag GOAL_MODE=true. Log: "Goal mode: GOAL_ID={GOAL_ID}, research-root=.tmux-cli/goals/{GOAL_ID}/research/".</action>
+      </branch>
+      <branch condition="absent or empty">
+        <action>STANDALONE mode. Set research-root = .tmux-cli/research/{y-m-d-hh}/ ({y-m-d-hh} = current timestamp). Create it if absent. Set internal flag GOAL_MODE=false. Log: "Standalone mode: research-root=.tmux-cli/research/{y-m-d-hh}/".</action>
+      </branch>
+      <rule>Every later reference to research-root in this flow uses the value resolved here. tasks.yaml is NOT affected — it always stays at .tmux-cli/tasks.yaml.</rule>
+      <rule>PRE_PLANNED tasks already carry resolved context: paths written by /tmux:plan — step 0b does NOT override those. It governs only the paths the supervisor itself creates: its own fan-out context files (step 3) and worker report save paths (steps 5/task-message).</rule>
     </step>
 
     <step n="1" title="MCP precondition">
@@ -142,9 +161,10 @@
       <exhaustive-coverage critical="true">NEVER skip a possible path due to low probability of success. Every identified vector — even speculative or low-yield — must be executed to produce a precise ruling (confirmed, refuted with evidence, or blocked by specific barrier). "Not worth budget" and "too speculative" are NOT valid reasons to skip a worker. The goal is exhaustive coverage: every path precisely documented as viable or dead, with no gaps left to assumption.</exhaustive-coverage>
       <task-tracking critical="true">
         <action>After determining the fan-out shape, create or update .tmux-cli/tasks.yaml with all planned tasks. Each task entry has: name (subtask label), wid (execute-N), status (pending), context (path to .md file), and cycle (current cycle number, starting at 1).</action>
-        <action>Before writing a task to tasks.yaml, create a context .md file for it in .tmux-cli/research/{y-m-d-hh}/ using the slug pattern task-&lt;slug&gt;.md. The context field MUST be set on every task — it is mandatory.</action>
+        <action>Before writing a task to tasks.yaml, create a context .md file for it in research-root (resolved in step 0b) using the slug pattern {research-root}/task-&lt;slug&gt;.md. The context field MUST be set on every task — it is mandatory.</action>
         <action>If tasks.yaml already exists from a continuation cycle, preserve done tasks and update/add pending ones.</action>
-        <format>tasks.yaml structure: status: planning, cycle: N, tasks: [{name: "...", wid: "execute-N", status: pending, context: ".tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md"}]</format>
+        <format>tasks.yaml structure: status: planning, cycle: N, tasks: [{name: "...", wid: "execute-N", status: pending, context: "{research-root}/task-&lt;slug&gt;.md"}]</format>
+        <rule>The literal value written for context: is the RESOLVED research-root path (step 0b) — goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/task-&lt;slug&gt;.md) in goal mode, timestamped (.tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md) in standalone mode. tasks.yaml itself always stays at .tmux-cli/tasks.yaml.</rule>
         <rule>When first creating or updating tasks.yaml during fan-out planning, set the top-level status to "planning". This prevents Stop hooks (cycle restart, unplanned audit) from firing while the supervisor is still planning.</rule>
       </task-tracking>
     </step>
@@ -184,7 +204,7 @@
       <rule>NEVER use sleep. NEVER poll windows-list while idle.</rule>
       <rule>Stop-hook idle notifications of the form "Idling — awaiting supervisor task payload" / "Idling for supervisor acceptance or pushback" / "Report delivered to supervisor. Idling for accept or pushback" are EXPECTED lifecycle output from the /tmux:execute skill and DO NOT count as untagged-output violations. They mean the worker has finished its turn and is waiting. Do not REMIND, do not advance state — simply wait for the next real message.</rule>
       <branch tag="[EXECUTE:NEED_INPUT ...]">
-        <action>Answer with windows-message to that wid, drawing from (a) the task's SCOPE/CONTEXT, (b) prior accepted reports in research-root, (c) files on disk. If still unanswerable, reply [SUPERVISOR:NARROW-SCOPE] with a reduced problem statement the worker CAN answer, rather than escalating. Escalate to user ONLY for user-only knowledge (credentials, intent, out-of-band facts) that no file-reading can supply.</action>
+        <action>Answer with windows-message to that wid, drawing from (a) the task's SCOPE/CONTEXT, (b) prior accepted reports in research-root, (c) files on disk. If the NEED_INPUT presents RESOLVABLE options (a technical/architectural fork), auto-resolve per the Decision-resolution policy (quality-in-scope, see &lt;autonomy-policy&gt;): answer with the highest-quality option that does NOT expand the goal's scope, plus a one-line rationale — do NOT bounce it to the user. If still unanswerable, reply [SUPERVISOR:NARROW-SCOPE] with a reduced problem statement the worker CAN answer, rather than escalating. Escalate to user ONLY for user-only knowledge (credentials, intent, out-of-band facts) that no file-reading can supply.</action>
       </branch>
       <branch tag="[EXECUTE:DONE ...]">
         <action>Proceed to step 6 — Read the cited file and verify against DELIVERABLE + pushback catalogue.</action>
@@ -193,7 +213,7 @@
         <action>Read REASON. First attempt: kill and respawn with narrowed scope. If a second respawn on the same subtask class FAILs with the same reason, escalate to user with the failure chain + a proposed pivot. NEVER silently retry the same prompt.</action>
       </branch>
       <branch tag="worker emitted FINDINGS/RISKS/etc. inline in tmux without a file= tag">
-        <action>This violates the file-only response protocol. Reply via windows-message with: [SUPERVISOR:REMIND] Use the file= response protocol. Save to .tmux-cli/research/{y-m-d-hh}/execute-&lt;N&gt;-&lt;slug&gt;.md and reply with only [EXECUTE:DONE file=&lt;abs-path&gt;].</action>
+        <action>This violates the file-only response protocol. Reply via windows-message with: [SUPERVISOR:REMIND] Use the file= response protocol. Save to {research-root}/execute-&lt;N&gt;-&lt;slug&gt;.md (research-root resolved in step 0b) and reply with only [EXECUTE:DONE file=&lt;abs-path&gt;].</action>
         <action>Do not advance state; wait for the file-form reply.</action>
       </branch>
       <branch tag="no [EXECUTE:...] header at all AND not a stop-hook idle line">
@@ -263,6 +283,19 @@
     <step n="9b" title="Cycle completion and continuation">
       <condition>Step 9 synthesis is complete</condition>
       <action>Read .tmux-cli/tasks.yaml and mark all completed tasks as status=done.</action>
+      <action condition="GOAL_MODE is true">Append/update a research-file index in .tmux-cli/goals/{GOAL_ID}/goal.md so the goal records its artifacts. Use a section titled "## Research Files" with markdown links RELATIVE to the goal dir, grouped by category:
+
+## Research Files
+
+### Reports
+- [&lt;subtask label&gt;](research/execute-&lt;N&gt;-&lt;slug&gt;.md)
+- ... one per accepted per-worker report file ...
+
+### Context
+- [&lt;subtask label&gt;](research/task-&lt;slug&gt;.md)
+- ... one per research-task context file ...
+
+If a "## Research Files" section already exists in goal.md (re-run / next cycle), REPLACE that section in place rather than appending a duplicate (idempotent). List every generated file in its category. Omit a subsection if it has no files.</action>
       <action>Read supervisor.max_cycles from .tmux-cli/setting.yaml (default: 0 = unlimited).</action>
       <action>Increment the cycle counter in tasks.yaml.</action>
       <check condition="pending tasks remain AND (max_cycles == 0 OR cycle &lt; max_cycles)">
@@ -304,7 +337,7 @@ DELIVERABLE (write these sections INSIDE the report .md; do NOT paste them into 
 - FILES: absolute paths touched or cited, one per line
 
 RESPONSE PROTOCOL (MANDATORY):
-1. Save the full report to .tmux-cli/research/{y-m-d-hh}/execute-&lt;N&gt;-&lt;slug&gt;.md
+1. Save the full report to {research-root}/execute-&lt;N&gt;-&lt;slug&gt;.md (research-root resolved in step 0b)
    using the sections specified in DELIVERABLE above (or ## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES when no custom deliverable is set).
    Pick a descriptive &lt;slug&gt; (kebab-case, ≤40 chars).
 2. Reply via windows-message to SUPERVISOR_WID with ONLY:

@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 13)
+	assert.Len(t, m.items, 17)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -45,6 +45,10 @@ commands:
 	assert.Equal(t, "taskvisor.dispatch_timeout", m.items[10].key)
 	assert.Equal(t, "taskvisor.validate_timeout", m.items[11].key)
 	assert.Equal(t, "taskvisor.poll_interval", m.items[12].key)
+	assert.Equal(t, "taskvisor.circuit_breaker_k", m.items[13].key)
+	assert.Equal(t, "taskvisor.auto_resume_interval_sec", m.items[14].key)
+	assert.Equal(t, "taskvisor.transient_retry_max_attempts", m.items[15].key)
+	assert.Equal(t, "taskvisor.transient_retry_backoff_ms", m.items[16].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -119,17 +123,33 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 12, m.cursor)
 
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 13, m.cursor)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 14, m.cursor)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 15, m.cursor)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 16, m.cursor)
+
 	// Can't go past last item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 12, m.cursor)
+	assert.Equal(t, 16, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 11, m.cursor)
+	assert.Equal(t, 15, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 17; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -622,7 +642,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 13)
+	assert.Len(t, m.items, 17)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -631,6 +651,10 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	assert.Contains(t, keys, "taskvisor.dispatch_timeout")
 	assert.Contains(t, keys, "taskvisor.validate_timeout")
 	assert.Contains(t, keys, "taskvisor.poll_interval")
+	assert.Contains(t, keys, "taskvisor.circuit_breaker_k")
+	assert.Contains(t, keys, "taskvisor.auto_resume_interval_sec")
+	assert.Contains(t, keys, "taskvisor.transient_retry_max_attempts")
+	assert.Contains(t, keys, "taskvisor.transient_retry_backoff_ms")
 
 	for _, item := range m.items {
 		switch item.key {
@@ -639,12 +663,189 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 			assert.Equal(t, 3600, item.intVal)
 		case "taskvisor.validate_timeout":
 			assert.Equal(t, "int", item.kind)
-			assert.Equal(t, 300, item.intVal)
+			// Default seeded via DeriveValidateTimeout(600,4,4) = 660 (C4).
+			assert.Equal(t, 660, item.intVal)
 		case "taskvisor.poll_interval":
 			assert.Equal(t, "int", item.kind)
 			assert.Equal(t, 5, item.intVal)
+		case "taskvisor.circuit_breaker_k":
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 2, item.intVal)
+		case "taskvisor.auto_resume_interval_sec":
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 30, item.intVal)
+		case "taskvisor.transient_retry_max_attempts":
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 3, item.intVal)
+		case "taskvisor.transient_retry_backoff_ms":
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 500, item.intVal)
 		}
 	}
+}
+
+// TestNewModel_IncludesTransientRetryItems proves the C4-cont transient-retry
+// knobs surface in the TUI items list with the correct kind and default intVals.
+func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	assert.Len(t, m.items, 17)
+
+	keys := make([]string, len(m.items))
+	for i, item := range m.items {
+		keys[i] = item.key
+	}
+	assert.Contains(t, keys, "taskvisor.transient_retry_max_attempts")
+	assert.Contains(t, keys, "taskvisor.transient_retry_backoff_ms")
+
+	for _, item := range m.items {
+		switch item.key {
+		case "taskvisor.transient_retry_max_attempts":
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 3, item.intVal)
+		case "taskvisor.transient_retry_backoff_ms":
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 500, item.intVal)
+		}
+	}
+}
+
+// TestToSettings_TransientRetryMaxAttempts proves an edited
+// transient_retry_max_attempts overlays onto Taskvisor.TransientRetryMaxAttempts
+// while sibling/undisplayed Settings fields survive (AGENTS.md TUI INVARIANT).
+func TestToSettings_TransientRetryMaxAttempts(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 7
+taskvisor:
+  dispatch_timeout: 1234
+  validate_timeout: 5678
+  poll_interval: 3
+  circuit_breaker_k: 4
+  auto_resume_interval_sec: 30
+  transient_retry_max_attempts: 3
+  transient_retry_backoff_ms: 500
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.transient_retry_max_attempts" {
+			m.items[i].intVal = 7
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 7, result.Taskvisor.TransientRetryMaxAttempts, "edited value overlays onto settings")
+	// Sibling/undisplayed fields preserved.
+	assert.Equal(t, 500, result.Taskvisor.TransientRetryBackoffMs)
+	assert.Equal(t, 1234, result.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 5678, result.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 4, result.Taskvisor.CircuitBreakerK)
+	assert.Equal(t, 7, result.Supervisor.MaxCycles)
+}
+
+// TestToSettings_TransientRetryBackoffMs proves an edited
+// transient_retry_backoff_ms overlays onto Taskvisor.TransientRetryBackoffMs.
+func TestToSettings_TransientRetryBackoffMs(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.transient_retry_backoff_ms" {
+			m.items[i].intVal = 750
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 750, result.Taskvisor.TransientRetryBackoffMs)
+}
+
+// TestToSettings_AutoResumeInterval proves an edited auto_resume_interval_sec
+// overlays onto Taskvisor.AutoResumeIntervalSec and that sibling/undisplayed
+// Settings fields survive the overlay (AGENTS.md TUI INVARIANT).
+func TestToSettings_AutoResumeInterval(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 7
+  cycle_delay: 9
+taskvisor:
+  dispatch_timeout: 1234
+  validate_timeout: 5678
+  poll_interval: 3
+  circuit_breaker_k: 4
+  auto_resume_interval_sec: 30
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.auto_resume_interval_sec" {
+			m.items[i].intVal = 45
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 45, result.Taskvisor.AutoResumeIntervalSec, "edited value overlays onto settings")
+	// Sibling/undisplayed fields preserved.
+	assert.Equal(t, 1234, result.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 5678, result.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 3, result.Taskvisor.PollInterval)
+	assert.Equal(t, 4, result.Taskvisor.CircuitBreakerK)
+	assert.Equal(t, 7, result.Supervisor.MaxCycles)
+}
+
+// TestToSettings_CircuitBreakerK proves an edited circuit_breaker_k overlays
+// onto Taskvisor.CircuitBreakerK and that undisplayed/sibling Settings fields
+// survive the overlay (AGENTS.md TUI INVARIANT — overlay onto baseSettings).
+func TestToSettings_CircuitBreakerK(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 7
+  cycle_delay: 9
+taskvisor:
+  dispatch_timeout: 1234
+  validate_timeout: 5678
+  poll_interval: 3
+  circuit_breaker_k: 2
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.circuit_breaker_k" {
+			m.items[i].intVal = 5
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 5, result.Taskvisor.CircuitBreakerK, "edited value overlays onto settings")
+	// Sibling/undisplayed fields preserved.
+	assert.Equal(t, 1234, result.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 5678, result.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 3, result.Taskvisor.PollInterval)
+	assert.Equal(t, 7, result.Supervisor.MaxCycles)
 }
 
 func TestToSettings_TaskvisorDispatchTimeout(t *testing.T) {

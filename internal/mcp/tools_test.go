@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -456,38 +457,38 @@ func TestResolveWindowIdentifier_Empty(t *testing.T) {
 // --- nextExecuteN tests ---
 
 func TestNextExecuteN_EmptyList(t *testing.T) {
-	result := nextExecuteN(nil)
+	result := nextExecuteN(nil, "execute-")
 	assert.Equal(t, "execute-1", result)
 }
 
 func TestNextExecuteN_NoExecuteWindows(t *testing.T) {
 	windows := []WindowListItem{{Name: "supervisor"}, {Name: "main"}}
-	result := nextExecuteN(windows)
+	result := nextExecuteN(windows, "execute-")
 	assert.Equal(t, "execute-1", result)
 }
 
 func TestNextExecuteN_OneExecuteWindow(t *testing.T) {
 	windows := []WindowListItem{{Name: "supervisor"}, {Name: "execute-1"}}
-	result := nextExecuteN(windows)
+	result := nextExecuteN(windows, "execute-")
 	assert.Equal(t, "execute-2", result)
 }
 
 func TestNextExecuteN_GapInNumbers(t *testing.T) {
 	windows := []WindowListItem{{Name: "execute-3"}, {Name: "execute-7"}}
-	result := nextExecuteN(windows)
+	result := nextExecuteN(windows, "execute-")
 	assert.Equal(t, "execute-8", result)
 }
 
 func TestNextExecuteN_NonNumericSuffix(t *testing.T) {
 	windows := []WindowListItem{{Name: "execute-foo"}, {Name: "supervisor"}}
-	result := nextExecuteN(windows)
+	result := nextExecuteN(windows, "execute-")
 	assert.Equal(t, "execute-1", result)
 }
 
 // --- buildTaskMessage tests ---
 
 func TestBuildTaskMessage_AllFields(t *testing.T) {
-	msg := buildTaskMessage("supervisor", "execute-3", "audit auth module", ".tmux-cli/research/2026-05-11-22/task-auth.md", "Check all auth endpoints", "Prior audit found XSS in login", "2026-05-11-22", "")
+	msg := buildTaskMessage("supervisor", "execute-3", "audit auth module", ".tmux-cli/research/2026-05-11-22/task-auth.md", "Check all auth endpoints", "Prior audit found XSS in login", ".tmux-cli/research/2026-05-11-22", "")
 
 	assert.Contains(t, msg, "SUPERVISOR_WID=supervisor")
 	assert.Contains(t, msg, "SELF_WID=execute-3")
@@ -503,19 +504,19 @@ func TestBuildTaskMessage_AllFields(t *testing.T) {
 }
 
 func TestBuildTaskMessage_EmptyContext(t *testing.T) {
-	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", "2026-05-11-22", "")
+	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-05-11-22", "")
 
 	assert.Contains(t, msg, "CONTEXT:\n(none)")
 }
 
 func TestBuildTaskMessage_ResearchDir(t *testing.T) {
-	msg := buildTaskMessage("supervisor", "execute-5", "task", "ctx.md", "scope", "", "2026-01-15-09", "")
+	msg := buildTaskMessage("supervisor", "execute-5", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-01-15-09", "")
 
 	assert.Contains(t, msg, ".tmux-cli/research/2026-01-15-09/execute-5-<slug>.md")
 }
 
 func TestBuildTaskMessage_DefaultDeliverable(t *testing.T) {
-	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", "2026-05-11-23", "")
+	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-05-11-23", "")
 
 	assert.Contains(t, msg, "FINDINGS")
 	assert.Contains(t, msg, "RISKS")
@@ -526,13 +527,118 @@ func TestBuildTaskMessage_DefaultDeliverable(t *testing.T) {
 
 func TestBuildTaskMessage_CustomDeliverable(t *testing.T) {
 	custom := "- SPEC: structured specification with sections\n- DESIGN: architecture decisions\n- TESTS: test plan"
-	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", "2026-05-11-23", custom)
+	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-05-11-23", custom)
 
 	assert.Contains(t, msg, "DELIVERABLE")
 	assert.Contains(t, msg, custom)
 	assert.NotContains(t, msg, ">=3 bullets")
 	assert.NotContains(t, msg, "verb of decision")
 	assert.Contains(t, msg, "RESPONSE PROTOCOL (MANDATORY)")
+}
+
+func TestBuildTaskMessage_GoalScopedSavePath(t *testing.T) {
+	goalMsg := buildTaskMessage("supervisor", "execute-2", "task", "ctx.md", "scope", "", ".tmux-cli/goals/goal-007/research", "")
+	assert.Contains(t, goalMsg, ".tmux-cli/goals/goal-007/research/execute-2-<slug>.md")
+	assert.NotContains(t, goalMsg, ".tmux-cli/research/")
+
+	standaloneMsg := buildTaskMessage("supervisor", "execute-2", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-06-01-14", "")
+	assert.Contains(t, standaloneMsg, ".tmux-cli/research/2026-06-01-14/execute-2-<slug>.md")
+}
+
+// --- resolveResearchRoot tests ---
+
+func TestResolveResearchRoot_GoalMode(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".tmux-cli", "taskvisor-current-goal"), []byte("goal-007\n"), 0o644))
+
+	s := &Server{workingDir: dir}
+	assert.Equal(t, ".tmux-cli/goals/goal-007/research", s.resolveResearchRoot())
+}
+
+func TestResolveResearchRoot_Standalone(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{workingDir: dir}
+
+	root := s.resolveResearchRoot()
+	assert.True(t, strings.HasPrefix(root, ".tmux-cli/research/"), "expected standalone research prefix, got %q", root)
+	assert.NotContains(t, root, ".tmux-cli/goals/")
+}
+
+func TestResolveResearchRoot_EmptyGoalFile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".tmux-cli", "taskvisor-current-goal"), []byte("  \n\t"), 0o644))
+
+	s := &Server{workingDir: dir}
+
+	root := s.resolveResearchRoot()
+	assert.True(t, strings.HasPrefix(root, ".tmux-cli/research/"), "expected standalone research prefix, got %q", root)
+	assert.NotContains(t, root, ".tmux-cli/goals/")
+}
+
+// writeMarkers is a tiny helper that writes the goal and (optionally) cycle
+// marker files into a temp working dir for resolveResearchRoot tests.
+func writeMarkers(t *testing.T, dir, goal string, cycle *string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli"), 0o755))
+	if goal != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".tmux-cli", "taskvisor-current-goal"), []byte(goal), 0o644))
+	}
+	if cycle != nil {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".tmux-cli", "taskvisor-current-cycle"), []byte(*cycle), 0o644))
+	}
+}
+
+func strptr(s string) *string { return &s }
+
+// goal=goal-008 + cycle=2 -> .tmux-cli/goals/goal-008/research/cycle-2
+func TestResolveResearchRoot_GoalAndCycle(t *testing.T) {
+	dir := t.TempDir()
+	writeMarkers(t, dir, "goal-008\n", strptr("2\n"))
+
+	s := &Server{workingDir: dir}
+	assert.Equal(t, filepath.Join(".tmux-cli", "goals", "goal-008", "research", "cycle-2"), s.resolveResearchRoot())
+}
+
+// goal set, cycle marker absent -> .tmux-cli/goals/goal-008/research (unchanged)
+func TestResolveResearchRoot_GoalNoCycle(t *testing.T) {
+	dir := t.TempDir()
+	writeMarkers(t, dir, "goal-008\n", nil)
+
+	s := &Server{workingDir: dir}
+	root := s.resolveResearchRoot()
+	assert.Equal(t, filepath.Join(".tmux-cli", "goals", "goal-008", "research"), root)
+	assert.NotContains(t, root, "cycle-")
+}
+
+// goal set + cycle = ""/"abc"/"0"/"-1" -> goal-scoped no-cycle path, never error/panic.
+func TestResolveResearchRoot_InvalidCycleFallsBack(t *testing.T) {
+	for _, cycle := range []string{"", "  \n\t", "abc", "0", "-1", "1.5", "2x"} {
+		t.Run("cycle="+cycle, func(t *testing.T) {
+			dir := t.TempDir()
+			writeMarkers(t, dir, "goal-008\n", strptr(cycle))
+
+			s := &Server{workingDir: dir}
+			root := s.resolveResearchRoot()
+			assert.Equal(t, filepath.Join(".tmux-cli", "goals", "goal-008", "research"), root,
+				"invalid cycle %q must fall back to goal-scoped no-cycle path", cycle)
+			assert.NotContains(t, root, "cycle-")
+		})
+	}
+}
+
+// no goal marker -> standalone timestamped path; a stray cycle marker must NOT
+// promote a standalone run into a goal/cycle path.
+func TestResolveResearchRoot_StandaloneIgnoresCycle(t *testing.T) {
+	dir := t.TempDir()
+	writeMarkers(t, dir, "", strptr("3\n"))
+
+	s := &Server{workingDir: dir}
+	root := s.resolveResearchRoot()
+	assert.True(t, strings.HasPrefix(root, ".tmux-cli/research/"), "expected standalone research prefix, got %q", root)
+	assert.NotContains(t, root, ".tmux-cli/goals/")
+	assert.NotContains(t, root, "cycle-")
 }
 
 // --- WindowsSpawnWorker tests ---
@@ -744,7 +850,7 @@ func TestServer_WindowsSpawnWorker_Success(t *testing.T) {
 	})).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	window, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "prior findings", "")
+	window, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "prior findings", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-1", workerName)
@@ -760,28 +866,28 @@ func TestServer_WindowsSpawnWorker_Success(t *testing.T) {
 
 func TestServer_WindowsSpawnWorker_EmptySupervisorWid(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("", "task", "ctx.md", "scope", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("", "task", "ctx.md", "scope", "", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 }
 
 func TestServer_WindowsSpawnWorker_EmptySubtask(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "", "ctx.md", "scope", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "", "ctx.md", "scope", "", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 }
 
 func TestServer_WindowsSpawnWorker_EmptyContextFile(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "", "scope", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "", "scope", "", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 }
 
 func TestServer_WindowsSpawnWorker_EmptyScope(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "", "", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 }
@@ -808,7 +914,7 @@ func TestServer_WindowsSpawnWorker_WithCustomDeliverable(t *testing.T) {
 	})).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "write spec", "ctx.md", "create spec", "", customDeliverable)
+	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "write spec", "ctx.md", "create spec", "", customDeliverable, "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-1", workerName)
@@ -841,7 +947,7 @@ func TestServer_WindowsSpawnWorker_WithoutDeliverable(t *testing.T) {
 	})).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "")
+	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-1", workerName)
@@ -869,7 +975,7 @@ func TestServer_WindowsSpawnWorker_ExecuteSendFails_CleansUp(t *testing.T) {
 	mockExec.On("KillWindow", "test-session", "@1").Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
@@ -893,7 +999,7 @@ func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
 	mockExec.On("KillWindow", "test-session", "@1").Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
@@ -917,11 +1023,11 @@ func TestServer_WindowsSpawnWorker_MaxWorkersExceeded(t *testing.T) {
 	}, nil)
 
 	server := newTestServer(mockExec, root)
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMaxWorkersExceeded)
-	assert.Contains(t, err.Error(), "2 execute workers already running")
+	assert.Contains(t, err.Error(), "2 execute-workers already running")
 }
 
 func TestServer_WindowsSpawnWorker_MaxWorkersNotExceeded(t *testing.T) {
@@ -948,7 +1054,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersNotExceeded(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@2", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, root)
-	window, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "")
+	window, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-2", name)
@@ -981,7 +1087,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersZeroUnlimited(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@4", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, root)
-	_, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "")
+	_, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-4", name)

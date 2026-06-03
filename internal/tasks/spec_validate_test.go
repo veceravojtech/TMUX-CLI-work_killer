@@ -420,3 +420,331 @@ func TestValidateSpecFile_Stats(t *testing.T) {
 	assert.Equal(t, 3, result.Stats.AcceptanceCriteria)
 	assert.Equal(t, 3, result.Stats.CodeMapEntries)
 }
+
+// gapIDsOf extracts the gap IDs from a validation result (helper for the
+// false-positive-remediation tests below; existing tests inline their own loop).
+func gapIDsOf(r *SpecValidationResult) []string {
+	var ids []string
+	for _, g := range r.Gaps {
+		ids = append(ids, g.ID)
+	}
+	return ids
+}
+
+// specWith builds an otherwise-valid spec skeleton with the Code Map and Test
+// Plan section bodies swapped in, so a test can exercise one section in
+// isolation without tripping the other S0-S8 checks.
+func specWith(codeMap, testPlan string) string {
+	return `## Intent
+
+**Problem:** Something is broken.
+**Approach:** Fix it cleanly.
+
+## Boundaries & Constraints
+
+**Always:** Do good.
+**Never:** Do bad.
+
+## Dependencies
+
+none
+
+## Code Map
+
+` + codeMap + `
+
+## Implementation Plan
+
+### Files to Create/Modify
+
+- ` + "`file.go`" + ` — modify
+
+## Test Plan
+
+` + testPlan + `
+
+## Acceptance Criteria
+
+- [ ] Given X, when Y, then Z
+`
+}
+
+const defaultCodeMap = "- `file.go:1` — thing"
+
+// --- S3 testCaseRe: regex-level forms ---------------------------------------
+
+func TestTestCaseRe_AcceptedForms(t *testing.T) {
+	accepted := []string{
+		"- `TestCreateUser` succeeds",
+		"- testCreateUser",
+		"  - TestNested",
+		"| TestFoo | returns X |",
+		"- TC-1: grep returns zero",
+	}
+	for _, in := range accepted {
+		assert.True(t, testCaseRe.MatchString(in), "expected match: %q", in)
+	}
+}
+
+func TestTestCaseRe_RejectedForms(t *testing.T) {
+	rejected := []string{
+		"- testing the cache",
+		"- tests should pass",
+		"| Normal request | valid | 200 | n/a |",
+		"| Scenario | Input | Output |",
+	}
+	for _, in := range rejected {
+		assert.False(t, testCaseRe.MatchString(in), "expected NO match: %q", in)
+	}
+}
+
+// --- S1 codeRefRe: regex-level forms ----------------------------------------
+
+func TestCodeRefRe_AcceptedForms(t *testing.T) {
+	accepted := []string{
+		"internal/foo.go:42",
+		"`base.md:1-168`",
+		"`internal/auth/handler.go:42`",
+		"file.go:1",
+	}
+	for _, in := range accepted {
+		assert.True(t, codeRefRe.MatchString(in), "expected match: %q", in)
+	}
+}
+
+func TestCodeRefRe_RejectedForms(t *testing.T) {
+	rejected := []string{
+		"http://host:80",
+		"time 12:30",
+		"noextensionhere:42",
+	}
+	for _, in := range rejected {
+		assert.False(t, codeRefRe.MatchString(in), "expected NO match: %q", in)
+	}
+}
+
+// --- S8 tdbRe: regex-level forms --------------------------------------------
+
+func TestTdbRe_ValuePositionFires(t *testing.T) {
+	fires := []string{
+		"**Approach:** TBD",
+		"- TODO",
+		"Status: PLACEHOLDER",
+		"field: to be determined",
+	}
+	for _, in := range fires {
+		assert.True(t, tdbRe.MatchString(in), "expected match: %q", in)
+	}
+}
+
+func TestTdbRe_ProseAndTemplateDoesNotFire(t *testing.T) {
+	noFire := []string{
+		"Use {{placeholder}} in body",
+		"{{placeholder}}",
+		"**Never:** never create placeholder code.",
+		"**Never:** leave a TODO comment behind",
+		"lowercase placeholder word in prose",
+	}
+	for _, in := range noFire {
+		assert.False(t, tdbRe.MatchString(in), "expected NO match: %q", in)
+	}
+}
+
+// --- S3 end-to-end: ValidateSpecFile -----------------------------------------
+
+func TestValidateSpecFile_S3_TableTestPlan(t *testing.T) {
+	dir := t.TempDir()
+	tp := "| Test Case | Expected |\n|---|---|\n| TestFoo | returns X |\n| TestBar | returns Y |"
+	path := writeSpec(t, dir, "spec.md", specWith(defaultCodeMap, tp))
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, gapIDsOf(result), "S3")
+	assert.GreaterOrEqual(t, result.Stats.TestCases, 1)
+}
+
+func TestValidateSpecFile_S3_CamelCaseTestPlan(t *testing.T) {
+	dir := t.TempDir()
+	tp := "- testCreatesUser: builds a user\n- testRejectsDuplicate: returns an error"
+	path := writeSpec(t, dir, "spec.md", specWith(defaultCodeMap, tp))
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, gapIDsOf(result), "S3")
+	assert.GreaterOrEqual(t, result.Stats.TestCases, 1)
+}
+
+func TestValidateSpecFile_S3_EmptyTestPlanStillFails(t *testing.T) {
+	dir := t.TempDir()
+	tp := "- testing the cache layer\n- general notes about how tests should pass"
+	path := writeSpec(t, dir, "spec.md", specWith(defaultCodeMap, tp))
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, gapIDsOf(result), "S3")
+	assert.Equal(t, 0, result.Stats.TestCases)
+}
+
+// --- S1 end-to-end: ValidateSpecFile -----------------------------------------
+
+func TestValidateSpecFile_S1_BareAndRangeRefs(t *testing.T) {
+	dir := t.TempDir()
+	cm := "- internal/x.go:10 — current behavior\n- `y.md:1-20` — range reference"
+	path := writeSpec(t, dir, "spec.md", specWith(cm, "- TestThing: checks it"))
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, gapIDsOf(result), "S1")
+	assert.GreaterOrEqual(t, result.Stats.CodeMapEntries, 2)
+}
+
+func TestValidateSpecFile_S1_EmptyCodeMapStillFails(t *testing.T) {
+	dir := t.TempDir()
+	cm := "Just prose describing the area, no file references at all."
+	path := writeSpec(t, dir, "spec.md", specWith(cm, "- TestThing: checks it"))
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, gapIDsOf(result), "S1")
+	assert.Equal(t, 0, result.Stats.CodeMapEntries)
+}
+
+// --- S8 end-to-end: ValidateSpecFile -----------------------------------------
+
+func TestValidateSpecFile_S8_MustacheNoFire(t *testing.T) {
+	dir := t.TempDir()
+	spec := specWith(defaultCodeMap, "- TestThing: checks it") +
+		"\n## Implementation Notes\n\nUse {{placeholder}} in the body. Never create placeholder code by hand.\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, gapIDsOf(result), "S8")
+	assert.True(t, result.Valid)
+}
+
+func TestValidateSpecFile_S8_ValuePositionStillFires(t *testing.T) {
+	dir := t.TempDir()
+	spec := specWith(defaultCodeMap, "- TestThing: checks it") +
+		"\n## Implementation Notes\n\n**Approach:** TBD\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, gapIDsOf(result), "S8")
+}
+
+// --- S9 subjectiveGateRe / coverageClauseRe: regex-level forms ---------------
+
+func TestSubjectiveGateRe_AcceptedForms(t *testing.T) {
+	accepted := []string{
+		"tests demonstrably cover the feature",
+		"the handler is properly wired",
+		"input is appropriately validated",
+		"appropriate error handling",
+		"sufficient coverage of edge cases",
+		"the buffer is adequately sized",
+		"retries as needed until success",
+		"applies where applicable",
+		"a reasonable number of attempts",
+	}
+	for _, in := range accepted {
+		assert.True(t, subjectiveGateRe.MatchString(in), "expected match: %q", in)
+	}
+}
+
+func TestSubjectiveGateRe_RejectedForms(t *testing.T) {
+	rejected := []string{
+		"vendor/bin/phpunit --filter=Foo exits 0",
+		"grep -rl 'class X' src/ returns >=1",
+		"this is an objective gate, not a judgment call",
+		"the property of the system is invariant", // must NOT match "properly"
+		"retries as expected",                     // must NOT match "as needed"
+	}
+	for _, in := range rejected {
+		assert.False(t, subjectiveGateRe.MatchString(in), "expected NO match: %q", in)
+	}
+}
+
+func TestCoverageClauseRe_AcceptedForms(t *testing.T) {
+	accepted := []string{
+		"pass exit 0 with creation/mutation/invariant/event coverage",
+		"missing test coverage for aggregate operations",
+		"insufficient test coverage",
+		"coverage of the domain layer",
+		"covers creation via named constructor",
+		"covers each invariant violation",
+	}
+	for _, in := range accepted {
+		assert.True(t, coverageClauseRe.MatchString(in), "expected match: %q", in)
+	}
+}
+
+func TestCoverageClauseRe_RejectedForms(t *testing.T) {
+	rejected := []string{
+		"this is an objective gate, not a coverage judgment call",
+		"a green-but-uncovered suite FAILS",
+		"line coverage >= 80%",
+		"code coverage threshold is enforced at 80%",
+	}
+	for _, in := range rejected {
+		assert.False(t, coverageClauseRe.MatchString(in), "expected NO match: %q", in)
+	}
+}
+
+// --- S9 end-to-end: ValidateSpecFile -----------------------------------------
+
+func TestValidateSpecFile_S9_SubjectiveCoverageGateFires(t *testing.T) {
+	dir := t.TempDir()
+	spec := fullValidSpec +
+		"\n## Investigation Config\n\nINV-1 Unit tests (test-execution): vendor/bin/phpunit; pass exit 0 with creation/mutation/invariant/event coverage; fail otherwise.\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, gapIDsOf(result), "S9")
+}
+
+func TestValidateSpecFile_S9_SubjectiveAdjectiveFires(t *testing.T) {
+	dir := t.TempDir()
+	spec := fullValidSpec +
+		"\n## Validation Rules\n\n- the feature is properly validated end to end\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, gapIDsOf(result), "S9")
+}
+
+func TestValidateSpecFile_S9_ObjectiveGatesNoFire(t *testing.T) {
+	dir := t.TempDir()
+	spec := fullValidSpec +
+		"\n## Validation Rules\n\n" +
+		"- vendor/bin/phpunit --filter=Foo (exit 0)\n" +
+		"- grep -rl 'class SkuUniquenessChecker' src/ (must return >=1)\n" +
+		"- line coverage >= 80%\n" +
+		"\n## Investigation Config\n\n" +
+		"INV-1 (test-execution): phpunit; pass exit 0 AND grep -rl 'class X' src/ returns >=1; fail otherwise.\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, gapIDsOf(result), "S9")
+	assert.True(t, result.Valid)
+}
+
+func TestValidateSpecFile_S9_MetaReferenceNoFire(t *testing.T) {
+	// Guards the goal-003 INV-1 wording: an objective gate that mentions the
+	// word "coverage"/"uncovered" only to DESCRIBE itself must not be flagged.
+	dir := t.TempDir()
+	spec := fullValidSpec +
+		"\n## Investigation Config\n\n" +
+		"INV-1 (test-execution): phpunit --filter=Foo MUST exit 0 AND grep -rl 'class X' src/ returns >=1; " +
+		"a green-but-uncovered suite FAILS. This is an objective gate, not a coverage judgment call.\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, gapIDsOf(result), "S9")
+	assert.True(t, result.Valid)
+}
