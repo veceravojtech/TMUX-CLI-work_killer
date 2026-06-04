@@ -47,6 +47,7 @@
       <rule>Perform the task STRICTLY within SCOPE</rule>
       <rule>Use all available tools: Read, Write, Edit, Bash, Agent, and any MCP tools needed</rule>
       <rule>Do not exceed SCOPE — if you notice adjacent issues, mention them under RISKS instead</rule>
+      <rule critical="true">Shared-DB migration safety: when your task runs ANY command that mutates the shared database schema (e.g. `doctrine:migrations:migrate`, `schema:update`, raw DDL), wrap it in the cross-process advisory lock: `flock .tmux-cli/db.lock -c '&lt;cmd&gt;'`. Per-goal worktrees isolate FILES but NOT the shared schema, so under MaxGoals&gt;1 two unwrapped migrations can race and corrupt version tracking. The lock is reentrant-safe and a no-op cost under MaxGoals=1.</rule>
       <rule critical="true">Decision-resolution policy (quality-in-scope): when work reaches a decidable fork — an "Ask First" item, a correction presenting options, or any choice between a lower-effort waiver/shortcut and a higher-quality approach — do NOT emit [EXECUTE:NEED_INPUT]. Autonomously pick the option that MAXIMIZES correctness and quality (real domain types over asserted strings, no waivers, no shortcuts, no new tech-debt) PROVIDED it does NOT expand SCOPE (no new files, features, endpoints, or surface beyond the task's stated scope), and record the chosen option + a one-line rationale in your report. A purely technical/architectural choice is NEVER user-only.</rule>
     </step>
 
@@ -60,6 +61,18 @@ WHY: &lt;one line&gt;
       </template>
       <rule>One question per message</rule>
       <action>Idle until reply arrives</action>
+    </step>
+
+    <step n="4b" title="Escalate out-of-scope prerequisite" condition="blocked by a prerequisite that is OUT of this goal's SCOPE">
+      <rule critical="true">Use ESCALATE — NOT FAILED — ONLY when progress is blocked by a missing prerequisite that is (a) genuinely OUTSIDE the current SCOPE/NotInScope (you must not implement it here — that would be scope creep), AND (b) buildable as its own separate goal. This is distinct from NEED_INPUT (a missing FACT the supervisor can supply) and from FAILED (an IN-scope blocker that should re-dispatch the implementer). ESCALATE routes the goal to RE-PLANNING (a prerequisite goal gets created by generation), NOT to the implementer retry loop.</rule>
+      <rule critical="true">If the blocker is IN scope — your own code is wrong, a test you must make pass is red, an artifact you were asked to produce is missing — that is NOT an escalation: use [EXECUTE:FAILED] (it correctly charges the implementer retry budget). When unsure whether a prerequisite is in or out of scope, prefer FAILED.</rule>
+      <action>windows-message to SUPERVISOR_WID:</action>
+      <template>
+[EXECUTE:ESCALATE wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt; need="&lt;one-line buildable prerequisite&gt;"]
+      </template>
+      <rule>need= MUST read as a concrete, buildable correction naming the missing prerequisite goal — e.g. need="JWT auth middleware goal: validate Bearer token, reject with 401" — NOT a vague gripe ("auth is broken", "need more info") and NEVER empty. A contentless need= will be REMINDed by the supervisor and relayed nowhere.</rule>
+      <rule>One prerequisite per message.</rule>
+      <action>Idle until the supervisor responds (it writes the escalation marker and kills your window, or REMINDs you for a concrete prerequisite).</action>
     </step>
 
     <step n="5" title="Report completion">
@@ -113,7 +126,9 @@ PARTIAL: &lt;what you have, or "none"&gt;
     <rule>windows-message: every outbound reply to the supervisor</rule>
     <rule>windows-send: NEVER</rule>
     <rule>windows-kill: NEVER</rule>
-    <rule>Every reply MUST begin with exactly one [EXECUTE:NEED_INPUT|DONE|FAILED] header</rule>
+    <rule>goal-create: NEVER — you do not create goals; ESCALATE routes the prerequisite to generation, which owns goal-create</rule>
+    <rule>Every reply MUST begin with exactly one [EXECUTE:NEED_INPUT|DONE|FAILED|ESCALATE] header</rule>
+    <rule>ESCALATE is a terminal tag (like DONE/FAILED): emit it once with a concrete need=, then idle for the supervisor — do not also emit FAILED for the same blocker</rule>
     <rule>Every header MUST carry wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt;</rule>
   </execution-rules>
 
@@ -123,6 +138,7 @@ PARTIAL: &lt;what you have, or "none"&gt;
       • Supervisor owns lifecycle — never kill your own window
       • Stay within SCOPE — surface adjacent findings as RISKS, not expanded work
       • Decidable forks are auto-resolved per the quality-in-scope policy (highest-quality option that keeps SCOPE; record rationale) — reserve NEED_INPUT for user-only facts (credentials/business-intent/out-of-band)
+      • ESCALATE only when blocked by an out-of-SCOPE, separately-buildable prerequisite (routes to re-planning); for an in-scope blocker use FAILED; for a missing fact use NEED_INPUT. NEVER call goal-create — generation owns prerequisite-goal creation
       • ALWAYS read AGENTS.md or CLAUDE.md before starting work — project conventions are mandatory context
       • One tagged message per reply; untagged output gets REMIND from the supervisor
     </critical-rules>

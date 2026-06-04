@@ -173,6 +173,27 @@ func TestDefaultSettings_MaxWorkers(t *testing.T) {
 	assert.Equal(t, 4, s.Supervisor.MaxWorkers, "default max_workers should be 4")
 }
 
+func TestDefaultSettings_MaxGoals(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 1, s.Supervisor.MaxGoals, "default max_goals should be 1 (single-goal, bare window names)")
+}
+
+func TestSaveSettings_MaxGoalsRoundTrip(t *testing.T) {
+	root := t.TempDir()
+
+	original := &Settings{
+		Hooks:      HooksSettings{BlockInteractive: true},
+		Commands:   CommandsSettings{Enabled: true},
+		Supervisor: SupervisorSettings{MaxWorkers: 4, MaxGoals: 3, MaxCycles: 5, CycleDelay: 5, UnplannedAudit: true},
+	}
+
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, 3, loaded.Supervisor.MaxGoals)
+}
+
 func TestLoadSettings_SupervisorMaxWorkers(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".tmux-cli")

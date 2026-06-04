@@ -1,174 +1,26 @@
-<task id="validate" name="Goal acceptance validator">
-  <objective>Parse goal payload from $ARGUMENTS, check each validate rule using available read-only tools, and report the verdict via goal-validation-done MCP tool.</objective>
-
-  <requirements critical="true">
-    <mcp>tmux-cli MCP server REQUIRED (for goal-validation-done)</mcp>
-  </requirements>
-
-  <glossary>
-    <term name="goal_id">Unique goal identifier (e.g. "goal-001").</term>
-    <term name="validate rule">A single checkable assertion from the goal's validate list.</term>
-    <term name="ValidationFinding">Struct: rule, status (pass|fail|blocked|error), detail, correction, and — for every non-pass finding — failure_class (code-defect|env-config|infra-flake|spec-defect|validator-error) and owner (implementer|ops|planner).</term>
-    <term name="verdict">Overall result, one of pass|fail|blocked|error, rolled up from the findings by precedence (code-defect fail &gt; blocked &gt; error &gt; pass).</term>
-  </glossary>
-
-  <llm critical="true">
-    <mandate>NEVER modify, create, edit, or delete any file — you are strictly read-only</mandate>
-    <mandate>Your ONLY write action is calling the goal-validation-done MCP tool</mandate>
-    <mandate>NEVER skip a validate rule — every rule must be checked independently</mandate>
-    <mandate>If a validate rule is ambiguous or untestable, never pass it: record status=error, failure_class=validator-error, owner=ops (per step 3) and explain the ambiguity in detail — do not blame the planner (spec-defect) or implementer (code-defect) for the validator's inability to evaluate it</mandate>
-    <mandate>Do NOT implement fixes or suggest code changes — only validate and report findings</mandate>
-    <mandate>NEVER run Bash commands that modify state (rm, mv, cp, sed -i, tee, redirect >, etc.)</mandate>
-  </llm>
-
-  <flow>
-    <step n="1" title="Read project context">
-      <action>Check if AGENTS.md exists in the project root. If so, Read it and internalize conventions.</action>
-      <action>If not, check for CLAUDE.md. Read whichever is found first.</action>
-      <rule>Project context informs how to interpret validate rules (e.g. which test commands, build tools, file structure).</rule>
-    </step>
-
-    <step n="2" title="Parse goal payload">
-      <action>Parse $ARGUMENTS as JSON containing:</action>
-      <field required="true">goal_id — the goal being validated</field>
-      <field required="true">description — what the goal aims to achieve</field>
-      <field required="true">acceptance — list of human-readable acceptance criteria</field>
-      <field required="true">validate — list of machine-checkable validate rules</field>
-      <check condition="$ARGUMENTS missing, empty, or not valid JSON">
-        <action>Call goal-validation-done: goal_id="unknown", verdict="fail", findings=[{rule:"payload", status:"fail", detail:"...", correction:"provide valid JSON payload"}], next_action="fix payload"</action>
-        <action>STOP</action>
-      </check>
-      <check condition="any required field missing from parsed JSON">
-        <action>Call goal-validation-done: goal_id=(parsed or "unknown"), verdict="fail", findings listing each missing field, next_action="provide complete payload"</action>
-        <action>STOP</action>
-      </check>
-    </step>
-
-    <step n="2b" title="Resolve validate rules from file or payload">
-      <action>Construct path: `.tmux-cli/goals/&lt;goal_id&gt;/validate.md` using the parsed goal_id.</action>
-      <action>Use the Read tool to check if this file exists.</action>
-      <check condition="validate.md exists and is non-empty">
-        <action>Read its content. Each bullet line (starting with `-`) becomes one validate rule, replacing the inline validate array from the payload.</action>
-      </check>
-      <check condition="validate.md does not exist or is empty">
-        <action>Use the inline validate array from the parsed payload as-is.</action>
-      </check>
-      <rule>The resolved validate rules (from either source) are used in all subsequent steps.</rule>
-    </step>
-
-    <!--
-      C10 incremental re-validation reuse gate, mirrored for rule-based goals.
-      The read-only `tmux-cli taskvisor revalidation-plan` CLI computes each
-      rule's input fingerprint in Go and compares it against the
-      orchestrator-owned results.json ledger, deciding which rules to RE-RUN and
-      which to REUSE from a prior cycle's pass. READ-ONLY: results.json is
-      written only at the end via goal-validation-done (step 5), never here.
-    -->
-    <step n="2c" title="C10 re-validation reuse gate">
-      <action>Decide which resolved rules to RE-RUN and which to REUSE by running:</action>
-      <cmd>tmux-cli taskvisor revalidation-plan &lt;goal_id&gt; [--full] [--final]</cmd>
-      <rule>Pass --full when force_full_revalidation is set. Pass --final when this is the final cycle before overall pass. EITHER flag forces every rule to RERUN for end-to-end regression safety.</rule>
-      <rule>The command prints a JSON array of {finding_id, action: "RERUN"|"REUSE", reused_from_cycle, fingerprint}; finding_id matches the validate rule text.</rule>
-      <rule>If the command errors, prints an empty array, or there is no prior results.json (first cycle), treat EVERY rule as RERUN (safe degenerate full run). NEVER block on a missing or corrupt plan.</rule>
-      <action>Partition the resolved rules: action="RERUN" ⇒ check it in step 3; action="REUSE" ⇒ skip the check and carry the prior pass forward as a status="pass" finding tagged with reused_from_cycle and reused_fingerprint.</action>
-    </step>
-
-    <!--
-      C8 / M-06 binding cross-reference preflight. Sits AFTER C10's step 2c reuse
-      gate and BEFORE the ordinary per-rule check (step 3). Before any rule is
-      checked, cross-reference every artifact the resolved rules reference against
-      the project's declared bindings (reusing C3's AGENTS.md + docs/architecture/
-      adrs/ parse). A reference that contradicts a binding is a PLANNING defect,
-      not a code defect: emit it as status=blocked, failure_class=spec-defect,
-      owner=planner so the daemon's C2 switch bounces it to goal-generation
-      (decrementing spec_retries) rather than charging the implementer a code
-      retry on an unwinnable goal. ABSENT AGENTS.md/adrs ⇒ empty forbidden set ⇒
-      pure no-op (never an error, never a block).
-    -->
-    <step n="2d" title="C8 cross-reference artifacts against bindings (spec-defect preflight)">
-      <action>Reuse C3's binding parse: read the project-root AGENTS.md and docs/architecture/adrs/ to detect binding keywords. If neither exists (or no keyword matches), FORBIDDEN_ARTIFACTS is empty — skip this step entirely: emit no finding and leave the verdict unaffected. Never treat absent bindings as an error or a block.</action>
-      <action>Build FORBIDDEN_ARTIFACTS as the UNION of the forbidden-artifact patterns for every detected binding keyword, using the same binding-forbidden-map the planner uses (task-plan-generate.xml substep 1.45):</action>
-      <map>
-        - greenfield → composer.json, vendor/, package-lock.json, yarn.lock, Gemfile.lock, poetry.lock
-        - service-oriented / microservice → shared_db, single shared/monolithic schema.sql, one-DB-for-all-services references
-        - no-orm → doctrine.yaml, *.orm.xml, prisma/schema.prisma, ORM entity-mapping config
-      </map>
-      <action>For each artifact/path referenced by the resolved validate rules, match it CONSERVATIVELY (basename / path-suffix) against FORBIDDEN_ARTIFACTS — a doc that merely mentions the word is NOT a match.</action>
-      <check condition="a referenced artifact matches FORBIDDEN_ARTIFACTS">
-        <action>Emit a spec-defect ValidationFinding and SKIP the ordinary step-3 check for that artifact: {rule:"binding-cross-reference: &lt;artifact&gt; vs &lt;binding&gt;", status:"blocked", detail:"&lt;artifact&gt; contradicts &lt;binding&gt; binding", correction:"regenerate Config without &lt;artifact&gt;", failure_class:"spec-defect", owner:"planner"}.</action>
-        <rule>A binding contradiction is ALWAYS failure_class=spec-defect, owner=planner — NEVER a plain status=fail/pass rule-check verdict. owner=planner is the top of C1's owner-priority order, so there is no ambiguity even if the artifact also fits another rule.</rule>
-      </check>
-      <rule>This preflight overrides step 2c for the contradicting artifact: a rule marked REUSE whose artifact now contradicts a binding is re-flagged as a spec-defect (a reused prior pass cannot mask a spec contradiction).</rule>
-      <rule>Per-rule independence is preserved: an artifact NOT in FORBIDDEN_ARTIFACTS falls through unchanged to its ordinary step-3 check. This step adds findings; it never removes or alters a non-contradicting rule's check.</rule>
-    </step>
-
-    <step n="3" title="Check each validate rule">
-      <rule>C8: rules whose artifact was flagged as a spec-defect in step 2d are NOT re-checked here (their finding is already recorded). Check the rest as below.</rule>
-      <rule>C10: actively CHECK only rules whose step 2c action is RERUN. REUSE rules are not re-checked — they aggregate as a prior-cycle pass carrying reused_from_cycle + reused_fingerprint.</rule>
-      <action>For each RERUN rule in the resolved validate rules list, execute independently:</action>
-      <substep title="Interpret the rule">Determine what tool to use: Read for file checks, Bash for command output (read-only commands only: grep, cat, go test, make test, curl, etc.), browser tools for UI checks.</substep>
-      <substep title="Execute the check">Run the appropriate tool(s) and observe the result.</substep>
-      <substep title="Record finding">Create a ValidationFinding:
-        - rule: the validate rule text
-        - status: "pass" if the check confirms the rule; otherwise "fail" (code is wrong), "blocked" (a precondition is missing — env var/secret/service/contradictory spec), or "error" (the check itself could not run)
-        - detail: what was observed (command output, file contents, etc.)
-        - correction: if not passed, what specifically needs to change; empty string if passed
-        <rule critical="true">DETERMINISTIC ENVIRONMENT-FAILURE CLASSIFICATION — apply this BEFORE choosing failure_class below. The observed CAUSE of the failure, NOT the rule's PHRASING, decides the class. Rule text such as "create a DB", "connect to X", or "set up Y" NEVER forces code-defect. A rule that fails ONLY because a dependency EXTERNAL to this cycle's code is unavailable — an unset OR empty secret/env var, a host:port that is unreachable, DNS that does not resolve, a timeout to a dependency, a service/daemon that is down, or failed authentication/authorization against an external service — is status=blocked, failure_class=env-config (or infra-flake when the symptom is transient/intermittent), owner=ops. It is NEVER status=fail / code-defect. Conservative tie-break: the env rule fires ONLY when the missing thing is EXTERNAL to this cycle's code. If an in-scope code artifact plausibly produced the connectivity symptom (a malformed query, a wrong hardcoded host literal, a DSN-building logic bug), classify code-defect — NEVER downgrade a genuine code defect to blocked. Map the observed signature with this table:</rule>
-        <decision-table>
-| Observed failure signature | status | failure_class | owner |
-|---|---|---|---|
-| Connection refused / host:port unreachable / DNS fails / timeout to dependency | blocked | env-config (infra-flake if transient/intermittent) | ops |
-| Authentication/authorization failed against external service (bad/missing creds) | blocked | env-config | ops |
-| Required secret/env var unset OR empty | blocked | env-config | ops |
-| Required service/daemon not running (e.g. DB/queue down) | blocked | env-config | ops |
-| Transient network flake / service restarting / 5xx that retries clean | blocked | infra-flake | ops |
-| Same env symptom, but traceable to an in-scope code artifact (malformed query, wrong hardcoded host literal, DSN-building logic bug) | fail | code-defect | implementer |
-| No environmental signature; assertion fails on code output | fail | code-defect | implementer |
-        </decision-table>
-        - failure_class: REQUIRED for every non-pass finding — one of code-defect (the implementation is wrong), env-config (missing secret/env/config → ops), infra-flake (transient service/network → ops), spec-defect (the goal/spec is contradictory or impossible → planner), validator-error (the check could not run → ops). Leaf-4 catch-all: if no class clearly fits, use code-defect. Never leave a non-pass finding without a failure_class.
-        - owner: REQUIRED for every non-pass finding — implementer for code-defect, ops for env-config/infra-flake/validator-error, planner for spec-defect.
-      </substep>
-      <rule critical="true">GREEN OBJECTIVE CHECK ⇒ status=pass (NON-NEGOTIABLE). When a rule's objective check actually SUCCEEDS — static analysis reports no errors (e.g. PHPStan "[OK] No errors"), a NON-EMPTY test run is green (e.g. "OK (N tests)" with no failures/errors), the build/compile succeeds, or the asserted artifact/output is present and correct — the finding MUST be status=pass with correction="". A succeeding objective check can NEVER be status=blocked/fail/error, NEVER failure_class=spec-defect, and NEVER owner=planner. Verified-green work is a pass; disagreement with how the goal is worded is NOT grounds to withhold it.</rule>
-      <rule critical="true">SPEC-DEFECT REQUIRES A NAMED, DEMONSTRATED CONTRADICTION. failure_class=spec-defect (status=blocked, owner=planner) is permitted ONLY when `detail` NAMES a concrete, demonstrated contradiction — one of: (a) two resolved rules or acceptance criteria that cannot both be satisfied (quote BOTH); (b) an artifact-vs-binding clash already emitted by step 2d; (c) an acceptance criterion logically impossible to satisfy (state precisely why). `detail` MUST quote the specific contradicting elements and `correction` MUST name what the planner must change. A vague "spec is under-specified / unclear / missing detail" with NO cited contradiction is NOT a spec-defect — route it as validator-error per the ambiguity rule below. When uncertain whether something is a spec-defect, it is NOT one.</rule>
-      <rule>OPTION-PRESENTING CORRECTION NAMES A RECOMMENDED CHOICE. A finding whose `correction` merely PRESENTS alternatives (a resolvable technical/architectural fork) is NOT by itself a spec-defect or planner-halt — the GREEN OBJECTIVE CHECK ⇒ pass and named-contradiction spec-defect guards above are UNCHANGED. When a non-pass finding's `correction` offers options, it MUST name the RECOMMENDED option — the highest-quality choice that does NOT expand the goal's scope (real domain types over asserted strings, no waivers/shortcuts/new tech-debt) — so the consumer auto-applies it per the Decision-resolution policy (quality-in-scope). This adds specificity to corrections; it does NOT loosen validation: a passing check still passes, and spec-defect still requires a named, demonstrated contradiction.</rule>
-      <rule>Each rule is independent — a failure in one does NOT skip subsequent rules.</rule>
-      <rule>If a rule requires running a command: use only read-only commands. If the rule implicitly requires a write (e.g. "create file X"), fail it with detail: "rule requires file modification which validator cannot perform — check if the executor created it."</rule>
-      <rule>If a rule is genuinely ambiguous or untestable with the available read-only tools (its meaning cannot be resolved, or no available tool can evaluate it), do NOT pass it and do NOT charge code or planner: record status=error, failure_class=validator-error, owner=ops, with detail explaining the ambiguity and correction naming what would make it checkable, so it re-validates. Reserve spec-defect for a NAMED contradiction (see the spec-defect guard above); reserve fail/code-defect for a check that actually ran and whose code output was wrong.</rule>
-    </step>
-
-    <step n="4" title="Determine verdict and next_action">
-      <action>Roll the findings up into one verdict by precedence (highest first):</action>
-      <rule>If ANY finding is a code defect (status fail + failure_class code-defect, or the leaf-4 catch-all) → verdict "fail".</rule>
-      <rule>Else if ANY finding is "blocked" → verdict "blocked".</rule>
-      <rule>Else if ANY finding is "error" → verdict "error".</rule>
-      <rule>Else (ALL findings "pass") → verdict "pass".</rule>
-      <action>If verdict is not "pass": set next_action to a concise summary of what must change (one sentence covering the non-pass rules and their owners).</action>
-      <action>If verdict is "pass": set next_action to empty string "".</action>
-    </step>
-
-    <step n="5" title="Report via goal-validation-done">
-      <action>Call goal-validation-done MCP tool with: goal_id, verdict, findings (array; reused rules carry reused_from_cycle + reused_fingerprint), next_action, and results.</action>
-      <rule>C10: results is an array of {id: rule text, status, scope_files: the files the rule inspects, changed_files: files changed this cycle} — one entry per resolved rule (RERUN and REUSE alike). The server computes each rule's input fingerprint and writes the orchestrator-owned results.json ledger for the next cycle's reuse gate.</rule>
-      <action>Idle after reporting — the daemon owns lifecycle and will kill this window.</action>
-    </step>
-  </flow>
-
-  <execution-rules>
-    <rule>Read tool: ALLOWED (any file)</rule>
-    <rule>Bash tool: ALLOWED for read-only commands ONLY (grep, cat, go test, make test, curl, ls, find, git log, git diff, etc.)</rule>
-    <rule>Browser tools (Chrome MCP): ALLOWED for UI inspection</rule>
-    <rule>Edit, Write tools: NEVER</rule>
-    <rule>Bash write commands (rm, mv, cp, sed -i, tee, >, >>): NEVER</rule>
-    <rule>goal-validation-done: the ONLY write action permitted</rule>
-  </execution-rules>
-
-  <llm final="true">
-    <critical-rules>
-      * Strictly read-only — goal-validation-done is your only output
-      * Check EVERY validate rule — no skipping, no short-circuiting
-      * Ambiguous or untestable rules are validator-error (status=error, owner=ops) with explanation — never pass, never spec-defect/planner, never code-defect/implementer
-      * Do not fix issues — only report them as findings
-      * AGENTS.md/CLAUDE.md context informs rule interpretation
-    </critical-rules>
-  </llm>
+<task id="validate" name="Goal acceptance validator (DEPRECATED)">
+  <deprecated>
+    Dead path — the daemon dispatches /tmux:investigate, never /tmux:validate
+    (grep tmux:validate --include=*.go → NONE). The deterministic
+    env/code/spec classification table that used to live here (the
+    DETERMINISTIC ENVIRONMENT-FAILURE rule, the decision-table, GREEN OBJECTIVE
+    CHECK, the named-contradiction SPEC-DEFECT guard, the option-presenting
+    correction rule, and the ambiguity→validator-error rule) now lives in
+    investigate-worker.xml step 3 (the live per-check classifier), which is the
+    single source of truth. The C8 binding cross-reference preflight and the
+    C1a worker-escalation relay live in investigate.xml. This alias is
+    retained one release so any stray manual /tmux:validate invocation still
+    parses and loads cleanly; do not extend it. Delete in a follow-up release
+    after re-confirming no caller.
+  </deprecated>
+  <objective>DEPRECATED alias for /tmux:investigate. This skill no longer carries any classification logic — see investigate-worker.xml step 3 for the env/code/spec decision table and investigate.xml for the orchestrator preflights.</objective>
+  <migration-safety>
+    Defense-in-depth (E1-1b): any validation/check command that mutates the
+    SHARED database schema (e.g. `doctrine:migrations:migrate`, `schema:update`,
+    raw DDL) MUST be wrapped in the cross-process advisory lock:
+    `flock .tmux-cli/db.lock -c '&lt;cmd&gt;'`. Per-goal worktrees isolate files but
+    NOT the shared schema, so under MaxGoals&gt;1 two unwrapped migrations race and
+    corrupt version tracking. No-op cost under MaxGoals=1. (Not classification
+    logic — an operational safety wrapper; do not extend this stub otherwise.)
+  </migration-safety>
 </task>

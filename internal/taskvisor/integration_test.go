@@ -70,7 +70,7 @@ func TestIntegration_FullCyclePass(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, d.tick(ctx, gf))
 	assert.Equal(t, GoalRunning, gf.Goals[0].Status)
-	assert.Equal(t, phaseSupervising, d.phase)
+	assert.Equal(t, phaseSupervising, d.runtime("goal-001").phase)
 
 	dispatchPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "dispatch.md")
 	_, statErr := os.Stat(dispatchPath)
@@ -92,7 +92,7 @@ func TestIntegration_FullCyclePass(t *testing.T) {
 	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 
 	require.NoError(t, d.tick(ctx, gf))
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 
 	// --- Tick 3: validating, validator passes → goal done, deactivate ---
 	writeValidatorSignal(t, dir, "goal-001", "pass", "")
@@ -155,8 +155,8 @@ func TestIntegration_FullCycleFailRetry(t *testing.T) {
 	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 
 	require.NoError(t, d.tick(ctx, gf))
-	assert.Equal(t, phaseValidating, d.phase)
-	assert.Equal(t, "done", d.lastSupervisorStatus)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
+	assert.Equal(t, "done", d.runtime("goal-001").lastSupervisorStatus)
 
 	// --- Tick 3: validator fails → correction written, retries++ ---
 	writeValidatorSignal(t, dir, "goal-001", "fail", "fix the price calc")
@@ -219,7 +219,7 @@ func TestIntegration_StoppedRetry(t *testing.T) {
 	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 
 	require.NoError(t, d.tick(ctx, gf))
-	assert.Equal(t, "stopped", d.lastSupervisorStatus)
+	assert.Equal(t, "stopped", d.runtime("goal-001").lastSupervisorStatus)
 
 	// --- Tick 3: validator fails → correction with stopped header ---
 	writeValidatorSignal(t, dir, "goal-001", "fail", "finish the booking page")
@@ -412,7 +412,7 @@ func TestIntegration_CrashRecoveryMidValidation(t *testing.T) {
 
 	require.NoError(t, d.crashRecovery())
 	assert.Equal(t, modeActive, d.mode)
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 	assert.Equal(t, "goal-001", d.currentGoal)
 
 	// Now simulate validator completing with pass
@@ -563,7 +563,7 @@ func TestIntegration_RetryExhaustion_CascadeAndDeactivate(t *testing.T) {
 	})).Return(nil)
 	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 	require.NoError(t, d.tick(ctx, gf))
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 
 	// --- Tick 3: validator fails → retries exhausted → cascade + deactivateOnCompletion ---
 	writeValidatorSignal(t, dir, "goal-001", "fail", "root task failed")
@@ -781,7 +781,8 @@ func TestIntegration_GlobalRetryCeiling_MultiGoalHaltWithReport(t *testing.T) {
 		CurrentGoal:      "goal-001",
 		GlobalMaxRetries: 3,
 		Goals: []Goal{
-			{ID: "goal-001", Description: "BC-A root", Status: GoalPending, Retries: 3, MaxRetries: 5},
+			// consumed code budget 3 (MaxCode5-Code2) == GlobalMaxRetries 3 => ceiling reached.
+			{ID: "goal-001", Description: "BC-A root", Status: GoalPending, MaxRetries: 5, MaxCodeRetries: 5, CodeRetries: 2},
 			{ID: "goal-002", Description: "BC-A dependent", Status: GoalPending, MaxRetries: 5, DependsOn: []string{"goal-001"}},
 			{ID: "goal-003", Description: "BC-B independent", Status: GoalPending, MaxRetries: 5},
 		},
@@ -861,7 +862,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 	require.NoError(t, d.tick(ctx, gf))
 	assert.Equal(t, GoalRunning, gf.Goals[0].Status)
-	assert.Equal(t, phaseSupervising, d.phase)
+	assert.Equal(t, phaseSupervising, d.runtime("goal-001").phase)
 
 	// --- Tick 2: supervisor done → validating ---
 	writeSupervisorSignal(t, dir, "goal-001", "done")
@@ -877,7 +878,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	})).Return(nil)
 	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 	require.NoError(t, d.tick(ctx, gf))
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 
 	// --- Tick 3: validator fail → goal-001 retries exhausted (1>=1) → cascade + advance ---
 	writeValidatorSignal(t, dir, "goal-001", "fail", "BC-A root failed")
@@ -930,7 +931,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	})).Return(nil)
 	d.SetWindowCreateFunc(mockCreateWindowFn("@15"))
 	require.NoError(t, d.tick(ctx, gf))
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-003").phase)
 
 	// --- Tick 6: validator pass → goal-003 done → deactivateOnCompletion ---
 	writeValidatorSignal(t, dir, "goal-003", "pass", "")
@@ -980,7 +981,9 @@ func TestIntegration_CompletionReport_AllCategories(t *testing.T) {
 		Goals: []Goal{
 			{ID: "goal-001", Description: "Completed task", Status: GoalDone, Retries: 1, MaxRetries: 3,
 				StartedAt: "2026-05-20T10:00:00Z", FinishedAt: "2026-05-20T10:15:30Z"},
-			{ID: "goal-002", Description: "Ceiling-halted task", Status: GoalPending, Retries: 3, MaxRetries: 5},
+			// consumed code budget 3 (MaxCode5-Code2) == GlobalMaxRetries 3 => ceiling reached.
+			// Legacy Retries:3 retained ONLY for the report-display assertion ("Retries: 3/5").
+			{ID: "goal-002", Description: "Ceiling-halted task", Status: GoalPending, Retries: 3, MaxRetries: 5, MaxCodeRetries: 5, CodeRetries: 2},
 			{ID: "goal-003", Description: "Cascade-blocked task", Status: GoalPending, MaxRetries: 3,
 				DependsOn: []string{"goal-002"}},
 			{ID: "goal-004", Description: "Independent ceiling-halted", Status: GoalPending, MaxRetries: 5},
@@ -991,7 +994,7 @@ func TestIntegration_CompletionReport_AllCategories(t *testing.T) {
 
 	ctx := context.Background()
 
-	// --- Tick 1: goal-002 pending, ceiling reached (1+3=4 >= 3) → haltRetryCeiling ---
+	// --- Tick 1: goal-002 pending, ceiling reached (consumed code 3 >= 3) → haltRetryCeiling ---
 	// goal-002 → Failed, goal-003 → Blocked, advance to goal-004
 	require.NoError(t, d.tick(ctx, gf))
 
@@ -1347,10 +1350,10 @@ func TestIntegration_DispatchTimeout_FullLifecycle(t *testing.T) {
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 	require.NoError(t, d.tick(ctx, gf))
 	assert.Equal(t, GoalRunning, gf.Goals[0].Status)
-	assert.Equal(t, phaseSupervising, d.phase)
+	assert.Equal(t, phaseSupervising, d.runtime("goal-001").phase)
 
 	// Simulate timeout: set dispatch time in the past
-	d.currentGoalDispatchTime = time.Now().Add(-2 * time.Second)
+	d.runtime("goal-001").dispatchTime = time.Now().Add(-2 * time.Second)
 
 	// Tick 2: no signal, timeout exceeded → handleFailedCycle → pending
 	require.NoError(t, d.tick(ctx, gf))
@@ -1438,7 +1441,7 @@ func TestIntegration_GoalsSequentialTasksParallel(t *testing.T) {
 
 	// --- Tick 2: goal-001 running, no signal → goal-002 must NOT start ---
 	d.dispatchTimeout = time.Hour
-	d.currentGoalDispatchTime = time.Now()
+	d.runtime("goal-001").dispatchTime = time.Now()
 	require.NoError(t, d.tick(ctx, gf))
 
 	loaded, err := LoadGoals(dir)
@@ -1462,7 +1465,7 @@ func TestIntegration_GoalsSequentialTasksParallel(t *testing.T) {
 	})).Return(nil)
 	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 	require.NoError(t, d.tick(ctx, gf))
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 
 	// --- Validator pass → goal-001 done, advance to goal-002 ---
 	writeValidatorSignal(t, dir, "goal-001", "pass", "")

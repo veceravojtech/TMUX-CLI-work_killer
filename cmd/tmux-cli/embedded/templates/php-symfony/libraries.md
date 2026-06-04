@@ -1,7 +1,7 @@
 # Preferred Composer Packages — PHP/Symfony DDD Stack
 
 > This template is PHP-specific. No corresponding `_base/` template exists.
-> The scaffold generator reads this list to emit `composer require` commands.
+> The scaffold generator reads this list to emit `composer require --no-interaction` commands.
 > Package names only — never pin versions here.
 
 ## Framework Core

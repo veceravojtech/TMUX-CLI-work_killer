@@ -81,7 +81,7 @@ func writeGuardFile(t *testing.T, dir string) {
 }
 
 func mockCreateWindowFn(tmuxWindowID string) WindowCreateFunc {
-	return func(name, command string) (*CreatedWindow, error) {
+	return func(name, command, cwd string) (*CreatedWindow, error) {
 		return &CreatedWindow{TmuxWindowID: tmuxWindowID, Name: name}, nil
 	}
 }
@@ -357,7 +357,7 @@ func TestDeactivate_CreatesFreshSupervisor(t *testing.T) {
 	setupDeactivateMocks(exec, testSession, "@0")
 
 	var createdName string
-	d.SetWindowCreateFunc(func(name, command string) (*CreatedWindow, error) {
+	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
 		createdName = name
 		return &CreatedWindow{TmuxWindowID: "@0", Name: name}, nil
 	})
@@ -525,7 +525,7 @@ func TestDispatch_KillWaitCreateBootSend(t *testing.T) {
 	// waitForPrompt — prompt detected
 	exec.On("CaptureWindowOutput", testSession, "@1").Return("❯ ", nil)
 
-	d.SetWindowCreateFunc(func(name, command string) (*CreatedWindow, error) {
+	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
 		callOrder = append(callOrder, "create")
 		return &CreatedWindow{TmuxWindowID: "@1", Name: name}, nil
 	})
@@ -605,8 +605,8 @@ func TestDispatch_RecordsDispatchTime(t *testing.T) {
 	err = d.dispatch(&gf.Goals[0], gf)
 	require.NoError(t, err)
 
-	assert.WithinDuration(t, time.Now(), d.currentGoalDispatchTime, time.Second)
-	assert.True(t, d.currentGoalDispatchTime.After(before) || d.currentGoalDispatchTime.Equal(before))
+	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").dispatchTime, time.Second)
+	assert.True(t, d.runtime("goal-001").dispatchTime.After(before) || d.runtime("goal-001").dispatchTime.Equal(before))
 }
 
 func TestTick_PendingGoalDispatches(t *testing.T) {
@@ -911,7 +911,7 @@ func TestCheckProgress_SupervisorDone_TransitionsToValidating(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
@@ -940,9 +940,9 @@ func TestCheckProgress_SupervisorDone_TransitionsToValidating(t *testing.T) {
 	err = d.checkProgress(goal, gf)
 	require.NoError(t, err)
 
-	assert.Equal(t, "done", d.lastSupervisorStatus)
-	assert.Equal(t, phaseValidating, d.phase)
-	assert.False(t, d.currentGoalValidateTime.IsZero())
+	assert.Equal(t, "done", d.runtime("goal-001").lastSupervisorStatus)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
+	assert.False(t, d.runtime("goal-001").validateTime.IsZero())
 
 	sig, err := LoadSignal(dir, "goal-001")
 	assert.NoError(t, err)
@@ -953,7 +953,7 @@ func TestCheckProgress_SupervisorStopped_TransitionsToValidating(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
@@ -979,8 +979,8 @@ func TestCheckProgress_SupervisorStopped_TransitionsToValidating(t *testing.T) {
 	err = d.checkProgress(goal, gf)
 	require.NoError(t, err)
 
-	assert.Equal(t, "stopped", d.lastSupervisorStatus)
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, "stopped", d.runtime("goal-001").lastSupervisorStatus)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 
 	sig, err := LoadSignal(dir, "goal-001")
 	assert.NoError(t, err)
@@ -991,8 +991,8 @@ func TestCheckProgress_Supervising_NoSignalWithinTimeout(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
-	d.currentGoalDispatchTime = time.Now().Add(-10 * time.Minute)
+	d.runtime("goal-001").phase = phaseSupervising
+	d.runtime("goal-001").dispatchTime = time.Now().Add(-10 * time.Minute)
 	d.dispatchTimeout = time.Hour
 
 	gf := &GoalsFile{
@@ -1012,9 +1012,9 @@ func TestCheckProgress_Supervising_TimeoutExceeded(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.dispatchTimeout = 3600 * time.Second
-	d.currentGoalDispatchTime = time.Now().Add(-3601 * time.Second)
+	d.runtime("goal-001").dispatchTime = time.Now().Add(-3601 * time.Second)
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -1042,10 +1042,10 @@ func TestCheckProgress_Supervising_CrashDetected(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.dispatchTimeout = time.Hour
-	d.currentGoalDispatchTime = time.Now().Add(-10 * time.Second)
-	d.bootConfirmedAt = time.Now().Add(-6 * time.Second)
+	d.runtime("goal-001").dispatchTime = time.Now().Add(-10 * time.Second)
+	d.runtime("goal-001").bootConfirmedAt = time.Now().Add(-6 * time.Second)
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -1073,7 +1073,7 @@ func TestCheckProgress_ValidatorPass_GoalDone(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -1113,8 +1113,8 @@ func TestCheckProgress_ValidatorFail_CorrectionDone(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").phase = phaseValidating
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -1153,8 +1153,8 @@ func TestCheckProgress_ValidatorFail_CorrectionStopped(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
-	d.lastSupervisorStatus = "stopped"
+	d.runtime("goal-001").phase = phaseValidating
+	d.runtime("goal-001").lastSupervisorStatus = "stopped"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -1193,8 +1193,8 @@ func TestCheckProgress_ValidatorFail_RetriesExhausted(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").phase = phaseValidating
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -1229,9 +1229,9 @@ func TestCheckProgress_Validating_TimeoutExceeded(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 	d.validateTimeout = 300 * time.Second
-	d.currentGoalValidateTime = time.Now().Add(-301 * time.Second)
+	d.runtime("goal-001").validateTime = time.Now().Add(-301 * time.Second)
 	d.createWindowFn = mockCreateWindowFn("@5")
 
 	gf := &GoalsFile{
@@ -1260,7 +1260,7 @@ func TestCheckProgress_Validating_TimeoutExceeded(t *testing.T) {
 	assert.Equal(t, 0, goal.Retries)
 	assert.Equal(t, 1, goal.ValidationRetries)
 	assert.Equal(t, GoalRunning, goal.Status)
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 
 	correctionPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "cycle-1.md")
 	_, statErr := os.Stat(correctionPath)
@@ -1271,10 +1271,10 @@ func TestCheckProgress_Validating_CrashDetected(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 	d.validateTimeout = 5 * time.Minute
-	d.currentGoalValidateTime = time.Now().Add(-10 * time.Second)
-	d.bootConfirmedAt = time.Now().Add(-6 * time.Second)
+	d.runtime("goal-001").validateTime = time.Now().Add(-10 * time.Second)
+	d.runtime("goal-001").bootConfirmedAt = time.Now().Add(-6 * time.Second)
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -1510,13 +1510,271 @@ func TestBounceToGeneration_ExhaustionCascades(t *testing.T) {
 	assert.Equal(t, "goal-001", gf.Goals[1].BlockedBy)
 }
 
+// --- B10: spec-route convergence circuit-breaker ---------------------------
+//
+// These eight tests mirror the code-route breaker (handleFailedCycle) onto the
+// spec-defect bounce path. They are built on execute-2's goal-025 repeat-signature
+// fixture (newGoal025Fixture / newRecurringFindingSignal) and assert: the breaker
+// halts at K identical spec-signature bounces to blocked/owner=human WITHOUT
+// draining SpecRetries, never fires on an empty/changing signature set, and tracks
+// streak state in DEDICATED spec-side fields so an interleaved code-defect cycle
+// cannot cross-contaminate the spec streak.
+
+// TestBounceToGeneration_IdenticalSpecSignatures_HaltsAtK: K consecutive bounces
+// with an identical finding-signature set halt the goal at the Kth (K=2) bounce
+// with the shared convergence-circuit-breaker sentinel.
+func TestBounceToGeneration_IdenticalSpecSignatures_HaltsAtK(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	sig, sigs := newRecurringFindingSignal()
+	gf := &GoalsFile{
+		CurrentGoal: "goal-025",
+		Goals: []Goal{
+			{ID: "goal-025", Description: "non-converging spec", Status: GoalRunning, SpecRetries: 5, MaxSpecRetries: 5},
+			{ID: "goal-026", Description: "next", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goal := &gf.Goals[0]
+
+	// First bounce primes the streak to 1 and drains normally — must NOT halt.
+	require.NoError(t, d.bounceToGeneration(goal, gf, sig))
+	assert.NotEqual(t, GoalBlocked, goal.Status, "first bounce must not halt")
+	assert.Equal(t, 1, goal.SpecConvergenceStreak)
+	assert.True(t, equalSorted(sigs, goal.SpecConvergenceSignatures))
+
+	// Second (Kth) identical bounce trips the breaker.
+	require.NoError(t, d.bounceToGeneration(goal, gf, sig))
+	assert.Equal(t, GoalBlocked, goal.Status)
+	assert.Equal(t, "convergence-circuit-breaker", goal.BlockedBy)
+	assert.Equal(t, 2, goal.SpecConvergenceStreak)
+}
+
+// TestBounceToGeneration_HaltDoesNotDecrementSpecRetries: a breaker halt leaves
+// SpecRetries at its pre-call value (the breaker fires on recurrence, never on
+// budget drain).
+func TestBounceToGeneration_HaltDoesNotDecrementSpecRetries(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	sig, sigs := newRecurringFindingSignal()
+	gf := &GoalsFile{
+		CurrentGoal: "goal-025",
+		Goals: []Goal{
+			{ID: "goal-025", Status: GoalRunning, SpecRetries: 4, MaxSpecRetries: 5,
+				SpecConvergenceSignatures: sigs, SpecConvergenceStreak: 1},
+			{ID: "goal-026", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goal := &gf.Goals[0]
+	pre := goal.SpecRetries
+
+	require.NoError(t, d.bounceToGeneration(goal, gf, sig))
+
+	assert.Equal(t, GoalBlocked, goal.Status)
+	assert.Equal(t, "convergence-circuit-breaker", goal.BlockedBy)
+	assert.Equal(t, pre, goal.SpecRetries, "breaker halt must not decrement SpecRetries")
+}
+
+// TestBounceToGeneration_HaltSetsOwnerHumanBlockedSignal: the persisted signal on
+// a breaker halt is Verdict=blocked, Owner=human, Signatures=the current sorted set.
+func TestBounceToGeneration_HaltSetsOwnerHumanBlockedSignal(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	sig, sigs := newRecurringFindingSignal()
+	gf := &GoalsFile{
+		CurrentGoal: "goal-025",
+		Goals: []Goal{
+			{ID: "goal-025", Status: GoalRunning, SpecRetries: 4, MaxSpecRetries: 5,
+				SpecConvergenceSignatures: sigs, SpecConvergenceStreak: 1},
+			{ID: "goal-026", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goal := &gf.Goals[0]
+
+	require.NoError(t, d.bounceToGeneration(goal, gf, sig))
+
+	raw, err := LoadSignal(dir, "goal-025")
+	require.NoError(t, err)
+	vs, ok := raw.(*ValidatorSignal)
+	require.True(t, ok, "expected *ValidatorSignal, got %T", raw)
+	assert.Equal(t, VerdictBlocked, vs.Verdict)
+	assert.Equal(t, "human", vs.Owner)
+	assert.Equal(t, sigs, vs.Signatures)
+}
+
+// TestBounceToGeneration_ChangingSpecSignatures_DrainsBudgetNotBreaker: a different
+// finding signature each bounce keeps the streak pinned at 1, so the breaker never
+// fires and the goal follows the normal SpecRetries-- drain.
+func TestBounceToGeneration_ChangingSpecSignatures_DrainsBudgetNotBreaker(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	gf := &GoalsFile{
+		CurrentGoal: "goal-025",
+		Goals: []Goal{
+			{ID: "goal-025", Status: GoalRunning, SpecRetries: 5, MaxSpecRetries: 5},
+			{ID: "goal-026", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goal := &gf.Goals[0]
+
+	for i := 0; i < 3; i++ {
+		sig := &ValidatorSignal{
+			Verdict: VerdictBlocked,
+			Findings: []ValidationFinding{
+				{Rule: fmt.Sprintf("rule-%d", i), Status: VerdictFail, FailureClass: "spec-defect",
+					Detail: fmt.Sprintf("distinct spec defect %d", i)},
+			},
+		}
+		require.NoError(t, d.bounceToGeneration(goal, gf, sig))
+		assert.NotEqual(t, "convergence-circuit-breaker", goal.BlockedBy, "changing signatures must not trip the breaker")
+		assert.Equal(t, 1, goal.SpecConvergenceStreak, "streak resets to 1 on a changed signature set")
+	}
+	assert.Equal(t, 2, goal.SpecRetries, "3 normal bounces drained 5->2")
+	assert.Equal(t, GoalPending, goal.Status)
+}
+
+// TestBounceToGeneration_EmptyFindings_NeverFires: a pass-only (empty signature)
+// set never fires the breaker even when replayed past K; the budget drains normally.
+func TestBounceToGeneration_EmptyFindings_NeverFires(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	gf := &GoalsFile{
+		CurrentGoal: "goal-025",
+		Goals: []Goal{
+			{ID: "goal-025", Status: GoalRunning, SpecRetries: 5, MaxSpecRetries: 5},
+			{ID: "goal-026", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goal := &gf.Goals[0]
+
+	passSig := &ValidatorSignal{Verdict: VerdictBlocked, Findings: []ValidationFinding{
+		{Rule: "noop", Status: VerdictPass},
+	}}
+	for i := 0; i < 3; i++ {
+		require.NoError(t, d.bounceToGeneration(goal, gf, passSig))
+		assert.NotEqual(t, "convergence-circuit-breaker", goal.BlockedBy, "empty signature set must never fire the breaker")
+		assert.Empty(t, goal.SpecConvergenceSignatures, "empty set stored, never matched")
+		assert.Equal(t, 1, goal.SpecConvergenceStreak, "streak pinned at 1 for an empty set")
+	}
+	assert.Equal(t, 2, goal.SpecRetries, "budget drains normally 5->2")
+}
+
+// TestBounceToGeneration_NilValSig_NoPanic: a nil valSig completes without panic,
+// skips the breaker, and writes the header-only framing correction.
+func TestBounceToGeneration_NilValSig_NoPanic(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Status: GoalRunning, SpecRetries: 2, MaxSpecRetries: 2},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goal := &gf.Goals[0]
+
+	require.NotPanics(t, func() {
+		require.NoError(t, d.bounceToGeneration(goal, gf, nil))
+	})
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "cycle-1.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "SPEC DEFECT (owner: PLANNER)")
+	assert.NotContains(t, string(data), "### Finding:", "no findings means no structured blocks")
+	assert.Equal(t, 1, goal.SpecRetries)
+	assert.NotEqual(t, "convergence-circuit-breaker", goal.BlockedBy)
+}
+
+// TestBounceToGeneration_AlternatingCodeSpecCycles_NoCrossContamination: a code
+// cycle interleaved between two identical spec bounces neither resets nor inflates
+// the spec streak — the spec streak accumulates to K ACROSS the code cycle and
+// trips, while the code streak lives only in ConvergenceStreak.
+func TestBounceToGeneration_AlternatingCodeSpecCycles_NoCrossContamination(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	d.runtime("goal-025").lastSupervisorStatus = "done"
+	_, err := EnsureGoalDir(dir, "goal-025")
+	require.NoError(t, err)
+
+	specSig, specSigs := newRecurringFindingSignal()
+	codeSig := &ValidatorSignal{
+		Source: "validator", Verdict: VerdictFail,
+		Findings: []ValidationFinding{
+			{Rule: "deptrac", Status: VerdictFail, FailureClass: "code-defect",
+				FailingCommand: "vendor/bin/deptrac", Detail: "layer violation in billing"},
+		},
+	}
+	codeSigs := ComputeSignatures(codeSig.Findings)
+	require.False(t, equalSorted(specSigs, codeSigs), "spec and code signature sets must differ")
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-025",
+		Goals: []Goal{
+			{ID: "goal-025", Status: GoalRunning,
+				SpecRetries: 5, MaxSpecRetries: 5, CodeRetries: 5, MaxCodeRetries: 5},
+			{ID: "goal-026", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goal := &gf.Goals[0]
+
+	// 1) Spec bounce S — primes spec streak; leaves code streak untouched.
+	require.NoError(t, d.bounceToGeneration(goal, gf, specSig))
+	assert.Equal(t, 1, goal.SpecConvergenceStreak)
+	assert.True(t, equalSorted(specSigs, goal.SpecConvergenceSignatures))
+	assert.Equal(t, 0, goal.ConvergenceStreak, "spec bounce must not touch the code streak")
+	assert.Empty(t, goal.ConvergenceSignatures)
+
+	// 2) Intervening code-defect cycle C — primes the code streak; spec state PRESERVED.
+	writeFixtureSignal(t, dir, "goal-025", codeSig) // handleFailedCycle re-loads from disk
+	require.NoError(t, d.handleFailedCycle(goal, gf, "code still failing", "code-defect"))
+	assert.Equal(t, 1, goal.ConvergenceStreak)
+	assert.True(t, equalSorted(codeSigs, goal.ConvergenceSignatures))
+	assert.Equal(t, 1, goal.SpecConvergenceStreak, "code cycle must NOT reset the spec streak")
+	assert.True(t, equalSorted(specSigs, goal.SpecConvergenceSignatures), "code cycle must NOT overwrite spec sigs")
+
+	// 3) Spec bounce S again — spec streak reaches K across the code cycle and trips.
+	require.NoError(t, d.bounceToGeneration(goal, gf, specSig))
+	assert.Equal(t, GoalBlocked, goal.Status)
+	assert.Equal(t, "convergence-circuit-breaker", goal.BlockedBy)
+	assert.Equal(t, 2, goal.SpecConvergenceStreak, "spec streak survived the intervening code cycle")
+	assert.Equal(t, 1, goal.ConvergenceStreak, "code streak not inflated by spec bounces")
+}
+
+// TestBounceToGeneration_FixtureReplay_GoalThreeIdenticalBounces: replaying the
+// goal-025 fixture's recurring signal 3 times halts at K (the 2nd bounce) with the
+// sentinel BEFORE draining the spec budget to a failed goal.
+func TestBounceToGeneration_FixtureReplay_GoalThreeIdenticalBounces(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	gf, sig := newGoal025Fixture(1, 2) // recurring-signature replay fixture
+	goal, ok := gf.GoalByID("goal-025")
+	require.True(t, ok)
+	// The fixture stages the CODE-route streak; give the SPEC route its own budget
+	// and a clean spec-side streak so only the spec breaker can halt the goal.
+	goal.Status = GoalRunning
+	goal.SpecRetries = 3
+	goal.MaxSpecRetries = 3
+	goal.SpecConvergenceSignatures = nil
+	goal.SpecConvergenceStreak = 0
+	writeGoals(t, dir, gf)
+
+	// Bounce 1: streak 1, SpecRetries 3->2, no halt.
+	require.NoError(t, d.bounceToGeneration(goal, gf, sig))
+	require.NotEqual(t, GoalBlocked, goal.Status)
+	require.Equal(t, 2, goal.SpecRetries)
+
+	// Bounce 2 (Kth identical): halts at K rather than draining to failed.
+	require.NoError(t, d.bounceToGeneration(goal, gf, sig))
+	assert.Equal(t, GoalBlocked, goal.Status, "halts at K, not a budget-exhausted failed")
+	assert.NotEqual(t, GoalFailed, goal.Status)
+	assert.Equal(t, "convergence-circuit-breaker", goal.BlockedBy)
+	assert.Equal(t, 2, goal.SpecRetries, "SpecRetries preserved at its post-1st-bounce value, not drained to 0")
+}
+
 // TestM05_DispatchMdFullCorrections proves a multi-finding failure flows through
 // handleFailedCycle → corrections/cycle-N.md → writeDispatchMd VERBATIM: the
 // dispatch.md "## Prior Corrections" reproduces every per-finding block with all
 // four fields and never collapses to the generic one-liner.
 func TestM05_DispatchMdFullCorrections(t *testing.T) {
 	d, _, dir := setupDaemon(t)
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -1576,7 +1834,7 @@ func TestM05_DispatchMdFullCorrections(t *testing.T) {
 // context — not just a nextAction summary.
 func TestInjectCorrections_CarriesPerFindingBlock(t *testing.T) {
 	d, _, dir := setupDaemon(t)
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -1602,7 +1860,7 @@ func TestInjectCorrections_CarriesPerFindingBlock(t *testing.T) {
 		NextAction: "fix the broken test", Timestamp: "2026-05-20T14:35:00Z",
 	}))
 
-	writeTasksYaml(t, dir, `status: ready
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
 cycle: 1
 tasks:
   - name: "task one"
@@ -1872,7 +2130,7 @@ func TestCheckProgress_SupervisorDone_ValidateShPass(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
@@ -1908,14 +2166,14 @@ func TestCheckProgress_SupervisorDone_ValidateShPass(t *testing.T) {
 	reloaded, err := LoadGoals(dir)
 	require.NoError(t, err)
 	assert.Equal(t, GoalDone, reloaded.Goals[0].Status)
-	assert.NotEqual(t, phaseValidating, d.phase)
+	assert.NotEqual(t, phaseValidating, d.runtime("goal-001").phase)
 }
 
 func TestCheckProgress_SupervisorDone_ValidateShFail_ValidateMdExists(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
@@ -1949,14 +2207,14 @@ func TestCheckProgress_SupervisorDone_ValidateShFail_ValidateMdExists(t *testing
 	err = d.checkProgress(goal, gf)
 	require.NoError(t, err)
 
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 }
 
 func TestCheckProgress_SupervisorDone_ValidateShFail_NoValidateMd(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
@@ -2038,7 +2296,7 @@ func TestCheckProgress_SupervisorDone_NoValidateSh(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
@@ -2065,7 +2323,7 @@ func TestCheckProgress_SupervisorDone_NoValidateSh(t *testing.T) {
 	err = d.checkProgress(goal, gf)
 	require.NoError(t, err)
 
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 }
 
 // --- transition logging tests ---
@@ -2127,7 +2385,7 @@ func TestDispatch_LogsPhaseTransition(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseNone
+	d.runtime("goal-001").phase = phaseNone
 
 	gf := &GoalsFile{
 		Goals: []Goal{{ID: "goal-001", Description: "test", Status: GoalPending}},
@@ -2150,7 +2408,7 @@ func TestCheckSupervisingPhase_Done_LogsGoalDone(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -2187,7 +2445,7 @@ func TestCheckSupervisingPhase_LogsPhaseToValidating(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
@@ -2221,7 +2479,7 @@ func TestCheckValidatingPhase_Pass_LogsGoalDone(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -2280,7 +2538,7 @@ func TestM02_CodeDefectRouting(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{routeGoal("goal-001", 2, 1, 1, 0)}}
 	writeGoals(t, dir, gf)
@@ -2304,7 +2562,7 @@ func TestM02_CodeDefectRouting(t *testing.T) {
 	assert.Equal(t, 0, goal.BlockRetries, "block budget untouched")
 	assert.Equal(t, 0, goal.Retries, "legacy Retries stays read-only")
 	assert.Equal(t, GoalPending, goal.Status, "implementer re-dispatched")
-	assert.Equal(t, phaseSupervising, d.phase)
+	assert.Equal(t, phaseSupervising, d.runtime("goal-001").phase)
 
 	corr := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "cycle-1.md")
 	data, readErr := os.ReadFile(corr)
@@ -2319,7 +2577,7 @@ func TestErrorVerdict_ReRunsValidationOnly(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 	d.validatorSendDelay = 0
 	d.createWindowFn = mockCreateWindowFn("@5")
 
@@ -2354,7 +2612,7 @@ func TestErrorVerdict_ReRunsValidationOnly(t *testing.T) {
 	assert.Equal(t, 1, goal.SpecRetries, "spec budget untouched")
 	assert.Equal(t, 0, goal.BlockRetries, "block budget untouched")
 	assert.Equal(t, GoalRunning, goal.Status, "stays running for re-validation")
-	assert.Equal(t, phaseValidating, d.phase, "re-enters validating, not supervising")
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase, "re-enters validating, not supervising")
 
 	for _, c := range sentCmds {
 		assert.NotContains(t, c, "/tmux:supervisor", "implementer must NOT be re-dispatched on error")
@@ -2375,7 +2633,7 @@ func TestSpecDefectRouting_BouncesToGeneration(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{routeGoal("goal-001", 2, 2, 1, 0)}}
 	writeGoals(t, dir, gf)
@@ -2413,7 +2671,7 @@ func TestBlockedEnvHold_NoBudget(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{routeGoal("goal-001", 2, 2, 1, 1)}}
 	writeGoals(t, dir, gf)
@@ -2475,7 +2733,7 @@ func TestBlockedEnvHold_SetsPreconditionFlagsAndConcreteRemedy(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{routeGoal("goal-001", 2, 2, 1, 1)}}
 	writeGoals(t, dir, gf)
@@ -2522,7 +2780,7 @@ func TestBudgetCountersIndependent(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{
 		routeGoal("goal-001", 2, 1, 1, 0),
@@ -2551,7 +2809,7 @@ func TestBudgetCountersIndependent(t *testing.T) {
 	// unsubstantiated verdict to rerunValidationOnly. validateFindings already
 	// guarantees every real blocked finding carries non-stub content.
 	goal.Status = GoalRunning
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
 		Verdict: "blocked", Owner: "planner",
 		Findings:  []ValidationFinding{{Rule: "r2", Status: "blocked", FailureClass: "spec-defect", Owner: "planner", Detail: "acceptance criteria contradict"}},
@@ -2570,7 +2828,7 @@ func TestCodeBudgetExhausted_HardHalt(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{
 		routeGoal("goal-001", 1, 1, 1, 0),
@@ -2607,7 +2865,7 @@ func TestHandleFailedCycle_RetriesExhausted_LogsGoalFailed(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -2638,7 +2896,7 @@ func TestHandleFailedCycle_Retry_LogsPendingAndPhase(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -2668,6 +2926,15 @@ func writeTasksYaml(t *testing.T, dir string, content string) {
 	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
 }
 
+// writeGoalTasksYaml writes the per-goal fan-out file at
+// .tmux-cli/goals/<goalID>/tasks.yaml — the path the daemon reads in goal mode.
+func writeGoalTasksYaml(t *testing.T, dir, goalID, content string) {
+	t.Helper()
+	p := tasks.GoalTasksFilePath(dir, goalID)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+}
+
 func writeTaskContext(t *testing.T, dir, relPath, content string) {
 	t.Helper()
 	p := filepath.Join(dir, relPath)
@@ -2688,7 +2955,7 @@ func TestTick_RetryUsesDispatchRetry_WhenTasksYamlExists(t *testing.T) {
 	}
 	writeGoals(t, dir, gf)
 
-	writeTasksYaml(t, dir, `status: ready
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
 cycle: 1
 tasks:
   - name: "create templates"
@@ -2762,7 +3029,7 @@ func TestDispatchRetry_ResetsTaskStatuses(t *testing.T) {
 	}
 	writeGoals(t, dir, gf)
 
-	writeTasksYaml(t, dir, `status: ready
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
 cycle: 1
 tasks:
   - name: "task one"
@@ -2788,8 +3055,8 @@ tasks:
 	err := d.dispatchRetry(goal, gf)
 	require.NoError(t, err)
 
-	// tasks.yaml should have all tasks reset to pending
-	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "tasks.yaml"))
+	// per-goal tasks.yaml should have all tasks reset to pending
+	data, err := os.ReadFile(tasks.GoalTasksFilePath(dir, "goal-001"))
 	require.NoError(t, err)
 	content := string(data)
 	assert.NotContains(t, content, "status: done", "all task statuses should be reset from done")
@@ -2809,7 +3076,7 @@ func TestDispatchRetry_InjectsCorrections(t *testing.T) {
 	}
 	writeGoals(t, dir, gf)
 
-	writeTasksYaml(t, dir, `status: ready
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
 cycle: 1
 tasks:
   - name: "task one"
@@ -2882,7 +3149,7 @@ func TestDeactivateOnCompletion_KillsWindowsNoSupervisor(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 
 	var createCalled bool
-	d.SetWindowCreateFunc(func(name, command string) (*CreatedWindow, error) {
+	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
 		createCalled = true
 		return &CreatedWindow{TmuxWindowID: "@9", Name: name}, nil
 	})
@@ -2978,7 +3245,8 @@ func TestTick_RetryCeilingReached_HaltsGoal(t *testing.T) {
 		CurrentGoal:      "goal-001",
 		GlobalMaxRetries: 3,
 		Goals: []Goal{
-			{ID: "goal-001", Description: "test", Status: GoalPending, Retries: 3, MaxRetries: 5},
+			// consumed code budget 3 (MaxCode5-Code2) == GlobalMaxRetries 3 => ceiling reached.
+			{ID: "goal-001", Description: "test", Status: GoalPending, MaxRetries: 5, MaxCodeRetries: 5, CodeRetries: 2},
 			{ID: "goal-002", Description: "next", Status: GoalPending},
 		},
 	}
@@ -3006,7 +3274,8 @@ func TestTick_AllBlockedCascade_DeactivatesWithReport(t *testing.T) {
 		CurrentGoal:      "goal-001",
 		GlobalMaxRetries: 3,
 		Goals: []Goal{
-			{ID: "goal-001", Description: "root task", Status: GoalPending, Retries: 3, MaxRetries: 5},
+			// consumed code budget 3 (MaxCode5-Code2) == GlobalMaxRetries 3 => ceiling reached.
+			{ID: "goal-001", Description: "root task", Status: GoalPending, MaxRetries: 5, MaxCodeRetries: 5, CodeRetries: 2},
 			{ID: "goal-002", Description: "depends on root", Status: GoalPending, DependsOn: []string{"goal-001"}},
 			{ID: "goal-003", Description: "also depends on root", Status: GoalPending, DependsOn: []string{"goal-001"}},
 		},
@@ -3044,7 +3313,8 @@ func TestTick_RetryCeilingNotReached_Dispatches(t *testing.T) {
 		CurrentGoal:      "goal-001",
 		GlobalMaxRetries: 10,
 		Goals: []Goal{
-			{ID: "goal-001", Description: "test", Status: GoalPending, Retries: 2, MaxRetries: 5},
+			// consumed code budget 2 (MaxCode5-Code3) < GlobalMaxRetries 10 => under ceiling.
+			{ID: "goal-001", Description: "test", Status: GoalPending, MaxRetries: 5, MaxCodeRetries: 5, CodeRetries: 3},
 		},
 	}
 	writeGoals(t, dir, gf)
@@ -3442,7 +3712,8 @@ func TestTick_AllDone_StaysIdleNoSupervisor(t *testing.T) {
 		CurrentGoal:      "goal-001",
 		GlobalMaxRetries: 3,
 		Goals: []Goal{
-			{ID: "goal-001", Description: "only goal", Status: GoalPending, Retries: 3, MaxRetries: 5},
+			// consumed code budget 3 (MaxCode5-Code2) == GlobalMaxRetries 3 => ceiling reached.
+			{ID: "goal-001", Description: "only goal", Status: GoalPending, MaxRetries: 5, MaxCodeRetries: 5, CodeRetries: 2},
 		},
 	}
 	writeGoals(t, dir, gf)
@@ -3450,7 +3721,7 @@ func TestTick_AllDone_StaysIdleNoSupervisor(t *testing.T) {
 	setupDeactivateOnCompletionMocks(exec, testSession)
 
 	var createCalled bool
-	d.SetWindowCreateFunc(func(name, command string) (*CreatedWindow, error) {
+	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
 		createCalled = true
 		return &CreatedWindow{TmuxWindowID: "@9", Name: name}, nil
 	})
@@ -3504,8 +3775,8 @@ func TestInvestigationLifecycle_FailedValidation_WritesCorrectionAndRetries(t *t
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").phase = phaseValidating
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -3532,7 +3803,7 @@ func TestInvestigationLifecycle_FailedValidation_WritesCorrectionAndRetries(t *t
 
 	assert.Equal(t, 2, goal.CodeRetries, "code budget 3->2")
 	assert.Equal(t, GoalPending, goal.Status)
-	assert.Equal(t, phaseSupervising, d.phase)
+	assert.Equal(t, phaseSupervising, d.runtime("goal-001").phase)
 
 	corrPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "cycle-1.md")
 	data, readErr := os.ReadFile(corrPath)
@@ -3553,7 +3824,7 @@ func TestInvestigationLifecycle_FailedValidation_WritesCorrectionAndRetries(t *t
 
 func TestInvestigationLifecycle_RedispatchIncludesCorrectionsInDispatchMd(t *testing.T) {
 	d, _, dir := setupDaemon(t)
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -3586,7 +3857,7 @@ func TestInvestigationLifecycle_RedispatchInjectsCorrectionsIntoTaskContext(t *t
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -3598,7 +3869,7 @@ func TestInvestigationLifecycle_RedispatchInjectsCorrectionsIntoTaskContext(t *t
 	_, err := EnsureGoalDir(dir, "goal-001")
 	require.NoError(t, err)
 
-	writeTasksYaml(t, dir, `status: ready
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
 cycle: 1
 tasks:
   - name: "task one"
@@ -3639,7 +3910,7 @@ tasks:
 
 func TestInvestigationLifecycle_MultipleCycles_CorrectionsAccumulate(t *testing.T) {
 	d, _, dir := setupDaemon(t)
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -3687,7 +3958,7 @@ func TestInvestigationLifecycle_FullChain_FailThenPassOnRetry(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
@@ -3701,7 +3972,7 @@ func TestInvestigationLifecycle_FullChain_FailThenPassOnRetry(t *testing.T) {
 	_, err := EnsureGoalDir(dir, "goal-001")
 	require.NoError(t, err)
 
-	writeTasksYaml(t, dir, `status: ready
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
 cycle: 1
 tasks:
   - name: "task one"
@@ -3711,7 +3982,7 @@ tasks:
 `)
 	writeTaskContext(t, dir, ".tmux-cli/research/ctx1.md", "# Context")
 
-	d.SetWindowCreateFunc(func(name, command string) (*CreatedWindow, error) {
+	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
 		switch name {
 		case "validator":
 			return &CreatedWindow{TmuxWindowID: "@5", Name: name}, nil
@@ -3752,7 +4023,7 @@ tasks:
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
 		return strings.HasPrefix(cmd, "/tmux:investigate")
 	})).Return(nil).Times(2)
-	exec.On("SendMessage", testSession, "@9", "/tmux:supervisor").Return(nil).Once()
+	exec.On("SendMessage", testSession, "@9", "/tmux:supervisor goal-001").Return(nil).Once()
 
 	exec.On("KillWindow", testSession, "@5").Return(nil).Times(2)
 
@@ -3764,7 +4035,7 @@ tasks:
 	}))
 	err = d.checkSupervisingPhase(goal, gf)
 	require.NoError(t, err)
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 
 	// Stage 2: Validator fail → correction written, retries incremented
 	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
@@ -3790,7 +4061,7 @@ tasks:
 	}))
 	err = d.checkSupervisingPhase(goal, gf)
 	require.NoError(t, err)
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 
 	// Stage 5: Validator pass → goal done
 	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
@@ -3808,9 +4079,9 @@ func TestCheckProgress_Supervising_TimeoutExceeded_KillsWindows(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime("goal-001").phase = phaseSupervising
 	d.dispatchTimeout = 1 * time.Second
-	d.currentGoalDispatchTime = time.Now().Add(-2 * time.Second)
+	d.runtime("goal-001").dispatchTime = time.Now().Add(-2 * time.Second)
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -3839,8 +4110,6 @@ func TestCheckProgress_Supervising_TimeoutExceeded_KillsWindows(t *testing.T) {
 }
 
 func TestTemplateContent_NoInteractionFlags(t *testing.T) {
-	t.Skip("templates do not yet include --no-interaction/CI=1 flags — see GO-14d")
-
 	templateDir := filepath.Join("..", "..", "cmd", "tmux-cli", "embedded", "templates", "php-symfony")
 	entries, err := os.ReadDir(templateDir)
 	require.NoError(t, err)
@@ -4120,7 +4389,7 @@ func TestDaemon_ClampValidateTimeout_LoadFailureStillClamps(t *testing.T) {
 // countingCreateWindowFn returns a WindowCreateFunc that increments *count on
 // each call, so precondition-block tests can assert no worker window is spawned.
 func countingCreateWindowFn(count *int, tmuxWindowID string) WindowCreateFunc {
-	return func(name, command string) (*CreatedWindow, error) {
+	return func(name, command, cwd string) (*CreatedWindow, error) {
 		*count++
 		return &CreatedWindow{TmuxWindowID: tmuxWindowID, Name: name}, nil
 	}
@@ -4315,7 +4584,7 @@ func TestDispatchBlockedGoalNotRedispatched(t *testing.T) {
 // without re-dispatching. Fires on recurrence, not on budget exhaustion.
 func TestM03_CircuitBreakerHalt(t *testing.T) {
 	d, _, dir := setupDaemon(t)
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	findings := []ValidationFinding{
 		{Rule: "build", Status: "fail", FailureClass: "code-defect",
@@ -4361,7 +4630,7 @@ func TestM03_CircuitBreakerHalt(t *testing.T) {
 	assert.Equal(t, cycle1Sigs, sig.Signatures, "blocked signal carries the recurrent signatures")
 
 	// Phase NOT advanced to supervising for this goal (no re-dispatch).
-	assert.NotEqual(t, phaseSupervising, d.phase, "circuit-break does not re-dispatch")
+	assert.NotEqual(t, phaseSupervising, d.runtime("goal-001").phase, "circuit-break does not re-dispatch")
 }
 
 // TestM03_NoHaltWhenSignaturesChange: when cycle 2's signature set differs from
@@ -4369,7 +4638,7 @@ func TestM03_CircuitBreakerHalt(t *testing.T) {
 // route (budget consumed, GoalPending re-dispatch) rather than halting.
 func TestM03_NoHaltWhenSignaturesChange(t *testing.T) {
 	d, _, dir := setupDaemon(t)
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	cycle1Findings := []ValidationFinding{
 		{Rule: "build", Status: "fail", FailureClass: "code-defect", Detail: "compile error in pkg a"},
@@ -4623,7 +4892,7 @@ func TestSpecDefectRouting_Unsubstantiated_ReRunsValidationOnly(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{routeGoal("goal-001", 2, 1, 2, 0)}}
 	writeGoals(t, dir, gf)
@@ -4646,7 +4915,7 @@ func TestSpecDefectRouting_Unsubstantiated_ReRunsValidationOnly(t *testing.T) {
 	assert.Equal(t, 2, goal.CodeRetries, "code budget untouched")
 	assert.Equal(t, 0, goal.BlockRetries, "block budget untouched")
 	assert.Equal(t, GoalRunning, goal.Status, "stays running for re-validation")
-	assert.Equal(t, phaseValidating, d.phase, "re-enters validating, not generation")
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase, "re-enters validating, not generation")
 
 	for _, c := range *sentCmds {
 		assert.NotContains(t, c, "/tmux:supervisor", "implementer must NOT be re-dispatched")
@@ -4668,7 +4937,7 @@ func TestSpecDefectRouting_TopLevelFallback_NoFindings_ReRunsValidationOnly(t *t
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{routeGoal("goal-001", 2, 1, 2, 0)}}
 	writeGoals(t, dir, gf)
@@ -4690,7 +4959,7 @@ func TestSpecDefectRouting_TopLevelFallback_NoFindings_ReRunsValidationOnly(t *t
 	assert.Equal(t, 1, goal.SpecRetries, "spec budget UNTOUCHED on a contentless fallback verdict")
 	assert.Equal(t, 2, goal.CodeRetries, "code budget untouched")
 	assert.Equal(t, GoalRunning, goal.Status, "stays running for re-validation")
-	assert.Equal(t, phaseValidating, d.phase, "re-enters validating, not generation")
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase, "re-enters validating, not generation")
 
 	for _, c := range *sentCmds {
 		assert.NotContains(t, c, "/tmux:plan", "planner must NOT be re-dispatched on a no-finding fallback")
@@ -4707,7 +4976,7 @@ func TestSpecDefectRouting_Substantive_NonStubCorrectionOnly_Bounces(t *testing.
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{routeGoal("goal-001", 2, 2, 1, 0)}}
 	writeGoals(t, dir, gf)
@@ -4730,4 +4999,403 @@ func TestSpecDefectRouting_Substantive_NonStubCorrectionOnly_Bounces(t *testing.
 	assert.Equal(t, 1, goal.ValidationRetries, "validation budget untouched")
 	assert.Equal(t, GoalPending, goal.Status)
 	assert.Equal(t, "generation", goal.Phase, "marked for generation re-dispatch")
+}
+
+// --- E1-0d: per-goal fan-out tasks.yaml relocation ---
+
+func TestTasksYamlExists_TrueForPerGoalFile(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	writeGoalTasksYaml(t, dir, "g1", "status: ready\ncycle: 1\ntasks: []\n")
+	assert.True(t, d.tasksYamlExists("g1"))
+}
+
+func TestTasksYamlExists_FalseWhenOnlyTopLevelExists(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	// Only the top-level planning-queue exists — the per-goal probe must NOT
+	// fall back to it, so a missing per-goal file routes to full dispatch.
+	writeTasksYaml(t, dir, "status: ready\ncycle: 1\ntasks: []\n")
+	assert.False(t, d.tasksYamlExists("g1"), "must not cross-read the top-level planning-queue")
+}
+
+func TestResetTaskStatuses_RependsPerGoalFile(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	// Sentinel top-level planning-queue that must be left untouched.
+	writeTasksYaml(t, dir, `status: ready
+cycle: 1
+tasks:
+  - name: "top task"
+    wid: execute-9
+    status: done
+    context: top.md
+`)
+
+	writeGoalTasksYaml(t, dir, "g1", `status: ready
+cycle: 1
+tasks:
+  - name: "task one"
+    wid: execute-1
+    status: done
+    context: ctx1.md
+  - name: "task two"
+    wid: execute-2
+    status: in_progress
+    context: ctx2.md
+`)
+
+	require.NoError(t, d.resetTaskStatuses("g1"))
+
+	data, err := os.ReadFile(tasks.GoalTasksFilePath(dir, "g1"))
+	require.NoError(t, err)
+	content := string(data)
+	assert.NotContains(t, content, "status: done", "all task statuses reset from done")
+	assert.NotContains(t, content, "status: in_progress", "all task statuses reset from in_progress")
+	assert.Contains(t, content, "status: pending", "tasks reset to pending")
+	assert.Contains(t, content, "status: ready", "file-level status set to ready")
+
+	// Top-level planning-queue must NOT be mutated.
+	topData, err := os.ReadFile(tasks.TasksFilePath(dir))
+	require.NoError(t, err)
+	assert.Contains(t, string(topData), "status: done", "top-level planning-queue must be left untouched")
+}
+
+func TestInjectCorrections_ReadsPerGoalTasksFile(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	goal := &Goal{ID: "g1", Description: "test", Status: GoalRunning, CodeRetries: 2, MaxCodeRetries: 3}
+	_, err := EnsureGoalDir(dir, "g1")
+	require.NoError(t, err)
+
+	// CurrentCycle(goal)=2 -> injectCorrections reads corrections/cycle-1.md.
+	corrDir := filepath.Join(dir, ".tmux-cli", "goals", "g1", "corrections")
+	require.NoError(t, os.MkdirAll(corrDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(corrDir, "cycle-1.md"), []byte("Remove Doctrine from quality-gates.md"), 0o644))
+
+	// The per-goal tasks file names the context .md to amend.
+	writeGoalTasksYaml(t, dir, "g1", `status: ready
+cycle: 1
+tasks:
+  - name: "task one"
+    wid: execute-1
+    status: done
+    context: .tmux-cli/research/ctx1.md
+`)
+	writeTaskContext(t, dir, ".tmux-cli/research/ctx1.md", "# Original context")
+
+	require.NoError(t, d.injectCorrections(goal))
+
+	ctxData, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "research", "ctx1.md"))
+	require.NoError(t, err)
+	ctxContent := string(ctxData)
+	assert.Contains(t, ctxContent, "# Original context", "original context preserved")
+	assert.Contains(t, ctxContent, "## Prior Corrections", "corrections section appended from per-goal tasks file")
+	assert.Contains(t, ctxContent, "Remove Doctrine from quality-gates.md", "correction content present")
+}
+
+func TestDispatchRetry_UsesPerGoalPath(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalPending, Retries: 1, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+
+	// Sentinel top-level planning-queue: dispatchRetry must not touch it.
+	writeTasksYaml(t, dir, `status: ready
+cycle: 1
+tasks:
+  - name: "top task"
+    wid: execute-9
+    status: done
+    context: top.md
+`)
+
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
+cycle: 1
+tasks:
+  - name: "task one"
+    wid: execute-1
+    status: done
+    context: .tmux-cli/research/ctx1.md
+`)
+	writeTaskContext(t, dir, ".tmux-cli/research/ctx1.md", "# context")
+
+	d.createWindowFn = mockCreateWindowFn("@99")
+	setupDispatchMocks(exec, testSession, "@99")
+
+	// Drives the tick retry-branch: tasksYamlExists("goal-001") gates re-dispatch.
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	// reset operated on the GOAL-SCOPED file.
+	goalData, err := os.ReadFile(tasks.GoalTasksFilePath(dir, "goal-001"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(goalData), "status: done", "per-goal tasks reset to pending")
+	assert.Contains(t, string(goalData), "status: pending")
+
+	// top-level planning-queue untouched.
+	topData, err := os.ReadFile(tasks.TasksFilePath(dir))
+	require.NoError(t, err)
+	assert.Contains(t, string(topData), "status: done", "top-level planning-queue must be left untouched")
+
+	// retry sends /tmux:supervisor (skip planning), confirming the retry branch.
+	var sentCmd string
+	for _, call := range exec.Calls {
+		if call.Method == "SendMessage" {
+			sentCmd = call.Arguments.Get(2).(string)
+		}
+	}
+	assert.Contains(t, sentCmd, "/tmux:supervisor")
+	assert.NotContains(t, sentCmd, "/tmux:plan")
+}
+
+// --- E1-0e: ready-set scheduler tests ---
+
+// writeSettingsMaxGoals writes a setting.yaml identical to writeSettings but with
+// an explicit supervisor.max_goals, so d.maxGoals() (which reads setting.yaml)
+// returns the multi-goal bound under test.
+func writeSettingsMaxGoals(t *testing.T, dir string, maxGoals int) {
+	t.Helper()
+	content := fmt.Sprintf(`hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 0
+  max_workers: 4
+  cycle_delay: 5
+  unplanned_audit: true
+  max_goals: %d
+plan:
+  auto_approve: true
+  auto_execute: true
+sudo:
+  timeout: 30
+taskvisor:
+  dispatch_timeout: 3600
+  validate_timeout: 300
+  poll_interval: 0
+`, maxGoals)
+	p := filepath.Join(dir, ".tmux-cli", "setting.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+}
+
+// setupNamespacedDispatchMocks programs the exact ListWindows sequence one
+// dispatch consumes for a per-goal namespaced supervisor window at MaxGoals>1:
+// 6 empty (4 kill lookups + collectManagedNames + waitWindowsGone) then 2 returning
+// the booted supervisor window (waitClaudeBoot + waitForPrompt's findWindowByName).
+func setupNamespacedDispatchMocks(exec *testutil.MockTmuxExecutor, session, supName, winID string) {
+	empty := []tmux.WindowInfo{}
+	claude := []tmux.WindowInfo{{TmuxWindowID: winID, Name: supName, CurrentCommand: "claude"}}
+	exec.On("ListWindows", session).Return(empty, nil).Times(6)
+	exec.On("ListWindows", session).Return(claude, nil).Times(2)
+}
+
+// MaxGoals=1: two ready disjoint goals, exactly ONE dispatch this tick; the head
+// is the first candidate and the second stays pending (byte-identical to the old
+// single-goal cadence).
+func TestTick_MaxGoalsOne_DispatchesSingleCandidate(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "first", Status: GoalPending},
+			{ID: "goal-002", Description: "second disjoint", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	writeSettingsMaxGoals(t, dir, 1)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	setupDispatchMocks(exec, testSession, "@0")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	assert.Equal(t, GoalRunning, gf.Goals[0].Status, "first goal dispatched")
+	assert.Equal(t, GoalPending, gf.Goals[1].Status, "second goal stays pending at MaxGoals=1")
+	assert.Equal(t, "goal-001", gf.CurrentGoal, "scalar head tracks the single in-flight goal")
+}
+
+// MaxGoals=2: two ready disjoint goals both reach GoalRunning in ONE tick, each
+// with its own distinct namespaced supervisor window.
+func TestTick_MaxGoalsTwo_DispatchesTwoDisjointGoals(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-020",
+		Goals: []Goal{
+			// Disjoint declared scopes: the disjoint-scope co-scheduling gate
+			// (DisjointReadySet, wired into tick) admits BOTH this tick only because
+			// their footprints provably do not overlap. Without a known scope the
+			// gate would conservatively serialize them (see the _UnknownScope test).
+			{ID: "goal-020", Description: "alpha", Status: GoalPending, Scope: []string{"internal/alpha/**"}},
+			{ID: "goal-021", Description: "beta disjoint", Status: GoalPending, Scope: []string{"internal/beta/**"}},
+		},
+	}
+	writeGoals(t, dir, gf)
+	writeSettingsMaxGoals(t, dir, 2)
+	_, err := EnsureGoalDir(dir, "goal-020")
+	require.NoError(t, err)
+	_, err = EnsureGoalDir(dir, "goal-021")
+	require.NoError(t, err)
+
+	// goal-020 dispatch then goal-021 dispatch, each its own namespaced supervisor.
+	setupNamespacedDispatchMocks(exec, testSession, "supervisor-020", "@20")
+	setupNamespacedDispatchMocks(exec, testSession, "supervisor-021", "@21")
+	exec.On("CaptureWindowOutput", testSession, mock.Anything).Return("❯ ", nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	exec.On("KillWindow", testSession, mock.Anything).Return(nil)
+
+	var createdNames []string
+	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
+		createdNames = append(createdNames, name)
+		id := "@" + name[len(name)-2:]
+		return &CreatedWindow{TmuxWindowID: id, Name: name}, nil
+	})
+
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	assert.Equal(t, GoalRunning, gf.Goals[0].Status, "goal-020 dispatched")
+	assert.Equal(t, GoalRunning, gf.Goals[1].Status, "goal-021 dispatched same tick")
+	assert.Equal(t, "goal-020", gf.CurrentGoal, "scalar head stays on the first in-flight goal")
+	assert.Contains(t, createdNames, "supervisor-020", "goal-020 owns a distinct supervisor window")
+	assert.Contains(t, createdNames, "supervisor-021", "goal-021 owns a distinct supervisor window")
+	assert.NotEqual(t, "supervisor-020", "supervisor-021")
+}
+
+// MaxGoals=2 but neither candidate declares a scope (UNKNOWN): the disjoint-scope
+// gate wired into tick must conservatively serialize — only the head goal
+// dispatches this tick, the second stays pending until a free slot opens. This
+// locks the gate's wiring at the tick level: it is NOT enough that two slots are
+// free; co-scheduling requires PROVABLY disjoint declared scope.
+func TestTick_MaxGoalsTwo_UnknownScopeSerializes(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-020",
+		Goals: []Goal{
+			{ID: "goal-020", Description: "alpha", Status: GoalPending}, // no scope
+			{ID: "goal-021", Description: "beta", Status: GoalPending},  // no scope
+		},
+	}
+	writeGoals(t, dir, gf)
+	writeSettingsMaxGoals(t, dir, 2)
+	_, err := EnsureGoalDir(dir, "goal-020")
+	require.NoError(t, err)
+	_, err = EnsureGoalDir(dir, "goal-021")
+	require.NoError(t, err)
+
+	setupNamespacedDispatchMocks(exec, testSession, "supervisor-020", "@20")
+	exec.On("CaptureWindowOutput", testSession, mock.Anything).Return("❯ ", nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	exec.On("KillWindow", testSession, mock.Anything).Return(nil)
+
+	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
+		id := "@" + name[len(name)-2:]
+		return &CreatedWindow{TmuxWindowID: id, Name: name}, nil
+	})
+
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	assert.Equal(t, GoalRunning, gf.Goals[0].Status, "head goal-020 dispatched (vacuously co-schedulable)")
+	assert.Equal(t, GoalPending, gf.Goals[1].Status, "goal-021 serialized: unknown scope cannot co-schedule with an in-flight goal")
+}
+
+// MaxGoals=2 but both goals already running -> 0 free slots -> no new dispatch;
+// each running goal is driven through checkProgress (no signal -> stays running).
+func TestTick_MaxGoalsTwo_NoFreeSlotsSkipsDispatch(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-020",
+		Goals: []Goal{
+			{ID: "goal-020", Description: "alpha", Status: GoalRunning},
+			{ID: "goal-021", Description: "beta", Status: GoalRunning},
+		},
+	}
+	writeGoals(t, dir, gf)
+	writeSettingsMaxGoals(t, dir, 2)
+	// Both runtimes mid-supervising with no signal on disk -> checkProgress is a no-op.
+	d.runtime("goal-020").phase = phaseSupervising
+	d.runtime("goal-021").phase = phaseSupervising
+
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	assert.Equal(t, GoalRunning, gf.Goals[0].Status, "no free slot: goal-020 stays running")
+	assert.Equal(t, GoalRunning, gf.Goals[1].Status, "no free slot: goal-021 stays running")
+	exec.AssertNotCalled(t, "SendMessage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// MaxGoals=3 with a single ready candidate -> exactly one dispatch, remaining
+// slots idle, no error.
+func TestTick_MaxGoalsThree_OneCandidateLeavesSlotsIdle(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-030",
+		Goals: []Goal{
+			{ID: "goal-030", Description: "only ready", Status: GoalPending},
+			{ID: "goal-031", Description: "waits on 030", Status: GoalPending, DependsOn: []string{"goal-030"}},
+		},
+	}
+	writeGoals(t, dir, gf)
+	writeSettingsMaxGoals(t, dir, 3)
+	_, err := EnsureGoalDir(dir, "goal-030")
+	require.NoError(t, err)
+
+	setupNamespacedDispatchMocks(exec, testSession, "supervisor-030", "@30")
+	exec.On("CaptureWindowOutput", testSession, mock.Anything).Return("❯ ", nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	exec.On("KillWindow", testSession, mock.Anything).Return(nil)
+	d.SetWindowCreateFunc(mockCreateWindowFn("@30"))
+
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	assert.Equal(t, GoalRunning, gf.Goals[0].Status, "the one ready goal dispatched")
+	assert.Equal(t, GoalPending, gf.Goals[1].Status, "dependent goal stays pending; spare slots idle")
+}
+
+// All goals terminal and none running -> deactivateOnCompletion fires and the
+// daemon goes idle with a completion report.
+func TestTick_AllTerminalNoneRunning_Deactivates(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "done", Status: GoalDone},
+			{ID: "goal-002", Description: "failed", Status: GoalFailed},
+		},
+	}
+	writeGoals(t, dir, gf)
+	writeSettings(t, dir, true, true)
+	writeGuardFile(t, dir)
+
+	setupDeactivateOnCompletionMocks(exec, testSession)
+
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	assert.Equal(t, modeIdle, d.mode, "no running, no candidates -> deactivate")
+	assert.FileExists(t, filepath.Join(dir, ".tmux-cli", "goals", "completion-report.md"))
 }

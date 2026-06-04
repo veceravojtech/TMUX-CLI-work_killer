@@ -31,6 +31,8 @@ goals = 1 (gate 0) + 1 (scaffold)
 
 Bracketed items are conditional — include only when selected in ADRs/discovery. Auth endpoints count in N_auth_flows only, NOT in per-BC N_actions (G-09, no double counting).
 
+`[1 Docker]` is conditional on `RUN_TARGET=docker OR a deployment ADR`: the compose+ports goal (step 3.26) fires whenever `RUN_TARGET=docker` (read from `test-environment.md`) — a deployment ADR is NOT required — and also when a Docker/container/deployment ADR is present. When both hold, exactly ONE goal is emitted (the ADR only adds production extras). Its host:container port mappings and `APP_PORT` come from the `Published Ports` block in `test-environment.md`.
+
 ## Phase ordering chain
 
 ```

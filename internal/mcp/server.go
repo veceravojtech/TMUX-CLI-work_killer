@@ -101,8 +101,10 @@ func (s *Server) SpecValidateHandler(ctx context.Context, req *sdkmcp.CallToolRe
 	return nil, *output, nil
 }
 
-// TasksValidateInput defines the input schema for tasks-validate tool (no parameters needed)
-type TasksValidateInput struct{}
+// TasksValidateInput defines the input schema for tasks-validate tool.
+type TasksValidateInput struct {
+	GoalID string `json:"goal_id,omitempty" jsonschema:"Optional goal id; validates .tmux-cli/goals/<id>/tasks.yaml instead of the top-level planning-queue"`
+}
 
 // TasksValidateOutput defines the output schema for tasks-validate tool
 type TasksValidateOutput struct {
@@ -116,7 +118,7 @@ func (s *Server) TasksValidateHandler(ctx context.Context, req *sdkmcp.CallToolR
 	TasksValidateOutput,
 	error,
 ) {
-	output, err := s.TasksValidate()
+	output, err := s.TasksValidate(input)
 	if err != nil {
 		return nil, TasksValidateOutput{}, err
 	}
@@ -174,13 +176,14 @@ type WindowsCreateOutput struct {
 
 // WindowsSpawnWorkerInput defines the input schema for windows-spawn-worker tool
 type WindowsSpawnWorkerInput struct {
-	SupervisorWid string `json:"supervisorWid" jsonschema:"Supervisor's tmux window name (e.g. 'supervisor'). Used in the task message and RESPONSE PROTOCOL."`
-	Subtask       string `json:"subtask" jsonschema:"One-line label for the worker's task (e.g. 'audit auth module'). Appears as SUBTASK in the task message."`
-	ContextFile   string `json:"contextFile" jsonschema:"Path to the context .md file the worker should read for full spec."`
-	Scope         string `json:"scope" jsonschema:"Multi-line scope summary — files, directories, what to investigate or implement."`
-	Context       string `json:"context,omitempty" jsonschema:"Multi-line supporting context — prior findings, constraints, non-goals. Optional."`
-	Deliverable   string `json:"deliverable,omitempty" jsonschema:"Custom deliverable format to replace the default FINDINGS/RISKS/RECOMMENDATION/FILES sections. When empty, the standard deliverable is used. Use this for spec-writing workers that need a different output format."`
-	Prefix        string `json:"prefix,omitempty" jsonschema:"Window name prefix (e.g. 'inv-'). Defaults to 'execute-' if empty. Max workers limit applies per-prefix."`
+	SupervisorWid    string `json:"supervisorWid" jsonschema:"Supervisor's tmux window name (e.g. 'supervisor'). Used in the task message and RESPONSE PROTOCOL."`
+	Subtask          string `json:"subtask" jsonschema:"One-line label for the worker's task (e.g. 'audit auth module'). Appears as SUBTASK in the task message."`
+	ContextFile      string `json:"contextFile" jsonschema:"Path to the context .md file the worker should read for full spec."`
+	Scope            string `json:"scope" jsonschema:"Multi-line scope summary — files, directories, what to investigate or implement."`
+	Context          string `json:"context,omitempty" jsonschema:"Multi-line supporting context — prior findings, constraints, non-goals. Optional."`
+	Deliverable      string `json:"deliverable,omitempty" jsonschema:"Custom deliverable format to replace the default FINDINGS/RISKS/RECOMMENDATION/FILES sections. When empty, the standard deliverable is used. Use this for spec-writing workers that need a different output format."`
+	Prefix           string `json:"prefix,omitempty" jsonschema:"Window name prefix (e.g. 'inv-'). Defaults to 'execute-' if empty. Max workers limit applies per-prefix."`
+	WorkingDirectory string `json:"workingDirectory,omitempty" jsonschema:"Optional working directory the worker's shell starts in (tmux -c). Used to run a worker inside a goal's git worktree for validate isolation. When empty, the session default cwd is used."`
 }
 
 // WindowsSpawnWorkerOutput defines the output schema for windows-spawn-worker tool
@@ -192,7 +195,8 @@ type WindowsSpawnWorkerOutput struct {
 
 // WindowsRecoverWorkersInput defines the input schema for windows-recover-workers tool
 type WindowsRecoverWorkersInput struct {
-	Message string `json:"message,omitempty" jsonschema:"Message to send after dismissing prompt. Defaults to 'continue' if empty."`
+	Message   string `json:"message,omitempty" jsonschema:"Message to send after dismissing prompt. Defaults to 'continue' if empty."`
+	CallerWid string `json:"callerWid,omitempty" jsonschema:"Window name of the calling supervisor (e.g. supervisor-020). When goal-namespaced, recovery is restricted to that goal's execute workers. Empty or bare names recover all execute-* workers."`
 }
 
 // WindowsRecoverWorkersOutput defines the output schema for windows-recover-workers tool
@@ -275,6 +279,7 @@ type GoalCreateInput struct {
 	Phase       string   `json:"phase,omitempty" jsonschema:"Development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final)"`
 	MaxRetries  int      `json:"max_retries,omitempty" jsonschema:"Maximum retry attempts before failing (default 5)"`
 	DependsOn   []string `json:"depends_on,omitempty" jsonschema:"IDs of goals this goal depends on (must exist in goals.yaml)"`
+	Scope       []string `json:"scope,omitempty" jsonschema:"Declared file/namespace footprint (globs like internal/x/** or namespace prefixes like App\\Billing). The disjoint-scope co-scheduling gate serializes goals with overlapping or unknown scope under MaxGoals>1; omit to derive from deliverables (treated as unknown = serialize)"`
 
 	Preconditions []taskvisor.Precondition `json:"preconditions,omitempty" jsonschema:"Optional precondition gates ({kind:env|service, spec, remedy}); daemon parks the goal until each is met"`
 
@@ -326,9 +331,34 @@ func (s *Server) GoalCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequ
 		}
 	}
 
-	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.Phase, input.MaxRetries, input.DependsOn, input.Preconditions, investigators)
+	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.Phase, input.MaxRetries, input.DependsOn, input.Preconditions, investigators, input.Scope)
 	if err != nil {
 		return nil, GoalCreateOutput{}, err
+	}
+	return nil, *output, nil
+}
+
+// GoalAddPrerequisiteInput defines the input schema for goal-add-prerequisite tool.
+type GoalAddPrerequisiteInput struct {
+	GoalID         string `json:"goal_id" jsonschema:"ID of the existing goal to add a prerequisite to (e.g. goal-005)"`
+	PrerequisiteID string `json:"prerequisite_id" jsonschema:"ID of the existing goal that must complete first; appended to the target goal's depends_on"`
+}
+
+// GoalAddPrerequisiteOutput defines the output schema for goal-add-prerequisite tool.
+type GoalAddPrerequisiteOutput struct {
+	DependsOn       []string `json:"depends_on" jsonschema:"The target goal's depends_on after the wire"`
+	EscalationCount int      `json:"escalation_count" jsonschema:"The target goal's escalation count after the wire (bounded by the escalation cap)"`
+}
+
+// GoalAddPrerequisiteHandler is the MCP tool handler for goal-add-prerequisite operation.
+func (s *Server) GoalAddPrerequisiteHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input GoalAddPrerequisiteInput) (
+	*sdkmcp.CallToolResult,
+	GoalAddPrerequisiteOutput,
+	error,
+) {
+	output, err := s.GoalAddPrerequisite(input.GoalID, input.PrerequisiteID)
+	if err != nil {
+		return nil, GoalAddPrerequisiteOutput{}, err
 	}
 	return nil, *output, nil
 }
@@ -383,6 +413,23 @@ type ValidationFinding struct {
 	InputFingerprint  string   `json:"input_fingerprint,omitempty" jsonschema:"Computed input fingerprint (server-derived; reuse decision output)"`
 	ReusedFromCycle   int      `json:"reused_from_cycle,omitempty" jsonschema:"Cycle a reused pass came from (reuse decision output)"`
 	ReusedFingerprint string   `json:"reused_fingerprint,omitempty" jsonschema:"Unchanged fingerprint echoed on reuse (reuse decision output)"`
+
+	// B5a structured correction. OPTIONAL machine-applicable remedy mirrored from
+	// taskvisor.ValidationFinding.CorrectionEdits; advisory only and NEVER
+	// auto-applied. Appended LAST to preserve field-order parity with the taskvisor
+	// type; omitempty keeps the tool input shape unchanged when unused.
+	CorrectionEdits []CorrectionEdit `json:"correction_edit,omitempty" jsonschema:"Optional machine-applicable edits {file,line,old,new}; advisory only, NOT auto-applied; the free-text correction is still required"`
+}
+
+// CorrectionEdit mirrors taskvisor.CorrectionEdit (same json tags). The mcp side
+// carries jsonschema descriptions the taskvisor type must not. SYNC: kept in
+// lock-step by TestCorrectionEditStructsInSync_TagsMatch. jsonschema tags use
+// bare description text only (no `description=` prefix — the go-sdk panics).
+type CorrectionEdit struct {
+	File string `json:"file" jsonschema:"Repo-relative file path to edit (required, non-empty)"`
+	Line int    `json:"line,omitempty" jsonschema:"1-based line anchor hint; 0 means unknown"`
+	Old  string `json:"old,omitempty" jsonschema:"Exact text to replace; empty means insert"`
+	New  string `json:"new,omitempty" jsonschema:"Replacement text; empty means delete"`
 }
 
 // FindingResult is one optional per-finding re-validation input to
@@ -485,7 +532,7 @@ func (s *Server) WindowsCreateHandler(ctx context.Context, req *sdkmcp.CallToolR
 	WindowsCreateOutput,
 	error,
 ) {
-	window, err := s.WindowsCreate(input.Name, input.Command)
+	window, err := s.WindowsCreate(input.Name, input.Command, "")
 	if err != nil {
 		return nil, WindowsCreateOutput{}, err
 	}
@@ -513,7 +560,7 @@ func (s *Server) WindowsRecoverWorkersHandler(ctx context.Context, req *sdkmcp.C
 	WindowsRecoverWorkersOutput,
 	error,
 ) {
-	output, err := s.WindowsRecoverWorkers(input.Message)
+	output, err := s.WindowsRecoverWorkers(input.Message, input.CallerWid)
 	if err != nil {
 		return nil, WindowsRecoverWorkersOutput{}, err
 	}
@@ -528,7 +575,7 @@ func (s *Server) WindowsSpawnWorkerHandler(ctx context.Context, req *sdkmcp.Call
 	error,
 ) {
 	window, workerName, taskMessage, err := s.WindowsSpawnWorker(
-		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context, input.Deliverable, input.Prefix,
+		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context, input.Deliverable, input.Prefix, input.WorkingDirectory,
 	)
 	if err != nil {
 		return nil, WindowsSpawnWorkerOutput{}, err
@@ -659,6 +706,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: false,
 		},
 	}, s.GoalCreateHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "goal-add-prerequisite",
+		Description: "Wire an existing goal's depends_on to include an existing prerequisite goal — the generation-side escalation backstop. Validates both IDs exist, rejects self-dependency and dependency cycles, is idempotent when the edge already exists, and enforces the escalation cap. Increments the goal's escalation_count. Generation-only: a worker must never call it (it races the daemon).",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.GoalAddPrerequisiteHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "goal-prune",

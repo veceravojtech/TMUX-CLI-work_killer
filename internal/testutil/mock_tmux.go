@@ -47,6 +47,15 @@ func (m *MockTmuxExecutor) CreateWindow(sessionID, name, command string) (string
 	return args.String(0), args.Error(1)
 }
 
+// CreateWindowInDir mocks creating a new window with an explicit start directory.
+// It mirrors RealTmuxExecutor.CreateWindowInDir (a concrete method NOT on the
+// TmuxExecutor interface) so cwd-aware callers — windows-spawn-worker's optional
+// workingDirectory (E1-1c) — can type-assert to it in tests.
+func (m *MockTmuxExecutor) CreateWindowInDir(sessionID, name, command, cwd string) (string, error) {
+	args := m.Called(sessionID, name, command, cwd)
+	return args.String(0), args.Error(1)
+}
+
 // ListWindows mocks listing windows in a session with metadata
 func (m *MockTmuxExecutor) ListWindows(sessionID string) ([]tmux.WindowInfo, error) {
 	args := m.Called(sessionID)

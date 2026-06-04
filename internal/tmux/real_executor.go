@@ -111,14 +111,31 @@ func (e *RealTmuxExecutor) ListSessions() ([]string, error) {
 // -P: Print information about the new window
 // -F '#{window_id}': Format output to only show window ID
 func (e *RealTmuxExecutor) CreateWindow(sessionID, name, command string) (string, error) {
+	return e.CreateWindowInDir(sessionID, name, command, "")
+}
+
+// CreateWindowInDir is CreateWindow with an explicit start directory. A non-empty
+// cwd is passed to tmux as `-c <cwd>` so the new window's shell starts there
+// (used for per-goal git-worktree isolation, E1-1a); an empty cwd leaves the
+// session default, making CreateWindow byte-identical to its prior behavior.
+// It is a concrete method (NOT on the TmuxExecutor interface) so threading cwd
+// requires no change to the interface, its mocks, or unrelated callers.
+//
+// Command: tmux new-window -d -t <sessionID> -n <name> [-c <cwd>] -P -F '#{window_id}' <command>
+func (e *RealTmuxExecutor) CreateWindowInDir(sessionID, name, command, cwd string) (string, error) {
 	args := []string{
 		"new-window",
 		"-d",
 		"-t", sessionID,
 		"-n", name,
+	}
+	if cwd != "" {
+		args = append(args, "-c", cwd)
+	}
+	args = append(args,
 		"-P",
 		"-F", "#{window_id}",
-	}
+	)
 
 	// Append command as the final argument if provided
 	// Wrap command in interactive shell to ensure window persistence

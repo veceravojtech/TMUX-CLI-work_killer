@@ -15,16 +15,17 @@
     <mcp>tmux-cli MCP server REQUIRED</mcp>
     <directory>research-root is resolved in step 0b (relative to project working directory; create if absent):
       • Standalone (no active goal): .tmux-cli/research/{y-m-d-hh}/ — {y-m-d-hh} expands to current timestamp, e.g. 2026-05-11-20.
-      • Goal mode (.tmux-cli/taskvisor-current-goal exists): .tmux-cli/goals/{GOAL_ID}/research/ — NO timestamp subfolder.</directory>
-    <constraint>tasks.yaml is ALWAYS .tmux-cli/tasks.yaml regardless of mode — the taskvisor daemon reads it from that fixed path. Only per-worker report and research-task context .md files live under research-root; tasks.yaml stays put and its context: fields point at the (possibly goal-scoped) files.</constraint>
+      • Goal mode (GOAL_ID resolved window-name-first in step 0b: supervisor-{ns} → goal-{ns}; the .tmux-cli/taskvisor-current-goal marker only for the bare `supervisor` window): .tmux-cli/goals/{GOAL_ID}/research/ — NO timestamp subfolder.</directory>
+    <constraint>The fan-out tasks.yaml path is resolved once in step 0b as `tasks-path`: goal-scoped (.tmux-cli/goals/{GOAL_ID}/tasks.yaml) in GOAL_MODE, else the top-level .tmux-cli/tasks.yaml. In goal mode the taskvisor daemon reads the per-goal file (retry: exists/reset/inject). This is DISTINCT from plan.xml's top-level planning-queue (the /tmux:plan handoff), which is never moved. Only per-worker report and research-task context .md files live under research-root; tasks-path holds the fan-out and its context: fields point at the (possibly goal-scoped) files.</constraint>
   </requirements>
 
   <glossary>
     <term name="SUPERVISOR_WID">Name of the supervisor's tmux window (e.g. "supervisor"). Stable for whole session.</term>
     <term name="SELF_WID">Name of a worker's tmux window (e.g. "execute-7"). Each worker gets unique N.</term>
     <term name="research-root">Primary directory where per-worker .md reports and research-task context files are saved. Resolved in step 0b: .tmux-cli/goals/{GOAL_ID}/research/ when a goal is active (no timestamp), else .tmux-cli/research/{y-m-d-hh}/ (timestamped). Defined in &lt;requirements&gt; / step 0b.</term>
-    <term name="GOAL_MODE">Internal flag set true in step 0b when .tmux-cli/taskvisor-current-goal exists and is non-empty. In goal mode research-root is goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/) and step 9b appends a research-file index to the goal's goal.md.</term>
-    <term name="GOAL_ID">The goal identifier read (trimmed) from .tmux-cli/taskvisor-current-goal in step 0b when GOAL_MODE is true. Names the goal folder under .tmux-cli/goals/.</term>
+    <term name="GOAL_MODE">Internal flag set true in step 0b when the supervisor's OWN window name is namespaced (supervisor-{ns}, daemon dispatch at MaxGoals&gt;1) or, for the bare `supervisor` window, when .tmux-cli/taskvisor-current-goal exists and is non-empty. In goal mode research-root is goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/) and step 9b appends a research-file index to the goal's goal.md.</term>
+    <term name="GOAL_ID">The goal identifier resolved in step 0b when GOAL_MODE is true: derived from the supervisor's namespaced window name (supervisor-{ns} → goal-{ns}, mirroring parseGoalBinding in internal/mcp/tools.go), else read (trimmed) from .tmux-cli/taskvisor-current-goal for the bare `supervisor` window. Names the goal folder under .tmux-cli/goals/.</term>
+    <term name="tasks-path">Path to the supervisor's fan-out tasks.yaml, resolved in step 0b: .tmux-cli/goals/{GOAL_ID}/tasks.yaml in GOAL_MODE (read by the taskvisor daemon on retry), else the top-level .tmux-cli/tasks.yaml. Every fan-out read/write/archive/status-flip in this flow uses tasks-path. DISTINCT from plan.xml's top-level planning-queue.</term>
     <term name="subtask label">One-line human-readable description of what a worker is doing (e.g. "implement setup config parser").</term>
     <term name="sup=">Supervisor's window name in tag messages.</term>
     <term name="wid=">Worker's window name in tag messages.</term>
@@ -39,6 +40,7 @@
     <tag name="[EXECUTE:DONE wid=... sup=... file=&lt;abs-path&gt;]" from="worker">Worker reports completion. Body carries NO inline findings — the .md at file= IS the report.</tag>
     <tag name="[EXECUTE:NEED_INPUT wid=... sup=... &lt;short reason&gt;]" from="worker">Worker cannot proceed without a fact. Reason ≤ 200 chars inline. Supervisor answers via windows-message to that wid, or replies [SUPERVISOR:NARROW-SCOPE].</tag>
     <tag name="[EXECUTE:FAILED wid=... sup=... reason=&lt;short&gt;]" from="worker">Worker hit a terminal failure. Reason ≤ 200 chars inline. Supervisor respawns with narrowed scope (first attempt) or escalates (second).</tag>
+    <tag name="[EXECUTE:ESCALATE wid=... sup=... need=&lt;one-line buildable prerequisite&gt;]" from="worker">Worker is blocked by a prerequisite that is OUT of this goal's scope (a separate goal must be built first). Distinct from FAILED (in-scope blocker → implementer retry) and NEED_INPUT (missing fact). Supervisor records a goal-scoped escalation marker (escalation.md), suppresses the code-retry, and lets the validator relay it to generation — it does NOT respawn the same scope. Routed per step 5's ESCALATE branch (cap 2/goal). need= MUST be a concrete buildable prerequisite; contentless need= is REMINDed, not relayed.</tag>
     <tag name="[SUPERVISOR:REMIND &lt;what to do&gt;]" from="supervisor">Supervisor reminds worker of protocol (e.g. file-only DONE). Does not advance state.</tag>
     <tag name="[EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;G1..G5&gt;]" from="supervisor">Supervisor requests a DELIVERABLE fix per pushback catalogue. Worker updates the SAME .md file and re-tags DONE.</tag>
     <tag name="[SUPERVISOR:AMEND &lt;new scope&gt;]" from="supervisor">Supervisor amends a running worker's scope mid-run. Worker applies to current task.</tag>
@@ -46,6 +48,20 @@
     <tag name="[SUPERVISOR:KILL]" from="supervisor">Supervisor instructs worker to exit cleanly because its scope is now pointless (per step 5a). Worker ACKs then exits.</tag>
     <tag name="[SUPERVISOR:NARROW-SCOPE &lt;reduced problem&gt;]" from="supervisor">Supervisor narrows a NEED_INPUT-blocked worker's scope instead of escalating to user.</tag>
   </message-tags>
+
+  <escalation-routing>
+    <note>How an [EXECUTE:ESCALATE ...] from a worker becomes a re-planning bounce. Source of truth for step 5's ESCALATE branch.</note>
+    <why>The supervisor cannot re-plan directly: a SupervisorSignal carries only {source,status,timestamp} and its status is stored but never routed to generation; the SOLE route to bounceToGeneration is a validator's ValidatorSignal with verdict=blocked + owner=planner. So the supervisor records a goal-scoped marker and lets the next validation cycle relay it. The supervisor also must NOT call goal-create (it races the daemon on goals.yaml) — generation owns that.</why>
+    <marker-file>.tmux-cli/goals/&lt;GOAL_ID&gt;/escalation.md — supervisor-written, validator-read (validate.xml/investigate.xml), generation-read. Idempotent across cycles: increment escalation_count, append entries; generation supersedes/clears consumed entries when it creates the prerequisite goal.</marker-file>
+    <schema>
+## Escalations
+escalation_count: &lt;N&gt;
+- need: "&lt;one-line buildable prerequisite&gt;"
+  from: execute-&lt;N&gt;  cycle: &lt;C&gt;
+    </schema>
+    <cap>Cap escalations at 2 per goal (≤ MaxSpecRetries). This is a supervisor-side guard against many escalations within one implementation cycle; the daemon's bounceToGeneration hard-halt at SpecRetries=0 is the authoritative ceiling. Beyond the cap the supervisor stops relaying and the goal takes its normal terminal path (no infinite re-plan loop).</cap>
+    <relayed-finding>The validator MUST emit the relayed finding as status=blocked, owner=planner, failure_class=spec-defect with a NON-CONTENTLESS detail+correction (e.g. correction="Create prerequisite goal: &lt;need&gt;"). HasSubstantiveSpecDefect rejects a finding whose detail AND correction are both contentless — that would mis-route to ValidationRetries instead of generation. That is why step 5 rejects a contentless need= up front.</relayed-finding>
+  </escalation-routing>
 
   <autonomy-policy>
     <rule>Supervisor operates AUTONOMOUSLY after the initial /supervisor invocation. The initial delegation authorizes the entire chain until a &lt;stop-conditions&gt; rule fires.</rule>
@@ -68,25 +84,38 @@
     <mandate>NEVER kill your own SUPERVISOR_WID</mandate>
     <mandate>windows-kill takes the window NAME (e.g. "execute-3"), not an @id. windows-send accepts @N; kill does not.</mandate>
     <mandate>When PRE_PLANNED is true, do NOT re-derive fan-out — trust the plan. Only verify context files exist (step 3b) and spawn (step 4).</mandate>
-    <mandate>Resolve research-root in step 0b before any worker spawn — every supervisor-created context file and worker report save path uses it (goal-scoped in GOAL_MODE, timestamped otherwise). tasks.yaml always stays at .tmux-cli/tasks.yaml; PRE_PLANNED context: paths from /tmux:plan are NOT overridden.</mandate>
+    <mandate>Resolve research-root AND tasks-path in step 0b before any worker spawn — every supervisor-created context file and worker report save path uses research-root (goal-scoped in GOAL_MODE, timestamped otherwise); every fan-out tasks.yaml read/write/archive/status-flip uses tasks-path (goal-scoped in GOAL_MODE, else top-level). PRE_PLANNED context: paths from /tmux:plan are NOT overridden.</mandate>
   </llm>
 
   <flow>
     <step n="0" title="Clean slate">
       <action>Remove .tmux-cli/audit-done guard file if it exists (allows the unplanned-audit hook to fire at the end of this cycle).</action>
       <action>Remove .tmux-cli/auto-execute-guard if it exists (consumed by the Stop hook to prevent double-invocation after plan auto-execute).</action>
-      <action>If .tmux-cli/tasks.yaml exists and is NOT a continuation cycle, set its top-level status field to "planning". If it doesn't exist yet, the status will be set when tasks.yaml is first created in step 3.</action>
+      <action>Resolve the fan-out file path the same way step 0b will (GOAL_MODE → .tmux-cli/goals/{GOAL_ID}/tasks.yaml with GOAL_ID derived window-name-first per step 0b — supervisor-{ns} → goal-{ns}; the .tmux-cli/taskvisor-current-goal marker only for the bare `supervisor` window — else .tmux-cli/tasks.yaml) — this is tasks-path. If tasks-path exists and is NOT a continuation cycle, set its top-level status field to "planning" — EXCEPTION: when $ARGUMENTS leads with a goal-{ns} token (daemon dispatchRetry or /tmux:plan auto-execute handoff), do NOT flip the status. The per-goal tasks-path was finalized (status: ready) by the planner or reset by the daemon's resetTaskStatuses precisely so step 1c consumes it as PRE_PLANNED — flipping it to "planning" would mask the handoff and re-plan an already-planned goal. If it doesn't exist yet, the status will be set when tasks-path is first created in step 3.</action>
     </step>
 
     <step n="0b" title="Resolve research-root">
-      <action>Check whether .tmux-cli/taskvisor-current-goal exists and is non-empty.</action>
-      <branch condition="exists and non-empty">
-        <action>GOAL mode. Read GOAL_ID from the file (trim whitespace). Set research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp). Create it if absent. Set internal flag GOAL_MODE=true. Log: "Goal mode: GOAL_ID={GOAL_ID}, research-root=.tmux-cli/goals/{GOAL_ID}/research/".</action>
+      <action>Read the FIRST whitespace-delimited token of $ARGUMENTS. If it matches ^goal-\d+$ it is an AUTHORITATIVE goal id handed over by the taskvisor daemon (dispatchRetry sends `/tmux:supervisor goal-{ns}`) or the /tmux:plan auto-execute handoff. Call it ARG_GOAL_ID (empty when no such leading token is present).</action>
+      <branch condition="ARG_GOAL_ID is set (leading $ARGUMENTS token matches goal-{ns})">
+        <action>GOAL mode (argument binding — HIGHEST PRECEDENCE for GOAL_ID, above both window-name derivation and the global marker). Set GOAL_ID = ARG_GOAL_ID. This is the AUTHORITATIVE goal id: the daemon shipped it explicitly BECAUSE the global .tmux-cli/taskvisor-current-goal marker is last-writer-wins under concurrent dispatch and may name ANOTHER goal — do NOT read that marker and do NOT re-derive GOAL_ID from the window name. Set research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp). Set tasks-path = .tmux-cli/goals/{GOAL_ID}/tasks.yaml (the per-goal fan-out file the daemon reads on retry). Create the goal dir / research-root if absent. Set internal flag GOAL_MODE=true.</action>
+        <action>Determine SUPERVISOR_WID from your REAL window name — NOT synthesized from the goal id: run `tmux display-message -p '#W'` via Bash and use the result VERBATIM. It is supervisor-{ns} at MaxGoals&gt;1 (which parseGoalBinding maps back to {GOAL_ID}, so worker routing and GOAL_ID agree) but the BARE `supervisor` at MaxGoals=1 — never invent supervisor-{ns} when the real window is bare, or worker [EXECUTE:DONE] replies route to a non-existent window. Pass this exact SUPERVISOR_WID as the supervisorWid argument to EVERY windows-spawn-worker call so the worker prefix, report path, and reply target bind correctly even when the MCP server's own resolveSelfWindowName returns empty. Log: "Goal mode (argument binding): GOAL_ID={GOAL_ID}, SUPERVISOR_WID=&lt;real window name&gt;, research-root=.tmux-cli/goals/{GOAL_ID}/research/, tasks-path=.tmux-cli/goals/{GOAL_ID}/tasks.yaml".</action>
       </branch>
-      <branch condition="absent or empty">
-        <action>STANDALONE mode. Set research-root = .tmux-cli/research/{y-m-d-hh}/ ({y-m-d-hh} = current timestamp). Create it if absent. Set internal flag GOAL_MODE=false. Log: "Standalone mode: research-root=.tmux-cli/research/{y-m-d-hh}/".</action>
+      <branch condition="ARG_GOAL_ID is NOT set (no leading goal-{ns} token in $ARGUMENTS — interactive /tmux:supervisor, or a plain task-file/inline arg)">
+      <action>Determine your OWN window name first: run `tmux display-message -p '#W'` via Bash. Call the result SELF_NAME.</action>
+      <branch condition="SELF_NAME is namespaced: supervisor-{ns} where {ns} is all digits (daemon dispatch at MaxGoals&gt;1)">
+        <action>GOAL mode (window-name binding). Derive GOAL_ID = goal-{ns} from SELF_NAME (e.g. supervisor-020 → goal-020) — the same namespaced-name form parseGoalBinding (internal/mcp/tools.go) uses for MCP research-root routing, so MCP routing and this GOAL_ID always agree. Do NOT read .tmux-cli/taskvisor-current-goal here: the daemon writes that marker GLOBALLY on every dispatch, so under concurrent dispatch it is last-writer-wins and may name ANOTHER goal — your own window name is the only per-goal-safe source. Set research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp). Set tasks-path = .tmux-cli/goals/{GOAL_ID}/tasks.yaml (the per-goal fan-out file the daemon reads on retry). Create the goal dir / research-root if absent. Set internal flag GOAL_MODE=true. Log: "Goal mode (window-name binding): GOAL_ID={GOAL_ID}, research-root=.tmux-cli/goals/{GOAL_ID}/research/, tasks-path=.tmux-cli/goals/{GOAL_ID}/tasks.yaml".</action>
       </branch>
-      <rule>Every later reference to research-root in this flow uses the value resolved here. tasks.yaml is NOT affected — it always stays at .tmux-cli/tasks.yaml.</rule>
+      <branch condition="SELF_NAME is the bare `supervisor` (MaxGoals=1) or any other non-namespaced name">
+        <action>Check whether .tmux-cli/taskvisor-current-goal exists and is non-empty.</action>
+        <branch condition="exists and non-empty">
+          <action>GOAL mode. Read GOAL_ID from the file (trim whitespace). Set research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp). Set tasks-path = .tmux-cli/goals/{GOAL_ID}/tasks.yaml (the per-goal fan-out file the daemon reads on retry). Create the goal dir / research-root if absent. Set internal flag GOAL_MODE=true. Log: "Goal mode: GOAL_ID={GOAL_ID}, research-root=.tmux-cli/goals/{GOAL_ID}/research/, tasks-path=.tmux-cli/goals/{GOAL_ID}/tasks.yaml".</action>
+        </branch>
+        <branch condition="absent or empty">
+          <action>STANDALONE mode. Set research-root = .tmux-cli/research/{y-m-d-hh}/ ({y-m-d-hh} = current timestamp). Set tasks-path = .tmux-cli/tasks.yaml. Create research-root if absent. Set internal flag GOAL_MODE=false. Log: "Standalone mode: research-root=.tmux-cli/research/{y-m-d-hh}/, tasks-path=.tmux-cli/tasks.yaml".</action>
+        </branch>
+      </branch>
+      </branch>
+      <rule>Every later reference to research-root AND tasks-path in this flow uses the values resolved here. tasks-path is the fan-out file — goal-scoped in GOAL_MODE, top-level otherwise — and is DISTINCT from plan.xml's top-level planning-queue (which is never moved).</rule>
       <rule>PRE_PLANNED tasks already carry resolved context: paths written by /tmux:plan — step 0b does NOT override those. It governs only the paths the supervisor itself creates: its own fan-out context files (step 3) and worker report save paths (steps 5/task-message).</rule>
     </step>
 
@@ -106,8 +135,9 @@
     </step>
 
     <step n="1c" title="Tasks gate">
-      <action>Check if .tmux-cli/tasks.yaml exists in the project root.</action>
-      <check condition="tasks.yaml exists AND top-level status=ready AND has tasks with status=pending (pre-planned by /tmux:plan)">
+      <note>This gate operates on tasks-path (resolved in step 0b): the per-goal fan-out file in GOAL_MODE, the top-level planning-queue in standalone. PRE_PLANNED handoffs from /tmux:plan are detected on tasks-path in BOTH modes — plan.xml resolves the same tasks-path (per-goal in GOAL_MODE, top-level in standalone) and finalizes the queue there.</note>
+      <action>Check if tasks-path exists in the project working directory.</action>
+      <check condition="tasks-path exists AND top-level status=ready AND has tasks with status=pending (pre-planned by /tmux:plan)">
         <check condition="all pending tasks have a context field pointing to an existing .md file">
           <action>PRE-PLANNED session detected (created by /tmux:plan). Log: "Pre-planned tasks detected (N pending). Consuming plan."</action>
           <action>Set internal flag: PRE_PLANNED=true.</action>
@@ -117,21 +147,24 @@
           <action>STOP. Print: "Pre-planned tasks found but N context files are missing: [list missing paths]. Run /tmux:plan to fix, or archive and start fresh."</action>
         </check>
       </check>
-      <check condition="tasks.yaml exists AND has tasks with status=pending or status=in_progress">
-        <check condition="this supervisor was called WITH .tmux-cli/tasks.yaml as $ARGUMENTS (continuation cycle)">
-          <action>This IS a continuation cycle — proceed to step 2 and work on pending tasks from tasks.yaml.</action>
+      <check condition="tasks-path exists AND has tasks with status=pending or status=in_progress">
+        <check condition="this supervisor was called WITH tasks-path as $ARGUMENTS (continuation cycle)">
+          <action>This IS a continuation cycle — proceed to step 2 and work on pending tasks from tasks-path.</action>
         </check>
-        <check condition="this supervisor was called with OTHER input (new invocation)">
-          <action>STOP. Print to user: "STOP GATE: Unfinished tasks found in .tmux-cli/tasks.yaml. [list each task name and status]. To continue previous work, re-run without new input. To start fresh, reply 'archive and start new'."</action>
-          <action>If user says "archive and start new": move tasks.yaml to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed) and proceed with fresh tasks.yaml.</action>
+        <check condition="this supervisor was called with OTHER input (new invocation) AND GOAL_MODE is true">
+          <action>Proceed WITHOUT user interaction: treat the pending/in_progress tasks in tasks-path as the work queue and continue to step 2. The per-goal queue is owned by the daemon/planner handoff — unfinished tasks here mean "execute these", and a daemon-dispatched supervisor has no human to answer a stop gate (the silence would burn the goal's cycle timeout as a misclassified code defect).</action>
+        </check>
+        <check condition="this supervisor was called with OTHER input (new invocation) AND GOAL_MODE is false">
+          <action>STOP. Print to user: "STOP GATE: Unfinished tasks found in {tasks-path}. [list each task name and status]. To continue previous work, re-run without new input. To start fresh, reply 'archive and start new'."</action>
+          <action>If user says "archive and start new": move tasks-path to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed) and proceed with a fresh tasks-path.</action>
           <action>Wait for user response before proceeding.</action>
         </check>
       </check>
-      <check condition="tasks.yaml does not exist">
+      <check condition="tasks-path does not exist">
         <action>Proceed normally to step 2.</action>
       </check>
-      <check condition="tasks.yaml exists AND all tasks have status=done">
-        <action>Archive the completed tasks.yaml to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed), then remove the original tasks.yaml.</action>
+      <check condition="tasks-path exists AND all tasks have status=done">
+        <action>Archive the completed tasks-path to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed), then remove the original tasks-path file.</action>
         <action>Proceed normally to step 2 with a clean slate.</action>
       </check>
     </step>
@@ -145,7 +178,7 @@
     <step n="3" title="Fan-out decision">
       <check condition="PRE_PLANNED is true">
         <action>Skip fan-out planning — tasks were pre-planned by /tmux:plan.</action>
-        <action>Read tasks.yaml for the task list. Each task entry has: name, wid, status, context (path to .md file).</action>
+        <action>Read tasks-path for the task list. Each task entry has: name, wid, status, context (path to .md file).</action>
         <action>Proceed directly to step 3b for verification.</action>
       </check>
       <rule>1 worker when task is linear OR subtasks share MUTABLE state (same SHM slot, same DB row, same file being written)</rule>
@@ -160,43 +193,60 @@
       <ranking>Highest-yield-first for auto-fan-out: (1) closest to user-facing surface or critical path, (2) closest to impact target, (3) smallest budget before completion, (4) overturns prior assumption if confirmed. Break ties by lowest budget. If two options are budget-tied and yield-tied, pick the one that runs first in dependency order (prerequisite before dependent).</ranking>
       <exhaustive-coverage critical="true">NEVER skip a possible path due to low probability of success. Every identified vector — even speculative or low-yield — must be executed to produce a precise ruling (confirmed, refuted with evidence, or blocked by specific barrier). "Not worth budget" and "too speculative" are NOT valid reasons to skip a worker. The goal is exhaustive coverage: every path precisely documented as viable or dead, with no gaps left to assumption.</exhaustive-coverage>
       <task-tracking critical="true">
-        <action>After determining the fan-out shape, create or update .tmux-cli/tasks.yaml with all planned tasks. Each task entry has: name (subtask label), wid (execute-N), status (pending), context (path to .md file), and cycle (current cycle number, starting at 1).</action>
-        <action>Before writing a task to tasks.yaml, create a context .md file for it in research-root (resolved in step 0b) using the slug pattern {research-root}/task-&lt;slug&gt;.md. The context field MUST be set on every task — it is mandatory.</action>
-        <action>If tasks.yaml already exists from a continuation cycle, preserve done tasks and update/add pending ones.</action>
-        <format>tasks.yaml structure: status: planning, cycle: N, tasks: [{name: "...", wid: "execute-N", status: pending, context: "{research-root}/task-&lt;slug&gt;.md"}]</format>
-        <rule>The literal value written for context: is the RESOLVED research-root path (step 0b) — goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/task-&lt;slug&gt;.md) in goal mode, timestamped (.tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md) in standalone mode. tasks.yaml itself always stays at .tmux-cli/tasks.yaml.</rule>
-        <rule>When first creating or updating tasks.yaml during fan-out planning, set the top-level status to "planning". This prevents Stop hooks (cycle restart, unplanned audit) from firing while the supervisor is still planning.</rule>
+        <action>After determining the fan-out shape, create or update tasks-path (resolved in step 0b) with all planned tasks. Each task entry has: name (subtask label), wid (execute-N), status (pending), context (path to .md file), and cycle (current cycle number, starting at 1).</action>
+        <action>Before writing a task to tasks-path, create a context .md file for it in research-root (resolved in step 0b) using the slug pattern {research-root}/task-&lt;slug&gt;.md. The context field MUST be set on every task — it is mandatory.</action>
+        <action>If tasks-path already exists from a continuation cycle, preserve done tasks and update/add pending ones.</action>
+        <format>tasks-path structure: status: planning, cycle: N, tasks: [{name: "...", wid: "execute-N", status: pending, context: "{research-root}/task-&lt;slug&gt;.md"}]</format>
+        <rule>The literal value written for context: is the RESOLVED research-root path (step 0b) — goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/task-&lt;slug&gt;.md) in goal mode, timestamped (.tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md) in standalone mode. The fan-out file itself is tasks-path (goal-scoped in GOAL_MODE, top-level otherwise).</rule>
+        <rule>When first creating or updating tasks-path during fan-out planning, set the top-level status to "planning". This prevents Stop hooks (cycle restart, unplanned audit) from firing while the supervisor is still planning.</rule>
       </task-tracking>
     </step>
 
-    <step n="3b" title="Tasks gate — verify tasks.yaml before spawn" critical="true">
-      <action>Read .tmux-cli/tasks.yaml and verify it contains ALL planned tasks with status=pending.</action>
-      <check condition="tasks.yaml does not exist OR is missing planned tasks">
-        <action>STOP. Do NOT proceed to step 4. Write tasks.yaml first per step 3 task-tracking, then re-verify.</action>
+    <step n="3b" title="Tasks gate — verify tasks-path before spawn" critical="true">
+      <action>Read tasks-path and verify it contains ALL planned tasks with status=pending.</action>
+      <check condition="tasks-path does not exist OR is missing planned tasks">
+        <action>STOP. Do NOT proceed to step 4. Write tasks-path first per step 3 task-tracking, then re-verify.</action>
       </check>
-      <action>Call tasks-validate MCP tool. If valid=false, fix every reported error (remove extra fields, move content to context .md file) and re-run until valid=true.</action>
-      <check condition="tasks.yaml exists AND contains all planned pending tasks AND tasks-validate returns valid=true">
-        <action>Set the top-level status in tasks.yaml to "ready". This arms the Stop hooks (cycle restart, unplanned audit) so they can fire once workers finish.</action>
+      <action>Call the tasks-validate MCP tool. In GOAL_MODE pass goal_id={GOAL_ID} so it validates the per-goal file (.tmux-cli/goals/{GOAL_ID}/tasks.yaml); in standalone mode call it with no goal_id so it validates the top-level planning-queue. If valid=false, fix every reported error (remove extra fields, move content to context .md file) and re-run until valid=true.</action>
+      <check condition="tasks-path exists AND contains all planned pending tasks AND tasks-validate returns valid=true">
+        <action>Set the top-level status in tasks-path to "ready". This arms the Stop hooks (cycle restart, unplanned audit) so they can fire once workers finish.</action>
         <action>Proceed to step 4.</action>
       </check>
-      <rule critical="true">This is a BLOCKING GATE. No worker may be spawned (step 4) until tasks.yaml is written, verified, tasks-validate passes, AND its status is set to "ready".</rule>
+      <rule critical="true">This is a BLOCKING GATE. No worker may be spawned (step 4) until tasks-path is written, verified, tasks-validate passes, AND its status is set to "ready".</rule>
     </step>
 
     <step n="4" title="Spawn protocol (repeat per worker, sequentially within your turn)">
+      <!--
+        E1 worktree-isolation wiring. At MaxGoals>1 the daemon dispatches THIS
+        supervisor window with cwd = the goal's git worktree
+        (<base>/.tmux-cli/worktrees/<GOAL_ID>, E1-1a) so the goal's edits stay
+        isolated until mergeWorktreeBack. The execute-N workers spawned below are
+        the processes that actually EDIT files — they MUST inherit that same
+        worktree cwd via windows-spawn-worker's workingDirectory (E1-1c plumbing,
+        already implemented in the MCP tool), otherwise they edit the BASE tree
+        and merge-back captures nothing.
+      -->
+      <action>ONCE before the first spawn, resolve WORKTREE_DIR:
+        1. Check your own current working directory (pwd). If its path contains "/.tmux-cli/worktrees/" → WORKTREE_DIR = that cwd (the daemon -c'd this supervisor window into the goal's worktree at dispatch — authoritative even when the marker below is absent or stale).
+        2. Else read .tmux-cli/taskvisor-current-worktree (trimmed). If present, non-empty, AND its final path component equals GOAL_ID → WORKTREE_DIR = marker content. (The GOAL_ID guard rejects a concurrent goal's stale marker — it is written at validator creation, not at dispatch.)
+        3. Else leave WORKTREE_DIR unset — this is the MaxGoals=1 / no-worktree case.</action>
       <action>Call windows-spawn-worker with:
         - supervisorWid: your SUPERVISOR_WID name
         - subtask: one-line label for this worker
         - contextFile: path to the context .md file created in step 3
         - scope: derived from the context .md file (read it and summarize key scope — files, directories, what to investigate or implement)
-        - context: derived from the context .md file (prior findings, constraints, non-goals — if present)</action>
+        - context: derived from the context .md file (prior findings, constraints, non-goals — if present)
+        - workingDirectory: WORKTREE_DIR if set (resolved above), else OMIT the field. E1: this starts the execute-N worker's shell in the goal's git worktree (tmux -c) so its file edits land in the isolated checkout and merge back. When WORKTREE_DIR is unset, omitting the field keeps the session-default base cwd — byte-identical to before.</action>
       <action>The tool atomically: picks the next execute-N name, creates the window, sends /tmux:execute, assembles and sends the task message with DELIVERABLE + RESPONSE PROTOCOL.</action>
       <action>Record from the response: workerName, window.tmuxWindowId, taskMessage (for your tracking table).</action>
       <critical>ALWAYS use windows-spawn-worker — never assemble the spawn steps manually via windows-create + windows-send.</critical>
+      <rule>Report save paths are UNCHANGED by WORKTREE_DIR: research-root and tasks-path stay rooted at the shared .tmux-cli control plane (the worktree symlinks .tmux-cli → base), so worker reports never land inside the worktree's working set.</rule>
       <rule condition="PRE_PLANNED is true">When consuming pre-planned tasks, read the context .md file for each task and pass to windows-spawn-worker:
         - subtask: task.name
         - contextFile: task.context
         - scope: derived from the context .md file (read it, summarize key scope points)
-        - context: derived from the context .md file (dependencies, constraints, prior findings)</rule>
+        - context: derived from the context .md file (dependencies, constraints, prior findings)
+        - workingDirectory: WORKTREE_DIR if set (resolved above), else OMIT — same rule as the non-pre-planned spawn.</rule>
     </step>
 
     <step n="5" title="Idle and route">
@@ -211,6 +261,30 @@
       </branch>
       <branch tag="[EXECUTE:FAILED ...]">
         <action>Read REASON. First attempt: kill and respawn with narrowed scope. If a second respawn on the same subtask class FAILs with the same reason, escalate to user with the failure chain + a proposed pivot. NEVER silently retry the same prompt.</action>
+      </branch>
+      <branch tag="[EXECUTE:ESCALATE ...]">
+        <note>The worker is blocked by a prerequisite OUT of this goal's scope. The fix is to BUILD a prerequisite goal first (re-planning / generation), NOT to re-dispatch the implementer. The supervisor cannot create that goal (goal-create races the daemon on goals.yaml) and cannot itself route to generation (a SupervisorSignal's status is never routed — only a validator's ValidatorSignal reaches bounceToGeneration). So the supervisor records a goal-scoped escalation marker that the validator (validate.xml / investigate.xml) consumes into a spec-defect finding next cycle. The supervisor's job here is: validate the request, write/append the marker (capped), suppress the code-retry, and finish the cycle normally.</note>
+        <action>Parse need= from the tag.</action>
+        <check condition="need= is empty, missing, or contentless (e.g. ''/'none'/'n/a'/'tbd'/'fix it'/a vague gripe with no buildable prerequisite)">
+          <action>Reply via windows-message to that wid: [SUPERVISOR:REMIND] ESCALATE needs a concrete, buildable prerequisite in need= (e.g. need="JWT auth middleware goal: validate Bearer token, reject 401"). Re-send [EXECUTE:ESCALATE ...] with a buildable need=, or use [EXECUTE:FAILED] if the blocker is actually in-scope.</action>
+          <action>Do NOT relay, do NOT write escalation.md, do NOT advance state. Wait for the worker's next message.</action>
+        </check>
+        <check condition="GOAL_MODE is false (no active goal)">
+          <action>There is no goal to escalate and no generation phase to route to. Treat as a terminal FAILED: handle per the [EXECUTE:FAILED ...] branch (narrowed respawn / user escalation). Log that ESCALATE was downgraded to FAILED because the session is standalone.</action>
+        </check>
+        <check condition="need= is concrete AND GOAL_MODE is true">
+          <action>Read .tmux-cli/goals/&lt;GOAL_ID&gt;/escalation.md if it exists; parse escalation_count (default 0 if the file or field is absent). Let N = escalation_count.</action>
+          <check condition="N &gt;= 2 (cap reached — recommended cap is 2, ≤ MaxSpecRetries; see &lt;escalation-routing&gt;)">
+            <action>Do NOT relay a 3rd escalation (loop guard against endless re-planning). Log: "escalation cap (2) reached for &lt;GOAL_ID&gt; — not relaying; routing to normal terminal path." Handle this worker per the [EXECUTE:FAILED ...] branch instead (narrowed respawn / user escalation). The daemon's SpecRetries backstop (bounceToGeneration hard-halts at 0) remains the authoritative ceiling.</action>
+          </check>
+          <check condition="N &lt; 2">
+            <action>Write/append to .tmux-cli/goals/&lt;GOAL_ID&gt;/escalation.md using the schema in &lt;escalation-routing&gt;: set escalation_count = N+1 and append one entry block carrying need=, the worker wid, and the current cycle. Create the file (with the "## Escalations" header) if absent; otherwise update escalation_count in place and append the entry — never clobber prior entries.</action>
+            <action>SUPPRESS the code-retry: do NOT respawn this worker's scope (re-dispatching the implementer against an unwinnable spec is exactly what ESCALATE avoids). Mark the task done/escalated in tasks-path.</action>
+            <action>windows-kill the worker by NAME (e.g. "execute-7").</action>
+            <action critical="true">Do NOT write any signal.json here, and NEVER write a source="validator" signal during the supervising phase — checkSupervisingPhase type-asserts *SupervisorSignal and treats any other type as a code-defect failed cycle (the opposite of intent). The supervisor only writes its ordinary SupervisorSignal at cycle completion (step 9b). The escalation reaches generation via the validator relay, not via any supervisor-written signal.</action>
+            <action>Finish the cycle normally (continue to step 7 / step 9b). Next validation cycle, validate.xml / investigate.xml reads escalation.md and emits the blocked+planner spec-defect finding that the daemon routes to bounceToGeneration (SpecRetries−1).</action>
+          </check>
+        </check>
       </branch>
       <branch tag="worker emitted FINDINGS/RISKS/etc. inline in tmux without a file= tag">
         <action>This violates the file-only response protocol. Reply via windows-message with: [SUPERVISOR:REMIND] Use the file= response protocol. Save to {research-root}/execute-&lt;N&gt;-&lt;slug&gt;.md (research-root resolved in step 0b) and reply with only [EXECUTE:DONE file=&lt;abs-path&gt;].</action>
@@ -251,7 +325,7 @@
     </step>
 
     <step n="7" title="Kill window and update task state">
-      <action>Mark the corresponding task as status=done in .tmux-cli/tasks.yaml.</action>
+      <action>Mark the corresponding task as status=done in tasks-path.</action>
       <action>Call windows-kill with windowId = the NAME (e.g. "execute-7"), not the @id</action>
       <critical>NEVER kill SUPERVISOR_WID</critical>
       <critical>If windows-kill returns "invalid window ID format: window IDs not allowed", you passed @N — retry with the name</critical>
@@ -282,7 +356,7 @@
 
     <step n="9b" title="Cycle completion and continuation">
       <condition>Step 9 synthesis is complete</condition>
-      <action>Read .tmux-cli/tasks.yaml and mark all completed tasks as status=done.</action>
+      <action>Read tasks-path and mark all completed tasks as status=done.</action>
       <action condition="GOAL_MODE is true">Append/update a research-file index in .tmux-cli/goals/{GOAL_ID}/goal.md so the goal records its artifacts. Use a section titled "## Research Files" with markdown links RELATIVE to the goal dir, grouped by category:
 
 ## Research Files
@@ -297,20 +371,20 @@
 
 If a "## Research Files" section already exists in goal.md (re-run / next cycle), REPLACE that section in place rather than appending a duplicate (idempotent). List every generated file in its category. Omit a subsection if it has no files.</action>
       <action>Read supervisor.max_cycles from .tmux-cli/setting.yaml (default: 0 = unlimited).</action>
-      <action>Increment the cycle counter in tasks.yaml.</action>
+      <action>Increment the cycle counter in tasks-path.</action>
       <check condition="pending tasks remain AND (max_cycles == 0 OR cycle &lt; max_cycles)">
         <action>Send /clear to SUPERVISOR_WID via windows-send.</action>
-        <action>Send /tmux:supervisor .tmux-cli/tasks.yaml to SUPERVISOR_WID via windows-send.</action>
-        <action>STOP — a fresh supervisor instance takes over with the updated tasks.yaml as input.</action>
+        <action>Send /tmux:supervisor {tasks-path} to SUPERVISOR_WID via windows-send (the resolved tasks-path — goal-scoped in GOAL_MODE, top-level otherwise). Step 1c's continuation check matches this same tasks-path argument.</action>
+        <action>STOP — a fresh supervisor instance takes over with the updated tasks-path as input.</action>
       </check>
       <check condition="max_cycles reached (cycle >= max_cycles AND max_cycles > 0)">
         <action>Print to user: "Cycle limit reached ({cycle}/{max_cycles}). Remaining pending tasks: [list task names]."</action>
-        <action>If .tmux-cli/taskvisor-current-goal exists, read GOAL_ID from it. Write .tmux-cli/goals/GOAL_ID/signal.json with {"source":"supervisor","status":"stopped","reason":"max_cycles_reached"}.</action>
+        <action>If GOAL_MODE is true, REUSE the GOAL_ID already resolved in step 0b — do NOT re-read the global current-goal marker at write time (the daemon rewrites it on every dispatch; under concurrent dispatch it is last-writer-wins and may name ANOTHER goal, misrouting this signal into the wrong goal's folder and corrupting daemon goal-completion state). Write .tmux-cli/goals/{GOAL_ID}/signal.json with {"source":"supervisor","status":"stopped","reason":"max_cycles_reached"}.</action>
         <action>STOP.</action>
       </check>
       <check condition="no pending tasks remain">
         <action>Normal stop — all work is complete.</action>
-        <action>If .tmux-cli/taskvisor-current-goal exists, read GOAL_ID from it. Write .tmux-cli/goals/GOAL_ID/signal.json with {"source":"supervisor","status":"done"}.</action>
+        <action>If GOAL_MODE is true, REUSE the GOAL_ID already resolved in step 0b — same rule as the max_cycles branch above: never re-read the global current-goal marker for a signal write (last-writer-wins under concurrent dispatch). Write .tmux-cli/goals/{GOAL_ID}/signal.json with {"source":"supervisor","status":"done"}.</action>
       </check>
     </step>
   </flow>

@@ -27,8 +27,14 @@ type CommandsSettings struct {
 }
 
 type SupervisorSettings struct {
-	MaxCycles      int  `yaml:"max_cycles"`
-	MaxWorkers     int  `yaml:"max_workers"`
+	MaxCycles  int `yaml:"max_cycles"`
+	MaxWorkers int `yaml:"max_workers"`
+	// MaxGoals bounds how many goals the daemon may have in flight concurrently.
+	// A value <=0 (or absent from a legacy setting.yaml) means "1" at runtime —
+	// the daemon's maxGoals() accessor coerces it. At 1 every tmux window keeps
+	// its bare singleton name (supervisor/validator/execute-/inv-); >1 namespaces
+	// each goal's windows so concurrent goals never collide (execute-31 wiring).
+	MaxGoals       int  `yaml:"max_goals"`
 	CycleDelay     int  `yaml:"cycle_delay"`
 	UnplannedAudit bool `yaml:"unplanned_audit"`
 }
@@ -128,6 +134,7 @@ func DefaultSettings() *Settings {
 		Supervisor: SupervisorSettings{
 			MaxCycles:      0,
 			MaxWorkers:     4,
+			MaxGoals:       1,
 			CycleDelay:     5,
 			UnplannedAudit: true,
 		},

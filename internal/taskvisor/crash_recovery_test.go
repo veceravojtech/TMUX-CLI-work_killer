@@ -69,9 +69,9 @@ func TestCrashRecovery_GuardWithValidatorWindow(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
-	assert.Equal(t, phaseValidating, d.phase)
-	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
-	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
+	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
+	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
 	assert.Equal(t, "goal-001", d.currentGoal)
 }
 
@@ -93,10 +93,10 @@ func TestCrashRecovery_GuardWithSignalFile(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
-	assert.Equal(t, phaseSupervising, d.phase)
+	assert.Equal(t, phaseSupervising, d.runtime("goal-001").phase)
 	assert.Equal(t, "goal-001", d.currentGoal)
-	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
-	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
+	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
 	exec.AssertNotCalled(t, "ListWindows", mock.Anything)
 }
 
@@ -118,10 +118,10 @@ func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 	assert.Equal(t, "goal-001", d.currentGoal)
-	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
-	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
+	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
 	exec.AssertNotCalled(t, "ListWindows", mock.Anything)
 }
 
@@ -169,6 +169,38 @@ func TestCrashRecovery_GuardNoWindowsRetriesExhausted(t *testing.T) {
 	g, ok := goals.GoalByID("goal-001")
 	require.True(t, ok)
 	assert.Equal(t, GoalFailed, g.Status)
+}
+
+func TestCrashRecovery_MultipleRunningGoals_AllRecovered(t *testing.T) {
+	// MaxGoals>1: after a crash NO supervisor survives, so EVERY in-flight goal must
+	// be recovered — not just the first. Recovering one and leaving the others as
+	// GoalRunning strands them as zombies that permanently consume the running
+	// budget (free = maxGoals - running), so no free slot ever refills.
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-045",
+		Goals: []Goal{
+			{ID: "goal-045", Description: "pricing", Status: GoalRunning, Retries: 1, MaxRetries: 3},
+			{ID: "goal-046", Description: "identity", Status: GoalRunning, Retries: 0, MaxRetries: 3},
+		},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+
+	err := d.crashRecovery()
+	require.NoError(t, err)
+	assert.Equal(t, modeActive, d.mode)
+
+	goals, err := LoadGoals(dir)
+	require.NoError(t, err)
+	g45, ok45 := goals.GoalByID("goal-045")
+	require.True(t, ok45)
+	g46, ok46 := goals.GoalByID("goal-046")
+	require.True(t, ok46)
+	assert.Equal(t, GoalPending, g45.Status, "goal-045 must be re-pended for re-dispatch")
+	assert.Equal(t, GoalPending, g46.Status, "goal-046 must ALSO be re-pended, not stranded as a zombie running goal")
 }
 
 func TestCrashRecovery_MissingGoalsYaml(t *testing.T) {
@@ -247,9 +279,9 @@ func TestCrashRecovery_GuardWithInvestigatorWindow(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
-	assert.Equal(t, phaseValidating, d.phase)
-	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
-	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
+	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
+	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
 	assert.Equal(t, "goal-001", d.currentGoal)
 }
 
@@ -272,9 +304,9 @@ func TestCrashRecovery_GuardWithMultipleInvWindows(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
-	assert.Equal(t, phaseValidating, d.phase)
-	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
-	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
+	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
+	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
 	assert.Equal(t, "goal-001", d.currentGoal)
 }
 
@@ -297,9 +329,9 @@ func TestCrashRecovery_GuardWithValidatorAndInvWindows(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
-	assert.Equal(t, phaseValidating, d.phase)
-	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
-	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
+	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
+	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
 	assert.Equal(t, "goal-001", d.currentGoal)
 }
 
@@ -322,9 +354,9 @@ func TestCrashRecovery_GuardWithSupervisorAndInvWindows(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
-	assert.Equal(t, phaseValidating, d.phase)
-	assert.WithinDuration(t, time.Now(), d.phaseStartedAt, time.Second)
-	assert.True(t, d.phaseStartedAt.After(before) || d.phaseStartedAt.Equal(before))
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
+	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
+	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
 	assert.Equal(t, "goal-001", d.currentGoal)
 }
 

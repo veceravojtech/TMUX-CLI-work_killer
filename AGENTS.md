@@ -109,6 +109,8 @@ internal/
 
 - **Goal description is a short title (max 120 chars)**: Detailed criteria belong in `--acceptance` and `--validate`. Both the MCP `goal-create` tool and the `goal add` CLI command enforce this limit at write time. `LoadGoals` does NOT validate length (read tolerance).
 - **TUI settings must reflect all fields in `setting.yaml`**: Every field in the `Settings` struct (`internal/setup/config.go`) must be editable in the TUI (`internal/tui/settings.go`). If a new field is added to `Settings`/`setting.yaml`, the TUI `items` list and `ToSettings()` must be updated in the same PR — including tests. `ToSettings()` must overlay displayed fields onto the loaded settings (not `DefaultSettings()`), so undisplayed fields are preserved. If this invariant is broken, fix it immediately including tests.
+- **`supervisor.max_goals` defaults to 1**: `SupervisorSettings.MaxGoals` (`yaml:"max_goals"`) bounds how many goals the daemon may have in flight concurrently; it is surfaced in the TUI as the `supervisor.max_goals` item (kind `int`, default `1`). A value `<=0` (or absent from a legacy `setting.yaml`) coerces to `1` via the daemon's `maxGoals()` accessor. At `1`, every tmux window keeps its bare singleton name; at `>1`, parallel independent-goal dispatch is enabled but gated on **disjoint goal scope** (the scheduler skips goals whose scope overlaps an in-flight goal) plus **per-goal git worktree isolation**, so concurrent goals never collide on files or windows.
+- **Goal reset is "zero + re-seed", never hand-set to Max…**: `GoalsFile.ResetGoal` (`internal/taskvisor/goals.go`) zeroes ALL FOUR live per-class retry counters (`CodeRetries`, `SpecRetries`, `ValidationRetries`, `BlockRetries`) in addition to the legacy `Retries`, then leaves the status non-terminal. With all four at `0` and the status non-terminal, the `LoadGoals` re-seed guard fires on the next load and restores each counter from its corresponding `Max…` budget. Do NOT hand-set the live counters to their `Max…` values inside `ResetGoal` — that duplicates `LoadGoals` and would wrongly grant budget when a `Max…` is `0`.
 
 ## Common pitfalls
 
@@ -118,7 +120,7 @@ internal/
 - `PostCommandConfig` has a 3-level fallback chain for launching Claude in new windows — errors from one level trigger the next
 - The `install` command was removed — all setup is automatic via `start`/`start-attach`
 
-## MCP tools (11 total)
+## MCP tools (12 total)
 
 | Tool | Read-only | Idempotent | Purpose |
 |------|-----------|-----------|---------|
@@ -131,6 +133,7 @@ internal/
 | windows-recover-workers | no | yes | Batch-recover stuck execute-N workers (Enter + continue message) |
 | tasks-validate | yes | yes | Validate tasks.yaml lean format (no extra fields) |
 | spec-validate | yes | yes | Validate spec .md against S0-S8 quality catalogue |
+| goal-add-prerequisite | no | no | Wire an existing goal's depends_on to an existing prerequisite (generation-side escalation backstop; validates IDs, rejects self-dep/cycle, caps escalations) |
 | hooks-config | no | yes | List/enable/disable hooks in setting.yaml |
 | sudo-execute | yes | yes | DISABLED — returns guidance to use `tmux-cli sudo` CLI instead |
 

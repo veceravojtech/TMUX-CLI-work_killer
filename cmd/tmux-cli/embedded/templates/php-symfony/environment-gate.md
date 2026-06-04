@@ -12,6 +12,9 @@ This template extends `_base/environment-gate.md` with concrete PHP/Symfony chec
 
 <!-- Container Runtime (## 0) values: in docker mode the base template's `## 0. Container Runtime`
      section is filled from RUN_TARGET; this PHP overlay adds no PHP-image-specific guidance here.
+     In docker mode, Gate 0 also records the resolved primary runtime container name into the
+     AGENTS.md GATE0 `Runtime Container` ground-truth field (the investigator preflight reads it to
+     verify the container is up before running any php/vendor/bin/* command).
      Host value blocks (## 1–## 3) below are wrapped in {{#unless is_docker}} — in docker mode the
      PHP runtime/extensions live inside the image and are deferred to the in-container scaffold. -->
 
@@ -111,6 +114,7 @@ This template extends `_base/environment-gate.md` with concrete PHP/Symfony chec
 {{#if has_database}}
 
 - **db_type:** PostgreSQL
+<!-- db_host/db_port are the Gate-0 connection target only; the full published host:container port mapping lives in docs/architecture/test-environment.md (Published Ports). -->
 - **db_host:** `{{db_host}}`
 - **db_port:** `{{db_port}}`
 - **db_name:** `{{db_name}}`

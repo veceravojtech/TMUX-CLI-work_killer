@@ -317,8 +317,9 @@ func TestTick_SelfRecoverPersistsWhenCurrentGoalRunning(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	// d.phase is the zero value here, so checkProgress short-circuits to nil with
-	// no signal load and no SaveGoals — exactly the mid-flight no-save path.
+	// the goal's runtime phase is the lazily-created zero value (phaseNone) here, so
+	// checkProgress short-circuits to nil with no signal load and no SaveGoals —
+	// exactly the mid-flight no-save path.
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -374,4 +375,97 @@ func TestIncidentReplay_FailResetDone(t *testing.T) {
 	// once goal-004 completes; here it should also clear since its blocked_by
 	// (goal-004) is real but goal-004 is not failed and deps aren't satisfied.
 	assert.Equal(t, GoalBlocked, g5.Status, "goal-005 stays blocked until goal-004 completes")
+}
+
+// countBlockedByDoneFlagged mirrors checkInvariant's trigger (diagnostics.go:50):
+// it counts non-terminal, non-park goals whose BlockedBy names a real GoalDone
+// goal — the exact signature the daemon floods INVARIANT VIOLATION on. The A1
+// fix must drive this to 0 post-reconcile.
+func countBlockedByDoneFlagged(gf *GoalsFile) int {
+	n := 0
+	for i := range gf.Goals {
+		g := &gf.Goals[i]
+		switch g.Status {
+		case GoalDone, GoalFailed, GoalRunning:
+			continue
+		}
+		if g.BlockedByPrecondition || g.BlockedBy == "convergence-circuit-breaker" || g.BlockedBy == "" {
+			continue
+		}
+		if gf.statusOf(g.BlockedBy) == GoalDone {
+			n++
+		}
+	}
+	return n
+}
+
+// TestReconcileBlocks_StaleBlockedByDone_RepointsToPendingDep — A1 core: the
+// goal-063 replay (BlockedBy names a now-done blocker while a sibling dep is
+// still pending) matches neither re-block (no failed dep) nor un-stick (deps
+// unsatisfied). The new branch re-points BlockedBy to the first incomplete dep
+// and KEEPS the goal GoalBlocked, driving the checkInvariant flag-count to 0.
+func TestReconcileBlocks_StaleBlockedByDone_RepointsToPendingDep(t *testing.T) {
+	gf := newGoal063Fixture() // goal-001 done, goal-002 pending, goal-063 blocked by goal-001
+
+	require.Equal(t, 1, countBlockedByDoneFlagged(gf), "fixture starts in the flagged state")
+
+	changed := gf.ReconcileBlocks()
+
+	assert.True(t, changed, "re-pointing a stale BlockedBy is a change")
+	g, _ := gf.GoalByID("goal-063")
+	assert.Equal(t, GoalBlocked, g.Status, "stays blocked — sibling dep still pending")
+	assert.Equal(t, "goal-002", g.BlockedBy, "re-pointed to the first still-incomplete dep")
+	assert.Equal(t, 0, countBlockedByDoneFlagged(gf), "checkInvariant no longer flags any goal")
+}
+
+// TestReconcileBlocks_Idempotent_AfterRepoint — after the re-point, BlockedBy
+// names an incomplete dep, so the gate (statusOf(BlockedBy)==GoalDone) is false
+// on the next tick → no-op, changed==false, BlockedBy unchanged.
+func TestReconcileBlocks_Idempotent_AfterRepoint(t *testing.T) {
+	gf := newGoal063Fixture()
+
+	require.True(t, gf.ReconcileBlocks(), "first call re-points")
+	g, _ := gf.GoalByID("goal-063")
+	require.Equal(t, "goal-002", g.BlockedBy)
+
+	second := gf.ReconcileBlocks()
+
+	assert.False(t, second, "second call is a no-op")
+	g, _ = gf.GoalByID("goal-063")
+	assert.Equal(t, GoalBlocked, g.Status)
+	assert.Equal(t, "goal-002", g.BlockedBy, "BlockedBy unchanged on idempotent re-run")
+}
+
+// TestReconcileBlocks_RepointsToFirstIncompleteDepInArrayOrder — with two
+// incomplete deps (goal-002 pending then goal-064 running) the re-point picks
+// the FIRST incomplete in DependsOn array order, not just any incomplete dep.
+func TestReconcileBlocks_RepointsToFirstIncompleteDepInArrayOrder(t *testing.T) {
+	gf := newGoal063Fixture()
+	gf.Goals = append(gf.Goals, Goal{ID: "goal-064", Status: GoalRunning})
+	g, _ := gf.GoalByID("goal-063")
+	g.DependsOn = []string{"goal-001", "goal-002", "goal-064"} // done, pending, running
+
+	changed := gf.ReconcileBlocks()
+
+	assert.True(t, changed)
+	g, _ = gf.GoalByID("goal-063")
+	assert.Equal(t, "goal-002", g.BlockedBy, "first incomplete dep in array order, though goal-064 is also incomplete")
+	assert.Equal(t, GoalBlocked, g.Status)
+}
+
+// TestReconcileBlocks_RepointFallsBackToDepsUnsatisfiedForDanglingDep — when
+// DependsOnSatisfied is false only because of a dangling (deleted) dep id, no
+// real incomplete dep exists, so the re-point uses the "deps_unsatisfied"
+// sentinel and the goal stays GoalBlocked.
+func TestReconcileBlocks_RepointFallsBackToDepsUnsatisfiedForDanglingDep(t *testing.T) {
+	gf := newGoal063Fixture()
+	g, _ := gf.GoalByID("goal-063")
+	g.DependsOn = []string{"goal-001", "goal-999"} // goal-999 does not exist
+
+	changed := gf.ReconcileBlocks()
+
+	assert.True(t, changed)
+	g, _ = gf.GoalByID("goal-063")
+	assert.Equal(t, "deps_unsatisfied", g.BlockedBy, "fallback sentinel when no real incomplete dep exists")
+	assert.Equal(t, GoalBlocked, g.Status)
 }

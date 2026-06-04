@@ -35,12 +35,25 @@ type TasksFile struct {
 	Tasks  []Task `yaml:"tasks"`
 }
 
+// TasksFilePath is the TOP-LEVEL planning-queue path produced by /tmux:plan and
+// consumed by the standalone supervisor (PRE_PLANNED). It is NEVER read by the
+// taskvisor daemon in goal mode — keep it byte-for-byte stable.
 func TasksFilePath(projectRoot string) string {
 	return filepath.Join(projectRoot, ".tmux-cli", "tasks.yaml")
 }
 
-func LoadTasks(projectRoot string) (*TasksFile, error) {
-	data, err := os.ReadFile(TasksFilePath(projectRoot))
+// GoalTasksFilePath is the per-goal supervisor fan-out path used in GOAL_MODE.
+// It isolates each goal's fan-out plan so concurrent goals (MaxGoals>1) never
+// clobber each other's tasks/retry state. Distinct from the top-level
+// planning-queue (TasksFilePath).
+func GoalTasksFilePath(projectRoot, goalID string) string {
+	return filepath.Join(projectRoot, ".tmux-cli", "goals", goalID, "tasks.yaml")
+}
+
+// loadTasksFromPath is the shared load core: a missing file is tolerated and
+// reported as (nil, nil), matching the top-level read tolerance.
+func loadTasksFromPath(p string) (*TasksFile, error) {
+	data, err := os.ReadFile(p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -55,8 +68,8 @@ func LoadTasks(projectRoot string) (*TasksFile, error) {
 	return &tf, nil
 }
 
-func SaveTasks(projectRoot string, tf *TasksFile) error {
-	p := TasksFilePath(projectRoot)
+// saveTasksToPath is the shared save core: ensures the parent dir then writes.
+func saveTasksToPath(p string, tf *TasksFile) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
@@ -66,6 +79,24 @@ func SaveTasks(projectRoot string, tf *TasksFile) error {
 		return err
 	}
 	return os.WriteFile(p, data, 0o644)
+}
+
+func LoadTasks(projectRoot string) (*TasksFile, error) {
+	return loadTasksFromPath(TasksFilePath(projectRoot))
+}
+
+func SaveTasks(projectRoot string, tf *TasksFile) error {
+	return saveTasksToPath(TasksFilePath(projectRoot), tf)
+}
+
+// LoadTasksForGoal reads the per-goal fan-out file at GoalTasksFilePath.
+func LoadTasksForGoal(projectRoot, goalID string) (*TasksFile, error) {
+	return loadTasksFromPath(GoalTasksFilePath(projectRoot, goalID))
+}
+
+// SaveTasksForGoal writes the per-goal fan-out file at GoalTasksFilePath.
+func SaveTasksForGoal(projectRoot, goalID string, tf *TasksFile) error {
+	return saveTasksToPath(GoalTasksFilePath(projectRoot, goalID), tf)
 }
 
 func ArchiveTasks(projectRoot string) error {

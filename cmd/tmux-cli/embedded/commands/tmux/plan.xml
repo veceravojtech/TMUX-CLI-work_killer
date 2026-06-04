@@ -6,7 +6,7 @@
   </input>
 
   <output>
-    <primary>A finalized .tmux-cli/tasks.yaml with status: ready and N implementation tasks, each pointing to an approved spec .md file. Ready for /tmux:supervisor consumption.</primary>
+    <primary>A finalized tasks.yaml at tasks-path (resolved in step 0b: .tmux-cli/goals/{GOAL_ID}/tasks.yaml in GOAL_MODE, else .tmux-cli/tasks.yaml) with status: ready and N implementation tasks, each pointing to an approved spec .md file. Ready for /tmux:supervisor consumption.</primary>
     <secondary>Spec .md files in research-root (resolved in step 0b) — one per module, with Intent, Boundaries &amp; Constraints, I/O &amp; Edge-Case Matrix, Dependencies, Code Map, Implementation Plan, Test Plan, Acceptance Criteria, Design Notes, Implementation Notes, Verification, and Spec Change Log.</secondary>
     <secondary>Research-task context .md files in research-root (resolved in step 0b) — one per module, describing what the worker should research.</secondary>
   </output>
@@ -16,13 +16,14 @@
     <directory>research-root is resolved in step 0b (relative to project working directory; create if absent):
       • Standalone (no active goal): .tmux-cli/research/{y-m-d-hh}/ — {y-m-d-hh} expands to current timestamp, e.g. 2026-05-11-20.
       • Goal mode (.tmux-cli/taskvisor-current-goal exists): .tmux-cli/goals/{GOAL_ID}/research/ — NO timestamp subfolder.</directory>
-    <constraint>tasks.yaml is ALWAYS .tmux-cli/tasks.yaml regardless of mode — the taskvisor daemon reads it from that fixed path. Only research-task and spec .md files live under research-root; tasks.yaml stays put and its context: fields point at the (possibly goal-scoped) files.</constraint>
+    <constraint>The planning-queue tasks.yaml path is resolved once in step 0b as `tasks-path`: goal-scoped (.tmux-cli/goals/{GOAL_ID}/tasks.yaml) in GOAL_MODE, else the top-level .tmux-cli/tasks.yaml. The taskvisor daemon and /tmux:supervisor both read the PER-GOAL file in goal mode (retry: exists/reset/inject), so writing top-level there would orphan the plan AND leave a stale `ready` landmine for the NEXT goal's planner. Only research-task and spec .md files live under research-root; tasks-path holds the queue and its context: fields point at the (possibly goal-scoped) files.</constraint>
   </requirements>
 
   <glossary>
     <term name="PLAN_WID">Name of the planning supervisor's tmux window (e.g. "supervisor"). Stable for whole session.</term>
     <term name="SELF_WID">Name of a spec-writing worker's tmux window (e.g. "execute-3"). Each worker gets unique N.</term>
     <term name="research-root">Primary directory for context and spec files. Resolved in step 0b: .tmux-cli/goals/{GOAL_ID}/research/ when a goal is active (no timestamp), else .tmux-cli/research/{y-m-d-hh}/ (timestamped). Defined in &lt;requirements&gt; / step 0b.</term>
+    <term name="tasks-path">Path to the planning-queue tasks.yaml, resolved in step 0b: .tmux-cli/goals/{GOAL_ID}/tasks.yaml in GOAL_MODE (the per-goal file the taskvisor daemon and /tmux:supervisor read), else the top-level .tmux-cli/tasks.yaml. EVERY tasks.yaml read/write/archive/status-flip in this flow uses tasks-path.</term>
     <term name="research-task context file">Markdown file the planning supervisor writes FOR a worker, telling it what to research and how to produce the spec. Named task-&lt;slug&gt;.md in research-root.</term>
     <term name="spec file">Markdown file a worker produces as its deliverable. Contains implementation-ready specification with mandatory sections (Intent through Spec Change Log). Named execute-&lt;N&gt;-&lt;slug&gt;.md in research-root.</term>
     <term name="AUTO_APPROVE">Internal flag set when plan.auto_approve=true in setting.yaml. Causes steps 9-10 to be skipped.</term>
@@ -162,14 +163,38 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
   </research-task-template>
 
   <flow>
-    <step n="0" title="Clean slate">
+    <step n="0" title="Audit guard">
       <action>Remove .tmux-cli/audit-done guard file if it exists.</action>
-      <action>Check if .tmux-cli/tasks.yaml exists:</action>
+      <note>The clean-slate gate runs in step 0c — AFTER step 0b, because it operates on tasks-path, which requires GOAL_ID/GOAL_MODE to be resolved first.</note>
+    </step>
+
+    <step n="0b" title="Resolve research-root">
+      <action>Inspect $ARGUMENTS for a goal-scoped dispatch path: the taskvisor daemon's first-cycle dispatch sends `/tmux:plan &lt;abs&gt;/.tmux-cli/goals/goal-{ns}/dispatch.md`. If $ARGUMENTS contains a `.tmux-cli/goals/goal-{ns}/` path segment, extract goal-{ns} as ARG_GOAL_ID (empty when $ARGUMENTS carries no such path).</action>
+      <branch condition="ARG_GOAL_ID is set (a .tmux-cli/goals/goal-{ns}/ segment in $ARGUMENTS) — HIGHEST PRECEDENCE">
+        <action>GOAL mode (dispatch-path binding). Set GOAL_ID = ARG_GOAL_ID. Prefer this over the global .tmux-cli/taskvisor-current-goal marker: the daemon writes that marker GLOBALLY on every dispatch, so under concurrent dispatch it is last-writer-wins and may name ANOTHER goal, whereas the dispatch path you were handed is per-goal-safe. Set research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp). Set tasks-path = .tmux-cli/goals/{GOAL_ID}/tasks.yaml (the per-goal planning queue the daemon and supervisor read). Create the goal dir / research-root if absent. Set internal flag GOAL_MODE=true. Log: "Goal mode (dispatch-path binding): GOAL_ID={GOAL_ID}, research-root=.tmux-cli/goals/{GOAL_ID}/research/, tasks-path=.tmux-cli/goals/{GOAL_ID}/tasks.yaml".</action>
+      </branch>
+      <branch condition="ARG_GOAL_ID is NOT set">
+        <action>Check whether .tmux-cli/taskvisor-current-goal exists and is non-empty.</action>
+        <branch condition="exists and non-empty">
+          <action>GOAL mode. Read GOAL_ID from the file (trim whitespace). Set research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp). Set tasks-path = .tmux-cli/goals/{GOAL_ID}/tasks.yaml (the per-goal planning queue the daemon and supervisor read). Create the goal dir / research-root if absent. Set internal flag GOAL_MODE=true. Log: "Goal mode: GOAL_ID={GOAL_ID}, research-root=.tmux-cli/goals/{GOAL_ID}/research/, tasks-path=.tmux-cli/goals/{GOAL_ID}/tasks.yaml".</action>
+        </branch>
+        <branch condition="absent or empty">
+          <action>STANDALONE mode. Set research-root = .tmux-cli/research/{y-m-d-hh}/ ({y-m-d-hh} = current timestamp). Set tasks-path = .tmux-cli/tasks.yaml. Create research-root if absent. Set internal flag GOAL_MODE=false. Log: "Standalone mode: research-root=.tmux-cli/research/{y-m-d-hh}/, tasks-path=.tmux-cli/tasks.yaml".</action>
+        </branch>
+      </branch>
+      <rule>Every later reference to research-root AND tasks-path in this flow uses the values resolved here. Every tasks.yaml read/write/archive/status-flip means tasks-path — never hardcode the top-level .tmux-cli/tasks.yaml in GOAL_MODE.</rule>
+    </step>
+
+    <step n="0c" title="Clean slate">
+      <action>Check if tasks-path (resolved in step 0b) exists:</action>
       <branch condition="exists AND status=planning">
         <action>INCREMENTAL mode — existing tasks preserved. Inform user: "Existing plan found with N tasks (status: planning). Entering incremental mode — existing tasks preserved."</action>
         <action>Proceed to step 1.</action>
       </branch>
-      <branch condition="exists AND status=ready">
+      <branch condition="exists AND status=ready AND GOAL_MODE is true">
+        <action>Auto-archive WITHOUT user confirmation: move tasks-path to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed), log "Archived stale finalized plan for {GOAL_ID} (status: ready) — daemon re-dispatch implies re-plan", then proceed in FRESH mode. A daemon-dispatched planner has NO human to answer a confirmation prompt — waiting would burn the goal's entire cycle timeout and get misclassified as a code defect. A `ready` file here is always stale: either this goal's prior cycle (superseded by this re-dispatch) or a leftover the daemon already consumed.</action>
+      </branch>
+      <branch condition="exists AND status=ready AND GOAL_MODE is false">
         <action>Warn user: "Tasks already finalized (status: ready). Re-planning will archive the current plan."</action>
         <action>Wait for user confirmation. On confirmation: archive to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed), then proceed in FRESH mode.</action>
         <action>On rejection: STOP.</action>
@@ -181,17 +206,7 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
       <branch condition="does not exist">
         <action>FRESH mode. Proceed to step 1.</action>
       </branch>
-    </step>
-
-    <step n="0b" title="Resolve research-root">
-      <action>Check whether .tmux-cli/taskvisor-current-goal exists and is non-empty.</action>
-      <branch condition="exists and non-empty">
-        <action>GOAL mode. Read GOAL_ID from the file (trim whitespace). Set research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp). Create it if absent. Set internal flag GOAL_MODE=true. Log: "Goal mode: GOAL_ID={GOAL_ID}, research-root=.tmux-cli/goals/{GOAL_ID}/research/".</action>
-      </branch>
-      <branch condition="absent or empty">
-        <action>STANDALONE mode. Set research-root = .tmux-cli/research/{y-m-d-hh}/ ({y-m-d-hh} = current timestamp). Create it if absent. Set internal flag GOAL_MODE=false. Log: "Standalone mode: research-root=.tmux-cli/research/{y-m-d-hh}/".</action>
-      </branch>
-      <rule>Every later reference to research-root in this flow uses the value resolved here. tasks.yaml is NOT affected — it always stays at .tmux-cli/tasks.yaml.</rule>
+      <action condition="GOAL_MODE is true">Legacy-landmine sweep: if the TOP-LEVEL .tmux-cli/tasks.yaml ALSO exists (pre-fix planners wrote the queue there in goal mode and nothing ever cleaned it), archive it to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml WITHOUT user confirmation and log "Archived legacy top-level planning queue (pre-per-goal-tasks-path leftover)". It cannot belong to this plan — tasks-path is per-goal — and leaving it would re-trigger this gate for every future standalone run.</action>
     </step>
 
     <step n="1" title="MCP precondition">
@@ -222,13 +237,16 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
     </step>
 
     <step n="1c" title="Tasks gate">
-      <action>Check if .tmux-cli/tasks.yaml exists in the project root.</action>
-      <check condition="tasks.yaml exists AND has tasks with status=pending or status=in_progress AND this is a new invocation (not handled by step 0)">
-        <action>STOP. Print: "STOP GATE: Unfinished tasks found in .tmux-cli/tasks.yaml. [list each task name and status]. To continue previous work, re-run without new input. To start fresh, reply 'archive and start new'."</action>
-        <action>If user says "archive and start new": archive tasks.yaml to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed) and proceed with fresh tasks.yaml.</action>
+      <action>Check if tasks-path (resolved in step 0b) exists.</action>
+      <check condition="tasks-path exists AND has tasks with status=pending or status=in_progress AND this is a new invocation (not handled by step 0c) AND GOAL_MODE is true">
+        <action>Auto-archive WITHOUT user confirmation: move tasks-path to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed), log "Archived unfinished plan for {GOAL_ID} — daemon re-dispatch implies re-plan", and proceed with a fresh tasks-path. A daemon-dispatched planner must never park on a prompt.</action>
+      </check>
+      <check condition="tasks-path exists AND has tasks with status=pending or status=in_progress AND this is a new invocation (not handled by step 0c) AND GOAL_MODE is false">
+        <action>STOP. Print: "STOP GATE: Unfinished tasks found in {tasks-path}. [list each task name and status]. To continue previous work, re-run without new input. To start fresh, reply 'archive and start new'."</action>
+        <action>If user says "archive and start new": archive tasks-path to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed) and proceed with fresh tasks-path.</action>
         <action>Wait for user response before proceeding.</action>
       </check>
-      <check condition="tasks.yaml does not exist OR all tasks done OR already handled by step 0">
+      <check condition="tasks-path does not exist OR all tasks done OR already handled by step 0c">
         <action>Proceed to step 2.</action>
       </check>
     </step>
@@ -260,7 +278,7 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
     </step>
 
     <step n="3b" title="Write and verify tasks.yaml" critical="true">
-      <action>Write or update .tmux-cli/tasks.yaml with the following structure:</action>
+      <action>Write or update tasks-path (resolved in step 0b — per-goal .tmux-cli/goals/{GOAL_ID}/tasks.yaml in GOAL_MODE, top-level .tmux-cli/tasks.yaml in standalone) with the following structure:</action>
       <format>
 status: planning
 cycle: 1
@@ -271,13 +289,13 @@ tasks:
     context: "{research-root}/task-&lt;slug&gt;.md"
     depends_on: ["execute-M"]  # implementation dependency — from plan's dependency graph. Optional.
       </format>
-      <rule>The literal value written for context: is the RESOLVED research-root path (step 0b) — goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/task-&lt;slug&gt;.md) in goal mode, timestamped (.tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md) in standalone mode. tasks.yaml itself always stays at .tmux-cli/tasks.yaml.</rule>
+      <rule>The literal value written for context: is the RESOLVED research-root path (step 0b) — goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/task-&lt;slug&gt;.md) in goal mode, timestamped (.tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md) in standalone mode. The file itself is written at tasks-path (also step 0b) — per-goal in GOAL_MODE, top-level in standalone.</rule>
       <action>Verify all context files referenced in tasks.yaml exist on disk.</action>
       <check condition="any context file is missing">
         <action>STOP. Create missing context files per step 3, then re-verify.</action>
       </check>
-      <action>Call tasks-validate MCP tool. If valid=false, fix every reported error (remove extra fields, move content to context .md file) and re-run until valid=true.</action>
-      <check condition="all context files exist AND tasks-validate returns valid=true AND tasks.yaml contains all planned tasks">
+      <action>Call tasks-validate MCP tool. In GOAL_MODE pass goal_id={GOAL_ID} so it validates the per-goal file (tasks-path); in standalone call it with no goal_id so it validates the top-level queue. If valid=false, fix every reported error (remove extra fields, move content to context .md file) and re-run until valid=true.</action>
+      <check condition="all context files exist AND tasks-validate returns valid=true AND tasks-path contains all planned tasks">
         <action>Proceed to step 4.</action>
       </check>
       <rule>Set status to "planning" — NOT "ready". Only step 11 sets "ready" after user approval.</rule>
@@ -476,7 +494,7 @@ tasks:
     depends_on: ["execute-M"]  # from spec ## Dependencies, mapped to wids. Optional.
       </format>
       <action>Respect the dependency graph from the specs — use depends_on fields or order tasks by implementation wave (prerequisites first).</action>
-      <action>Set tasks.yaml top-level status to "ready".</action>
+      <action>Set the top-level status field in tasks-path to "ready".</action>
       <action condition="GOAL_MODE is true">Append a research-file index to .tmux-cli/goals/{GOAL_ID}/goal.md so the goal records its plan artifacts. Use a section titled "## Research Files" with two subsections grouped by category, using markdown links RELATIVE to the goal dir:
 
 ## Research Files
@@ -492,7 +510,7 @@ tasks:
 If a "## Research Files" section already exists in goal.md (re-plan), REPLACE that section in place rather than appending a duplicate. List every generated file in its category (all files, grouped). Omit a subsection if it has no files.</action>
       <action>Print summary:</action>
       <template>
-Plan finalized: N implementation tasks ready in .tmux-cli/tasks.yaml
+Plan finalized: N implementation tasks ready in {tasks-path}
 Research dir: {research-root} (resolved in step 0b)
 
 Run `/tmux:supervisor` to execute the plan.
@@ -501,7 +519,8 @@ Run `/tmux:supervisor` to execute the plan.
         <action>Auto-execute mode enabled (plan.auto_execute=true in setting.yaml). Invoking supervisor automatically.</action>
         <action>Write guard file .tmux-cli/auto-execute-guard (prevents the Stop hook from also restarting the supervisor — without this, both auto-execute AND the Stop hook would send /tmux:supervisor, causing a double invocation).</action>
         <action>Send /clear to PLAN_WID via windows-send.</action>
-        <action>Send /tmux:supervisor .tmux-cli/tasks.yaml to PLAN_WID via windows-send.</action>
+        <action condition="GOAL_MODE is true">Send `/tmux:supervisor {GOAL_ID}` to PLAN_WID via windows-send — {GOAL_ID} already carries the goal- prefix (e.g. goal-046), so this expands to `/tmux:supervisor goal-046`. Ship the goal id (resolved in step 0b) as a leading token so the fresh supervisor binds to THIS goal authoritatively (its step 0b consumes the goal-{ns} argument) and never re-derives it from the last-writer-wins global .tmux-cli/taskvisor-current-goal marker.</action>
+        <action condition="GOAL_MODE is false">Send `/tmux:supervisor .tmux-cli/tasks.yaml` to PLAN_WID via windows-send (standalone — no goal id to ship).</action>
         <action>STOP — a fresh supervisor instance takes over with the finalized tasks.yaml.</action>
       </check>
       <action>STOP. The supervisor takes over from here.</action>
@@ -515,6 +534,7 @@ Run `/tmux:supervisor` to execute the plan.
     <rule>windows-kill: only on accepted spec or terminal FAILED; never on PLAN_WID; pass window NAME</rule>
     <rule>Always Read the file cited in a DONE before applying the S1–S9 catalogue; never rely on inline body</rule>
     <rule>If a worker sends DONE without file=, REMIND once; do not accept inline-body DONE</rule>
+    <rule>Every tasks.yaml reference in this flow means tasks-path (resolved in step 0b) — per-goal .tmux-cli/goals/{GOAL_ID}/tasks.yaml in GOAL_MODE, top-level .tmux-cli/tasks.yaml in standalone</rule>
     <rule>tasks.yaml status transitions: missing → planning (step 3b) → ready (step 11 only, after user approval)</rule>
     <rule>Research-task context files are created BEFORE tasks.yaml references them</rule>
     <rule>Spec files are created BY workers, verified BY the planning supervisor against S1–S9</rule>

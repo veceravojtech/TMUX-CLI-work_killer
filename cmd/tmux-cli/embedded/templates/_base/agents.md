@@ -12,6 +12,7 @@
 ## Environment
 {{#if is_docker}}
 - **Container runtime:** Docker {{docker_version}}, Compose {{compose_version}}
+- **Runtime Container:** {{runtime_container}}
 {{/if}}
 {{#unless is_docker}}
 - **Runtime:** {{runtime_name}} {{runtime_version}}
@@ -21,6 +22,14 @@
 
 ## Database
 - {{db_type}} @ {{db_host}}:{{db_port}} / {{db_name}} — credentials: {{db_credentials_source}}
+
+{{#if is_docker}}
+## Published Ports
+<!-- Published host:container mappings for compose services (distinct from db_host/db_port, which is only the Gate-0 connection target). -->
+{{#each published_ports}}
+- **{{service}}** — host {{host_port}} → container {{container_port}}{{#if purpose}} ({{purpose}}){{/if}}
+{{/each}}
+{{/if}}
 
 ## Services
 - {{services_summary}}            <!-- Redis/RabbitMQ/none -->

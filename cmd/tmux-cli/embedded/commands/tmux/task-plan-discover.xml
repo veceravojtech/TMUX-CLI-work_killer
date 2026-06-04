@@ -220,7 +220,7 @@ Should I save this to `docs/architecture/product-brief.md`, or would you like to
           <decision topic="api-style">API style (REST, GraphQL, gRPC)</decision>
           <decision topic="message-bus">Message bus (synchronous, async with Messenger, RabbitMQ)</decision>
           <decision topic="deployment">Deployment target (Docker, bare metal, cloud)</decision>
-          <decision topic="run-target" critical="true">Run target — ask EXPLICITLY: "Should the project run in Docker (containerized: Dockerfile + docker-compose) or locally on the host?" Capture a discrete value RUN_TARGET = docker | local. This drives Gate 0 (goal-001) prerequisite checks — do not infer, ask. If docker, also ask whether the database/services run as compose services (default) or are external.</decision>
+          <decision topic="run-target" critical="true">Run target — ask EXPLICITLY: "Should the project run in Docker (containerized: Dockerfile + docker-compose) or locally on the host?" Capture a discrete value RUN_TARGET = docker | local. This drives Gate 0 (goal-001) prerequisite checks — do not infer, ask. If docker, also ask whether the database/services run as compose services (default) or are external. If docker AND the DB/services run as compose services, ALSO ask the published host:container port mappings the stack exposes for each service tests/host must reach (e.g. web 8080→80, db 5432→5432, redis 6379→6379). Capture a discrete PUBLISHED_PORTS list — service, host port, container port, purpose — distinct from the DB connection host/port used only for Gate-0 connectivity. Persist into test-environment.md (Published Ports block) and the Goal-0 AGENTS.md; record it ONLY there, never as an ADR.</decision>
         </decisions>
         <action>For each decision, capture: context (why this decision matters), alternatives considered with pros/cons, and the chosen rationale.</action>
         <action>Ask about any open or unresolved architecture decisions that need further investigation.</action>
@@ -246,7 +246,7 @@ Should I save this to `docs/architecture/product-brief.md`, or would you like to
         <action>Number ADRs sequentially starting at 001. Derive the filename slug from the decision topic (e.g., adr-001-database.md, adr-002-authentication.md, adr-003-caching.md).</action>
         <action>Each ADR must contain: status (Accepted/Proposed), date, bounded context (which BC this decision primarily affects — use "Cross-Cutting" for decisions spanning multiple BCs), related ADRs (links to other ADRs this decision depends on or supersedes — use "None" if standalone), context (why the decision is needed), decision drivers (forces at play), the decision itself, consequences (positive, negative, and neutral), and alternatives considered with pros, cons, and rejection reason. These fields match the _base/adr.md template header and body sections. (D-09, D-10)</action>
         <action>Note: language/framework-specific decisions from 4.1 (e.g., Deptrac layer enforcement, CQRS bus separation, event dispatch strategy for PHP/Symfony) also produce ADRs — they are included in "each decision captured in substeps 4.1 and 4.2" and must not be skipped.</action>
-        <rule critical="true">EXCEPTION: the run-target decision (topic="run-target") is recorded ONLY in docs/architecture/test-environment.md (Step 7.3), NEVER as an ADR. Reason: task-plan-generate.xml scans ADRs for the keyword "docker" to decide whether to generate the production deployment goal (step 3.26); a run-target ADR containing "docker" would falsely trigger that deployment goal for a project the user only wants to RUN in a container. The free-form deployment decision/ADR stays the sole trigger for step 3.26 — the two questions are independent.</rule>
+        <rule critical="true">EXCEPTION: the run-target decision (topic="run-target") is recorded ONLY in docs/architecture/test-environment.md (Step 7.3), NEVER as an ADR. Reason: task-plan-generate.xml scans ADRs for the keyword "docker" to decide whether to generate the production deployment goal (step 3.26); a run-target ADR containing "docker" would falsely trigger that deployment goal for a project the user only wants to RUN in a container. The free-form deployment decision/ADR stays the sole trigger for step 3.26 — the two questions are independent. The published host:container port mappings captured alongside run-target (PUBLISHED_PORTS) are LIKEWISE recorded ONLY in test-environment.md, NEVER as an ADR — they introduce no new ADR topic; test-environment.md is their sole sink.</rule>
         <action>Create docs/architecture/adrs/ directory if it does not exist.</action>
         <action>Present a summary of all ADRs to the user with decision topics and chosen options before saving files.</action>
       </substep>
@@ -465,7 +465,7 @@ What external services does this project integrate with? For example: payment ga
       <action>Read _base/discovery.md section 14 to inform conversational question flow. Do NOT dump template content to the user — use it as reference for natural follow-up questions.</action>
 
       <substep n="7.1" title="Base Test Environment" interactive="true" acceptance="D-14, D-15">
-        <action>Ask _base/discovery.md section 14 questions conversationally, one at a time. Cover all six topics:</action>
+        <action>Ask _base/discovery.md section 14 questions conversationally, one at a time. Cover the six base topics, plus a seventh seed-default-admin topic GATED on auth flows (ask it only when Step 6.2 captured at least one auth flow):</action>
 
         <questions>
           <q order="1" topic="base-url">
@@ -500,6 +500,13 @@ Is Playwright installed and available for E2E testing?
             <template>
 What CI/CD environment does this project use? (e.g., GitHub Actions, GitLab CI, Jenkins, none)
             </template>
+          </q>
+          <q order="7" topic="seed-default-admin" condition="Step 6.2 AUTH_FLOWS is non-empty (at least one auth flow mapped)">
+            <template>
+Should the app seed a default admin user on first run (the dev environment)? If yes, which environment-variable NAMES hold the admin identifier and the admin password? Provide the NAMES only — for example `APP_ADMIN_EMAIL` and `APP_ADMIN_PASSWORD` — never the secret values themselves.
+            </template>
+            <rule critical="true">GATED: ask this ONLY when Step 6.2 captured one or more auth flows (AUTH_FLOWS non-empty). If AUTH_FLOWS is empty there is no User entity to seed — SKIP this question entirely and leave seed_default_admin unset.</rule>
+            <rule critical="true">Capture environment-variable NAMES only (admin_identifier_env, admin_password_env). NEVER record, repeat, or inline the secret values — values live only in the environment.</rule>
           </q>
         </questions>
         <rule>Ask ONE question, wait for answer, then ask the next. Do not batch.</rule>
@@ -542,6 +549,14 @@ The **{{field_name}}** is still missing. Could you provide this? It's needed to 
           <action>Wait for response and update that field.</action>
         </check>
 
+        <check condition="seed_default_admin == yes AND (admin_identifier_env is blank OR admin_password_env is blank)">
+          <action>Run a targeted D-14-style follow-up BEFORE saving — one per missing NAME:</action>
+          <template>
+You chose to seed a default admin, but the environment-variable NAME for the **{{missing_admin_env_field}}** is still missing. Which env-var NAME holds it? Provide the NAME only (e.g. `APP_ADMIN_EMAIL`) — never the secret value.
+          </template>
+          <action>Wait for response and update that field. Do NOT save until BOTH admin_identifier_env and admin_password_env are non-empty NAMES.</action>
+        </check>
+
         <action>Create docs/architecture/ directory if it does not exist (mkdir -p).</action>
         <action>Present summary to user before saving:</action>
         <template>
@@ -550,11 +565,17 @@ Here's the test environment configuration I've captured:
 **Base URL:** {{test_base_url}}
 **Run Target:** {{run_target}}
 {{#if is_docker}}**DB/services location:** {{services_location}}
+{{#if services_compose}}**Published Ports:**
+| Service | Host Port | Container Port | Purpose |
+|---------|-----------|----------------|---------|
+{{#each published_ports}}| {{service}} | {{host_port}} | {{container_port}} | {{purpose}} |
+{{/each}}{{/if}}
 {{/if}}**Test Credentials:** {{test_user_credentials}}
 **Test Database:** {{test_db_name}}
 **Fixture Command:** {{fixture_command}}
 **Playwright Status:** {{playwright_status}}
 **CI/CD:** {{ci_cd_environment}}
+{{#if seed_default_admin}}**Seed Default Admin (dev):** {{seed_default_admin}} — identifier env-var NAME: `{{admin_identifier_env}}`, password env-var NAME: `{{admin_password_env}}` (NAMES only, no secret values){{/if}}
 {{#if symfony_sections}}
 
 **Symfony-specific:**
@@ -565,15 +586,17 @@ Here's the test environment configuration I've captured:
 
 Should I save this to `docs/architecture/test-environment.md`, or would you like to adjust anything?
         </template>
+        <action condition="seed_default_admin == yes">When writing test-environment.md, append a `## Bootstrap / Seed Default Admin` block recording exactly: `seed_default_admin: yes`, `admin_identifier_env: {{admin_identifier_env}}`, `admin_password_env: {{admin_password_env}}`. Record env-var NAMES only — NEVER the secret values. Generation Step 3.19a reads this block directly.</action>
         <action>On confirmation, write docs/architecture/test-environment.md.</action>
 
         <rule critical="true">Do NOT save test-environment.md until user confirms the summary.</rule>
-        <rule>D-14 gate: test environment doc must contain base URL, test user credentials, DB name, fixture command, AND Run Target (docker|local) — all non-empty.</rule>
+        <rule>The `## Bootstrap / Seed Default Admin` block, when present, records env-var NAMES (admin_identifier_env, admin_password_env) only — never secret values (GM-05). The block is omitted entirely when seed_default_admin is not yes.</rule>
+        <rule>D-14 gate: test environment doc must contain base URL, test user credentials, DB name, fixture command, AND Run Target (docker|local) — all non-empty. When Run Target = docker with compose-hosted services, the doc must ALSO contain a non-empty Published Ports mapping (omitted entirely — not "N/A" — for local or external-services projects).</rule>
         <rule>D-15 gate: Playwright status must explicitly state whether Playwright is installed, needs Gate 0 setup, or is not applicable.</rule>
       </substep>
 
       <output>
-        <file path="docs/architecture/test-environment.md" condition="always">Test environment configuration: base URL, run target (docker|local; plus DB/services location compose|external when docker), test credentials, DB name, fixture command, Playwright status, CI/CD environment. Plus Symfony-specific sections when applicable.</file>
+        <file path="docs/architecture/test-environment.md" condition="always">Test environment configuration: base URL, run target (docker|local; plus DB/services location compose|external and published host:container ports when docker with compose services), test credentials, DB name, fixture command, Playwright status, CI/CD environment. Plus Symfony-specific sections when applicable.</file>
       </output>
 
       <rule>Create docs/architecture/ directory if it does not exist before writing output files.</rule>

@@ -299,6 +299,11 @@ Relationship types: Conformist, Customer-Supplier, Published Language, Shared Ke
      Decisions (decision topic="run-target") and persisted into test-environment.md
      alongside the fields below; D-14 also gates it as non-empty. It is recorded
      here only, never as an ADR. -->
+<!-- NOTE: When the run target is docker with compose-hosted services, the published
+     host:container port mappings (PUBLISHED_PORTS — service, host port, container
+     port, purpose) are ALSO captured in Step 4 and persisted as a Published Ports
+     block in test-environment.md (omitted entirely for local/external). These are
+     distinct from db_host/db_port, which is only the Gate-0 connection target. -->
 
 1. What is the base URL for the test/development environment?
    > {{test_base_url}}
@@ -318,6 +323,17 @@ Relationship types: Conformist, Customer-Supplier, Published Language, Shared Ke
    - [ ] Not applicable (API-only, no browser tests needed)
 
    > Playwright status: {{playwright_status}}
+
+6. Should the app seed a default admin user on first run (the dev environment)?
+   <!-- GATED: only relevant when at least one auth flow exists (see Auth Flows /
+        discover Step 6.2). Skip entirely when there are no auth flows — there is
+        no User entity to seed. -->
+   <!-- Provide environment-variable NAMES only (e.g. APP_ADMIN_EMAIL,
+        APP_ADMIN_PASSWORD). NEVER record the secret values — they live only in
+        the environment. -->
+   > Seed default admin (dev): {{seed_default_admin}}
+   > Admin identifier env-var NAME: {{admin_identifier_env}}
+   > Admin password env-var NAME: {{admin_password_env}}
 
 ---
 

@@ -1,0 +1,652 @@
+package taskvisor
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/console/tmux-cli/internal/tasks"
+	"gopkg.in/yaml.v3"
+)
+
+type ScriptRunnerFunc func(ctx context.Context, scriptPath, dir string, env []string) (stdout, stderr string, exitCode int, err error)
+
+const validateScriptTimeout = 30 * time.Second
+
+func defaultScriptRunner(ctx context.Context, scriptPath, dir string, env []string) (stdout, stderr string, exitCode int, err error) {
+	cmd := exec.CommandContext(ctx, scriptPath)
+	cmd.Env = env
+	cmd.Dir = dir
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	runErr := cmd.Run()
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
+		}
+		return outBuf.String(), errBuf.String(), -1, runErr
+	}
+	return outBuf.String(), errBuf.String(), 0, nil
+}
+
+func (d *Daemon) runValidateScript(goal *Goal) (passed bool, stderr string, err error) {
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+
+	info, statErr := os.Stat(scriptPath)
+	if statErr != nil {
+		return false, "", nil
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		log.Printf("warning: validate.sh exists but is not executable for goal %s", goal.ID)
+		return false, "", nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), d.scriptTimeout)
+	defer cancel()
+
+	// Route validate.sh's cwd to the goal's worktree (E1-1c) so the script sees
+	// ONLY this goal's edits; scriptPath itself stays rooted at base .tmux-cli above.
+	// WORKTREE_DIR is exported alongside GOAL_ID so the script can reference the tree
+	// explicitly. Under MaxGoals=1 cwd==d.workDir — byte-identical to before.
+	cwd := d.goalWorkDir(goal.ID)
+	env := append(os.Environ(), "GOAL_ID="+goal.ID, "WORKTREE_DIR="+cwd)
+
+	// Hold the shared-schema db lock for the DURATION of the validate.sh exec
+	// (E1-1b): worktrees isolate this goal's FILES but the database SCHEMA is a
+	// single shared resource, so a concurrent worker-run migration (MaxGoals>1)
+	// must not race the schema we validate against. Lock order is goals→db — the
+	// poll loop already holds the goals flock here, so db is strictly the inner
+	// lock. At MaxGoals=1 there is never contention and this is byte-identical.
+	var (
+		stderrOut string
+		exitCode  int
+		runErr    error
+	)
+	if lockErr := d.withDBLock(func() error {
+		_, stderrOut, exitCode, runErr = d.scriptRunnerFn(ctx, scriptPath, cwd, env)
+		return nil
+	}); lockErr != nil {
+		log.Printf("error: acquiring db lock for validate of goal %s: %v", goal.ID, lockErr)
+		return false, "", nil
+	}
+	if runErr != nil {
+		log.Printf("error: validate.sh exec error for goal %s: %v", goal.ID, runErr)
+		return false, "", nil
+	}
+
+	if exitCode == 0 {
+		return true, "", nil
+	}
+
+	if len(stderrOut) > 500 {
+		stderrOut = stderrOut[:500]
+	}
+	return false, stderrOut, nil
+}
+
+func (d *Daemon) hasValidateMd(goalID string) bool {
+	mdPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goalID, "validate.md")
+	_, err := os.Stat(mdPath)
+	return err == nil
+}
+
+// writeCycleMarker pre-creates the current cycle's goal-scoped research dir and
+// writes the cycle marker(s) so investigate.xml's step-2a resolution can locate
+// research/cycle-<N>/ for the current dispatch attempt. Idempotent; called on
+// every (re-)dispatch BEFORE any worker (supervisor or validator) is spawned,
+// inside the goals flock — no extra locking needed.
+//
+// The global .tmux-cli/taskvisor-current-cycle marker (sibling of
+// taskvisor-current-goal) is written unconditionally: it remains the MaxGoals<=1
+// resolution source and the standalone fallback. At mg>1 it is last-writer-wins
+// across concurrent goals, so a PER-GOAL marker .tmux-cli/goals/<id>/current-cycle
+// is ALSO written — fed by the same CurrentCycle computation (one computation,
+// two destinations, zero drift) — and investigate.xml reads the per-goal marker
+// FIRST so one goal's dispatch can never clobber another's cycle number. At
+// mg<=1 the per-goal marker is REMOVED instead (mirroring writeWorktreeMarker's
+// gate-and-remove), so single-goal runs produce zero new artifacts and a stale
+// marker from a prior mg>1 run cannot leak into the fallback chain.
+func (d *Daemon) writeCycleMarker(goal *Goal, mg int) error {
+	if _, err := EnsureCycleResearchDir(d.workDir, goal); err != nil {
+		return fmt.Errorf("ensure cycle research dir: %w", err)
+	}
+	n := CurrentCycle(goal)
+	markerPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-current-cycle")
+	if err := os.WriteFile(markerPath, []byte(fmt.Sprintf("%d", n)), 0o644); err != nil {
+		return err
+	}
+	perGoalPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "current-cycle")
+	if mg > 1 {
+		return os.WriteFile(perGoalPath, []byte(fmt.Sprintf("%d", n)), 0o644)
+	}
+	if err := os.Remove(perGoalPath); err != nil && !os.IsNotExist(err) {
+		log.Printf("warning: clear per-goal cycle marker: %v", err)
+	}
+	return nil
+}
+
+func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
+	// B4: repair-at-dispatch. A planner re-write of goal.md can strip the
+	// `## Investigation Config` section post-creation; re-assert it (>=2
+	// investigators derived from the in-memory Validate rules) BEFORE
+	// writeDispatchMd reads goal.md, so the validator never hard-fails for
+	// missing/<2. Runs inside the goals-lock; never blocks dispatch (an
+	// unreadable goal.md is logged and skipped — writeDispatchMd's own fallback
+	// still applies).
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+	if rep, err := EnsureInvestigationConfig(goalDir, goal.Validate); err != nil {
+		log.Printf("[repair] %s: %v", goal.ID, err)
+	} else if rep {
+		log.Printf("[repair] %s: re-asserted Investigation Config (was missing/<2)", goal.ID)
+	}
+
+	if err := d.writeDispatchMd(goal); err != nil {
+		return fmt.Errorf("write dispatch.md: %w", err)
+	}
+
+	currentGoalPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-current-goal")
+	if err := os.MkdirAll(filepath.Dir(currentGoalPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(currentGoalPath, []byte(goal.ID), 0o644); err != nil {
+		return err
+	}
+	mg := d.maxGoals()
+	// C7: allocate the per-cycle research dir + write the current-cycle marker(s)
+	// BEFORE spawning any worker, so reports land under research/cycle-<N>/.
+	if err := d.writeCycleMarker(goal, mg); err != nil {
+		return err
+	}
+
+	if err := d.killWindowByName(supervisorWindow(goal.ID, mg)); err != nil {
+		return err
+	}
+	if err := d.killWindowsByPrefix(executePrefix(goal.ID, mg)); err != nil {
+		return err
+	}
+	if err := d.killWindowByName(validatorWindow(goal.ID, mg)); err != nil {
+		return err
+	}
+	if err := d.killWindowsByPrefix(invPrefix(goal.ID, mg)); err != nil {
+		return err
+	}
+
+	allNames := d.collectManagedNames(goal.ID)
+	if err := d.waitWindowsGone(allNames, 5*time.Second); err != nil {
+		return fmt.Errorf("waitWindowsGone: %w", err)
+	}
+
+	// Preflight precondition gate: never spawn a worker for a goal whose
+	// declared environment is unmet. On a block we emit a blocked signal with a
+	// class + remedy runbook, log an owner-facing line, mark the goal blocked
+	// (which excludes it from pending selection, halting re-dispatch), and
+	// return without spawning or consuming a retry.
+	if ok, class, remedy := d.evaluatePreconditions(goal); !ok {
+		owner := ownerFor(class)
+		failingSpec := failingPreconditionSpec(goal, class, remedy)
+		prefix := "[BLOCKED - OPERATOR ACTION REQUIRED]"
+		if owner == "planner" {
+			prefix = "[SPEC-DEFECT - GENERATOR ACTION REQUIRED]"
+		}
+		sig := &ValidatorSignal{
+			Verdict: "blocked",
+			Class:   class,
+			Owner:   owner,
+			Remedy:  remedy,
+			Findings: []ValidationFinding{{
+				Rule:   failingSpec,
+				Status: "blocked",
+				Detail: remedy,
+			}},
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := SaveValidatorSignal(d.workDir, goal.ID, sig); err != nil {
+			return fmt.Errorf("save block signal: %w", err)
+		}
+		log.Printf("%s %s: precondition %q failed — %s", prefix, goal.ID, failingSpec, remedy)
+		goal.Status = GoalBlocked
+		// env/infra precondition blocks are auto-resumable: flag the goal so the
+		// resume loop (scanPreconditionBlocked, §5) re-evaluates its preconditions
+		// and resumes it once they clear. A spec-defect (planner) block needs a
+		// re-plan, not a re-check, so it is deliberately left unflagged.
+		if owner == "ops" {
+			goal.BlockedByPrecondition = true
+		}
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Per-goal worktree isolation (E1-1a), gated on MaxGoals>1. At MaxGoals=1 this
+	// returns d.workDir with NO git call; at MaxGoals>1 it materializes (or reuses)
+	// .tmux-cli/worktrees/<id> and returns its path so the supervisor — and the
+	// workers it spawns — edit tracked source inside the isolated checkout.
+	cwd, err := d.ensureWorktree(goal, mg > 1)
+	if err != nil {
+		return fmt.Errorf("ensure worktree: %w", err)
+	}
+
+	supWin := supervisorWindow(goal.ID, mg)
+	winInfo, err := d.createWindow(supWin, "", cwd)
+	if err != nil {
+		return fmt.Errorf("create supervisor: %w", err)
+	}
+
+	if err := d.waitClaudeBoot(supWin, 30*time.Second); err != nil {
+		return fmt.Errorf("waitClaudeBoot: %w", err)
+	}
+
+	log.Printf("dispatch: waitClaudeBoot done, waiting for prompt...")
+	if err := d.waitForPrompt(supWin, 30*time.Second); err != nil {
+		log.Printf("warning: waitForPrompt: %v (proceeding anyway)", err)
+	}
+	log.Printf("dispatch: prompt detected, sending command")
+
+	d.currentGoal = goal.ID
+	rt := d.runtime(goal.ID)
+	rt.bootConfirmedAt = time.Now()
+	oldPhase := rt.phase
+	rt.phase = phaseSupervising
+	log.Printf("%s: phase %s -> supervising", goal.ID, phaseName(oldPhase))
+
+	dispatchPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "dispatch.md")
+	planCmd := fmt.Sprintf("/tmux:plan %s", dispatchPath)
+	log.Printf("dispatch: sending to session=%s window=%s cmd=%s", d.session, winInfo.TmuxWindowID, planCmd)
+	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, planCmd); err != nil {
+		return fmt.Errorf("send plan command: %w", err)
+	}
+	log.Printf("dispatch: SendMessage returned successfully")
+
+	goal.Status = GoalRunning
+	log.Printf("%s: pending -> running", goal.ID)
+	if goal.StartedAt == "" {
+		goal.StartedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+
+	// B7: per-cycle cost record at the dispatch seam. Investigators are unknown
+	// pre-validation, so inv counts are zero here (the verdict-resolution line
+	// carries the real spawn/reuse split).
+	d.logCounters(goal, "dispatch", 0, 0)
+
+	// Successful dispatch ends the stall episode (watchdog reset).
+	d.idleTicks = 0
+	d.stallReported = false
+	rt.dispatchTime = time.Now()
+	rt.lastSupervisorStatus = "dispatched"
+	return nil
+}
+
+// tasksYamlExists probes the per-goal fan-out file only. It deliberately does
+// NOT fall back to the top-level planning-queue: a missing per-goal file must
+// route to full dispatch (planner re-generation), not retry.
+func (d *Daemon) tasksYamlExists(goalID string) bool {
+	_, err := os.Stat(tasks.GoalTasksFilePath(d.workDir, goalID))
+	return err == nil
+}
+
+func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
+	if err := d.resetTaskStatuses(goal.ID); err != nil {
+		log.Printf("dispatchRetry: resetTaskStatuses failed, falling back to full dispatch: %v", err)
+		return d.dispatch(goal, goals)
+	}
+
+	if err := d.injectCorrections(goal); err != nil {
+		log.Printf("dispatchRetry: injectCorrections failed: %v", err)
+	}
+
+	if err := d.writeDispatchMd(goal); err != nil {
+		return fmt.Errorf("write dispatch.md: %w", err)
+	}
+
+	currentGoalPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-current-goal")
+	if err := os.MkdirAll(filepath.Dir(currentGoalPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(currentGoalPath, []byte(goal.ID), 0o644); err != nil {
+		return err
+	}
+	mg := d.maxGoals()
+	// C7: allocate the per-cycle research dir + write the current-cycle marker(s)
+	// BEFORE spawning any worker, so reports land under research/cycle-<N>/.
+	if err := d.writeCycleMarker(goal, mg); err != nil {
+		return err
+	}
+
+	if err := d.killWindowByName(supervisorWindow(goal.ID, mg)); err != nil {
+		return err
+	}
+	if err := d.killWindowsByPrefix(executePrefix(goal.ID, mg)); err != nil {
+		return err
+	}
+	if err := d.killWindowByName(validatorWindow(goal.ID, mg)); err != nil {
+		return err
+	}
+	if err := d.killWindowsByPrefix(invPrefix(goal.ID, mg)); err != nil {
+		return err
+	}
+
+	allNames := d.collectManagedNames(goal.ID)
+	if err := d.waitWindowsGone(allNames, 5*time.Second); err != nil {
+		return fmt.Errorf("waitWindowsGone: %w", err)
+	}
+
+	// Reuse (or create) this goal's worktree for the retry cycle (E1-1a). ensureWorktree
+	// is idempotent: a worktree from an earlier cycle of the SAME goal is reused.
+	cwd, err := d.ensureWorktree(goal, mg > 1)
+	if err != nil {
+		return fmt.Errorf("ensure worktree: %w", err)
+	}
+
+	supWin := supervisorWindow(goal.ID, mg)
+	winInfo, err := d.createWindow(supWin, "", cwd)
+	if err != nil {
+		return fmt.Errorf("create supervisor: %w", err)
+	}
+
+	if err := d.waitClaudeBoot(supWin, 30*time.Second); err != nil {
+		return fmt.Errorf("waitClaudeBoot: %w", err)
+	}
+
+	log.Printf("dispatchRetry: waitClaudeBoot done, waiting for prompt...")
+	if err := d.waitForPrompt(supWin, 30*time.Second); err != nil {
+		log.Printf("warning: waitForPrompt: %v (proceeding anyway)", err)
+	}
+	log.Printf("dispatchRetry: prompt detected, sending /tmux:supervisor (skip planning)")
+
+	d.currentGoal = goal.ID
+	rt := d.runtime(goal.ID)
+	rt.bootConfirmedAt = time.Now()
+	oldPhase := rt.phase
+	rt.phase = phaseSupervising
+	log.Printf("%s: phase %s -> supervising (retry, skip plan)", goal.ID, phaseName(oldPhase))
+
+	// Ship the goal id as a leading token. The daemon writes the GLOBAL
+	// .tmux-cli/taskvisor-current-goal marker on every dispatch (last-writer-wins),
+	// so a bare /tmux:supervisor would force the supervisor to re-derive its goal
+	// from that marker — which, under concurrent dispatch, may name ANOTHER
+	// in-flight goal. We know goal.ID authoritatively here, so we hand it over and
+	// supervisor.xml step 0b consumes it as the highest-precedence GOAL_ID source.
+	supervisorCmd := "/tmux:supervisor " + goal.ID
+	log.Printf("dispatchRetry: sending to session=%s window=%s cmd=%s", d.session, winInfo.TmuxWindowID, supervisorCmd)
+	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, supervisorCmd); err != nil {
+		return fmt.Errorf("send supervisor command: %w", err)
+	}
+	log.Printf("dispatchRetry: SendMessage returned successfully")
+
+	goal.Status = GoalRunning
+	log.Printf("%s: pending -> running (retry %d/%d, reusing tasks.yaml)", goal.ID, goal.Retries, goal.MaxRetries)
+	if goal.StartedAt == "" {
+		goal.StartedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+
+	// B7: per-cycle cost record at the re-dispatch seam (zero inv counts, see dispatch).
+	d.logCounters(goal, "redispatch", 0, 0)
+
+	// Successful re-dispatch ends the stall episode (watchdog reset).
+	d.idleTicks = 0
+	d.stallReported = false
+	rt.dispatchTime = time.Now()
+	rt.lastSupervisorStatus = "dispatched"
+	return nil
+}
+
+func (d *Daemon) resetTaskStatuses(goalID string) error {
+	p := tasks.GoalTasksFilePath(d.workDir, goalID)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return err
+	}
+
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	tasksRaw, ok := raw["tasks"].([]interface{})
+	if !ok {
+		return fmt.Errorf("tasks field not found or not a list")
+	}
+
+	for _, t := range tasksRaw {
+		taskMap, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		taskMap["status"] = "pending"
+	}
+
+	raw["status"] = "ready"
+
+	out, err := yaml.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(p, out, 0o644)
+}
+
+func (d *Daemon) injectCorrections(goal *Goal) error {
+	// Read the corrections file handleFailedCycle wrote one cycle earlier. That
+	// write used cycleNum = CurrentCycle(goal) computed BEFORE the CodeRetries
+	// decrement; this code runs AFTER the decrement (consumed budget is one
+	// higher), so the just-written file is cycle-(CurrentCycle(goal)-1).md. This
+	// stays in lockstep with handleFailedCycle's unified numbering (C7) — in the
+	// code-only path it equals the legacy (MaxCodeRetries - CodeRetries) value,
+	// and it stays correct when a prior spec/validation defect also consumed
+	// budget (where the legacy formula would read the wrong file).
+	cycle := CurrentCycle(goal) - 1
+	cycleFile := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID,
+		"corrections", fmt.Sprintf("cycle-%d.md", cycle))
+	correction, err := os.ReadFile(cycleFile)
+	if err != nil {
+		return nil
+	}
+
+	p := tasks.GoalTasksFilePath(d.workDir, goal.ID)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return err
+	}
+
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	tasksRaw, ok := raw["tasks"].([]interface{})
+	if !ok {
+		return nil
+	}
+
+	for _, t := range tasksRaw {
+		taskMap, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ctxRel, ok := taskMap["context"].(string)
+		if !ok || ctxRel == "" {
+			continue
+		}
+		ctxPath := filepath.Join(d.workDir, ctxRel)
+		existing, err := os.ReadFile(ctxPath)
+		if err != nil {
+			continue
+		}
+		amended := fmt.Sprintf("%s\n\n## Prior Corrections (Cycle %d)\n\n%s\n",
+			strings.TrimRight(string(existing), "\n"), cycle, string(correction))
+		if err := os.WriteFile(ctxPath, []byte(amended), 0o644); err != nil {
+			log.Printf("injectCorrections: failed to write %s: %v", ctxPath, err)
+		}
+	}
+	return nil
+}
+
+func (d *Daemon) writeDispatchMd(goal *Goal) error {
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+	if err := os.MkdirAll(filepath.Join(goalDir, "corrections"), 0o755); err != nil {
+		return err
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Dispatch: " + goal.Description + "\n\n")
+
+	sb.WriteString("## Acceptance Criteria\n\n")
+	goalMdPath := filepath.Join(goalDir, "goal.md")
+	goalMdData, goalMdErr := os.ReadFile(goalMdPath)
+	if goalMdErr == nil && strings.TrimSpace(string(goalMdData)) != "" {
+		sb.WriteString(string(goalMdData))
+		if !strings.HasSuffix(string(goalMdData), "\n") {
+			sb.WriteString("\n")
+		}
+	} else if len(goal.Acceptance) > 0 {
+		for _, a := range goal.Acceptance {
+			sb.WriteString("- " + a + "\n")
+		}
+	} else {
+		sb.WriteString("(none specified)\n")
+	}
+
+	sb.WriteString("\n## Prior Corrections\n\n")
+	correctionsDir := filepath.Join(goalDir, "corrections")
+	entries, err := os.ReadDir(correctionsDir)
+	if err != nil || len(entries) == 0 {
+		sb.WriteString("None (first attempt)\n")
+	} else {
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].Name() < entries[j].Name()
+		})
+		hasCorrections := false
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(correctionsDir, e.Name()))
+			if err != nil {
+				continue
+			}
+			sb.WriteString("### " + e.Name() + "\n\n")
+			sb.WriteString(string(data) + "\n\n")
+			hasCorrections = true
+		}
+		if !hasCorrections {
+			sb.WriteString("None (first attempt)\n")
+		}
+	}
+
+	dispatchPath := filepath.Join(goalDir, "dispatch.md")
+	return os.WriteFile(dispatchPath, []byte(sb.String()), 0o644)
+}
+
+// writeCorrectionFile emits the per-cycle correction the implementer reads on
+// re-dispatch. For every NON-pass finding it writes a structured block
+// (### Finding / Command / Output / Expected / Correction) so the full failure
+// detail flows VERBATIM through writeDispatchMd + injectCorrections — never
+// collapsed to a one-liner. When the signal carries no non-pass findings it
+// falls back to NextAction (which the call site primes with the daemon framing
+// header) so the file is never empty.
+func (d *Daemon) writeCorrectionFile(goalDir string, cycleNum int, signal *ValidatorSignal) error {
+	correctionsDir := filepath.Join(goalDir, "corrections")
+	if err := os.MkdirAll(correctionsDir, 0o755); err != nil {
+		return err
+	}
+
+	var sb strings.Builder
+	wrote := false
+	if signal != nil {
+		for _, f := range signal.Findings {
+			if f.Status == VerdictPass {
+				continue
+			}
+			fmt.Fprintf(&sb, "### Finding: %s\n", f.Rule)
+			fmt.Fprintf(&sb, "Command: %s\n", f.FailingCommand)
+			fmt.Fprintf(&sb, "Output: %s\n", f.OutputExcerpt)
+			fmt.Fprintf(&sb, "Expected: %s\n", f.ExpectedState)
+			fmt.Fprintf(&sb, "Correction: %s\n\n", f.Correction)
+			wrote = true
+		}
+	}
+	if !wrote {
+		fallback := ""
+		if signal != nil {
+			fallback = strings.TrimSpace(signal.NextAction)
+		}
+		if fallback == "" {
+			fallback = "Implementation failed acceptance criteria — re-check the goal acceptance and fix."
+		}
+		sb.WriteString(fallback)
+	}
+
+	filename := fmt.Sprintf("cycle-%d.md", cycleNum)
+	return os.WriteFile(filepath.Join(correctionsDir, filename), []byte(sb.String()), 0o644)
+}
+
+// writeWorktreeMarker publishes the validator's resolved cwd to
+// .tmux-cli/taskvisor-current-worktree (a sibling of taskvisor-current-goal/-cycle,
+// always at base d.workDir — the .tmux-cli control plane is shared, never a worktree
+// copy). investigate.xml step 3 reads it to thread workingDirectory into each inv-*
+// worker so they inherit the goal's worktree. When cwd is the base tree (MaxGoals=1
+// or a stale-degraded worktree) the marker is REMOVED, not written, so single-goal
+// operation produces zero new artifacts and a stale prior-goal marker can never leak
+// a wrong worktree into the next validation. Best-effort: a marker I/O failure must
+// never block validation.
+func (d *Daemon) writeWorktreeMarker(cwd string) {
+	markerPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-current-worktree")
+	if cwd == "" || cwd == d.workDir {
+		if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("warning: clear worktree marker: %v", err)
+		}
+		return
+	}
+	if err := os.WriteFile(markerPath, []byte(cwd), 0o644); err != nil {
+		log.Printf("warning: write worktree marker: %v", err)
+	}
+}
+
+func (d *Daemon) createValidatorAndSendPayload(goal *Goal) error {
+	valWin := validatorWindow(goal.ID, d.maxGoals())
+	// Route the validator window into the goal's worktree (E1-1c) so the
+	// orchestrator and its inv-* investigators run quality/test commands against
+	// ONLY this goal's (uncommitted) edits. goalWorkDir is the single chokepoint;
+	// under MaxGoals=1 cwd resolves to base and createWindow gets "" — byte-identical.
+	cwd := d.goalWorkDir(goal.ID)
+	d.writeWorktreeMarker(cwd)
+	winInfo, err := d.createWindow(valWin, "", cwd)
+	if err != nil {
+		return fmt.Errorf("create validator: %w", err)
+	}
+
+	if err := d.waitClaudeBoot(valWin, 30*time.Second); err != nil {
+		return fmt.Errorf("waitClaudeBoot validator: %w", err)
+	}
+
+	if err := d.waitForPrompt(valWin, 30*time.Second); err != nil {
+		log.Printf("warning: waitForPrompt validator: %v (proceeding anyway)", err)
+	}
+
+	d.runtime(goal.ID).bootConfirmedAt = time.Now()
+
+	goalMdPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "goal.md")
+	investigateCmd := fmt.Sprintf("/tmux:investigate %s", goalMdPath)
+	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, investigateCmd); err != nil {
+		return fmt.Errorf("send investigate command: %w", err)
+	}
+
+	return nil
+}

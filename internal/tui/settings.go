@@ -45,6 +45,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.auto_resume_interval_sec", label: "Taskvisor Auto-Resume Interval (s)", kind: "int", intVal: settings.Taskvisor.AutoResumeIntervalSec},
 			{key: "taskvisor.transient_retry_max_attempts", label: "Taskvisor Transient Retry Max Attempts", kind: "int", intVal: settings.Taskvisor.TransientRetryMaxAttempts},
 			{key: "taskvisor.transient_retry_backoff_ms", label: "Taskvisor Transient Retry Backoff (ms)", kind: "int", intVal: settings.Taskvisor.TransientRetryBackoffMs},
+			{key: "supervisor.max_goals", label: "Max Goals (concurrent)", kind: "int", intVal: settings.Supervisor.MaxGoals},
 		},
 	}
 }
@@ -146,6 +147,8 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Commands.Enabled = item.value
 		case "supervisor.max_workers":
 			s.Supervisor.MaxWorkers = item.intVal
+		case "supervisor.max_goals":
+			s.Supervisor.MaxGoals = item.intVal
 		case "supervisor.cycle_delay":
 			s.Supervisor.CycleDelay = item.intVal
 		case "supervisor.max_cycles":

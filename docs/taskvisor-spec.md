@@ -467,9 +467,9 @@ $ tmux-cli taskvisor start           # same effect as taskvisor-start MCP tool
 ## What's NOT Built (v1)
 
 - No file locking package (each file has single writer, except goal-create which is acceptable risk)
-- No git worktree for validator (prompt-enforced read-only)
 - No git stash before retries (next supervisor deals with existing state)
 - No STALLED/INCONCLUSIVE states (timeout = failed, stopped = still validate)
 - No goal-planning skill (conversational planning with Claude is sufficient)
-- No parallel goal execution (sequential only)
 - No SIGKILL-safe guard cleanup (signal handler covers SIGTERM/SIGINT; SIGKILL leaves stale guard — next daemon start cleans it up)
+
+> **E1 capability (delivered):** parallel independent-goal execution (default `MaxGoals=1`, gated on disjoint goal scope + a per-goal git worktree), plus worktree isolation for the validator. Implemented by the E1 scheduler/disjoint-gate, per-goal worktree, db-lock, and validate-isolation tasks — superseding two earlier v1 non-goals.

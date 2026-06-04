@@ -1,0 +1,849 @@
+package taskvisor
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/console/tmux-cli/internal/setup"
+)
+
+// tick is the ready-set scheduler. Each invocation (under the poll flock):
+//  1. ReconcileBlocks + checkInvariant + checkStall — whole-GoalsFile, unchanged.
+//  2. Drive EVERY in-flight (GoalRunning) goal via its own per-goal runtime by
+//     calling checkProgress(goal, goals) per running goal.
+//  3. Size the free dispatch budget: free = maxGoals - (goals running AT TICK
+//     START). Snapshotting the running set before step 2 means a goal that
+//     completes during this tick does NOT free its slot until the next tick, so
+//     a completion and the next dispatch never share a tick — the property that
+//     makes MaxGoals=1 byte-identical to the old scalar-CurrentGoal switch.
+//  4. Fill free slots from DisjointReadySet(maxGoals) — RunnableCandidates()
+//     scope-gated so MaxGoals>1 never co-schedules two goals editing overlapping
+//     files (byte-identical to RunnableCandidates' head at MaxGoals=1) — via the
+//     shared per-candidate decision helper (dispatchCandidate: retry-ceiling halt
+//     / dispatchRetry when code budget was consumed and a per-goal tasks.yaml
+//     exists / else dispatch).
+//  5. Teardown: when nothing is running and nothing is runnable, attempt
+//     deactivateOnCompletion (which self-guards on resumable parks / recoverable
+//     cascade blocks / AllResolved).
+//
+// At MaxGoals=1 the running set holds <=1 goal and free<=1, so the loop visits
+// the same single goal through the same dispatch/checkProgress/advanceToNextGoal
+// calls in the same order, and the scalar CurrentGoal still head-tracks via
+// dispatchCandidate + advanceToNextGoal.
+func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
+	// Safety net (preserved from the scalar switch): a CurrentGoal naming a goal
+	// that no longer exists means the active goal vanished out from under us —
+	// tear down the idle supervisor surface and go idle. ReconcileBlocks does not
+	// add/remove goals, so the existence check is stable across the heal below.
+	if _, ok := goals.GoalByID(goals.CurrentGoal); !ok {
+		return d.deactivate()
+	}
+
+	// Heal stale block-state before acting on it (Bug A + self-recovery on load).
+	// This MUST self-persist here at the tick top: a GoalRunning->checkProgress
+	// path can return nil WITHOUT a SaveGoals, so the reconcile mutation would be
+	// discarded when the flock releases. Reconcile mutates &goals.Goals[i] in
+	// place, so a re-pended goal is visible to RunnableCandidates below.
+	if goals.ReconcileBlocks() {
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+	}
+
+	// Diagnostics-only guardrails, run strictly AFTER reconcile (the only point
+	// where the invariant should hold), BEFORE any dispatch. Neither mutates goal
+	// state nor alters the dispatch decision below — checkInvariant only logs,
+	// checkStall only advances its own counter.
+	d.checkInvariant(goals)
+	d.checkStall(goals)
+
+	// (2) Drive every in-flight goal. Snapshot the running set FIRST so the free
+	// budget in (3) reflects the tick-start in-flight count, not mid-tick
+	// completions.
+	runningAtStart := goals.RunningGoalIDs()
+	for _, id := range runningAtStart {
+		g, ok := goals.GoalByID(id)
+		if !ok {
+			continue
+		}
+		if err := d.checkProgress(g, goals); err != nil {
+			return err
+		}
+	}
+
+	// A checkProgress completion may have driven the goals to all-resolved and
+	// already torn down via advanceToNextGoal -> deactivateOnCompletion (the
+	// byte-identical MaxGoals=1 path). If so, the tick is done — never re-enter
+	// teardown or dispatch against an idle daemon.
+	if d.mode != modeActive {
+		return nil
+	}
+
+	// (3) Free dispatch budget for this tick.
+	free := d.maxGoals() - len(runningAtStart)
+
+	// (4) Fill free slots from the SCOPE-GATED ready set, in goal-file order.
+	// DisjointReadySet composes on top of RunnableCandidates: it returns the same
+	// candidates but only those whose declared file Scope is disjoint from every
+	// in-flight and already-admitted goal, capped at the dispatch budget. At
+	// MaxGoals=1 it returns ≤1 goal (the same head RunnableCandidates would), so
+	// the single-goal dispatch cadence is byte-identical; at MaxGoals>1 it is the
+	// conservative gate that prevents co-scheduling two goals editing overlapping
+	// files before per-goal worktree isolation (execute-33) exists. `free` remains
+	// the authoritative budget bound (tick-start running count).
+	if free > 0 {
+		for _, cand := range goals.DisjointReadySet(d.maxGoals()) {
+			if free <= 0 {
+				break
+			}
+			// Global retry ceiling is checked per candidate (it is a whole-file
+			// query); a hit halts that goal and advances, matching the old
+			// per-branch ceiling guard. Halting returns from the tick.
+			if goals.RetryCeilingReached() {
+				return d.haltRetryCeiling(cand, goals)
+			}
+			if err := d.dispatchCandidate(cand, goals); err != nil {
+				return err
+			}
+			free--
+		}
+	}
+
+	// (5) Teardown when no work is in flight and none is runnable. At MaxGoals=1
+	// this is the same condition the old GoalDone/Failed branch reached via
+	// NextPendingGoal()==false. deactivateOnCompletion self-guards on resumable
+	// parks / recoverable cascade blocks / AllResolved, so a parked-but-not-done
+	// goals.yaml stays active (the old GoalBlocked idle branch).
+	if !goals.AnyRunning() && len(goals.RunnableCandidates()) == 0 {
+		return d.deactivateOnCompletion(goals)
+	}
+	return nil
+}
+
+// dispatchCandidate is the single per-candidate dispatch decision shared by the
+// single- and multi-goal scheduler paths. It mirrors the old GoalPending branch
+// exactly: re-dispatch the implementer (reuse tasks.yaml, skip planning) only
+// when a prior cycle consumed code-defect budget AND a per-goal tasks.yaml
+// exists; otherwise a full dispatch (planner re-generation). CodeRetries is
+// decremented per code-defect (handleFailedCycle); a spec-defect bounce leaves
+// CodeRetries untouched and only moves SpecRetries, so it falls through to the
+// full dispatch below — keeping "code-defect -> implementer" and "spec-defect ->
+// generation" distinct. (goal.Retries > 0 kept for fixtures / pre-migration
+// goals that still carry a legacy count.)
+//
+// It also maintains the scalar CurrentGoal head: when the current head is not a
+// running goal (e.g. it just completed, or this is the first dispatch of the
+// tick), the dispatched goal becomes the head. At MaxGoals=1 the dispatched goal
+// is always the head, so this reproduces the old switch's CurrentGoal tracking.
+// The retry-ceiling halt is the caller's responsibility (it is a whole-file
+// query and returns from the tick), matching the old per-branch guard order.
+func (d *Daemon) dispatchCandidate(goal *Goal, goals *GoalsFile) error {
+	if cur, ok := goals.GoalByID(goals.CurrentGoal); !ok || cur.Status != GoalRunning {
+		goals.CurrentGoal = goal.ID
+		d.currentGoal = goal.ID
+	}
+	codeBudgetConsumed := goal.CodeRetries < goal.MaxCodeRetries
+	if (goal.Retries > 0 || codeBudgetConsumed) && d.tasksYamlExists(goal.ID) {
+		return d.dispatchRetry(goal, goals)
+	}
+	return d.dispatch(goal, goals)
+}
+
+func (d *Daemon) checkProgress(goal *Goal, goals *GoalsFile) error {
+	switch d.runtime(goal.ID).phase {
+	case phaseSupervising:
+		return d.checkSupervisingPhase(goal, goals)
+	case phaseValidating:
+		return d.checkValidatingPhase(goal, goals)
+	}
+	return nil
+}
+
+func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
+	rt := d.runtime(goal.ID)
+	mg := d.maxGoals()
+	sig, err := LoadSignal(d.workDir, goal.ID)
+	if err != nil {
+		return fmt.Errorf("load signal: %w", err)
+	}
+
+	if sig == nil {
+		if !rt.dispatchTime.IsZero() && time.Since(rt.dispatchTime) >= d.dispatchTimeout {
+			return d.handleFailedCycle(goal, goals, "Cycle timed out — no completion signal received.", "code-defect")
+		}
+		if !rt.bootConfirmedAt.IsZero() && time.Since(rt.bootConfirmedAt) > 5*time.Second {
+			windows, err := d.listWindows()
+			if err != nil {
+				return err
+			}
+			for _, w := range windows {
+				if w.Name == supervisorWindow(goal.ID, mg) && w.CurrentCommand == "zsh" {
+					return d.handleFailedCycle(goal, goals, "Crash detected — supervisor returned to shell.", "code-defect")
+				}
+			}
+		}
+		return nil
+	}
+
+	supSig, ok := sig.(*SupervisorSignal)
+	if !ok {
+		_ = DeleteSignal(d.workDir, goal.ID)
+		return d.handleFailedCycle(goal, goals, "Unexpected signal type during supervising phase.", "code-defect")
+	}
+
+	rt.lastSupervisorStatus = supSig.Status
+	if err := DeleteSignal(d.workDir, goal.ID); err != nil {
+		return fmt.Errorf("delete signal: %w", err)
+	}
+
+	if err := d.killWindowsByPrefix(executePrefix(goal.ID, mg)); err != nil {
+		return err
+	}
+	if err := d.killWindowByName(supervisorWindow(goal.ID, mg)); err != nil {
+		return err
+	}
+
+	passed, stderr, err := d.runValidateScript(goal)
+	if err != nil {
+		return fmt.Errorf("validate script: %w", err)
+	}
+	if passed {
+		if err := SaveValidatorSignal(d.workDir, goal.ID, &ValidatorSignal{
+			Verdict:   "pass",
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}); err != nil {
+			return err
+		}
+		goal.Status = GoalDone
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		log.Printf("%s: running -> done (%s)", goal.ID, goalDuration(goal))
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals, goal.ID, true)
+	}
+	if stderr != "" && !d.hasValidateMd(goal.ID) {
+		return d.handleFailedCycle(goal, goals, stderr, "code-defect")
+	}
+
+	if err := d.createValidatorAndSendPayload(goal); err != nil {
+		return err
+	}
+
+	log.Printf("%s: phase supervising -> validating", goal.ID)
+	rt.phase = phaseValidating
+	rt.validateTime = time.Now()
+	return nil
+}
+
+func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
+	rt := d.runtime(goal.ID)
+	mg := d.maxGoals()
+	sig, err := LoadSignal(d.workDir, goal.ID)
+	if err != nil {
+		return fmt.Errorf("load signal: %w", err)
+	}
+
+	if sig == nil {
+		if !rt.validateTime.IsZero() && time.Since(rt.validateTime) >= d.validateTimeout {
+			// The validator never reported before the deadline. This is a
+			// validator error (verdict=error / owner=ops), NOT a code defect —
+			// synthesize it and re-run validation only. Do not route through
+			// handleFailedCycle, which would charge a code-defect retry.
+			log.Printf("%s: validation timed out — no verdict; synthesizing error/ops, re-running validation only", goal.ID)
+			return d.rerunValidationOnly(goal, goals)
+		}
+		if !rt.bootConfirmedAt.IsZero() && time.Since(rt.bootConfirmedAt) > 5*time.Second {
+			windows, err := d.listWindows()
+			if err != nil {
+				return err
+			}
+			for _, w := range windows {
+				if w.Name == validatorWindow(goal.ID, mg) && w.CurrentCommand == "zsh" {
+					return d.handleFailedCycle(goal, goals, "Crash detected — validator returned to shell.", "code-defect")
+				}
+			}
+		}
+		return nil
+	}
+
+	valSig, ok := sig.(*ValidatorSignal)
+	if !ok {
+		_ = DeleteSignal(d.workDir, goal.ID)
+		return d.handleFailedCycle(goal, goals, "Unexpected signal type during validating phase.", "code-defect")
+	}
+
+	if err := DeleteSignal(d.workDir, goal.ID); err != nil {
+		return fmt.Errorf("delete signal: %w", err)
+	}
+
+	if err := d.killWindowByName(validatorWindow(goal.ID, mg)); err != nil {
+		return err
+	}
+
+	// Route by the rolled-up verdict CLASS (C1's ClassifyVerdict), not a binary
+	// pass/fail. ClassifyVerdict folds the per-finding classes into a single
+	// (verdict, owner) pair; when the validator carried a top-level verdict but
+	// no classifiable finding (e.g. a synthesized error/blocked), fall back to
+	// that reported verdict — and its reported owner — so a non-pass verdict
+	// never misclassifies as pass and the blocked owner-split still works.
+	verdict, owner := ClassifyVerdict(valSig.Findings)
+	if verdict == VerdictPass && valSig.Verdict != "" && valSig.Verdict != VerdictPass {
+		verdict = valSig.Verdict
+		if owner == "" {
+			owner = valSig.Owner
+		}
+	}
+
+	// An unsubstantiated spec-defect (blocked/planner with no concretely-cited
+	// contradiction) is a validator failure, not a planner failure — re-validate
+	// (bounded by ValidationRetries) rather than burning the single SpecRetries
+	// and cascading. Mirrors the timeout (:1248) and empty-verdict-synth routes.
+	// A genuine, concretely-cited spec defect still falls through to the
+	// blocked/planner case below and charges SpecRetries.
+	if verdict == VerdictBlocked && owner == "planner" && !HasSubstantiveSpecDefect(valSig.Findings) {
+		log.Printf("%s: blocked/planner verdict carries no substantive spec contradiction — re-validating (not charging spec retry)", goal.ID)
+		return d.rerunValidationOnly(goal, goals)
+	}
+
+	// B7: per-goal/per-cycle cost record at the verdict-resolution seam. The
+	// spawned/reused split is derived from the validator findings already in hand
+	// (counted at actual spawn — reused investigators are never re-launched).
+	// Side-effect-only: emits one COUNTERS line, never alters the verdict, owner,
+	// or the switch below.
+	sp, ru := countInvFindings(valSig.Findings)
+	d.logCounters(goal, verdict, sp, ru)
+
+	// Each non-pass branch moves exactly one per-class budget counter (or none):
+	//   fail            -> implementer re-dispatch, dec CodeRetries
+	//   blocked+planner -> bounce to generation (re-plan), dec SpecRetries
+	//   blocked+ops     -> park + runbook (env/infra hold), NO budget (§5 resumes)
+	//   error           -> re-run validation only, dec ValidationRetries
+	switch {
+	case verdict == VerdictPass:
+		goal.Status = GoalDone
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		log.Printf("%s: running -> done (%s)", goal.ID, goalDuration(goal))
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals, goal.ID, true)
+	case verdict == VerdictFail:
+		// Code defect — the implementer must fix it. Charges CodeRetries only.
+		return d.handleFailedCycle(goal, goals, valSig.NextAction, "code-defect")
+	case verdict == VerdictBlocked && owner == "planner":
+		// B5b: before charging the single scarce SpecRetries on a planner bounce,
+		// try the mechanical-correction applier. When the failing findings carry a
+		// structured correction_edit CONFINED to spec artifacts (goal.md / dispatch
+		// spec), the daemon applies it directly (idempotent) and re-validates the
+		// goal charging ZERO budget. If absent, out-of-scope, or ineffective (no
+		// on-disk change), applyStructuredCorrections returns handled=false and we
+		// fall through to the unchanged spec-defect bounce below.
+		if done, err := d.applyStructuredCorrections(goal, goals, valSig); err != nil {
+			return err
+		} else if done {
+			return nil
+		}
+		// Spec defect — re-plan via the generation slot. Charges SpecRetries only.
+		return d.bounceToGeneration(goal, goals, valSig)
+	case verdict == VerdictBlocked:
+		// Env/infra precondition (owner=ops) — park + runbook, NO budget. The
+		// auto-resume loop is owned by §5; this branch never starts it.
+		return d.haltBlockedEnv(goal, goals, valSig)
+	case verdict == VerdictError:
+		// The validator could not run. Re-validate only — never a code defect.
+		return d.rerunValidationOnly(goal, goals)
+	default:
+		// Defensive: C1's enum is closed and its leaf-4 catch-all maps unknowns to
+		// (fail, implementer), so this should not occur. Treat as a code defect.
+		return d.handleFailedCycle(goal, goals, valSig.NextAction, "code-defect")
+	}
+}
+
+// rerunValidationOnly handles a validator-error verdict: the validator itself
+// could not run, or never reported before the deadline. It re-runs validation
+// ONLY — it decrements ValidationRetries (the REMAINING validation budget) and
+// re-creates the validator window without touching CodeRetries/SpecRetries and
+// without re-dispatching the implementer (that would be the handleFailedCycle
+// code-defect path). This is the single bounded error/ops route shared by both
+// the caller-reported empty-verdict synthesis (MCP GoalValidationDone), the
+// never-reported timeout watchdog, and the error branch of checkValidatingPhase
+// (C1 introduced an unbounded reRunValidation; this consolidation makes it
+// bounded so a wedged validator can no longer re-spawn forever). When the
+// validation budget reaches 0 the goal hard-halts (verdict class "error" — kept
+// available for §5.1's CascadeFailure wiring; CascadeFailure's signature change
+// is owned by §5.1).
+func (d *Daemon) rerunValidationOnly(goal *Goal, goals *GoalsFile) error {
+	goal.ValidationRetries--
+	if goal.ValidationRetries <= 0 {
+		log.Printf("%s: validation budget exhausted (error/ops) — cascading failure to dependents", goal.ID)
+		// Exhausted validation budget is a hard halt: the goal genuinely cannot
+		// complete, so dependents are blocked (hard class "fail").
+		goals.CascadeFailure(goal.ID, "fail")
+		goal.Status = GoalFailed
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals, goal.ID, false)
+	}
+	log.Printf("%s: validator error (error/ops) — re-running validation only (validation budget left %d)", goal.ID, goal.ValidationRetries)
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+	// Tear down any stale validator before re-creating one. In the timeout path
+	// the previous validator is still alive; in the verdict path it has already
+	// been killed (killWindowByName is then a no-op).
+	if err := d.killWindowByName(validatorWindow(goal.ID, d.maxGoals())); err != nil {
+		return err
+	}
+	if err := d.createValidatorAndSendPayload(goal); err != nil {
+		return err
+	}
+	rt := d.runtime(goal.ID)
+	rt.phase = phaseValidating
+	rt.validateTime = time.Now()
+	return nil
+}
+
+// hasNonPassFindings reports whether the signal carries at least one non-pass
+// finding (i.e. writeCorrectionFile will emit structured per-finding blocks
+// rather than the NextAction fallback).
+func hasNonPassFindings(sig *ValidatorSignal) bool {
+	if sig == nil {
+		return false
+	}
+	for _, f := range sig.Findings {
+		if f.Status != VerdictPass {
+			return true
+		}
+	}
+	return false
+}
+
+// circuitBreakerK returns the configured convergence circuit-breaker threshold
+// (consecutive identical-signature cycles before halting). It reads
+// Taskvisor.CircuitBreakerK from setting.yaml; a missing/invalid (<1) value
+// falls back to the documented default of 2.
+func (d *Daemon) circuitBreakerK() int {
+	s, err := setup.LoadSettings(d.workDir)
+	if err != nil || s == nil || s.Taskvisor.CircuitBreakerK < 1 {
+		return 2
+	}
+	return s.Taskvisor.CircuitBreakerK
+}
+
+// equalSorted reports whether two ALREADY-sorted string slices are element-wise
+// equal. ComputeSignatures returns ascending-sorted slices and the stored
+// Goal.ConvergenceSignatures is likewise the previously-computed sorted set, so
+// a positional comparison is a correct set-equality test here.
+func equalSorted(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// handleFailedCycle is the code-defect route: the implementer must fix the
+// reported defect. It writes the correction file, decrements CodeRetries (the
+// REMAINING code-defect budget) toward zero, and either re-dispatches the
+// implementer (budget remaining) or hard-halts (budget exhausted). verdictClass
+// names the failure class ("code-defect") and is kept in scope at the
+// CascadeFailure call site so §5.1 can wire CascadeFailure(goal.ID,
+// verdictClass) — CascadeFailure's signature change is owned by §5.1, not here.
+//
+// reason is the correction text surfaced to the implementer on the next cycle;
+// it is retained as a distinct parameter (not collapsed into verdictClass) so
+// the correction file keeps the actionable remediation guidance.
+func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdictClass string) error {
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+	// Cycle number is the unified CurrentCycle(goal) (consumed per-class budget +
+	// 1) so the corrections file (cycle-N.md) and the per-cycle research dir
+	// (research/cycle-N/) share ONE source of truth — changing one without the
+	// other reintroduces drift (C7). Computed BEFORE the CodeRetries decrement
+	// below, so cycle K's corrections land in cycle-K.md and the subsequent retry
+	// (after the decrement) allocates cycle-(K+1).
+	cycleNum := CurrentCycle(goal)
+	rt := d.runtime(goal.ID)
+
+	var header string
+	if rt.lastSupervisorStatus == "stopped" {
+		header = "Previous cycle hit the supervisor cycle limit — work is incomplete. Prioritize the unmet criteria below over polish or cleanup."
+	} else {
+		header = "Implementation completed but failed acceptance criteria."
+	}
+
+	// Load the validator signal so the correction file carries full per-finding
+	// detail (failing_command/output_excerpt/expected_state/correction) VERBATIM.
+	// On the timeout/crash routes no signal exists yet — synthesize one from the
+	// reason. When the signal has no structured findings, fold the daemon framing
+	// header into NextAction so the fallback branch keeps the supervisor-context
+	// line the implementer relies on; when findings ARE present, the structured
+	// blocks carry the detail and take precedence.
+	loaded, loadErr := LoadSignal(d.workDir, goal.ID)
+	if loadErr != nil {
+		log.Printf("%s: handleFailedCycle: load signal: %v (using reason fallback)", goal.ID, loadErr)
+	}
+	valSig, _ := loaded.(*ValidatorSignal)
+	if valSig == nil {
+		valSig = &ValidatorSignal{}
+	}
+	if !hasNonPassFindings(valSig) {
+		detail := strings.TrimSpace(valSig.NextAction)
+		if detail == "" {
+			detail = strings.TrimSpace(reason)
+		}
+		valSig.NextAction = header + "\n\n" + detail
+	}
+
+	// C6 convergence circuit-breaker — checked BEFORE the CodeRetries decrement.
+	// If this cycle's non-pass findings produce the SAME sorted signature set as
+	// the prior failed cycle (persisted on the goal), the goal is not converging:
+	// burning the rest of the code budget on an identical failure only wastes
+	// cycles a human must eventually unblock. On K consecutive identical sets we
+	// halt to blocked/owner=human REGARDLESS of remaining budget, WITHOUT
+	// decrementing any counter and WITHOUT re-dispatching. The breaker fires only
+	// on signature recurrence, never on budget exhaustion (that stays the
+	// GoalFailed cascade below). An empty set (no non-pass findings, e.g. the
+	// timeout/crash routes) never fires.
+	cur := ComputeSignatures(valSig.Findings)
+	k := d.circuitBreakerK()
+	streak := 1
+	if len(cur) > 0 && equalSorted(cur, goal.ConvergenceSignatures) {
+		streak = goal.ConvergenceStreak + 1
+	}
+	goal.ConvergenceSignatures = cur
+	goal.ConvergenceStreak = streak
+	if len(cur) > 0 && streak >= k {
+		goal.Status = GoalBlocked
+		goal.BlockedBy = "convergence-circuit-breaker"
+		if err := SaveValidatorSignal(d.workDir, goal.ID, &ValidatorSignal{
+			Verdict:    VerdictBlocked,
+			Owner:      "human",
+			Findings:   valSig.Findings,
+			Signatures: cur,
+			NextAction: strings.TrimSpace(reason),
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		}); err != nil {
+			return err
+		}
+		log.Printf("%s: running -> blocked (circuit-breaker, streak=%d/%d)", goal.ID, streak, k)
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals, goal.ID, false)
+	}
+
+	if err := d.writeCorrectionFile(goalDir, cycleNum, valSig); err != nil {
+		return err
+	}
+
+	// Decrement-toward-zero: CodeRetries is the REMAINING code-defect budget.
+	// Legacy goal.Retries stays read-only post-migration (never incremented here).
+	goal.CodeRetries--
+	if goal.CodeRetries <= 0 {
+		// Code budget exhausted — hard halt. verdictClass is in scope here (C2
+		// threads it from ClassifyVerdict) and is a hard class ("fail"/"code-defect"),
+		// so dependents are blocked.
+		goals.CascadeFailure(goal.ID, verdictClass)
+		log.Printf("%s: code budget exhausted (%s) — cascading failure to dependents", goal.ID, verdictClass)
+		goal.Status = GoalFailed
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals, goal.ID, false)
+	}
+
+	goal.Status = GoalPending
+	log.Printf("%s: running -> pending (code budget left %d)", goal.ID, goal.CodeRetries)
+	oldPhase := rt.phase
+	rt.phase = phaseSupervising
+	log.Printf("%s: phase %s -> supervising", goal.ID, phaseName(oldPhase))
+	return SaveGoals(d.workDir, goals)
+}
+
+// bounceToGeneration is the spec-defect route (verdict=blocked, owner=planner):
+// the goal/spec itself is contradictory or under-specified, so it must be
+// re-planned via the generation/planner slot — NOT re-run against the unchanged
+// spec by the implementer. It charges SpecRetries only (decrement-toward-zero)
+// and leaves CodeRetries untouched; because tick() routes a pending dispatch to
+// dispatchRetry only when code budget was consumed, an untouched CodeRetries
+// makes the next dispatch a full planner re-generation. On exhausted spec budget
+// it hard-halts (verdict class "spec-defect").
+func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *ValidatorSignal) error {
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+	cycleNum := goal.MaxSpecRetries - goal.SpecRetries + 1
+	if cycleNum < 1 {
+		cycleNum = 1
+	}
+	// Spec-defect bounce. The framing header is the planner-facing context +
+	// remediation; the live valSig.Findings carry the REAL per-finding detail
+	// (which rule, what contradiction, the remedy) the re-generation must fix.
+	// Declared ABOVE the convergence breaker so a breaker halt can reuse it as the
+	// blocked signal's NextAction.
+	const framing = "Validation reports a SPEC DEFECT (owner: PLANNER). The current spec is contradictory or under-specified — regenerate/repair the plan; do NOT re-run the implementer against the unchanged spec.\n\nBounce to generation: regenerate the goal plan to resolve the spec defect before re-implementing."
+
+	// B10 spec-route convergence circuit-breaker — the verbatim mirror of
+	// handleFailedCycle's code-route breaker, checked BEFORE writeCorrectionFile
+	// and BEFORE the SpecRetries decrement. If this bounce's non-pass finding
+	// signatures match the prior spec bounce's for K consecutive bounces, the
+	// planner is re-emitting an identical, non-converging spec defect; halt to
+	// blocked/owner=human with the shared sentinel REGARDLESS of remaining spec
+	// budget, WITHOUT decrementing SpecRetries and WITHOUT writing a misleading
+	// bounce-correction file. The streak lives in DEDICATED spec-side fields
+	// (SpecConvergenceSignatures/SpecConvergenceStreak), isolated from the code
+	// route so an interleaved code-defect cycle never resets or inflates it. An
+	// empty set (nil/findingless bounce) never fires.
+	var findings []ValidationFinding
+	if valSig != nil {
+		findings = valSig.Findings
+	}
+	cur := ComputeSignatures(findings)
+	k := d.circuitBreakerK()
+	streak := 1
+	if len(cur) > 0 && equalSorted(cur, goal.SpecConvergenceSignatures) {
+		streak = goal.SpecConvergenceStreak + 1
+	}
+	goal.SpecConvergenceSignatures = cur
+	goal.SpecConvergenceStreak = streak
+	if len(cur) > 0 && streak >= k {
+		goal.Status = GoalBlocked
+		goal.BlockedBy = "convergence-circuit-breaker"
+		if err := SaveValidatorSignal(d.workDir, goal.ID, &ValidatorSignal{
+			Verdict:    VerdictBlocked,
+			Owner:      "human",
+			Findings:   findings,
+			Signatures: cur,
+			NextAction: framing,
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		}); err != nil {
+			return err
+		}
+		log.Printf("%s: running -> blocked (spec circuit-breaker, streak=%d/%d)", goal.ID, streak, k)
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals, goal.ID, false)
+	}
+
+	// Prime the NextAction fallback so a findingless bounce still writes the
+	// framing header; forward the validator's findings when present (a
+	// synthesized/never-reported bounce may pass nil → header-only fallback).
+	sig := &ValidatorSignal{NextAction: framing}
+	if valSig != nil {
+		sig.Findings = valSig.Findings
+	}
+	if err := d.writeCorrectionFile(goalDir, cycleNum, sig); err != nil {
+		return err
+	}
+	// writeCorrectionFile's XOR suppresses the NextAction framing once structured
+	// findings are rendered. Prepend the framing header ABOVE the rendered blocks
+	// so the planner gets both the context and the concrete detail. (No non-pass
+	// findings → the fallback already wrote the framing; skip the read-modify-write.)
+	if hasNonPassFindings(sig) {
+		correctionPath := filepath.Join(goalDir, "corrections", fmt.Sprintf("cycle-%d.md", cycleNum))
+		body, err := os.ReadFile(correctionPath)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(correctionPath, []byte(framing+"\n\n"+string(body)), 0o644); err != nil {
+			return err
+		}
+	}
+
+	// Decrement-toward-zero: SpecRetries only. CodeRetries/ValidationRetries are
+	// left untouched (one counter per verdict).
+	goal.SpecRetries--
+	if goal.SpecRetries <= 0 {
+		// Spec budget exhausted — hard halt. An unrepairable spec leaves dependents
+		// genuinely blocked, so cascade with the hard class "fail".
+		goals.CascadeFailure(goal.ID, "fail")
+		log.Printf("%s: spec budget exhausted (spec-defect) — cascading failure to dependents", goal.ID)
+		goal.Status = GoalFailed
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals, goal.ID, false)
+	}
+
+	goal.Status = GoalPending
+	goal.Phase = "generation"
+	log.Printf("%s: spec defect (planner) — bouncing to generation (spec budget left %d)", goal.ID, goal.SpecRetries)
+	rt := d.runtime(goal.ID)
+	oldPhase := rt.phase
+	rt.phase = phaseSupervising
+	log.Printf("%s: phase %s -> supervising (generation re-dispatch)", goal.ID, phaseName(oldPhase))
+	return SaveGoals(d.workDir, goals)
+}
+
+// haltBlockedEnv is the env/infra route (verdict=blocked, owner=ops): a
+// precondition (missing secret, unreachable service) is unmet. It charges NO
+// budget — re-running anything cannot clear an environmental block — and parks
+// the goal after writing an operator runbook and emitting an operator-facing log
+// line. The polling auto-resume loop (resumeDownstreamLoop / BlockedByPrecondition)
+// is owned by §5 and is deliberately NOT started here; this branch only parks +
+// notifies and lets §5 resume the goal once the precondition clears.
+func (d *Daemon) haltBlockedEnv(goal *Goal, goals *GoalsFile, valSig *ValidatorSignal) error {
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+
+	remedy := valSig.Remedy
+	if remedy == "" {
+		remedy = valSig.NextAction
+	}
+	if remedy == "" {
+		remedy = "Resolve the missing environment/infrastructure precondition, then resume the goal."
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Runbook — %s blocked (env/infra)\n\n", goal.ID)
+	b.WriteString("Owner: **ops**. This is an environment/infrastructure precondition, not a code or spec defect. No retry budget was charged; the goal is parked until the precondition clears (auto-resume is handled by §5).\n\n")
+	fmt.Fprintf(&b, "## Remedy\n\n%s\n", remedy)
+	if len(valSig.Findings) > 0 {
+		b.WriteString("\n## Blocking findings\n\n")
+		for _, f := range valSig.Findings {
+			if f.Status == VerdictPass {
+				continue
+			}
+			fmt.Fprintf(&b, "- [%s/%s] %s — %s\n", f.Status, f.FailureClass, f.Rule, f.Detail)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(goalDir, "runbook.md"), []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+
+	// notify(log): operator-facing, mirrors the preflight precondition-gate line.
+	log.Printf("[BLOCKED - OPERATOR ACTION REQUIRED] %s: env/infra precondition unmet — %s (parked; no budget charged, §5 auto-resumes)", goal.ID, remedy)
+
+	// SOFT cascade: an env/infra hold is transient, so dependents must NOT be
+	// hard-blocked — they stay GoalPending with BlockedBy recorded and resume
+	// automatically once this goal's precondition clears and it completes. Derive
+	// the soft class from the validator signal (env-config / infra-flake); default
+	// to env-config. This is the ONE soft CascadeFailure call site.
+	softClass := valSig.Class
+	if softClass != "env-config" && softClass != "infra-flake" {
+		softClass = "env-config"
+	}
+	goals.CascadeFailure(goal.ID, softClass)
+
+	goal.Status = GoalBlocked
+	goal.BlockedBy = "env_precondition"
+	// Flag for the §5 auto-resume loop: scanPreconditionBlocked re-evaluates this
+	// goal's preconditions on each tick and resumes it when they pass.
+	goal.BlockedByPrecondition = true
+	// C-1: persist the precondition-classified signal so §5's resume gate recognizes
+	// this park. Stamp the resolved soft class onto valSig first (it may be empty),
+	// then persist BEFORE SaveGoals so the goal is never parked without its signal —
+	// on a persist error, return early.
+	valSig.Class = softClass
+	if err := SaveValidatorSignal(d.workDir, goal.ID, valSig); err != nil {
+		return err
+	}
+	return SaveGoals(d.workDir, goals)
+}
+
+func (d *Daemon) haltRetryCeiling(goal *Goal, goals *GoalsFile) error {
+	log.Printf("%s: retry ceiling reached (total retries: %d), halting", goal.ID, goals.TotalRetries())
+	goal.Status = GoalFailed
+	goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	// Ceiling = exhausted retries → hard fail; downstream genuinely blocked.
+	goals.CascadeFailure(goal.ID, "fail")
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+	return d.advanceToNextGoal(goals, goal.ID, false)
+}
+
+// advanceToNextGoal is called when the goal named by completedID leaves the
+// in-flight set (terminal/halt). completedID is ALWAYS that goal's id (so the
+// right per-goal runtime is dropped, even when a non-head sibling completes at
+// MaxGoals>1). resume gates the synchronous downstream unblock: true only when
+// completedID reached GoalDone, so its soft-held dependents are cleared in the
+// SAME locked critical section (the caller — poll — already holds the goals
+// lock); false for failure/halt callers, because CascadeFailure already settled
+// their dependents (hard-block) and resuming would be wrong.
+//
+// Teardown is gated on AnyRunning: a completing goal with siblings still in
+// flight (MaxGoals>1) must NOT deactivate — it just persists and stays active so
+// the running siblings continue. At MaxGoals=1 the completing goal was the only
+// runner, so AnyRunning is false and deactivateOnCompletion fires exactly as the
+// old switch did. The scalar CurrentGoal head moves only when it pointed at the
+// goal that just left flight: it prefers another running sibling (MaxGoals>1) so
+// the dashboard/crashRecovery head stays in flight, falling back to the next
+// pending goal (the byte-identical MaxGoals=1 choice, where nothing else runs).
+func (d *Daemon) advanceToNextGoal(goals *GoalsFile, completedID string, resume bool) error {
+	// E1-1a worktree lifecycle, BEFORE the downstream resume and clearRuntime (the
+	// merge/discard helpers read the per-goal WorktreeDir that clearRuntime drops).
+	// On the success path merge the worktree back into base then remove it; a merge
+	// conflict flips the goal done→failed, surfaces the conflicting paths, and
+	// suppresses the resume. On the halt path discard the worktree (no merge). All
+	// of this is a zero-git no-op at MaxGoals=1 (empty WorktreeDir).
+	if completedID != "" {
+		if resume {
+			if g, ok := goals.GoalByID(completedID); ok {
+				failed, err := d.finalizeWorktreeOnDone(goals, g)
+				if err != nil {
+					return err
+				}
+				if failed {
+					resume = false
+				}
+			}
+		} else if g, ok := goals.GoalByID(completedID); ok {
+			d.cleanupWorktreeOnHalt(g)
+		}
+	}
+	if resume && completedID != "" {
+		d.resumeDownstream(goals, completedID)
+	}
+	if completedID != "" {
+		d.clearRuntime(completedID)
+	}
+	next, hasNext := goals.NextPendingGoal()
+	if !hasNext {
+		if goals.AnyRunning() {
+			// Siblings still in flight (MaxGoals>1) — persist the terminal state and
+			// stay active; the scheduler keeps driving them.
+			return d.persistAfterAdvance(goals, completedID)
+		}
+		return d.deactivateOnCompletion(goals)
+	}
+	if goals.CurrentGoal == completedID {
+		if rid, ok := goals.FirstRunningGoalID(); ok {
+			goals.CurrentGoal = rid
+			d.currentGoal = rid
+		} else {
+			goals.CurrentGoal = next.ID
+			d.currentGoal = next.ID
+		}
+	}
+	return SaveGoals(d.workDir, goals)
+}
+
+// persistAfterAdvance moves the scalar CurrentGoal head off a just-completed goal
+// to a still-running sibling (MaxGoals>1, no pending goal to advance to) and
+// persists. If the completed goal was not the head, or no sibling is running, it
+// just persists. Keeps the head pointing at an in-flight goal for the dashboard.
+func (d *Daemon) persistAfterAdvance(goals *GoalsFile, completedID string) error {
+	if goals.CurrentGoal == completedID {
+		if rid, ok := goals.FirstRunningGoalID(); ok {
+			goals.CurrentGoal = rid
+			d.currentGoal = rid
+		}
+	}
+	return SaveGoals(d.workDir, goals)
+}

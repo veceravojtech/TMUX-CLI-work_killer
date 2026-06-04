@@ -19,6 +19,7 @@
 {{#if is_docker}}
 - **Container runtime:** Docker {{docker_version}}, Compose {{compose_version}}
 - **PHP image:** {{php_image}}        <!-- e.g. php:8.2-fpm — verified inside the container by scaffold -->
+- **Runtime Container:** {{runtime_container}}
 {{/if}}
 {{#unless is_docker}}
 - **Runtime:** PHP {{php_version}} ({{version_constraint}})
@@ -28,6 +29,14 @@
 
 ## Database
 - {{db_type}} @ {{db_host}}:{{db_port}} / {{db_name}} — credentials: {{db_credentials_source}}
+
+{{#if is_docker}}
+## Published Ports
+<!-- Published host:container mappings for compose services (distinct from db_host/db_port, which is only the Gate-0 connection target). -->
+{{#each published_ports}}
+- **{{service}}** — host {{host_port}} → container {{container_port}}{{#if purpose}} ({{purpose}}){{/if}}
+{{/each}}
+{{/if}}
 
 ## Services
 - {{services_summary}}            <!-- Redis/RabbitMQ/none -->

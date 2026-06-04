@@ -27,6 +27,10 @@
 ### {{check_id}}: Docker Compose
 - **Check command:** `docker compose version`
 - **Result:** {{check_status}}
+
+### {{check_id}}: Runtime Container ground truth
+- **Action:** Record the resolved primary runtime container name into the AGENTS.md GATE0 `Runtime Container` field — it is the authoritative source the investigator preflight reads to verify the container is up before running any `php`/`vendor/bin/*` command. Until scaffold creates the compose stack, record the resolution target (expected `<project>-<php-service>-1`, or `resolve via docker compose ps -q <php-service>`).
+- **Result:** {{check_status}}
 {{/if}}
 {{#unless is_docker}}
 > Local run target — host runtime checked directly (sections 1–3).
@@ -78,6 +82,7 @@
 {{#if has_database}}
 
 - **Type:** {{db_type}}
+<!-- db_host/db_port are the Gate-0 connection target only; the full published host:container port mapping lives in docs/architecture/test-environment.md (Published Ports). -->
 - **Host:** {{db_host}}
 - **Port:** {{db_port}}
 - **Database:** {{db_name}}

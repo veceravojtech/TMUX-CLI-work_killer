@@ -70,7 +70,8 @@ func TestDashboard_Render_IdleMode(t *testing.T) {
 func TestDashboard_Render_ActiveSupervising(t *testing.T) {
 	d, dir := setupDashboardDaemon(t)
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -96,7 +97,8 @@ func TestDashboard_Render_ActiveSupervising(t *testing.T) {
 func TestDashboard_Render_ActiveValidating(t *testing.T) {
 	d, dir := setupDashboardDaemon(t)
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseValidating
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -118,7 +120,8 @@ func TestDashboard_Render_ActiveValidating(t *testing.T) {
 func TestDashboard_Render_GoalColors(t *testing.T) {
 	d, dir := setupDashboardDaemon(t)
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.currentGoal = "goal-002"
+	d.runtime("goal-002").phase = phaseSupervising
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	gf := &GoalsFile{
@@ -146,7 +149,8 @@ func TestDashboard_Render_GoalColors(t *testing.T) {
 func TestDashboard_Render_ElapsedRunning(t *testing.T) {
 	d, dir := setupDashboardDaemon(t)
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
 
 	started := time.Now().Add(-3 * time.Minute).UTC().Format(time.RFC3339)
 	gf := &GoalsFile{
@@ -169,7 +173,8 @@ func TestDashboard_Render_ElapsedRunning(t *testing.T) {
 func TestDashboard_Render_ElapsedDone(t *testing.T) {
 	d, dir := setupDashboardDaemon(t)
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
 
 	start := time.Date(2026, 5, 20, 15, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	finish := time.Date(2026, 5, 20, 15, 12, 30, 0, time.UTC).Format(time.RFC3339)
@@ -192,7 +197,8 @@ func TestDashboard_Render_ElapsedDone(t *testing.T) {
 func TestDashboard_Render_DescriptionTruncation(t *testing.T) {
 	d, dir := setupDashboardDaemon(t)
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
 
 	longDesc := "Implement full payment gateway integration"
 	gf := &GoalsFile{
@@ -216,7 +222,8 @@ func TestDashboard_Render_DescriptionTruncation(t *testing.T) {
 func TestDashboard_Render_DescriptionNoTruncation(t *testing.T) {
 	d, dir := setupDashboardDaemon(t)
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
 
 	shortDesc := "Fix pricing for hotels"
 	gf := &GoalsFile{
@@ -239,7 +246,8 @@ func TestDashboard_Render_DescriptionNoTruncation(t *testing.T) {
 func TestDashboard_Render_ElapsedPending(t *testing.T) {
 	d, dir := setupDashboardDaemon(t)
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -260,7 +268,7 @@ func TestDashboard_Render_ElapsedPending(t *testing.T) {
 func TestDashboard_Render_NoGoals(t *testing.T) {
 	d, _ := setupDashboardDaemon(t)
 	d.mode = modeActive
-	d.phase = phaseSupervising
+	d.runtime(d.currentGoal).phase = phaseSupervising
 
 	var buf bytes.Buffer
 	err := d.renderDashboard(&buf)

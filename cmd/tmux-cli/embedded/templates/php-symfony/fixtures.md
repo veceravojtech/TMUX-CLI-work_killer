@@ -1,6 +1,6 @@
 # PHP/Symfony Fixture Patterns: {{bc_name}}
 
-This template extends `_base/fixtures.md` with Doctrine Fixtures Bundle class structure, dependency ordering, and CLI integration. Requires `composer require --dev doctrine/doctrine-fixtures-bundle`.
+This template extends `_base/fixtures.md` with Doctrine Fixtures Bundle class structure, dependency ordering, and CLI integration. Requires `composer require --no-interaction --dev doctrine/doctrine-fixtures-bundle`.
 
 ## Fixture Class with Dependencies and References
 

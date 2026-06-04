@@ -247,6 +247,72 @@ func TestSignal_RoundtripValidator(t *testing.T) {
 	assert.Equal(t, original.Findings[1], vs.Findings[1])
 }
 
+// --- B5a structured correction_edit schema ---
+
+// TestValidationFinding_CorrectionEditRoundTrips: a finding carrying two
+// CorrectionEdits survives a JSON marshal → unmarshal field-for-field.
+func TestValidationFinding_CorrectionEditRoundTrips(t *testing.T) {
+	original := ValidationFinding{
+		Rule:       "rename symbol",
+		Status:     "fail",
+		Detail:     "old name still referenced",
+		Correction: "rename Foo to Bar everywhere",
+		CorrectionEdits: []CorrectionEdit{
+			{File: "internal/a/a.go", Line: 5, Old: "Foo", New: "Bar"},
+			{File: "internal/b/b.go", Line: 0, Old: "", New: "import x"},
+		},
+	}
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var back ValidationFinding
+	require.NoError(t, json.Unmarshal(data, &back))
+	require.Len(t, back.CorrectionEdits, 2)
+	assert.Equal(t, original.CorrectionEdits, back.CorrectionEdits)
+	// json tag name is correction_edit (not correction_edits).
+	assert.Contains(t, string(data), `"correction_edit"`)
+}
+
+// TestValidationFinding_OmitsCorrectionEditWhenAbsent: a prose-only finding
+// marshals with NO correction_edit key (back-compat byte shape).
+func TestValidationFinding_OmitsCorrectionEditWhenAbsent(t *testing.T) {
+	f := ValidationFinding{Rule: "r", Status: "pass", Detail: "ok"}
+	data, err := json.Marshal(f)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "correction_edit",
+		"prose-only finding must not emit a correction_edit key")
+}
+
+// TestComputeSignatures_IgnoresCorrectionEdit: two findings identical except for
+// CorrectionEdits must hash to the same signature (corrections are remedy, not
+// failure identity — the C6 breaker must not see them).
+func TestComputeSignatures_IgnoresCorrectionEdit(t *testing.T) {
+	base := ValidationFinding{Rule: "r1", Status: "fail", Detail: "cause", FailureClass: "code-defect"}
+	withEdit := base
+	withEdit.CorrectionEdits = []CorrectionEdit{{File: "a.go", Line: 1, Old: "x", New: "y"}}
+
+	assert.Equal(t,
+		ComputeSignatures([]ValidationFinding{base}),
+		ComputeSignatures([]ValidationFinding{withEdit}),
+		"CorrectionEdits must not affect the failure signature")
+}
+
+// TestHasSubstantiveSpecDefect_UnaffectedByCorrectionEdit: a planner/blocked
+// finding with stub Detail+Correction but a populated CorrectionEdits must NOT
+// be treated as substantive (no spec-defect inflation from code edits).
+func TestHasSubstantiveSpecDefect_UnaffectedByCorrectionEdit(t *testing.T) {
+	f := ValidationFinding{
+		Rule:            "spec contradiction",
+		Status:          VerdictBlocked,
+		Owner:           "planner",
+		Detail:          "tbd",
+		Correction:      "fix it",
+		CorrectionEdits: []CorrectionEdit{{File: "a.go", Line: 1, Old: "x", New: "y"}},
+	}
+	assert.False(t, HasSubstantiveSpecDefect([]ValidationFinding{f}),
+		"CorrectionEdits must not make a stub-prose finding substantive")
+}
+
 // --- C6 convergence circuit-breaker: signature primitives ---
 
 func TestNormalizeFailureCause_CollapsesVariableParts(t *testing.T) {
@@ -537,4 +603,143 @@ func TestContentlessDetail_ParityWithMCP(t *testing.T) {
 		gotKeys[k] = true
 	}
 	assert.Equal(t, wantKeys, gotKeys, "contentlessDetail must mirror mcp.contentlessCorrections key-for-key")
+}
+
+// --- C3 runtime-container guard regression tests ------------------------------
+// These pin the EXISTING taskvisor routing the C3 prompt layer relies on: an
+// investigator that emits a dead-container finding as failure_class=infra-flake
+// owner=ops must roll up to (blocked, ops) and park via haltBlockedEnv WITHOUT
+// charging any code-retry budget. signal.go / statemachine.go are UNCHANGED — the
+// fix is purely in the prompt/template layer that EMITS the class; these tests
+// guard that the route those prompts depend on cannot silently regress.
+
+// TestClassifyVerdict_InfraFlakeOwnerOps_RoutesBlockedOps — a lone
+// infra-flake/ops finding rolls up to (blocked, ops): the route a down runtime
+// container takes so haltBlockedEnv parks the goal instead of bouncing to code.
+func TestClassifyVerdict_InfraFlakeOwnerOps_RoutesBlockedOps(t *testing.T) {
+	findings := []ValidationFinding{
+		{
+			Rule:         "phpunit:smoke",
+			Status:       VerdictBlocked,
+			FailureClass: "infra-flake",
+			Owner:        "ops",
+			Detail:       "runtime container test-project-php-1 is not running",
+		},
+	}
+	verdict, owner := ClassifyVerdict(findings)
+	assert.Equal(t, VerdictBlocked, verdict, "infra-flake must roll up to blocked, not fail")
+	assert.Equal(t, "ops", owner, "a dead-container infra-flake is owned by ops, not the implementer")
+}
+
+// TestClassifyVerdict_InfraFlakeNotDowngradedToCodeDefect — a pass finding
+// alongside an infra-flake/ops non-pass finding must NOT leak into a code-defect
+// fail; the verdict stays blocked. This locks the precedence the guard depends on:
+// an environment fault must never be re-classified as a code defect.
+func TestClassifyVerdict_InfraFlakeNotDowngradedToCodeDefect(t *testing.T) {
+	findings := []ValidationFinding{
+		{Rule: "ecs:style", Status: VerdictPass},
+		{
+			Rule:         "vendor/bin/phpstan",
+			Status:       VerdictBlocked,
+			FailureClass: "infra-flake",
+			Owner:        "ops",
+			Detail:       "no such object: test-project-php-1",
+		},
+	}
+	verdict, owner := ClassifyVerdict(findings)
+	assert.Equal(t, VerdictBlocked, verdict, "infra-flake must not be downgraded to a code-defect fail")
+	assert.NotEqual(t, VerdictFail, verdict, "a down container is never a code defect")
+	assert.Equal(t, "ops", owner)
+}
+
+// TestHaltBlockedEnv_InfraFlake_ChargesNoBudget — a blocked/infra-flake/ops
+// ValidatorSignal parks the goal with ZERO budget charged (all four counters
+// unchanged) and arms BlockedByPrecondition for §5 auto-resume. Mirrors
+// TestBlockedEnvHold_NoBudget but with the dead-container infra-flake class.
+func TestHaltBlockedEnv_InfraFlake_ChargesNoBudget(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseValidating
+
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{routeGoal("goal-001", 2, 2, 1, 1)}}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: "blocked", Owner: "ops", Remedy: "start the runtime container test-project-php-1, then resume",
+		Findings: []ValidationFinding{{
+			Rule: "vendor/bin/phpunit", Status: "blocked", FailureClass: "infra-flake", Owner: "ops",
+			Detail: "runtime container test-project-php-1 is not running (State.Running=false)",
+		}},
+		Timestamp: "2026-05-20T14:35:00Z",
+	}))
+	noWindows(exec)
+
+	goal := &gf.Goals[0]
+	require.NoError(t, d.checkValidatingPhase(goal, gf))
+
+	assert.Equal(t, 2, goal.CodeRetries, "no code budget charged on a down-container infra-flake")
+	assert.Equal(t, 2, goal.SpecRetries, "no spec budget charged")
+	assert.Equal(t, 1, goal.ValidationRetries, "no validation budget charged")
+	assert.Equal(t, 1, goal.BlockRetries, "no block budget charged")
+	assert.Equal(t, GoalBlocked, goal.Status, "goal parked on infra-flake")
+	assert.True(t, goal.BlockedByPrecondition, "infra-flake park must arm §5 auto-resume")
+}
+
+// TestHaltBlockedEnv_WritesRunbookNamingContainer — the operator runbook names
+// the EXACT container from the blocking finding, so the operator knows which
+// container to bring back up.
+func TestHaltBlockedEnv_WritesRunbookNamingContainer(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseValidating
+
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{routeGoal("goal-001", 2, 2, 1, 1)}}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: "blocked", Owner: "ops",
+		Findings: []ValidationFinding{{
+			Rule: "vendor/bin/phpunit", Status: "blocked", FailureClass: "infra-flake", Owner: "ops",
+			Detail: "runtime container test-project-php-1 is down — docker inspect reported State.Running=false",
+		}},
+		Timestamp: "2026-05-20T14:35:00Z",
+	}))
+	noWindows(exec)
+
+	goal := &gf.Goals[0]
+	require.NoError(t, d.checkValidatingPhase(goal, gf))
+
+	runbook := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "runbook.md")
+	data, readErr := os.ReadFile(runbook)
+	require.NoError(t, readErr, "haltBlockedEnv must write an operator runbook")
+	assert.Contains(t, string(data), "test-project-php-1",
+		"runbook must name the exact down container so ops knows what to restart")
+}
+
+// TestClassifyVerdict_OwnSuiteRedRollsToFail — a red own-suite-green gate arrives
+// as a {Status:fail, FailureClass:"code-defect"} finding (the gate's Fail text
+// classifies a non-zero phpunit exit as code-defect/implementer). ClassifyVerdict
+// must roll it up to (fail, implementer) so the goal cannot reach done. This is a
+// REGRESSION lock on the B2b wiring: signal.go's code-defect tier is unchanged;
+// the test pins that a gate red routes through it correctly.
+func TestClassifyVerdict_OwnSuiteRedRollsToFail(t *testing.T) {
+	findings := []ValidationFinding{
+		{Rule: "build sanity", Status: VerdictPass},
+		{
+			Rule:         "vendor/bin/phpunit tests/Integration/Catalog tests/Functional/Catalog",
+			Status:       VerdictFail,
+			FailureClass: "code-defect",
+			Owner:        "implementer",
+			Detail:       "non-zero phpunit exit for the goal's integration+functional scope",
+		},
+	}
+	verdict, owner := ClassifyVerdict(findings)
+	assert.Equal(t, VerdictFail, verdict, "a red own-suite gate must roll up to fail")
+	assert.Equal(t, "implementer", owner, "a code-defect gate red is owned by the implementer")
 }

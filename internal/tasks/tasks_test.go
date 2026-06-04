@@ -871,3 +871,60 @@ func TestCreateContextFile_DoesNotOverwriteExisting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "existing content", string(data))
 }
+
+// --- E1-0d: per-goal fan-out tasks.yaml relocation ---
+
+func TestGoalTasksFilePath_ReturnsGoalScopedPath(t *testing.T) {
+	p := GoalTasksFilePath("/project", "goal-020")
+	assert.Equal(t, filepath.Join("/project", ".tmux-cli", "goals", "goal-020", "tasks.yaml"), p)
+}
+
+func TestTasksFilePath_TopLevelUnchanged(t *testing.T) {
+	// The planning-queue path must remain byte-for-byte stable.
+	p := TasksFilePath("/project")
+	assert.Equal(t, filepath.Join("/project", ".tmux-cli", "tasks.yaml"), p)
+}
+
+func TestSaveTasksForGoal_RoundTrips(t *testing.T) {
+	root := t.TempDir()
+	tf := &TasksFile{
+		Status: FileStatusReady,
+		Cycle:  2,
+		Tasks: []Task{
+			{Name: "task one", Wid: "execute-1", Status: StatusPending, Context: "ctx1.md"},
+		},
+	}
+	require.NoError(t, SaveTasksForGoal(root, "g1", tf))
+
+	// File lives under goals/g1/.
+	_, err := os.Stat(GoalTasksFilePath(root, "g1"))
+	require.NoError(t, err)
+
+	loaded, err := LoadTasksForGoal(root, "g1")
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.Equal(t, tf.Status, loaded.Status)
+	assert.Equal(t, tf.Cycle, loaded.Cycle)
+	assert.Equal(t, tf.Tasks, loaded.Tasks)
+}
+
+func TestLoadTasksForGoal_MissingReturnsNil(t *testing.T) {
+	root := t.TempDir()
+	loaded, err := LoadTasksForGoal(root, "g1")
+	require.NoError(t, err)
+	assert.Nil(t, loaded)
+}
+
+func TestSaveTasks_TopLevelDoesNotWriteGoalDir(t *testing.T) {
+	root := t.TempDir()
+	tf := &TasksFile{Status: FileStatusReady, Cycle: 1}
+	require.NoError(t, SaveTasks(root, tf))
+
+	// Only the top-level planning-queue is written.
+	_, err := os.Stat(TasksFilePath(root))
+	require.NoError(t, err)
+
+	// No goals/*/tasks.yaml appears (isolation guard).
+	_, err = os.Stat(filepath.Join(root, ".tmux-cli", "goals"))
+	assert.True(t, os.IsNotExist(err), "SaveTasks must not create any goal dir")
+}

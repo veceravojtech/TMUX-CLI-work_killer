@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 17)
+	assert.Len(t, m.items, 18)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -49,6 +49,7 @@ commands:
 	assert.Equal(t, "taskvisor.auto_resume_interval_sec", m.items[14].key)
 	assert.Equal(t, "taskvisor.transient_retry_max_attempts", m.items[15].key)
 	assert.Equal(t, "taskvisor.transient_retry_backoff_ms", m.items[16].key)
+	assert.Equal(t, "supervisor.max_goals", m.items[17].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -139,14 +140,18 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 16, m.cursor)
 
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 17, m.cursor)
+
 	// Can't go past last item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 16, m.cursor)
+	assert.Equal(t, 17, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 15, m.cursor)
+	assert.Equal(t, 16, m.cursor)
 
 	// Can't go above first item
 	for i := 0; i < 17; i++ {
@@ -542,6 +547,126 @@ func TestModel_ToSettings_MaxWorkers(t *testing.T) {
 	assert.Equal(t, 5, result.Supervisor.MaxWorkers)
 }
 
+func TestModel_ToSettings_MaxGoals(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	found := false
+	for i, item := range m.items {
+		if item.key == "supervisor.max_goals" {
+			found = true
+			m.items[i].intVal = 3
+		}
+	}
+	assert.True(t, found, "supervisor.max_goals must be in TUI items")
+
+	result := m.ToSettings()
+	assert.Equal(t, 3, result.Supervisor.MaxGoals, "edited supervisor.max_goals must overlay into ToSettings")
+}
+
+func TestModel_ToSettings_PreservesMaxGoals(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_workers: 4
+  max_goals: 4
+  max_cycles: 5
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+
+	m := NewModel(dir, settings)
+	result := m.ToSettings()
+
+	assert.Equal(t, 4, result.Supervisor.MaxGoals, "max_goals must be preserved")
+	assert.Equal(t, 5, result.Supervisor.MaxCycles)
+}
+
+// TestNewModel_IncludesMaxGoalsItem proves the supervisor.max_goals knob surfaces
+// in the TUI items list with kind "int" and the default intVal of 1 (the MaxGoals=1
+// semantics from DefaultSettings — parallel independent-goal dispatch defaults off).
+func TestNewModel_IncludesMaxGoalsItem(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	var found bool
+	for _, item := range m.items {
+		if item.key == "supervisor.max_goals" {
+			found = true
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 1, item.intVal, "default supervisor.max_goals should be 1")
+		}
+	}
+	assert.True(t, found, "supervisor.max_goals must be in TUI items")
+}
+
+// TestToSettings_OverlaysMaxGoals proves an edited supervisor.max_goals overlays
+// onto Supervisor.MaxGoals while sibling/undisplayed Settings fields survive
+// (AGENTS.md TUI INVARIANT — overlay onto baseSettings, not DefaultSettings).
+func TestToSettings_OverlaysMaxGoals(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 7
+  max_goals: 1
+taskvisor:
+  dispatch_timeout: 1234
+  validate_timeout: 5678
+  circuit_breaker_k: 4
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "supervisor.max_goals" {
+			m.items[i].intVal = 2
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 2, result.Supervisor.MaxGoals, "edited supervisor.max_goals must overlay onto settings")
+	// Sibling/undisplayed fields preserved.
+	assert.Equal(t, 1234, result.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 5678, result.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 4, result.Taskvisor.CircuitBreakerK)
+	assert.Equal(t, 7, result.Supervisor.MaxCycles)
+}
+
+// TestToSettings_PreservesMaxGoalsFromBase proves a base setting.yaml max_goals
+// value survives ToSettings() when the item is not edited (overlay-not-reset).
+func TestToSettings_PreservesMaxGoalsFromBase(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_workers: 4
+  max_goals: 3
+  max_cycles: 5
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+
+	m := NewModel(dir, settings)
+	result := m.ToSettings()
+
+	assert.Equal(t, 3, result.Supervisor.MaxGoals, "max_goals must overlay from base, not reset")
+	assert.Equal(t, 5, result.Supervisor.MaxCycles)
+}
+
 func TestModel_ToSettings_PreservesMaxWorkers(t *testing.T) {
 	dir := t.TempDir()
 	writeSettingsYAML(t, dir, `hooks:
@@ -642,7 +767,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 17)
+	assert.Len(t, m.items, 18)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -691,7 +816,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 17)
+	assert.Len(t, m.items, 18)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -103,7 +104,7 @@ func TestGoalCreate_FirstGoal(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Fix prices", []string{"Price matches API"}, []string{"Check price"}, "", "", "", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Fix prices", []string{"Price matches API"}, []string{"Check price"}, "", "", "", 0, nil, nil, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -143,7 +144,7 @@ func TestGoalCreate_SequentialID(t *testing.T) {
 `)
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Third", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Third", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-003", output.ID)
@@ -153,7 +154,7 @@ func TestGoalCreate_ExplicitMaxRetries(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Custom retries", nil, []string{"check"}, "", "", "", 5, nil, nil, nil)
+	output, err := server.GoalCreate("Custom retries", nil, []string{"check"}, "", "", "", 5, nil, nil, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -167,7 +168,7 @@ func TestGoalCreate_DefaultMaxRetries(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Default retries", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Default retries", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -184,7 +185,7 @@ func TestGoalCreateDefaultMaxRetriesIsFive(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Default budgets", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Default budgets", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	// Persisted single counter is the new default.
@@ -208,7 +209,7 @@ func TestGoalCreate_EmptyDescription(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("", nil, nil, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("", nil, nil, "", "", "", 0, nil, nil, nil, nil)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
@@ -220,7 +221,7 @@ func TestGoalCreate_DescriptionTooLong(t *testing.T) {
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 	longDesc := strings.Repeat("a", 121)
-	_, err := server.GoalCreate(longDesc, nil, nil, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate(longDesc, nil, nil, "", "", "", 0, nil, nil, nil, nil)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
@@ -233,7 +234,7 @@ func TestGoalCreate_DescriptionExactlyAtLimit(t *testing.T) {
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 	exactDesc := strings.Repeat("b", 120)
-	output, err := server.GoalCreate(exactDesc, nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	output, err := server.GoalCreate(exactDesc, nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -254,7 +255,7 @@ func TestGoalCreate_AppendsToExisting(t *testing.T) {
 `)
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Second", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Second", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	gf, err := tvLoadGoals(tmpDir)
@@ -270,7 +271,7 @@ func TestGoalCreate_AtomicWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Test atomic", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Test atomic", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	tmpFile := filepath.Join(tmpDir, ".tmux-cli", "goals.yaml.tmp")
@@ -282,7 +283,7 @@ func TestGoalCreate_WithContext(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Refactor auth", []string{"Tests pass"}, []string{"check"}, "Legacy code", "Performance", "", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Refactor auth", []string{"Tests pass"}, []string{"check"}, "Legacy code", "Performance", "", 0, nil, nil, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -301,7 +302,7 @@ func TestGoalCreate_WithPhase(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, nil, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -316,7 +317,7 @@ func TestGoalCreate_NoAcceptance(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Simple task", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Simple task", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -335,7 +336,7 @@ func TestGoalCreate_EmptyValidate(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Valid desc", nil, nil, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Valid desc", nil, nil, "", "", "", 0, nil, nil, nil, nil)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
@@ -346,7 +347,7 @@ func TestGoalCreate_EmptyValidateSlice(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Valid desc", nil, []string{}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Valid desc", nil, []string{}, "", "", "", 0, nil, nil, nil, nil)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
@@ -357,7 +358,7 @@ func TestGoalCreate_InvalidPhase(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Bad phase goal", nil, []string{"check"}, "", "", "nonexistent", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Bad phase goal", nil, []string{"check"}, "", "", "nonexistent", 0, nil, nil, nil, nil)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
@@ -368,10 +369,10 @@ func TestGoalCreate_WithDependsOn(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("First goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("First goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
-	output, err := server.GoalCreate("Second goal", nil, []string{"check"}, "", "", "", 0, []string{"goal-001"}, nil, nil)
+	output, err := server.GoalCreate("Second goal", nil, []string{"check"}, "", "", "", 0, []string{"goal-001"}, nil, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "goal-002", output.ID)
 
@@ -385,7 +386,7 @@ func TestGoalCreate_DependsOnNonExistent(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Orphan goal", nil, []string{"check"}, "", "", "", 0, []string{"goal-999"}, nil, nil)
+	_, err := server.GoalCreate("Orphan goal", nil, []string{"check"}, "", "", "", 0, []string{"goal-999"}, nil, nil, nil)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
@@ -396,10 +397,10 @@ func TestGoalCreate_WithPhaseAndDependsOn(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Prereq goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Prereq goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
-	output, err := server.GoalCreate("Domain goal", nil, []string{"check"}, "", "", "domain", 0, []string{"goal-001"}, nil, nil)
+	output, err := server.GoalCreate("Domain goal", nil, []string{"check"}, "", "", "domain", 0, []string{"goal-001"}, nil, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "goal-002", output.ID)
 
@@ -414,7 +415,7 @@ func TestGoalCreate_DependsOnEmptySlice(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("No deps goal", nil, []string{"check"}, "", "", "", 0, []string{}, nil, nil)
+	output, err := server.GoalCreate("No deps goal", nil, []string{"check"}, "", "", "", 0, []string{}, nil, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
@@ -424,12 +425,12 @@ func TestGoalCreate_DependsOnMultiple(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Goal A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Goal A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
-	_, err = server.GoalCreate("Goal B", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err = server.GoalCreate("Goal B", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
-	output, err := server.GoalCreate("Goal C", nil, []string{"check"}, "", "", "", 0, []string{"goal-001", "goal-002"}, nil, nil)
+	output, err := server.GoalCreate("Goal C", nil, []string{"check"}, "", "", "", 0, []string{"goal-001", "goal-002"}, nil, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "goal-003", output.ID)
 
@@ -855,6 +856,47 @@ func TestGoalValidationDone_NoValidatorWindow(t *testing.T) {
 	assert.Contains(t, err.Error(), "no validator window")
 }
 
+// TestGoalValidationDone_NamespacedValidatorWindow reproduces the MaxGoals>1
+// concurrency defect: when two goals run in parallel the daemon spawns the
+// validator with a per-goal suffixed name ("validator-046", see
+// internal/taskvisor/window_names.go), but the authorization lookup used to
+// hard-code Name == "validator" and rejected with "no validator window found",
+// stranding the verdict. The lookup must accept the per-goal "validator-<ns>"
+// form and still gate the write on the UUID match.
+func TestGoalValidationDone_NamespacedValidatorWindow(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestGoalsYaml(t, tmpDir, `goals:
+- id: goal-046
+  description: Test
+  status: running
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, ".tmux-cli", "goals", "goal-046"), 0o755))
+
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", tmpDir).Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor-045"},
+		{TmuxWindowID: "@1", Name: "validator-046"},
+		{TmuxWindowID: "@2", Name: "supervisor-046"},
+	}, nil)
+	mockExec.On("GetWindowOption", "test-session", "@1", "window-uuid").Return("uuid-val-046", nil)
+
+	t.Setenv("TMUX_WINDOW_UUID", "uuid-val-046")
+
+	server := newTestServer(mockExec, tmpDir)
+	output, err := server.GoalValidationDone("goal-046", "pass", []ValidationFinding{{Rule: "x", Status: "pass"}}, "", nil)
+
+	require.NoError(t, err)
+	assert.True(t, output.Written)
+
+	signalPath := filepath.Join(tmpDir, ".tmux-cli", "goals", "goal-046", "signal.json")
+	data, err := os.ReadFile(signalPath)
+	require.NoError(t, err)
+	var sig map[string]any
+	require.NoError(t, json.Unmarshal(data, &sig))
+	assert.Equal(t, "pass", sig["verdict"])
+}
+
 func TestGoalValidationDone_UnknownGoalID(t *testing.T) {
 	tmpDir := t.TempDir()
 	writeTestGoalsYaml(t, tmpDir, `goals:
@@ -952,7 +994,7 @@ func TestGoalCreate_LockFileCreated(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Lock test", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Lock test", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	lockPath := filepath.Join(tmpDir, ".tmux-cli", "goals.yaml.lock")
@@ -979,7 +1021,7 @@ func TestGoalCreate_Concurrent_AllSucceed(t *testing.T) {
 				fmt.Sprintf("Goal %d", idx),
 				[]string{fmt.Sprintf("criterion-%d", idx)},
 				[]string{"check"}, "", "", "",
-				0, nil, nil, nil,
+				0, nil, nil, nil, nil,
 			)
 			errs[idx] = err
 			if output != nil {
@@ -1019,11 +1061,11 @@ func TestGoalCreate_LockCoversLoadSaveSpan(t *testing.T) {
 	var err1, err2 error
 	go func() {
 		defer wg.Done()
-		_, err1 = server.GoalCreate("First concurrent", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+		_, err1 = server.GoalCreate("First concurrent", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	}()
 	go func() {
 		defer wg.Done()
-		_, err2 = server.GoalCreate("Second concurrent", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+		_, err2 = server.GoalCreate("Second concurrent", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	}()
 
 	wg.Wait()
@@ -1095,7 +1137,7 @@ func TestGoalCreate_InfraGoalContent(t *testing.T) {
 
 	output, err := server.GoalCreate(
 		"Implement Booking infrastructure: Doctrine mappings, repos, migration, integration tests",
-		acceptance, validate, ctx, "", "infrastructure", 0, nil, nil, nil,
+		acceptance, validate, ctx, "", "infrastructure", 0, nil, nil, nil, nil,
 	)
 
 	require.NoError(t, err)
@@ -1162,7 +1204,7 @@ func TestGoalCreate_ActionGoalContent(t *testing.T) {
 
 	output, err := server.GoalCreate(
 		"POST /api/bookings — Booking controller action",
-		acceptance, validate, ctx, "", "action", 0, nil, nil, nil,
+		acceptance, validate, ctx, "", "action", 0, nil, nil, nil, nil,
 	)
 
 	require.NoError(t, err)
@@ -1218,7 +1260,7 @@ func TestGoalCreate_ErrorHandlingGoalContent(t *testing.T) {
 
 	output, err := server.GoalCreate(
 		"Implement global error handling: exception listener, RFC 7807, status code mapping",
-		acceptance, validate, ctx, "", "cross-cutting", 0, nil, nil, nil,
+		acceptance, validate, ctx, "", "cross-cutting", 0, nil, nil, nil, nil,
 	)
 
 	require.NoError(t, err)
@@ -1284,7 +1326,7 @@ func TestGoalCreate_DeptracFinalGateContent(t *testing.T) {
 
 	output, err := server.GoalCreate(
 		"Final gate: Deptrac full codebase layer dependency verification",
-		acceptance, validate, ctx, notInScope, "final", 5, nil, nil, nil,
+		acceptance, validate, ctx, notInScope, "final", 5, nil, nil, nil, nil,
 	)
 
 	require.NoError(t, err)
@@ -1353,7 +1395,7 @@ func TestGoalCreate_E2EFinalGateContent(t *testing.T) {
 
 	output, err := server.GoalCreate(
 		"Final gate: Playwright E2E regression — all tests run together",
-		acceptance, validate, ctx, notInScope, "final", 5, nil, nil, nil,
+		acceptance, validate, ctx, notInScope, "final", 5, nil, nil, nil, nil,
 	)
 
 	require.NoError(t, err)
@@ -1431,7 +1473,7 @@ func TestGoalCreate_QualityFinalGateContent(t *testing.T) {
 
 	output, err := server.GoalCreate(
 		"Final gate: PHPStan, ECS, test suites, coverage, schema, migrations",
-		acceptance, validate, ctx, notInScope, "final", 5, nil, nil, nil,
+		acceptance, validate, ctx, notInScope, "final", 5, nil, nil, nil, nil,
 	)
 
 	require.NoError(t, err)
@@ -1498,7 +1540,7 @@ func TestGoalCreate_PlaywrightActionWithFlakeRetry(t *testing.T) {
 
 	output, err := server.GoalCreate(
 		"POST /api/bookings — Booking controller action",
-		acceptance, validate, ctx, "", "action", 0, nil, nil, nil,
+		acceptance, validate, ctx, "", "action", 0, nil, nil, nil, nil,
 	)
 
 	require.NoError(t, err)
@@ -1552,7 +1594,7 @@ goals:
 `)
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Second goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Second goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	gf, err := tvLoadGoals(tmpDir)
@@ -1601,7 +1643,7 @@ func TestGoalCreate_PreservesGoalTimingFields(t *testing.T) {
 `)
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Second goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	_, err := server.GoalCreate("Second goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	gf, err := tvLoadGoals(tmpDir)
@@ -1616,7 +1658,7 @@ func TestGoalCreate_WritesPhaseToGoalMD(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Domain goal", nil, []string{"check"}, "", "", "domain", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Domain goal", nil, []string{"check"}, "", "", "domain", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", output.ID)
@@ -1632,7 +1674,7 @@ func TestGoalCreate_NoPhaseOmitsSection(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Simple goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Simple goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", output.ID)
@@ -1907,7 +1949,7 @@ func TestGoalCreate_WithPreconditions_PersistsToGoalsYaml(t *testing.T) {
 		{Kind: "env", Spec: "DB_DSN", Remedy: "export DB_DSN=postgres://..."},
 		{Kind: "service", Spec: "localhost:5432", Remedy: "start postgres"},
 	}
-	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, preconds, nil)
+	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, preconds, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
 
@@ -1919,6 +1961,21 @@ func TestGoalCreate_WithPreconditions_PersistsToGoalsYaml(t *testing.T) {
 	assert.Equal(t, taskvisor.Precondition{Kind: "service", Spec: "localhost:5432", Remedy: "start postgres"}, gf.Goals[0].Preconditions[1])
 }
 
+func TestGoalCreate_PersistsScope(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	scope := []string{"internal/x/**", `App\Billing`}
+	output, err := server.GoalCreate("Scoped goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, scope)
+	require.NoError(t, err)
+	assert.Equal(t, "goal-001", output.ID)
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, gf.Goals, 1)
+	assert.Equal(t, scope, gf.Goals[0].Scope)
+}
+
 func TestGoalCreate_WithPreconditions_PersistsToGoalMD(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -1926,7 +1983,7 @@ func TestGoalCreate_WithPreconditions_PersistsToGoalMD(t *testing.T) {
 	preconds := []taskvisor.Precondition{
 		{Kind: "env", Spec: "DB_DSN", Remedy: "export DB_DSN"},
 	}
-	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, preconds, nil)
+	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, preconds, nil, nil)
 	require.NoError(t, err)
 
 	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", output.ID)
@@ -1945,7 +2002,7 @@ func TestGoalCreate_PreconditionsRoundTripToEvaluate(t *testing.T) {
 		{Kind: "env", Spec: "DB_DSN", Remedy: "export DB_DSN"},
 		{Kind: "service", Spec: "localhost:5432", Remedy: "start postgres"},
 	}
-	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, preconds, nil)
+	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, preconds, nil, nil)
 	require.NoError(t, err)
 
 	gf, err := taskvisor.LoadGoals(tmpDir)
@@ -1962,7 +2019,7 @@ func TestGoalCreate_NoPreconditions_OmitsYamlKeyAndSection(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Simple task", nil, []string{"check"}, "", "", "", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Simple task", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	rawYaml, err := os.ReadFile(filepath.Join(tmpDir, ".tmux-cli", "goals.yaml"))
@@ -1982,7 +2039,7 @@ func TestGoalCreate_PreconditionEmptyRemedy_RendersSpecOnly(t *testing.T) {
 	preconds := []taskvisor.Precondition{
 		{Kind: "service", Spec: "localhost:5432", Remedy: ""},
 	}
-	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, preconds, nil)
+	output, err := server.GoalCreate("Setup DB", nil, []string{"check"}, "", "", "infrastructure", 0, nil, preconds, nil, nil)
 	require.NoError(t, err)
 
 	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", output.ID)
@@ -2016,7 +2073,7 @@ func TestGoalCreate_AcceptsValidInvestigators(t *testing.T) {
 	tmpDir := t.TempDir()
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
-	output, err := server.GoalCreate("Valid investigators", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(2))
+	output, err := server.GoalCreate("Valid investigators", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(2), nil)
 	require.NoError(t, err)
 
 	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", output.ID)
@@ -2034,7 +2091,7 @@ func TestGoalCreate_AcceptsFourInvestigators(t *testing.T) {
 	tmpDir := t.TempDir()
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
-	output, err := server.GoalCreate("Four investigators", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(4))
+	output, err := server.GoalCreate("Four investigators", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(4), nil)
 	require.NoError(t, err)
 	assert.Equal(t, "goal-001", output.ID)
 }
@@ -2043,7 +2100,7 @@ func TestGoalCreate_RejectsTooFewInvestigators(t *testing.T) {
 	tmpDir := t.TempDir()
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
-	_, err := server.GoalCreate("Too few", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(1))
+	_, err := server.GoalCreate("Too few", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(1), nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 	require.ErrorContains(t, err, "2–4")
@@ -2056,7 +2113,7 @@ func TestGoalCreate_RejectsTooManyInvestigators(t *testing.T) {
 	tmpDir := t.TempDir()
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
-	_, err := server.GoalCreate("Too many", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(5))
+	_, err := server.GoalCreate("Too many", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(5), nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 	require.ErrorContains(t, err, "2–4")
@@ -2068,7 +2125,7 @@ func TestGoalCreate_RejectsEmptyName(t *testing.T) {
 
 	invs := validInvestigatorSet(2)
 	invs[1].Name = ""
-	_, err := server.GoalCreate("Empty name", nil, []string{"check"}, "", "", "", 0, nil, nil, invs)
+	_, err := server.GoalCreate("Empty name", nil, []string{"check"}, "", "", "", 0, nil, nil, invs, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 	require.ErrorContains(t, err, "name")
@@ -2081,7 +2138,7 @@ func TestGoalCreate_RejectsBadType(t *testing.T) {
 
 	invs := validInvestigatorSet(2)
 	invs[0].Type = "bogus"
-	_, err := server.GoalCreate("Bad type", nil, []string{"check"}, "", "", "", 0, nil, nil, invs)
+	_, err := server.GoalCreate("Bad type", nil, []string{"check"}, "", "", "", 0, nil, nil, invs, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 	require.ErrorContains(t, err, "invalid type")
@@ -2120,7 +2177,7 @@ func TestGoalCreate_AcceptsPlannerEmittedTypes(t *testing.T) {
 				},
 			}
 
-			output, err := server.GoalCreate("Planner type "+plannerType, nil, []string{"check"}, "", "", "", 0, nil, nil, invs)
+			output, err := server.GoalCreate("Planner type "+plannerType, nil, []string{"check"}, "", "", "", 0, nil, nil, invs, nil)
 			require.NoError(t, err)
 
 			goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", output.ID)
@@ -2139,7 +2196,7 @@ func TestGoalCreate_RejectsMissingCommand(t *testing.T) {
 
 	invs := validInvestigatorSet(2)
 	invs[0].Commands = nil
-	_, err := server.GoalCreate("Missing command", nil, []string{"check"}, "", "", "", 0, nil, nil, invs)
+	_, err := server.GoalCreate("Missing command", nil, []string{"check"}, "", "", "", 0, nil, nil, invs, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 	require.ErrorContains(t, err, "command")
@@ -2151,7 +2208,7 @@ func TestGoalCreate_RejectsEmptyPass(t *testing.T) {
 
 	invs := validInvestigatorSet(2)
 	invs[0].Pass = ""
-	_, err := server.GoalCreate("Empty pass", nil, []string{"check"}, "", "", "", 0, nil, nil, invs)
+	_, err := server.GoalCreate("Empty pass", nil, []string{"check"}, "", "", "", 0, nil, nil, invs, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 	require.ErrorContains(t, err, "pass")
@@ -2163,7 +2220,7 @@ func TestGoalCreate_FallbackWhenNoInvestigators(t *testing.T) {
 
 	// nil investigators → M1's deriveInvestigators fallback must still render a
 	// valid 2–4 section.
-	output, err := server.GoalCreate("Fallback", nil, []string{"PHPStan level 9 passes", "Unit tests pass"}, "", "", "", 0, nil, nil, nil)
+	output, err := server.GoalCreate("Fallback", nil, []string{"PHPStan level 9 passes", "Unit tests pass"}, "", "", "", 0, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", output.ID)
@@ -2183,10 +2240,527 @@ func TestGoalCreate_UnchangedGuardsStillFire(t *testing.T) {
 
 	// Empty description still rejects even with a valid investigator set — the
 	// new trailing param did not reorder the existing guards.
-	_, err := server.GoalCreate("", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(2))
+	_, err := server.GoalCreate("", nil, []string{"check"}, "", "", "", 0, nil, nil, validInvestigatorSet(2), nil)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 
 	// Empty validate still rejects.
-	_, err = server.GoalCreate("Valid desc", nil, nil, "", "", "", 0, nil, nil, validInvestigatorSet(2))
+	_, err = server.GoalCreate("Valid desc", nil, nil, "", "", "", 0, nil, nil, validInvestigatorSet(2), nil)
 	assert.ErrorIs(t, err, ErrInvalidInput)
+}
+
+// --- GoalAddPrerequisite tests ---
+
+func TestGoalAddPrerequisite_WiresExistingGoalDependsOn(t *testing.T) {
+	tmpDir := t.TempDir()
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+
+	// Goal A (the bounced dependent) and freshly-created prerequisite P.
+	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+	_, err = server.GoalCreate("Prerequisite P", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	out, err := server.GoalAddPrerequisite("goal-001", "goal-002")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"goal-002"}, out.DependsOn)
+	assert.Equal(t, 1, out.EscalationCount)
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, gf.Goals, 2)
+	assert.Equal(t, []string{"goal-002"}, gf.Goals[0].DependsOn, "A.depends_on must round-trip via goals.yaml")
+	assert.Equal(t, 1, gf.Goals[0].EscalationCount)
+}
+
+func TestGoalAddPrerequisite_RejectsNonExistentPrerequisite(t *testing.T) {
+	tmpDir := t.TempDir()
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+
+	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = server.GoalAddPrerequisite("goal-001", "goal-999")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Contains(t, err.Error(), "non-existent goal")
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	assert.Empty(t, gf.Goals[0].DependsOn, "no edit on rejection")
+	assert.Equal(t, 0, gf.Goals[0].EscalationCount)
+}
+
+func TestGoalAddPrerequisite_RejectsNonExistentTargetGoal(t *testing.T) {
+	tmpDir := t.TempDir()
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+
+	_, err := server.GoalCreate("Prerequisite P", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = server.GoalAddPrerequisite("goal-999", "goal-001")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Contains(t, err.Error(), "non-existent goal")
+}
+
+func TestGoalAddPrerequisite_RejectsSelfDependency(t *testing.T) {
+	tmpDir := t.TempDir()
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+
+	_, err := server.GoalCreate("Goal A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = server.GoalAddPrerequisite("goal-001", "goal-001")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	assert.Empty(t, gf.Goals[0].DependsOn)
+	assert.Equal(t, 0, gf.Goals[0].EscalationCount)
+}
+
+func TestGoalAddPrerequisite_RejectsCycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+
+	// A exists; P is created depending on A. Wiring A -> P would close the cycle
+	// A -> P -> A.
+	_, err := server.GoalCreate("Goal A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+	_, err = server.GoalCreate("Goal P", nil, []string{"check"}, "", "", "", 0, []string{"goal-001"}, nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = server.GoalAddPrerequisite("goal-001", "goal-002")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	assert.Empty(t, gf.Goals[0].DependsOn, "no edit persists on cycle rejection")
+	assert.Equal(t, 0, gf.Goals[0].EscalationCount)
+}
+
+func TestGoalAddPrerequisite_IdempotentWhenAlreadyPresent(t *testing.T) {
+	tmpDir := t.TempDir()
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+
+	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+	_, err = server.GoalCreate("Prerequisite P", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	out1, err := server.GoalAddPrerequisite("goal-001", "goal-002")
+	require.NoError(t, err)
+	assert.Equal(t, 1, out1.EscalationCount)
+
+	// Re-wiring the same edge is a no-op success: no duplicate, no double-increment.
+	out2, err := server.GoalAddPrerequisite("goal-001", "goal-002")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"goal-002"}, out2.DependsOn)
+	assert.Equal(t, 1, out2.EscalationCount, "EscalationCount must not double-increment")
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"goal-002"}, gf.Goals[0].DependsOn)
+	assert.Equal(t, 1, gf.Goals[0].EscalationCount)
+}
+
+func TestGoalAddPrerequisite_EnforcesEscalationCap(t *testing.T) {
+	tmpDir := t.TempDir()
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+
+	// A already at escalation_count == cap; another wire must be rejected.
+	writeTestGoalsYaml(t, tmpDir, fmt.Sprintf(`goals:
+- id: goal-001
+  description: Dependent A
+  status: pending
+  escalation_count: %d
+- id: goal-002
+  description: Prerequisite P
+  status: pending
+`, escalationCap))
+
+	_, err := server.GoalAddPrerequisite("goal-001", "goal-002")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Contains(t, err.Error(), "escalation cap")
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	assert.Empty(t, gf.Goals[0].DependsOn, "A.depends_on unchanged at cap")
+	assert.Equal(t, escalationCap, gf.Goals[0].EscalationCount)
+}
+
+func TestGoalAddPrerequisite_ConcurrentCallsSerializeUnderLock(t *testing.T) {
+	tmpDir := t.TempDir()
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+
+	// One dependent A and two prerequisites; two concurrent wires (within the
+	// cap of 2) must both land without corrupting goals.yaml.
+	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+	_, err = server.GoalCreate("Prerequisite P1", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+	_, err = server.GoalCreate("Prerequisite P2", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	errs := make([]error, 2)
+	prereqs := []string{"goal-002", "goal-003"}
+	for i := 0; i < 2; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			_, errs[idx] = server.GoalAddPrerequisite("goal-001", prereqs[idx])
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < 2; i++ {
+		assert.NoError(t, errs[i], "wire %d should succeed under the lock", i)
+	}
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err, "goals.yaml must remain valid YAML (no corruption)")
+	require.NotNil(t, gf)
+	assert.ElementsMatch(t, []string{"goal-002", "goal-003"}, gf.Goals[0].DependsOn, "both prerequisites must be wired")
+	assert.Equal(t, 2, gf.Goals[0].EscalationCount, "each wire increments exactly once")
+}
+
+// --- tvGoal Migrates mirror tests (dual-struct sync with taskvisor.Goal.Migrates) ---
+
+// TestTvGoal_MigratesRoundTrips: migrates:true must survive the MCP tvGoalsFile
+// load → tvSaveGoals round-trip. Without the tvGoal mirror field, every MCP
+// load-resave silently erases the flag and disarms the daemon's migration
+// co-scheduling exclusion at MaxGoals>1.
+func TestTvGoal_MigratesRoundTrips(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestGoalsYaml(t, tmpDir, `goals:
+- id: goal-001
+  description: Add bookings table migration
+  status: pending
+  max_retries: 3
+  migrates: true
+- id: goal-002
+  description: Non-migrating goal
+  status: pending
+  max_retries: 3
+`)
+
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.Len(t, gf.Goals, 2)
+	assert.True(t, gf.Goals[0].Migrates, "migrates: true must load into tvGoal")
+	assert.False(t, gf.Goals[1].Migrates)
+
+	require.NoError(t, tvSaveGoals(tmpDir, gf))
+
+	// Re-read via the CANONICAL taskvisor loader — proves the MCP resave did not
+	// erase the flag the daemon's DisjointReadySet exclusion depends on.
+	canonical, err := taskvisor.LoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, canonical.Goals, 2)
+	assert.True(t, canonical.Goals[0].Migrates, "migrates: true must survive the MCP load-resave round-trip")
+	assert.False(t, canonical.Goals[1].Migrates)
+}
+
+// TestGoalAddPrerequisite_PreservesMigratesFlag: regression for the erase bug —
+// wiring a prerequisite onto goal A load-resaves the whole goals file via
+// tvGoal, which must not strip migrates: true from ANY goal in the file.
+func TestGoalAddPrerequisite_PreservesMigratesFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestGoalsYaml(t, tmpDir, `goals:
+- id: goal-001
+  description: Dependent A with schema migration
+  status: pending
+  max_retries: 3
+  migrates: true
+- id: goal-002
+  description: Prerequisite P
+  status: pending
+  max_retries: 3
+`)
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	out, err := server.GoalAddPrerequisite("goal-001", "goal-002")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"goal-002"}, out.DependsOn)
+
+	canonical, err := taskvisor.LoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, canonical.Goals, 2)
+	assert.True(t, canonical.Goals[0].Migrates,
+		"GoalAddPrerequisite must not erase migrates: true on the rewired goal")
+	assert.Equal(t, []string{"goal-002"}, canonical.Goals[0].DependsOn)
+}
+
+// --- tvGoal full durable-field parity tests (audit-6: dual-struct sync with taskvisor.Goal) ---
+
+// fullyLoadedGoalYaml populates EVERY durable taskvisor.Goal field with a
+// non-zero value: legacy + per-class retry counters, per-class Max… budgets,
+// both convergence breaker states, escalation/scope/migrates, blocked_by,
+// blocked_by_precondition, and timestamps. Live counters are non-zero and
+// Max… budgets are non-zero ON PURPOSE so neither LoadGoals normalization
+// (budget derivation, live-counter re-seed) fires — the file round-trips
+// byte-for-byte semantically and any field tvGoal drops shows up as a diff.
+const fullyLoadedGoalYaml = `current_goal: goal-001
+goals:
+- id: goal-001
+  description: Fully loaded durable goal
+  acceptance:
+  - builds green
+  validate:
+  - go test ./...
+  preconditions:
+  - kind: command
+    spec: which go
+    remedy: install go
+  status: in_progress
+  retries: 1
+  max_retries: 5
+  code_retries: 3
+  spec_retries: 2
+  validation_retries: 1
+  block_retries: 1
+  max_code_retries: 5
+  max_spec_retries: 3
+  max_validation_retries: 2
+  max_block_retries: 1
+  convergence_signatures:
+  - code-sig-a
+  - code-sig-b
+  convergence_streak: 2
+  spec_convergence_signatures:
+  - spec-sig-a
+  spec_convergence_streak: 1
+  phase: implement
+  depends_on:
+  - goal-002
+  escalation_count: 1
+  scope:
+  - internal/mcp/**
+  migrates: true
+  blocked_by: goal-002
+  blocked_by_precondition: true
+  started_at: "2026-06-03T10:00:00Z"
+- id: goal-002
+  description: Prerequisite P
+  status: pending
+  retries: 0
+  max_retries: 3
+  code_retries: 3
+  spec_retries: 2
+  validation_retries: 2
+  max_code_retries: 3
+  max_spec_retries: 2
+  max_validation_retries: 2
+- id: goal-003
+  description: Independent goal
+  status: pending
+  retries: 0
+  max_retries: 3
+  code_retries: 3
+  spec_retries: 2
+  validation_retries: 2
+  max_code_retries: 3
+  max_spec_retries: 2
+  max_validation_retries: 2
+`
+
+// TestTvGoal_AllDurableFieldsRoundTrip: a goal carrying every durable field
+// must survive the MCP tvLoadGoals → tvSaveGoals round-trip and re-read
+// IDENTICALLY via the canonical taskvisor.LoadGoals. Without full tvGoal field
+// parity, any MCP load-resave (goal-create, goal-add-prerequisite) silently
+// erases per-class retry counters/budgets (corrupting the LoadGoals zero +
+// re-seed guard), resets the C6/spec convergence breakers, and drops the
+// blocked_by_precondition auto-resume key.
+func TestTvGoal_AllDurableFieldsRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestGoalsYaml(t, tmpDir, fullyLoadedGoalYaml)
+
+	// Baseline: what the daemon sees BEFORE any MCP touch.
+	baseline, err := taskvisor.LoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, baseline)
+	require.Len(t, baseline.Goals, 3)
+
+	// MCP load-resave round-trip (the erase path under test).
+	gf, err := tvLoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, gf)
+	require.NoError(t, tvSaveGoals(tmpDir, gf))
+
+	// Re-read via the CANONICAL loader: every durable field must be intact.
+	after, err := taskvisor.LoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	assert.Equal(t, baseline, after,
+		"MCP tvLoadGoals→tvSaveGoals round-trip must preserve every durable taskvisor.Goal field")
+
+	// Spot-check the 13 audit-6 fields explicitly so a failure names the field.
+	g := after.Goals[0]
+	assert.Equal(t, 3, g.CodeRetries, "code_retries erased")
+	assert.Equal(t, 2, g.SpecRetries, "spec_retries erased")
+	assert.Equal(t, 1, g.ValidationRetries, "validation_retries erased")
+	assert.Equal(t, 1, g.BlockRetries, "block_retries erased")
+	assert.Equal(t, 5, g.MaxCodeRetries, "max_code_retries erased")
+	assert.Equal(t, 3, g.MaxSpecRetries, "max_spec_retries erased")
+	assert.Equal(t, 2, g.MaxValidationRetries, "max_validation_retries erased")
+	assert.Equal(t, 1, g.MaxBlockRetries, "max_block_retries erased")
+	assert.Equal(t, []string{"code-sig-a", "code-sig-b"}, g.ConvergenceSignatures, "convergence_signatures erased")
+	assert.Equal(t, 2, g.ConvergenceStreak, "convergence_streak erased")
+	assert.Equal(t, []string{"spec-sig-a"}, g.SpecConvergenceSignatures, "spec_convergence_signatures erased")
+	assert.Equal(t, 1, g.SpecConvergenceStreak, "spec_convergence_streak erased")
+	assert.True(t, g.BlockedByPrecondition, "blocked_by_precondition erased")
+}
+
+// TestGoalAddPrerequisite_PreservesAllDurableFields: wiring a prerequisite
+// load-resaves the WHOLE goals file via tvGoal; no durable state on any goal
+// may be erased by that rewrite (regression for the audit-6 erase hazard).
+func TestGoalAddPrerequisite_PreservesAllDurableFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeTestGoalsYaml(t, tmpDir, fullyLoadedGoalYaml)
+
+	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
+	out, err := server.GoalAddPrerequisite("goal-002", "goal-003")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"goal-003"}, out.DependsOn)
+
+	canonical, err := taskvisor.LoadGoals(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, canonical.Goals, 3)
+
+	g := canonical.Goals[0] // goal-001: untouched by the wire, must be fully intact
+	assert.Equal(t, 3, g.CodeRetries, "code_retries erased by GoalAddPrerequisite")
+	assert.Equal(t, 2, g.SpecRetries, "spec_retries erased by GoalAddPrerequisite")
+	assert.Equal(t, 1, g.ValidationRetries, "validation_retries erased by GoalAddPrerequisite")
+	assert.Equal(t, 1, g.BlockRetries, "block_retries erased by GoalAddPrerequisite")
+	assert.Equal(t, 5, g.MaxCodeRetries, "max_code_retries erased by GoalAddPrerequisite")
+	assert.Equal(t, 3, g.MaxSpecRetries, "max_spec_retries erased by GoalAddPrerequisite")
+	assert.Equal(t, 2, g.MaxValidationRetries, "max_validation_retries erased by GoalAddPrerequisite")
+	assert.Equal(t, 1, g.MaxBlockRetries, "max_block_retries erased by GoalAddPrerequisite")
+	assert.Equal(t, []string{"code-sig-a", "code-sig-b"}, g.ConvergenceSignatures, "convergence_signatures erased by GoalAddPrerequisite")
+	assert.Equal(t, 2, g.ConvergenceStreak, "convergence_streak erased by GoalAddPrerequisite")
+	assert.Equal(t, []string{"spec-sig-a"}, g.SpecConvergenceSignatures, "spec_convergence_signatures erased by GoalAddPrerequisite")
+	assert.Equal(t, 1, g.SpecConvergenceStreak, "spec_convergence_streak erased by GoalAddPrerequisite")
+	assert.True(t, g.BlockedByPrecondition, "blocked_by_precondition erased by GoalAddPrerequisite")
+	assert.True(t, g.Migrates, "migrates erased by GoalAddPrerequisite")
+	assert.Equal(t, 1, g.EscalationCount, "escalation_count erased by GoalAddPrerequisite")
+
+	// The wired goal itself keeps its durable state and gains the edge.
+	p := canonical.Goals[1]
+	assert.Equal(t, []string{"goal-003"}, p.DependsOn)
+	assert.Equal(t, 3, p.MaxCodeRetries, "max_code_retries erased on the rewired goal")
+	assert.Equal(t, 2, p.MaxSpecRetries, "max_spec_retries erased on the rewired goal")
+}
+
+// TestGoalTvGoalYamlTagParity: REFLECTION parity guard — every yaml-persisted
+// field on the canonical taskvisor.Goal must exist on the MCP mirror tvGoal
+// with the SAME yaml tag (key + omitempty) and the SAME Go type
+// (tvGoal ⊇ Goal's persisted set). This is the permanent class guard: the next
+// field added to Goal without a tvGoal mirror fails THIS test instead of
+// silently being erased by the MCP load-resave paths.
+func TestGoalTvGoalYamlTagParity(t *testing.T) {
+	// Deliberately MCP-absent fields would be allowlisted here, keyed by yaml
+	// key, with a justification string each. Currently EMPTY by design: the MCP
+	// tools load-resave the daemon-owned .tmux-cli/goals.yaml IN FULL, so every
+	// persisted Goal field is durable state the resave must carry.
+	allowlist := map[string]string{}
+
+	goalType := reflect.TypeOf(taskvisor.Goal{})
+	tvType := reflect.TypeOf(tvGoal{})
+
+	tvByKey := make(map[string]reflect.StructField, tvType.NumField())
+	for i := 0; i < tvType.NumField(); i++ {
+		f := tvType.Field(i)
+		tag := f.Tag.Get("yaml")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		tvByKey[strings.Split(tag, ",")[0]] = f
+	}
+
+	for i := 0; i < goalType.NumField(); i++ {
+		gf := goalType.Field(i)
+		tag := gf.Tag.Get("yaml")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		key := strings.Split(tag, ",")[0]
+		if reason, ok := allowlist[key]; ok {
+			t.Logf("allowlisted (deliberately MCP-absent): %s — %s", key, reason)
+			continue
+		}
+		tvField, ok := tvByKey[key]
+		if !ok {
+			t.Errorf("taskvisor.Goal.%s (yaml %q) has NO mirror on mcp.tvGoal — every MCP load-resave will silently erase it from goals.yaml", gf.Name, key)
+			continue
+		}
+		assert.Equal(t, tag, tvField.Tag.Get("yaml"),
+			"yaml tag mismatch for %s: Goal=%q tvGoal=%q (key and omitempty must match)", gf.Name, tag, tvField.Tag.Get("yaml"))
+		assert.Equal(t, gf.Type, tvField.Type,
+			"type mismatch for yaml key %q: Goal.%s is %s, tvGoal.%s is %s", key, gf.Name, gf.Type, tvField.Name, tvField.Type)
+	}
+}
+
+// TestGoalsFileTvGoalsFileYamlTagParity: container-level sibling of
+// TestGoalTvGoalYamlTagParity. The same dual-struct silent-erase hazard exists
+// one level up: taskvisor.GoalsFile (canonical owner of .tmux-cli/goals.yaml)
+// vs mcp.tvGoalsFile (the wrapper tvLoadGoals/tvSaveGoals (de)serialize
+// through on every MCP resave). Every yaml-persisted field on GoalsFile must
+// exist on tvGoalsFile with the SAME yaml tag (key + omitempty); otherwise a
+// future GoalsFile field would be silently dropped from goals.yaml by the
+// next MCP load-resave.
+//
+// Exception: for the `goals` field the Go types differ BY DESIGN
+// ([]taskvisor.Goal vs []tvGoal), so this test asserts yaml-KEY parity only
+// and defers element-level field parity to TestGoalTvGoalYamlTagParity.
+func TestGoalsFileTvGoalsFileYamlTagParity(t *testing.T) {
+	// Deliberately MCP-absent fields would be allowlisted here, keyed by yaml
+	// key, with a justification string each. Currently EMPTY by design: the
+	// MCP tools load-resave goals.yaml IN FULL, so every persisted GoalsFile
+	// field is durable state the resave must carry.
+	allowlist := map[string]string{}
+
+	goalsFileType := reflect.TypeOf(taskvisor.GoalsFile{})
+	tvType := reflect.TypeOf(tvGoalsFile{})
+
+	tvByKey := make(map[string]reflect.StructField, tvType.NumField())
+	for i := 0; i < tvType.NumField(); i++ {
+		f := tvType.Field(i)
+		tag := f.Tag.Get("yaml")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		tvByKey[strings.Split(tag, ",")[0]] = f
+	}
+
+	for i := 0; i < goalsFileType.NumField(); i++ {
+		gf := goalsFileType.Field(i)
+		tag := gf.Tag.Get("yaml")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		key := strings.Split(tag, ",")[0]
+		if reason, ok := allowlist[key]; ok {
+			t.Logf("allowlisted (deliberately MCP-absent): %s — %s", key, reason)
+			continue
+		}
+		tvField, ok := tvByKey[key]
+		if !ok {
+			t.Errorf("taskvisor.GoalsFile.%s (yaml %q) has NO mirror on mcp.tvGoalsFile — every MCP load-resave will silently erase it from goals.yaml", gf.Name, key)
+			continue
+		}
+		assert.Equal(t, tag, tvField.Tag.Get("yaml"),
+			"yaml tag mismatch for %s: GoalsFile=%q tvGoalsFile=%q (key and omitempty must match)", gf.Name, tag, tvField.Tag.Get("yaml"))
+		// Skip Go-type equality for the goals slice: []Goal vs []tvGoal differ
+		// by design; element parity is covered by TestGoalTvGoalYamlTagParity.
+		if key == "goals" {
+			continue
+		}
+		assert.Equal(t, gf.Type, tvField.Type,
+			"type mismatch for yaml key %q: GoalsFile.%s is %s, tvGoalsFile.%s is %s", key, gf.Name, gf.Type, tvField.Name, tvField.Type)
+	}
 }

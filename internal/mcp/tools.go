@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/console/tmux-cli/internal/session"
 	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/tasks"
+	"github.com/console/tmux-cli/internal/taskvisor"
 	"github.com/console/tmux-cli/internal/tmux"
 )
 
@@ -115,6 +118,29 @@ func (s *Server) WindowsSend(windowIdentifier, command string) (bool, error) {
 	return true, nil
 }
 
+// resolveSelfWindowName returns the NAME of the tmux window this MCP server
+// process is running in, resolved from the TMUX_WINDOW_UUID env var that the
+// per-window launcher exports (see SessionManager / WindowsCreate). It matches
+// that UUID against the per-window "window-uuid" option across the supplied
+// window list. Returns "" when the env var is unset or no window matches — in
+// those contexts (MaxGoals=1, non-tmux, unit tests) callers keep their prior
+// behavior. This is the single source of truth for "which window am I?" so the
+// LLM never has to guess it (which it gets wrong at MaxGoals>1, where multiple
+// supervisor-NNN windows plus a bare "supervisor" coexist).
+func (s *Server) resolveSelfWindowName(sessionID string, windows []tmux.WindowInfo) string {
+	selfUUID := os.Getenv("TMUX_WINDOW_UUID")
+	if selfUUID == "" {
+		return ""
+	}
+	for i := range windows {
+		uuid, err := s.executor.GetWindowOption(sessionID, windows[i].TmuxWindowID, tmux.WindowUUIDOption)
+		if err == nil && uuid == selfUUID {
+			return windows[i].Name
+		}
+	}
+	return ""
+}
+
 // WindowsMessage sends a formatted message to another window with auto-detected sender.
 func (s *Server) WindowsMessage(receiver, message string) (bool, string, error) {
 	if receiver == "" {
@@ -134,18 +160,10 @@ func (s *Server) WindowsMessage(receiver, message string) (bool, string, error) 
 		return false, "", fmt.Errorf("%w: %w", ErrTmuxCommandFailed, err)
 	}
 
-	// Detect sender window by UUID from environment variable
-	senderUUID := os.Getenv("TMUX_WINDOW_UUID")
+	// Detect sender window by UUID from environment variable.
 	sender := sessionID // Default to session ID
-
-	if senderUUID != "" {
-		for i := range windows {
-			uuid, err := s.executor.GetWindowOption(sessionID, windows[i].TmuxWindowID, tmux.WindowUUIDOption)
-			if err == nil && uuid == senderUUID {
-				sender = windows[i].Name
-				break
-			}
-		}
+	if self := s.resolveSelfWindowName(sessionID, windows); self != "" {
+		sender = self
 	}
 
 	// Resolve receiver window
@@ -168,7 +186,17 @@ func (s *Server) WindowsMessage(receiver, message string) (bool, string, error) 
 }
 
 // WindowsCreate creates a new window in the current tmux session.
-func (s *Server) WindowsCreate(name, command string) (*WindowInfo, error) {
+// windowCreatorInDir is the optional cwd-aware extension implemented by the
+// production executor (RealTmuxExecutor.CreateWindowInDir). It is deliberately NOT
+// part of the TmuxExecutor interface (see internal/tmux/real_executor.go) so that
+// threading a working directory stays additive — WindowsCreate type-asserts to it
+// only when a non-empty cwd is requested and otherwise leaves every existing path
+// (and its mocks) byte-identical.
+type windowCreatorInDir interface {
+	CreateWindowInDir(sessionID, name, command, cwd string) (string, error)
+}
+
+func (s *Server) WindowsCreate(name, command, cwd string) (*WindowInfo, error) {
 	if name == "" {
 		return nil, fmt.Errorf("%w: name cannot be empty", ErrInvalidInput)
 	}
@@ -194,7 +222,21 @@ func (s *Server) WindowsCreate(name, command string) (*WindowInfo, error) {
 	// Generate UUID
 	windowUUID := session.GenerateUUID()
 
-	windowID, err := s.executor.CreateWindow(sessionID, name, "")
+	// A non-empty cwd (E1-1c per-goal worktree isolation) starts the window's shell
+	// there via the executor's cwd-aware factory. cwd=="" keeps the session default,
+	// routing through the original CreateWindow path so all existing callers are
+	// unchanged. If the executor lacks CreateWindowInDir, degrade to the default cwd.
+	var windowID string
+	if cwd != "" {
+		if dirExec, ok := s.executor.(windowCreatorInDir); ok {
+			windowID, err = dirExec.CreateWindowInDir(sessionID, name, "", cwd)
+		} else {
+			log.Printf("warning: executor does not support working directory; creating %q at session default", name)
+			windowID, err = s.executor.CreateWindow(sessionID, name, "")
+		}
+	} else {
+		windowID, err = s.executor.CreateWindow(sessionID, name, "")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: session=%s name=%q: %w",
 			ErrWindowCreateFailed, sessionID, name, err)
@@ -331,10 +373,22 @@ func (s *Server) HooksConfig(action, hook string) (*HooksConfigOutput, error) {
 	}
 }
 
-// WindowsRecoverWorkers batch-recovers stuck execute-N worker windows.
-func (s *Server) WindowsRecoverWorkers(message string) (*WindowsRecoverWorkersOutput, error) {
+// WindowsRecoverWorkers batch-recovers stuck execute-N worker windows. When
+// callerWid is goal-namespaced (parseGoalBinding ok — e.g. "supervisor-020" or
+// an explicit goal-<N> token), recovery is restricted to that goal's
+// execute-<ns>-* worker pool, so at MaxGoals>1 a supervisor recovering ITS
+// stuck workers never injects spurious messages into other goals' healthy
+// workers mid-task. A bare ("supervisor") or absent callerWid keeps the global
+// "execute-" prefix — byte-identical back-compat, and the tool remains usable
+// as a manual catch-all recovery.
+func (s *Server) WindowsRecoverWorkers(message, callerWid string) (*WindowsRecoverWorkersOutput, error) {
 	if message == "" {
 		message = "continue"
+	}
+
+	prefix := "execute-"
+	if id, _, ok := parseGoalBinding(callerWid); ok {
+		prefix = taskvisor.ExecutePrefixForGoal(id)
 	}
 
 	sessionID, err := s.discoverSession()
@@ -347,14 +401,14 @@ func (s *Server) WindowsRecoverWorkers(message string) (*WindowsRecoverWorkersOu
 		return nil, fmt.Errorf("%w: %w", ErrTmuxCommandFailed, err)
 	}
 
-	// Filter execute-* workers
+	// Filter the in-scope execute workers
 	type workerInfo struct {
 		name     string
 		windowID string
 	}
 	var workers []workerInfo
 	for _, w := range windows {
-		if strings.HasPrefix(w.Name, "execute-") {
+		if strings.HasPrefix(w.Name, prefix) {
 			workers = append(workers, workerInfo{name: w.Name, windowID: w.TmuxWindowID})
 		}
 	}
@@ -413,16 +467,87 @@ func nextExecuteN(windows []WindowListItem, prefix string) string {
 	return fmt.Sprintf("%s%d", prefix, maxN+1)
 }
 
+// goalBindingRe matches the first goal-<N> token anywhere in a caller window name
+// (e.g. the "goal-020" in "sup-goal-020-c3"). Compiled once at package scope.
+var goalBindingRe = regexp.MustCompile(`goal-\d+`)
+
+// goalCycleSuffixRe matches a trailing -c<N> cycle suffix on a caller window name
+// (e.g. the "-c3" in "sup-goal-020-c3"). Compiled once at package scope.
+var goalCycleSuffixRe = regexp.MustCompile(`-c(\d+)$`)
+
+// namespacedSupRe / namespacedWorkerRe recover the goal namespace from the
+// per-goal window names the taskvisor daemon actually emits at MaxGoals>1
+// (internal/taskvisor/window_names.go): supervisor-<ns> / validator-<ns> and the
+// execute-<ns>-<n> / inv-<ns>-<n> worker pools, where <ns> is the goal id with its
+// "goal-" prefix stripped (e.g. goal-020 -> "020"). This reconciles the two halves
+// of execute-31: window_names.go strips the "goal-" prefix to form <ns>, but this
+// parser was written for an explicit "goal-<N>" token, so a worker spawned under a
+// real namespaced supervisor window (e.g. "supervisor-020") would otherwise miss
+// the goal binding and fall back to the SHARED global marker — routing two
+// concurrent goals' workers to the same research root. The MaxGoals<=1 bare names
+// ("supervisor"/"validator" carry no -<ns>; "execute-<n>"/"inv-<n>" carry a single
+// numeric segment) are deliberately NOT matched here, so they still take the
+// marker fallback (byte-identical single-goal routing).
+var namespacedSupRe = regexp.MustCompile(`^(?:supervisor|validator)-(\d+)$`)
+var namespacedWorkerRe = regexp.MustCompile(`^(?:execute|inv)-(\d+)-\d+`)
+
+// parseGoalBinding derives a worker→goal binding from a caller window name. It is a
+// pure function: no filesystem access, never panics. Resolution order: (1) an
+// explicit goal-<N> token anywhere in the name (e.g. "sup-goal-020-c3"); (2) the
+// daemon's namespaced window forms (supervisor-<ns> / execute-<ns>-<n>), from which
+// the goal id is reconstructed as "goal-<ns>". A trailing -c<N> suffix with N>=1
+// becomes cycle (otherwise cycle=0, the no-cycle research path; the namespaced
+// forms carry no cycle suffix, so concurrent goals route to distinct goal-scoped
+// roots). ok is true iff a goal id was resolved.
+func parseGoalBinding(windowName string) (goalID string, cycle int, ok bool) {
+	goalID = goalBindingRe.FindString(windowName)
+	if goalID == "" {
+		var ns string
+		if m := namespacedSupRe.FindStringSubmatch(windowName); m != nil {
+			ns = m[1]
+		} else if m := namespacedWorkerRe.FindStringSubmatch(windowName); m != nil {
+			ns = m[1]
+		}
+		if ns == "" {
+			return "", 0, false
+		}
+		goalID = "goal-" + ns
+	}
+	if m := goalCycleSuffixRe.FindStringSubmatch(windowName); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil && n >= 1 {
+			cycle = n
+		}
+	}
+	return goalID, cycle, true
+}
+
 // resolveResearchRoot returns the project-relative research-root path for worker
-// reports. In goal mode (a non-empty .tmux-cli/taskvisor-current-goal exists) it is
-// goal-scoped with NO timestamp: .tmux-cli/goals/<GOAL_ID>/research. When the daemon
-// has also written a valid .tmux-cli/taskvisor-current-cycle marker (C7), the path is
-// further namespaced per-cycle: .tmux-cli/goals/<GOAL_ID>/research/cycle-<N> — keeping
-// the MCP worker-spawn path consistent with the daemon / investigate.xml resolution.
-// Otherwise (no/empty/invalid cycle marker) it falls back to the goal-scoped no-cycle
-// path. With no active goal it is the standalone timestamped dir:
-// .tmux-cli/research/<YYYY-MM-DD-HH>. This mirrors supervisor.xml / plan.xml step 0b.
-func (s *Server) resolveResearchRoot() string {
+// reports, derived from the caller's window name first and process-global markers only
+// as a fallback. Precedence:
+//  1. If callerWid is goal-namespaced (parseGoalBinding ok), the binding is derived
+//     from it — parallel-safe, never the global cycle marker: an explicit cycle>=1
+//     suffix yields .tmux-cli/goals/<GOAL_ID>/research/cycle-<N>; otherwise the
+//     PER-GOAL marker .tmux-cli/goals/<GOAL_ID>/current-cycle (readPerGoalCycleMarker)
+//     supplies the cycle layer when valid, else .tmux-cli/goals/<GOAL_ID>/research.
+//  2. Otherwise (today's plain "supervisor" caller, MaxGoals=1) it falls back to the
+//     legacy global markers: a non-empty .tmux-cli/taskvisor-current-goal yields the
+//     goal-scoped path, further namespaced per-cycle when a valid
+//     .tmux-cli/taskvisor-current-cycle marker exists. This keeps MaxGoals=1 output
+//     paths byte-identical to the prior marker-based resolution.
+//  3. With no goal token and no marker, it is the standalone timestamped dir:
+//     .tmux-cli/research/<YYYY-MM-DD-HH>.
+//
+// This mirrors supervisor.xml / plan.xml step 0b.
+func (s *Server) resolveResearchRoot(callerWid string) string {
+	if id, cyc, ok := parseGoalBinding(callerWid); ok {
+		if cyc >= 1 {
+			return filepath.Join(".tmux-cli", "goals", id, "research", fmt.Sprintf("cycle-%d", cyc))
+		}
+		if n, ok := s.readPerGoalCycleMarker(id); ok {
+			return filepath.Join(".tmux-cli", "goals", id, "research", fmt.Sprintf("cycle-%d", n))
+		}
+		return filepath.Join(".tmux-cli", "goals", id, "research")
+	}
 	goalPath := filepath.Join(s.workingDir, ".tmux-cli", "taskvisor-current-goal")
 	if data, err := os.ReadFile(goalPath); err == nil {
 		if goalID := strings.TrimSpace(string(data)); goalID != "" {
@@ -442,6 +567,26 @@ func (s *Server) resolveResearchRoot() string {
 func (s *Server) readCycleMarker() (int, bool) {
 	cyclePath := filepath.Join(s.workingDir, ".tmux-cli", "taskvisor-current-cycle")
 	data, err := os.ReadFile(cyclePath)
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
+}
+
+// readPerGoalCycleMarker reads the PER-GOAL .tmux-cli/goals/<goalID>/current-cycle
+// marker written by the daemon's writeCycleMarker at mg>1 (a bare integer string)
+// and returns (N, true) only when it trims to a positive integer (>=1). Absent,
+// empty, or unparseable markers yield (0, false) so callers fall back to the
+// no-cycle path. It is the race-free cycle source for namespaced callers — the
+// global taskvisor-current-cycle marker is last-writer-wins under mg>1. It never
+// errors or panics.
+func (s *Server) readPerGoalCycleMarker(goalID string) (int, bool) {
+	p := filepath.Join(s.workingDir, ".tmux-cli", "goals", goalID, "current-cycle")
+	data, err := os.ReadFile(p)
 	if err != nil {
 		return 0, false
 	}
@@ -502,7 +647,7 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 
 // WindowsSpawnWorker atomically spawns a worker: creates window, sends /tmux:execute,
 // and sends the structured task message.
-func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, context, deliverable, prefix string) (*WindowInfo, string, string, error) {
+func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, context, deliverable, prefix, workingDirectory string) (*WindowInfo, string, string, error) {
 	if prefix == "" {
 		prefix = "execute-"
 	}
@@ -517,6 +662,39 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	}
 	if scope == "" {
 		return nil, "", "", fmt.Errorf("%w: scope cannot be empty", ErrInvalidInput)
+	}
+
+	sessionID, err := s.discoverSession()
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	// Authoritative supervisor identity: override the caller-supplied supervisorWid
+	// with the spawning window's REAL name, resolved from TMUX_WINDOW_UUID. At
+	// MaxGoals>1 the supervisor LLM cannot reliably name its own per-goal window
+	// (supervisor-NNN vs the bare "supervisor"), and a wrong name silently misroutes
+	// every worker's [EXECUTE:DONE] reply to the wrong window — stalling the goal.
+	// Guarded by the env check inside resolveSelfWindowName, so MaxGoals=1 / non-tmux
+	// / unit-test contexts (env unset) keep the passed value unchanged. Resolved
+	// BEFORE the cap/allocation below so the worker prefix can be derived from it.
+	if os.Getenv("TMUX_WINDOW_UUID") != "" {
+		if full, lerr := s.executor.ListWindows(sessionID); lerr == nil {
+			if self := s.resolveSelfWindowName(sessionID, full); self != "" {
+				supervisorWid = self
+			}
+		}
+	}
+
+	// Per-supervisor worker namespacing: derive the worker-window prefix from the
+	// resolved supervisor window so BOTH nextExecuteN allocation and the MaxWorkers
+	// cap (each prefix-parametric) are scoped PER SUPERVISOR — a sibling goal's
+	// workers never consume this goal's budget. "supervisor-<ns>" → "<base>-<ns>-"
+	// (e.g. execute-<ns>- / inv-<ns>-), which also matches the daemon's per-goal
+	// teardown (killWindowsByPrefix executePrefix/invPrefix), so workers are no
+	// longer orphaned at goal completion. The bare "supervisor" (MaxGoals=1) leaves
+	// the prefix unchanged — byte-identical to before.
+	if ns := strings.TrimPrefix(supervisorWid, "supervisor-"); ns != "" && ns != supervisorWid {
+		prefix = strings.TrimSuffix(prefix, "-") + "-" + ns + "-"
 	}
 
 	windows, err := s.WindowsList()
@@ -540,14 +718,12 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 
 	workerName := nextExecuteN(windows, prefix)
 
-	window, err := s.WindowsCreate(workerName, "")
+	// workingDirectory (E1-1c) starts the worker's shell in the goal's worktree so
+	// validate-isolation investigators inherit the isolated tree; "" (the default
+	// for every existing caller) keeps the session default cwd unchanged.
+	window, err := s.WindowsCreate(workerName, "", workingDirectory)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("failed to create worker window %s: %w", workerName, err)
-	}
-
-	sessionID, err := s.discoverSession()
-	if err != nil {
-		return nil, "", "", err
 	}
 
 	err = s.executor.SendMessage(sessionID, window.TmuxWindowID, "/tmux:execute")
@@ -559,7 +735,7 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 
 	time.Sleep(2 * time.Second)
 
-	researchRoot := s.resolveResearchRoot()
+	researchRoot := s.resolveResearchRoot(supervisorWid)
 	_ = os.MkdirAll(filepath.Join(s.workingDir, researchRoot), 0o755)
 	taskMessage := buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchRoot, deliverable)
 
@@ -593,8 +769,14 @@ func (s *Server) SpecValidate(file string) (*SpecValidateOutput, error) {
 	}, nil
 }
 
-func (s *Server) TasksValidate() (*TasksValidateOutput, error) {
-	path := filepath.Join(s.workingDir, ".tmux-cli", "tasks.yaml")
+func (s *Server) TasksValidate(in TasksValidateInput) (*TasksValidateOutput, error) {
+	// Empty GoalID validates the top-level planning-queue (standalone /tmux:plan
+	// flow, unchanged). A set GoalID validates the per-goal fan-out file so the
+	// goal-mode step-3b gate checks the isolated path.
+	path := tasks.TasksFilePath(s.workingDir)
+	if in.GoalID != "" {
+		path = tasks.GoalTasksFilePath(s.workingDir, in.GoalID)
+	}
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("no tasks.yaml found at %s", path)
 	}

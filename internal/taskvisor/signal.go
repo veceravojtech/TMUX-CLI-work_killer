@@ -58,6 +58,28 @@ type ValidationFinding struct {
 	InputFingerprint  string   `json:"input_fingerprint,omitempty" yaml:"input_fingerprint,omitempty"`
 	ReusedFromCycle   int      `json:"reused_from_cycle,omitempty" yaml:"reused_from_cycle,omitempty"`
 	ReusedFingerprint string   `json:"reused_fingerprint,omitempty" yaml:"reused_fingerprint,omitempty"`
+
+	// B5a structured correction. CorrectionEdits is an OPTIONAL, machine-applicable
+	// remedy a validator MAY emit alongside the REQUIRED free-text Correction: a
+	// list of {File,Line,Old,New} edits a downstream mechanical applier consumes
+	// before the generation bounce. Advisory only — never auto-applied here, never
+	// folded into failureSignature/ComputeSignatures (it is a remedy, not failure
+	// identity) nor HasSubstantiveSpecDefect. Appended LAST so existing field order
+	// is preserved; omitempty so prose-only findings are byte-identical on the wire.
+	// SYNC: mirrored by mcp.ValidationFinding.CorrectionEdits + mcp.CorrectionEdit
+	// (TestValidationFindingStructsInSync + TestCorrectionEditStructsInSync_TagsMatch).
+	CorrectionEdits []CorrectionEdit `json:"correction_edit,omitempty" yaml:"correction_edit,omitempty"`
+}
+
+// CorrectionEdit is one machine-applicable edit within a finding's structured
+// remedy. SYNC: mirrored field-for-field (same json tags) by mcp.CorrectionEdit
+// in internal/mcp/server.go (taskvisor cannot import mcp — import cycle). Keep
+// the two in lock-step; TestCorrectionEditStructsInSync_TagsMatch pins this.
+type CorrectionEdit struct {
+	File string `json:"file" yaml:"file"`                     // repo-relative path (REQUIRED, non-empty)
+	Line int    `json:"line,omitempty" yaml:"line,omitempty"` // 1-based anchor hint; 0 = unknown
+	Old  string `json:"old,omitempty" yaml:"old,omitempty"`   // exact text to replace ("" = insert)
+	New  string `json:"new,omitempty" yaml:"new,omitempty"`   // replacement ("" = delete)
 }
 
 // ClassifyVerdict rolls a set of findings up into a single (verdict, owner)

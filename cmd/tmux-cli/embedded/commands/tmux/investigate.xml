@@ -112,19 +112,37 @@
     </step>
 
     <!--
-      C7 per-cycle research-dir resolution. The taskvisor daemon writes two
-      SIBLING markers before spawning this validator: .tmux-cli/taskvisor-current-goal
-      (the active GOAL_ID) and .tmux-cli/taskvisor-current-cycle (the one-indexed
-      CurrentCycle number = consumed per-class retry budget + 1). In GOAL MODE,
-      reports are namespaced per cycle under the goal-scoped research root, so a
-      stale prior-cycle report can never be read as the current verdict. STANDALONE
-      (no active goal) keeps the flat timestamped dir with NO cycle layer.
+      C7 per-cycle research-dir resolution. The taskvisor daemon writes its cycle
+      markers before spawning this validator. The one-indexed CurrentCycle number
+      (= consumed per-class retry budget + 1) lands in TWO places: the PER-GOAL
+      marker .tmux-cli/goals/&lt;GOAL_ID&gt;/current-cycle (written only at
+      max_goals&gt;1; removed at max_goals&lt;=1) and the GLOBAL sibling marker
+      .tmux-cli/taskvisor-current-cycle (always written; last-writer-wins across
+      concurrent goals). Precedence here is therefore PER-GOAL FIRST: read
+      GOAL_DIR/current-cycle, and only when it is absent/empty/non-numeric fall
+      back to the global marker — so under max_goals&gt;1 another goal's dispatch
+      can never clobber THIS goal's cycle number (reports/corrections landing in
+      a sibling goal's cycle-N/ was the failure mode). .tmux-cli/taskvisor-current-goal
+      (the active GOAL_ID) is unchanged. In GOAL MODE, reports are namespaced per
+      cycle under the goal-scoped research root, so a stale prior-cycle report can
+      never be read as the current verdict. STANDALONE (no active goal) keeps the
+      flat timestamped dir with NO cycle layer.
     -->
     <step n="2a" title="Resolve per-cycle research dir (CYCLE_DIR)">
-      <action>Read .tmux-cli/taskvisor-current-goal (if present, trimmed → GOAL_ID_MARKER) and .tmux-cli/taskvisor-current-cycle (if present, trimmed integer → CYCLE_N).</action>
-      <rule>GOAL MODE — taskvisor-current-goal exists and is non-empty: use the GOAL_ID derived from the goal.md path in step 2 (the marker only corroborates it). If taskvisor-current-cycle is missing, empty, or non-numeric, default CYCLE_N=1. Set CYCLE_DIR = .tmux-cli/goals/&lt;GOAL_ID&gt;/research/cycle-&lt;CYCLE_N&gt;/ — a path BENEATH the already-existing goal-scoped research root; do NOT invent a parallel tree.</rule>
+      <action>Read .tmux-cli/taskvisor-current-goal (if present, trimmed → GOAL_ID_MARKER).</action>
+      <rule>GOAL MODE — taskvisor-current-goal exists and is non-empty: use the GOAL_ID derived from the goal.md path in step 2 (the marker only corroborates it). Resolve CYCLE_N per-goal first: (1) read GOAL_DIR/current-cycle — if present and it trims to a positive integer, that is CYCLE_N; (2) ONLY if the per-goal marker is absent, empty, or non-numeric, read the global .tmux-cli/taskvisor-current-cycle (same trimmed-positive-integer check); (3) if both are missing/empty/non-numeric, default CYCLE_N=1. Set CYCLE_DIR = .tmux-cli/goals/&lt;GOAL_ID&gt;/research/cycle-&lt;CYCLE_N&gt;/ — a path BENEATH the already-existing goal-scoped research root; do NOT invent a parallel tree. NEVER derive CYCLE_N by scanning corrections/ or research/cycle-* directories — both drift from the daemon's authoritative cycle number.</rule>
       <rule>STANDALONE MODE — taskvisor-current-goal absent or empty: there is no daemon-tracked cycle. Set CYCLE_DIR = .tmux-cli/research/{y-m-d-hh}/ (current timestamp, NO cycle layer) and leave CYCLE_N unset.</rule>
       <action>mkdir -p CYCLE_DIR (idempotent, defensive — the daemon pre-creates it in goal mode).</action>
+      <!--
+        E1-1c worktree-isolation resolution. The daemon (createValidatorAndSendPayload)
+        starts THIS validator window with cwd=the goal's git worktree and publishes
+        that path to the sibling marker .tmux-cli/taskvisor-current-worktree. Reading
+        it here lets step 3 thread the same worktree into every inv-* worker so their
+        quality/test commands observe ONLY this goal's edits. The .tmux-cli control
+        plane is shared (the worktree symlinks .tmux-cli -> base), so CYCLE_DIR and
+        every marker read/write stay correct regardless of cwd.
+      -->
+      <action>Read .tmux-cli/taskvisor-current-worktree (if present, trimmed → WORKTREE_DIR). If the marker is absent or empty, leave WORKTREE_DIR unset — this is the MaxGoals=1 / no-worktree case and the inv-* workers keep the session-default cwd (byte-identical to before).</action>
     </step>
 
     <!--
@@ -229,6 +247,77 @@
       <rule>Investigators with NO forbidden reference are unaffected: they keep their step 2c RERUN/REUSE decision and proceed to step 3 normally. This step removes only contradicting investigators from the spawn set; it never alters the condition-skip logic, the inv- prefix, or a clean investigator's spawn.</rule>
     </step>
 
+    <!--
+      C1a worker-escalation relay. Sibling of step 2d (same spec-defect family).
+      When an implementer worker hits a prerequisite that is OUT of the goal's
+      scope, /tmux:supervisor records it in GOAL_DIR/escalation.md
+      (supervisor-written, validator-read). This preflight turns that marker into
+      a status=blocked, owner=planner, failure_class=spec-defect finding for
+      step-5 aggregation with a CONCRETE correction naming the prerequisite, so
+      the daemon's C2 switch bounces the goal to goal-generation (SpecRetries−1) —
+      which then calls goal-create for the prerequisite — instead of charging the
+      implementer a code retry on an unwinnable goal. ABSENT escalation.md ⇒ pure
+      no-op (no investigator removed, no finding emitted).
+    -->
+    <step n="2e" title="C1a worker-escalation relay (spec-defect preflight)">
+      <action>Read GOAL_DIR/escalation.md. If the file does not exist or has escalation_count: 0 / zero entries, SKIP this step entirely — spawn investigators as planned and emit no escalation finding. Absent/empty escalations are never an error or a block.</action>
+      <action>Parse the entries under "## Escalations" (schema: escalation_count plus one or more "- need: \"...\"" blocks). For EACH entry whose need= is concrete (non-empty, not 'none'/'n/a'/'tbd'/'fix it'), record one ValidationFinding for step-5 aggregation: {rule:"escalation: &lt;need&gt;", status:"blocked", detail:"worker escalated an out-of-scope prerequisite: &lt;need&gt;", correction:"Create prerequisite goal: &lt;need&gt;", failure_class:"spec-defect", owner:"planner"}.</action>
+      <rule critical="true">The relayed finding MUST be substantive: detail and correction both name the concrete prerequisite. A contentless escalation finding is rejected by HasSubstantiveSpecDefect and would mis-route to ValidationRetries instead of generation — skip any entry with a contentless need= rather than emitting a vague finding.</rule>
+      <rule>This preflight does NOT remove or skip any investigator (unlike step 2d's binding short-circuit): the escalation finding is ADDED alongside the normal investigator verdicts. It forces verdict=blocked in step 5 (owner=planner tops the owner-priority order), so the goal cannot roll up to pass while an unconsumed escalation stands. Generation clears/supersedes consumed escalation entries when it creates the prerequisite goal.</rule>
+    </step>
+
+    <!--
+      B9b inline validation fast-path decision gate. Sits AFTER the C10 (2c), C8
+      (2d) and C1a (2e) preflights and BEFORE step 3 (spawn). When EVERY active
+      RERUN investigator is a pure-command exit check (build/lint/test) and this
+      is the FIRST validation cycle, the validator runs them INLINE in this window
+      (a faithful replica of investigate-worker.xml's command loop) with ZERO
+      inv-* spawns — saving 2-4 Claude instances on the goal's first validation.
+      The moment ANY active RERUN investigator needs reasoning, the whole set fans
+      out via step 3 (all-or-nothing; never partially inline). The decision itself
+      lives in Go (deterministic, test-covered taskvisor.InlinePlan) so this step
+      is a THIN branch on its JSON — identical rationale to C10's revalidation-plan.
+    -->
+    <step n="2f" title="B9b inline fast-path decision gate">
+      <action>Decide whether the active RERUN investigators can run inline by running the read-only CLI:</action>
+      <cmd>tmux-cli taskvisor inline-plan &lt;GOAL_ID&gt; --cycle &lt;CYCLE_N&gt; [--full] [--final]</cmd>
+      <rule>CYCLE_N is the one-indexed cycle resolved in step 2a. In STANDALONE mode (CYCLE_N unset) pass --cycle 0. Pass --full / --final on the SAME conditions as step 2c so the RERUN set matches exactly.</rule>
+      <rule>The command prints {"mode":"inline"|"fanout","rerun":[finding ids],"reason":"..."}. mode="inline" iff CYCLE_N&lt;=1 AND the RERUN set is non-empty AND every RERUN investigator is pure-command (type:command or a whitelisted exit-only check). The rerun array is the sorted RERUN set; reason is human-readable.</rule>
+      <rule critical="true">SAFE DEGENERATE: if the command errors, prints nothing, or yields mode!="inline" (including the empty-RERUN "no RERUN investigators" case), treat the decision as FAN-OUT — go to step 3 unchanged. NEVER block on a missing/garbled inline plan; the spawn path is always the safe fallback.</rule>
+      <check condition="mode == &quot;inline&quot;">
+        <action>Skip step 3 and step 4 ENTIRELY (no windows-spawn-worker, no inv-* windows, no idle/collect). Go to step 3-inline.</action>
+      </check>
+      <check condition="mode == &quot;fanout&quot; (or any error/degenerate)">
+        <action>Proceed to step 3 (normal spawn) unchanged.</action>
+      </check>
+    </step>
+
+    <!--
+      B9b inline execution branch. Taken ONLY when step 2f returned mode="inline".
+      It replaces the spawn (step 3) + idle/collect (step 4) for THIS cycle with an
+      in-window sequential command loop that mirrors investigate-worker.xml's
+      execute+classify semantics verbatim, so classification (retry, failure_class,
+      leaf-4 catch-all) does not diverge. It runs ONLY the RERUN set; REUSE
+      investigators (C10, step 2c) still carry forward as pass in step 5. It is
+      strictly READ-ONLY w.r.t. project files (same mandate as a worker). After it
+      builds one ValidationFinding per RERUN investigator it falls through to step
+      4c (convergence guard) → step 5 (aggregate) exactly like the spawned path.
+    -->
+    <step n="3-inline" title="B9b run RERUN investigators inline (zero spawns)" condition="step 2f mode == inline">
+      <rule critical="true">ZERO windows-spawn-worker calls and ZERO inv-* windows in this branch. If you are about to spawn, you are in the wrong branch — return to step 3. Inline execution is ALL-OR-NOTHING: every finding here comes from an inline command run, never a worker.</rule>
+      <rule>Operate on the RERUN set ONLY (the inline-plan `rerun` array == the step 2c RERUN investigators). REUSE investigators are NOT executed here; they aggregate as pass in step 5 with reused_from_cycle/reused_fingerprint exactly as on the spawned path.</rule>
+      <action>For EACH RERUN investigator, in the rerun-array order, do the following IN THIS WINDOW:</action>
+      <substep>Validate each command against the blocklist (rm, mv, cp, tee, chmod, chown, touch, sed -i, kill, mkfs, dd, &gt;, &gt;&gt;) BEFORE running. Skip any destructive command with finding "command skipped: destructive operation forbidden".</substep>
+      <substep>Run each safe command via Bash with a per-command timeout (wrap as `timeout &lt;T&gt;s &lt;command&gt;`). Bound T so the SUM of inline command timeouts stays under the daemon validate_timeout envelope — use the same 10-minute ceiling a single worker had: divide the per-worker 600s budget across the RERUN commands (e.g. ceil(600 / max(1, command_count)) s each), so a single hung command cannot blow the daemon budget.</substep>
+      <substep>On a command failure that is a transient-prone probe, re-run it through step 2b's &lt;transient-retry-loop&gt; (same transient-detection-rules). A deterministic non-zero exit / assertion failure is NOT transient — do not retry it. Pass on first success.</substep>
+      <substep>Classify the result using investigate-worker.xml's &lt;classification&gt; block VERBATIM: GREEN OBJECTIVE CHECK ⇒ status=pass; env/connectivity signature ⇒ blocked/env-config|infra-flake/ops; assertion-on-code-output ⇒ fail/code-defect/implementer; ambiguous/untestable ⇒ error/validator-error/ops; leaf-4 catch-all ⇒ a non-pass finding with no clear class is fail/code-defect/implementer. failure_class and owner are REQUIRED on every non-pass finding.</substep>
+      <substep>Build EXACTLY ONE ValidationFinding for this investigator (rule = investigator name, status, detail, correction-if-non-pass, failing_command + output_excerpt on failure, plus failure_class/owner on non-pass) and add it to the step-5 findings array.</substep>
+      <action>OPTIONAL audit: write the raw command/output excerpts to &lt;CYCLE_DIR&gt;/inline-evidence.md (audit only — namespaced under the C7 CYCLE_DIR, never a flat or prior-cycle path). This file is evidence, not a verdict source; goal-validation-done is still the single report channel.</action>
+      <action>Surface the B7 instrumentation signal: emit a greppable line `inv_inlined=&lt;N&gt; inv_spawned=0` where N == the RERUN count just executed inline (0 spawns this cycle). This is what makes the saving measurable.</action>
+      <rule>PRESERVE the other preflight findings: a C8 spec-defect (2d) and each C1a escalation (2e) finding still aggregate alongside the inline findings in step 5 — inline execution does NOT touch them, so an inline cycle can still roll up to verdict "blocked". C10 reuse (2c) and the C7 cycle-dir guard are untouched.</rule>
+      <action>Proceed to step 4c (convergence guard) → step 5 (aggregate) exactly like the spawned path. Do NOT call windows-kill (no windows were created).</action>
+    </step>
+
     <step n="3" title="Spawn inv-* workers">
       <rule>C8: an investigator short-circuited to a spec-defect in step 2d is NOT spawned (its blocked finding is already recorded for step-5 aggregation). Worker count excludes both REUSE and spec-defect investigators.</rule>
       <rule>C10: spawn a worker ONLY for investigators whose step 2c action is RERUN. REUSE investigators are NOT spawned — they carry forward their prior-cycle pass. Worker count == RERUN count.</rule>
@@ -241,8 +330,10 @@
         - context: goal description + acceptance criteria from goal.md
         - deliverable: custom investigation report format (see &lt;worker-deliverable&gt;)
         - prefix: "inv-"
+        - workingDirectory: WORKTREE_DIR if set (step 2a), else OMIT (empty). E1-1c: this starts the inv-* worker's shell in the goal's git worktree (tmux -c) so its SCOPE commands observe ONLY this goal's edits. When WORKTREE_DIR is unset, omit the field — the worker keeps the session-default cwd, byte-identical to before.
       </params>
       <rule>C7: inject the resolved report dir into EACH worker's task message — append "CYCLE_DIR=&lt;CYCLE_DIR&gt; CYCLE_N=&lt;CYCLE_N&gt; GOAL_ID=&lt;GOAL_ID&gt;" to the context AND state in scope: "Write your report to &lt;CYCLE_DIR&gt;/inv-&lt;N&gt;-&lt;slug&gt;.md". The worker writes ONLY within CYCLE_DIR — never a flat or prior-cycle path.</rule>
+      <rule>E1-1c: when WORKTREE_DIR is set (step 2a), ALSO append "WORKTREE_DIR=&lt;WORKTREE_DIR&gt;" to the context so the worker can resolve relative SCOPE paths and run SCOPE commands against the worktree (it is also -c'd there via workingDirectory). The CYCLE_DIR report path is UNCHANGED — reports still land under the base-shared .tmux-cli, never inside the worktree's working set. When WORKTREE_DIR is unset, append nothing.</rule>
       <action>Record from the response: workerName (inv-N), window info. Update tracking table: status=spawned, spawn_time=now.</action>
       <critical>ALWAYS use windows-spawn-worker with prefix: "inv-" — never assemble manually via windows-create + windows-send.</critical>
     </step>
@@ -301,7 +392,7 @@
       the planner). This step runs AFTER all workers are terminal and BEFORE the
       step-5 roll-up, so a reclassified finding changes the verdict. Owner=planner
       (spec-defect) is the daemon's C2 generation-bounce trigger (charges
-      spec_retries, re-plans) — see validate.xml step 2d.
+      spec_retries, re-plans) — see this command's own step 2d (C8 binding cross-reference preflight) above.
     -->
     <step n="4c" title="Cross-cycle repeat escalation (convergence guard)">
       <action>List GOAL_DIR/corrections/ and find the highest-numbered existing cycle-N.md (the PRIOR cycle's corrections — the current cycle has not written yet). If none exists (this is the first failing cycle), SKIP this step: every finding is first-occurrence.</action>
@@ -314,6 +405,7 @@
 
     <step n="5" title="Aggregate findings">
       <rule>C8: spec-defect investigators (step 2d) contribute a status="blocked", failure_class="spec-defect", owner="planner" ValidationFinding WITHOUT having spawned a worker. They force the overall verdict to "blocked" — a binding contradiction can never roll up to pass.</rule>
+      <rule>C1a: each concrete worker-escalation (step 2e) contributes a status="blocked", failure_class="spec-defect", owner="planner" ValidationFinding (rule "escalation: &lt;need&gt;", correction "Create prerequisite goal: &lt;need&gt;") WITHOUT having spawned a worker. It forces the overall verdict to "blocked" — an unconsumed out-of-scope prerequisite can never roll up to pass.</rule>
       <rule>C10: REUSE investigators (step 2c) contribute a status="pass" ValidationFinding WITHOUT having spawned a worker — carry reused_from_cycle and reused_fingerprint on the finding. They never affect the verdict adversely (a reused pass is still a pass).</rule>
       <rule>C4-cont: a transient-retry exhaustion (step 2b &lt;transient-retry-loop&gt;) contributes a status="blocked", failure_class="infra-flake", owner="ops" ValidationFinding WITHOUT a worker verdict. It rolls up to verdict "blocked"; ClassifyVerdict's owner-priority (planner&gt;ops) leaves owner=ops UNCHANGED unless a co-occurring spec-defect (planner) finding outranks it. The emitter's owner is never overwritten.</rule>
       <action>Merge all worker results AND the reuse set into a findings array (one ValidationFinding per investigator):</action>

@@ -254,7 +254,7 @@ Re-run /tmux:task-plan-discover to regenerate discovery outputs, or edit the fil
         <commands> reference in substep 1.5) that matches the set is a planning
         contradiction — substep 1.5's guard writes a SPEC-DEFECT marker in its
         place instead of the live reference, so a self-contradicting Config is
-        never emitted. The validator preflight (validate.xml / investigate.xml)
+        never emitted. The validator preflight (investigate.xml / investigate-worker.xml)
         re-checks the same contract as defense-in-depth.
       -->
       <substep n="1.45" title="Detect bindings and build FORBIDDEN_ARTIFACTS (C8 spec-defect guard)">
@@ -284,7 +284,7 @@ Re-run /tmux:task-plan-discover to regenerate discovery outputs, or edit the fil
           </binding>
         </binding-forbidden-map>
 
-        <rule>FORBIDDEN_ARTIFACTS is consumed by the guard rule in substep 1.5 (investigation-config section) and is the SAME contract the validate.xml and investigate.xml preflights re-check at validation time. A binding contradiction is ALWAYS a spec-defect owned by the planner — never an implementer code defect.</rule>
+        <rule>FORBIDDEN_ARTIFACTS is consumed by the guard rule in substep 1.5 (investigation-config section) and is the SAME contract the investigate.xml and investigate-worker.xml preflights re-check at validation time. A binding contradiction is ALWAYS a spec-defect owned by the planner — never an implementer code defect.</rule>
       </substep>
 
       <substep n="1.5" title="Compose context with Investigation Config">
@@ -402,7 +402,11 @@ Correction ordering protocol (E-13): when multiple failures are detected, apply 
           <param name="not_in_scope">NOT_IN_SCOPE from substep 1.6</param>
           <param name="max_retries">5</param>
           <param name="preconditions">PRECONDITIONS from substep 1.65 (array of {kind,spec,remedy}; goal-create persists them to BOTH goals.yaml and goal.md's ## Preconditions section). Pass nothing/empty when PRECONDITIONS=none.</param>
+          <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule below. Gate 0 touches repo-root skeleton files (no src/ BC footprint) and is the FIRST goal with no concurrent sibling, so OMIT scope (unknown ⇒ serialized, which is correct for the bootstrap gate).</param>
         </params>
+        <scope-derivation>
+          The `scope` param is the goal's declared file footprint (array of path globs / namespace prefixes) that the daemon's disjoint-scope co-scheduling gate reads to decide whether two goals may run CONCURRENTLY under MaxGoals&gt;1. DERIVE it from the goal's Deliverables file paths: emit the distinct directory globs that cover every deliverable (e.g. deliverables under src/Booking/Domain/ ⇒ scope ["src/Booking/Domain/**"]; a single file ⇒ that file path). CONSERVATIVE CONTRACT: overlap OR an omitted/unknown scope ⇒ the daemon SERIALIZES the goals (never co-schedules), so it is always safe to omit when the footprint is unclear. An explicit author-provided `scope:` overrides derivation. The runtime reads ONLY this persisted field — it never parses goal.md — so scope MUST be passed here to enable safe co-scheduling.
+        </scope-derivation>
         <rule>Description is 73 characters — well within the 120-char limit (MaxGoalDescriptionLength).</rule>
         <rule>max_retries=5 because Gate 0 has 4 independent failure categories that may each need a correction cycle.</rule>
 
@@ -570,6 +574,7 @@ Test environment variables from docs/architecture/test-environment.md.
           <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 2.5's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
           <param name="not_in_scope">NOT_IN_SCOPE from substep 2.6</param>
           <param name="max_retries">3</param>
+          <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in substep 1.7. Scaffold lays down the repo-wide skeleton (config/, composer.json, src/Share/**, quality-tool configs) and runs before any BC goal, so OMIT scope (unknown ⇒ serialized — correct for the skeleton goal).</param>
         </params>
         <rule>Description is 97 characters — within the 120-char limit (MaxGoalDescriptionLength).</rule>
         <rule>max_retries=3 — scaffold has fewer independent failure categories than Gate 0.</rule>
@@ -726,7 +731,7 @@ Test environment variables from docs/architecture/test-environment.md.
             <item id="PD-10a" always="true">Unit test for creation via each aggregate's named constructor exists (per aggregate)</item>
             <item id="PD-10b" always="true">Unit tests for each mutation method exist (one per state-changing method on each aggregate)</item>
             <item id="PD-10c" always="true">Event-generation assertion exists per aggregate (each domain event asserted recorded by a test)</item>
-            <item id="PD-10-INV" always="true" per-invariant="true">DECOMPOSE PER INVARIANT — for EACH invariant/uniqueness/existence rule named in the {{BC}} domain model, emit ONE atomic criterion of the form: "{{Invariant}} invariant — {{Invariant}}Checker domain service enforces it AND a test asserts {{Invariant}}Exception is thrown when violated". Name the checker class (src/{{BC}}/Domain/Service/) and the exception thrown-test (tests/Unit/{{BC}}/Domain/) so each is independently greppable. NEVER collapse these into a single 'tests cover invariant violations' line.
+            <item id="PD-10-INV" always="true" per-invariant="true">DECOMPOSE PER INVARIANT — for EACH invariant/uniqueness/existence rule named in the {{BC}} domain model, emit ONE atomic criterion of the form: "{{Invariant}} invariant — {{Invariant}}Checker domain service enforces it AND a test asserts {{Invariant}}Exception is thrown when violated". Name the checker class (src/{{BC}}/Domain/Service/) and the exception thrown-test (tests/Unit/{{BC}}/Domain/) so each is independently greppable. NEVER collapse these into a single 'tests cover invariant violations' line.</item>
             <item id="PD-11" always="true">Unit tests run green — vendor/bin/phpunit --filter={{BC}}\\Domain passes</item>
             <item id="PD-12" always="true">PHPStan level 9 passes on Domain namespace — vendor/bin/phpstan analyse src/{{BC}}/Domain</item>
             <item id="PD-13" always="true">No Doctrine annotations/attributes on domain objects — grep for @ORM\ and #[ORM\ (must be zero)</item>
@@ -832,6 +837,7 @@ ACL patterns from resolved context-mapping template ({{CONTEXT_MAP_TEMPLATE tier
             <param name="not_in_scope">NOT_IN_SCOPE from substep 3.14.4h</param>
             <param name="depends_on">goal-002</param>
             <param name="max_retries">3</param>
+            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in substep 1.7. Derive from this BC's domain Deliverables (substep 3.14.4c): emit ["src/{{BC}}/Domain/**"] (add any extra distinct deliverable dirs). A focused single-BC domain footprint lets the gate co-schedule this goal with a DIFFERENT BC's goal under MaxGoals&gt;1.</param>
           </params>
           <rule>Description must be ≤120 chars. If BC name + aggregate list exceeds limit, use "Implement {{BC}} domain layer: {{N}} aggregates, VOs, events, interfaces".</rule>
           <rule>max_retries=3 — domain goals have focused scope within a single BC.</rule>
@@ -1024,6 +1030,7 @@ If BC has list/search use cases:
             <param name="not_in_scope">NOT_IN_SCOPE from substep 3.15.4d</param>
             <param name="depends_on">APP_DEPENDS_ON[bc_name] — own BC's domain goal ID from goals.yaml</param>
             <param name="max_retries">3</param>
+            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in substep 1.7. Derive from this BC's application Deliverables (substep 3.15.4c): emit ["src/{{BC_NAME}}/Application/**"] (plus any extra distinct deliverable dirs). Single-BC application namespace ⇒ disjoint from other BCs ⇒ co-schedulable under MaxGoals&gt;1.</param>
           </params>
           <rule>Description pattern "Implement {BC} application layer: command/query handlers and DTOs" stays under 120 chars for BC names up to ~40 chars.</rule>
           <rule>max_retries=3 — application goals have focused scope (single BC namespace).</rule>
@@ -1251,6 +1258,7 @@ ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messeng
             <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from this goal's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
             <param name="not_in_scope">NOT_IN_SCOPE</param>
             <param name="max_retries">3</param>
+            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in substep 1.7. Derive from this BC's infrastructure Deliverables: emit ["src/{BC}/Infrastructure/**"] plus any distinct mapping/migration dirs the deliverables touch. Single-BC infrastructure footprint ⇒ disjoint from other BCs ⇒ co-schedulable under MaxGoals&gt;1.</param>
           </params>
           <rule>Description is parameterized with BC name — must stay under 120 chars (MaxGoalDescriptionLength).</rule>
           <rule>max_retries=3 — infrastructure goals have focused scope per BC.</rule>
@@ -1273,6 +1281,124 @@ ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messeng
         </check>
         <check condition="goal count matches">
           <action>Print: "Infrastructure generation complete: {bc_count} goals created (goal-{first_id}..goal-{last_id}), all phase=infrastructure"</action>
+          <action>Proceed to Step 3.17 (Fixtures).</action>
+        </check>
+      </substep>
+    </step>
+
+    <step n="3.16a" title="Generate Auth Bootstrap goal (conditional, phase=auth-bootstrap)">
+      <rule critical="true">This step runs AFTER infrastructure (3.16) and BEFORE fixtures (3.17), controller actions (3.18), and auth flows (3.19) — every downstream auth/protected goal depends on the bootstrap goal, so it must exist first.</rule>
+      <rule critical="true">Emit the auth-bootstrap goal ONLY when N_auth_flows >= 1. When N_auth_flows == 0, SKIP entirely — downstream deps resolve to empty without error.</rule>
+      <rule critical="true">Security wiring is OWNED by this single goal — never leave security.yaml / User entity as a side-effect of the first auth flow goal (D3 determinism gate).</rule>
+      <rule critical="true">All inputs read from docs/architecture/* files and discovery output on disk (G-16), never from conversation context.</rule>
+
+      <substep n="3.16a.1" title="Read auth-flow inventory and count flows">
+        <action>Read docs/architecture/cross-cutting.md — the SAME auth-flow source used by step 3.19.1. Build the auth-flow inventory and count N_auth_flows.</action>
+        <check condition="N_auth_flows == 0">
+          <action>Print: "No auth flows discovered (N_auth_flows == 0) — skipping auth-bootstrap goal. Downstream auth/action deps resolve empty."</action>
+          <action>SKIP this step entirely. Do NOT create any goal. Proceed to Step 3.17 (Fixtures).</action>
+        </check>
+      </substep>
+
+      <substep n="3.16a.2" title="Resolve scaffold goal ID">
+        <action>Read goals.yaml from disk. Find the goal with phase=scaffold — store its ID as SCAFFOLD_GOAL_ID.</action>
+        <check condition="SCAFFOLD_GOAL_ID not found">
+          <action>ABORT with error: "Cannot generate auth-bootstrap goal: no scaffold goal (phase=scaffold) found in goals.yaml — ensure Step 2 ran first"</action>
+        </check>
+      </substep>
+
+      <substep n="3.16a.3" title="Read auth method (session vs JWT)">
+        <action>Read the auth method from docs/architecture/cross-cutting.md security section and the discovery `uses_jwt` flag (php-symfony/discovery.md §10a security, php-symfony/libraries.md `{{#uses_jwt}}`).</action>
+        <action>If uses_jwt is true → JWT identity provider via lexik/jwt-authentication-bundle + keypair generation. If false → Symfony session/form-login authenticator.</action>
+        <rule>The library is resolvable by convention (`lexik/jwt-authentication-bundle` gated on uses_jwt, else `symfony/security-bundle`) — do not escalate unless the JWT choice is genuinely unknowable from project context.</rule>
+        <action>Resolve the User entity placement: the identity/auth BC named in discovery. If no dedicated identity BC exists, default to src/Share/ (Share-ownership convention) — do not invent a new BC.</action>
+      </substep>
+
+      <substep n="3.16a.4" title="Compose acceptance criteria">
+        <action>Build ACCEPTANCE array. AU-08 and AU-09 are OWNED here (relocated from the per-flow auth goals):</action>
+        <criteria>
+          <item id="AU-08">Security configuration uses Symfony security bundle properly (firewall, provider, authenticator in config/packages/security.yaml)</item>
+          <item id="AU-09">User entity has proper password hashing (bcrypt/argon2) and implements the security user interface</item>
+          <item id="AB-JWT" condition="uses_jwt">JWT keypair generated via bin/console lexik:jwt:generate-keypair and lexik config present at config/packages/lexik_jwt_authentication.yaml</item>
+        </criteria>
+        <rule>Include AB-JWT only when uses_jwt is true. AU-08/AU-09 are always present.</rule>
+      </substep>
+
+      <substep n="3.16a.5" title="Compose context with deliverables and Investigation Config">
+        <section name="purpose">
+Auth bootstrap goal — the single deterministic owner of authentication infrastructure for the project.
+Owns config/packages/security.yaml (firewall, provider, authenticator) and the User entity with password hashing (bcrypt/argon2).
+{{#uses_jwt}}Uses lexik/jwt-authentication-bundle as the JWT identity provider; generates the signing keypair.{{/uses_jwt}}
+{{^uses_jwt}}Uses the Symfony session/form-login authenticator.{{/uses_jwt}}
+See docs/architecture/cross-cutting.md for auth method decisions. See docs/architecture/test-environment.md for test user credentials — never hard-code credentials.
+        </section>
+
+        <section name="deliverables">
+          <deliverable>Security config: config/packages/security.yaml (firewall, provider, authenticator)</deliverable>
+          <deliverable>User entity with password hashing: src/{IdentityBC|Share}/Domain/Model/User.php</deliverable>
+          <deliverable condition="uses_jwt">JWT config: config/packages/lexik_jwt_authentication.yaml + keypair via bin/console lexik:jwt:generate-keypair</deliverable>
+        </section>
+
+        <section name="investigation-config">
+          <action>Build 3 investigators:</action>
+
+          <investigator n="1" name="Security config presence">
+            <type>file-check</type>
+            <files>config/packages/security.yaml, src/{IdentityBC|Share}/Domain/Model/User.php</files>
+            <commands>test -f config/packages/security.yaml &amp;&amp; grep -c 'firewall\|provider' config/packages/security.yaml</commands>
+            <pass>security.yaml and User entity exist; firewall/provider grep returns >= 1</pass>
+            <fail>Missing security.yaml, missing User entity, or no firewall/provider config</fail>
+          </investigator>
+
+          <investigator n="2" name="Auth wiring check">
+            <type>environment-check</type>
+            <commands>{{#uses_jwt}}bin/console lexik:jwt:check-config{{/uses_jwt}}{{^uses_jwt}}bin/console debug:firewall{{/uses_jwt}}</commands>
+            <pass>Exit 0 — JWT keypair/config valid (uses_jwt) or firewall configured (session)</pass>
+            <fail>JWT config invalid or firewall not configured</fail>
+          </investigator>
+
+          <investigator n="3" name="Quality gates">
+            <type>quality-gate</type>
+            <commands>vendor/bin/phpstan analyse src/ --level=9 &amp;&amp; vendor/bin/ecs check src/ &amp;&amp; vendor/bin/deptrac analyse</commands>
+            <pass>PHPStan, ECS, and Deptrac all exit 0</pass>
+            <fail>Any tool reports errors or violations</fail>
+          </investigator>
+
+          <rule>3 investigators (GM-08 minimum is 2). Investigator 2's command is gated on uses_jwt (JWT key/config check vs firewall check).</rule>
+        </section>
+      </substep>
+
+      <substep n="3.16a.6" title="Create the auth-bootstrap goal via goal-create">
+        <action>Set NOT_IN_SCOPE:</action>
+        <value>Auth endpoint controllers/DTOs/routes (built by per-flow auth goals 3.19), business logic beyond authentication, fixtures/seed users (built by fixtures goal), non-auth controller actions.</value>
+
+        <action>Call goal-create MCP tool:</action>
+        <params>
+          <param name="description">Auth bootstrap: security.yaml firewall/provider/authenticator + User entity with password hashing</param>
+          <param name="acceptance">ACCEPTANCE array from substep 3.16a.4 (AU-08, AU-09, + AB-JWT when uses_jwt)</param>
+          <param name="validate">[
+            "test -f config/packages/security.yaml",
+            "vendor/bin/phpstan analyse src/ --level=9",
+            "vendor/bin/ecs check src/",
+            "vendor/bin/deptrac analyse"
+          ]{{#uses_jwt}} plus "bin/console lexik:jwt:check-config"{{/uses_jwt}}</param>
+          <param name="context">CONTEXT string from substep 3.16a.5 (purpose + deliverables)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.16a.5's investigators (3; types from the Reference Table).</param>
+          <param name="not_in_scope">NOT_IN_SCOPE</param>
+          <param name="depends_on">[SCAFFOLD_GOAL_ID]</param>
+          <param name="max_retries">3</param>
+        </params>
+        <rule>phase=auth-bootstrap on the created goal.</rule>
+        <rule>depends_on=[SCAFFOLD_GOAL_ID] — bootstrap leans on the project skeleton + bundle install only.</rule>
+        <rule>Description must be ≤120 chars (MaxGoalDescriptionLength invariant).</rule>
+
+        <action>Store the returned goal ID as AUTH_BOOTSTRAP_GOAL_ID — used by substeps 3.18.2 (auth_required actions) and 3.19.2 (auth flows).</action>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Print: "Auth bootstrap created: goal-{NNN} (phase=auth-bootstrap, depends_on=[{SCAFFOLD_GOAL_ID}], uses_jwt={uses_jwt}) with 3 investigators, max_retries=3"</action>
           <action>Proceed to Step 3.17 (Fixtures).</action>
         </check>
       </substep>
@@ -1405,6 +1531,24 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide Doctri
       </substep>
     </step>
 
+    <step n="3.17.0" title="Controller Path Resolver (shared)">
+      <rule critical="true">This step defines the SINGLE source of truth for every controller file path the planner produces. Both the action step (3.18) and the auth step (3.19) MUST route their controller deliverable, investigator file list, and phpstan/ecs paths through RESOLVE_CONTROLLER_PATH. No other location may restate the canonical controller-path shape — they reference this resolver by name.</rule>
+
+      <resolver name="RESOLVE_CONTROLLER_PATH">
+        <signature>RESOLVE_CONTROLLER_PATH(BC, NAME)</signature>
+        <inputs>
+          <input name="BC">PascalCase bounded-context name (e.g. Booking, Identity).</input>
+          <input name="NAME">Controller base name — the action name or auth-flow name (e.g. CreateBooking, Login).</input>
+        </inputs>
+        <produces>src/{BC}/Infrastructure/Http/Controller/{NAME}Controller.php</produces>
+        <normalization>
+          <rule>Strip a trailing "Controller" from NAME before appending the "Controller.php" suffix. So NAME=Login yields LoginController.php, and a NAME that already arrives as LoginController still yields LoginController.php — never LoginControllerController.php.</rule>
+          <rule>If a candidate controller path lacks the "/Controller/" segment immediately after "Infrastructure/Http/" (e.g. a Fan-Out value or a legacy string of the form src/{BC}/Infrastructure/Http/{NAME}Controller.php), insert "/Controller/" after "Infrastructure/Http/" so it matches the canonical shape above.</rule>
+        </normalization>
+        <result>The canonical controller path. The produces line above is the ONLY place the full canonical shape is stated; every controller reference elsewhere uses RESOLVE_CONTROLLER_PATH(BC, NAME).</result>
+      </resolver>
+    </step>
+
     <step n="3.18" title="Generate Controller Action Goals">
       <rule critical="true">Step 3.17 (Fixtures) must have completed successfully before this step executes — action E2E tests need fixture data.</rule>
       <rule critical="true">One goal per non-auth controller action (G-05). Auth endpoints are handled by a separate auth step (3.19) — never count them here.</rule>
@@ -1428,10 +1572,12 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide Doctri
           <dep name="fixtures goal">Filter goals.yaml for phase=fixtures. Required — E2E tests need test data.</dep>
           <dep name="error handling goal">Filter goals.yaml for phase matching error-handling or cross-cutting with error-handling description. Required — E2E tests assert RFC 7807 error responses.</dep>
           <dep name="all auth goals">Filter goals.yaml for phase=auth. Required — protected endpoint E2E tests need auth infrastructure for 401/403 assertions.</dep>
+          <dep name="auth bootstrap goal" condition="this action is auth_required">Filter goals.yaml for phase=auth-bootstrap. For every action whose auth_required flag is true, add AUTH_BOOTSTRAP_GOAL_ID — the protected endpoint needs the security firewall/provider + User entity from the bootstrap goal. Skip for public (auth_required=false) actions.</dep>
         </dependencies>
-        <action>Collect these goal IDs into DEPENDS_ON array for each action: [own_bc_infra_goal_id, fixtures_goal_id, error_handling_goal_id] + all_auth_goal_ids.</action>
+        <action>Collect these goal IDs into DEPENDS_ON array for each action: [own_bc_infra_goal_id, fixtures_goal_id, error_handling_goal_id] + all_auth_goal_ids + (AUTH_BOOTSTRAP_GOAL_ID when this action is auth_required).</action>
         <rule>If fixtures or error handling goal ID cannot be resolved, ABORT — prior steps did not run correctly.</rule>
         <rule>Auth goal IDs may be empty if the project has no auth flows — that is valid. Infrastructure goal for the action's BC must always resolve.</rule>
+        <rule>AUTH_BOOTSTRAP_GOAL_ID is appended ONLY for auth_required actions. If no auth flows exist (3.16a skipped), there is no bootstrap goal and no action is auth_required — the append is empty, which is valid.</rule>
       </substep>
 
       <substep n="3.18.3" title="Compose acceptance criteria (PC-01..PC-17)">
@@ -1475,7 +1621,7 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide Doctri
           <cmd source="PC-17">vendor/bin/deptrac analyse</cmd>
           <cmd source="PC-14" condition="Playwright available">npx playwright test {e2e_test_path}</cmd>
         </commands>
-        <rule>File paths come from the Fan-Out section of each action block in api-endpoints.md — use them directly, do not derive paths from conventions.</rule>
+        <rule>Request/Response DTO, route, and e2e paths come from the Fan-Out section of each action block in api-endpoints.md — use them directly. The controller path is produced by RESOLVE_CONTROLLER_PATH (3.17.0), the single source of truth — do not derive any other path from conventions.</rule>
         <rule>PC-14 command is conditional on Playwright availability from test-environment.md.</rule>
       </substep>
 
@@ -1491,10 +1637,10 @@ See docs/architecture/test-strategy.md for E2E test layer conventions.
         </section>
 
         <section name="deliverables">
-          <action>List the 5 deliverables (GM-12) using Fan-Out paths from api-endpoints.md:</action>
+          <action>Bind controller_path = RESOLVE_CONTROLLER_PATH({bc_name}, {action_name}) (3.17.0) ONCE for this action. Then list the 5 deliverables (GM-12) using Fan-Out paths from api-endpoints.md for DTO/route/e2e and controller_path for the controller:</action>
           <deliverable n="1">Request DTO: {request_dto_path}</deliverable>
           <deliverable n="2">Response DTO: {response_dto_path}</deliverable>
-          <deliverable n="3">Controller: {handler_path}</deliverable>
+          <deliverable n="3">Controller: {controller_path}</deliverable>
           <deliverable n="4">Route: {route_definition_path}</deliverable>
           <deliverable n="5">E2E Test: {e2e_test_path}</deliverable>
         </section>
@@ -1504,14 +1650,14 @@ See docs/architecture/test-strategy.md for E2E test layer conventions.
 
           <investigator n="1" name="File existence">
             <type>file-check</type>
-            <files>{request_dto_path}, {response_dto_path}, {handler_path}, {route_definition_path}, {e2e_test_path}</files>
+            <files>{request_dto_path}, {response_dto_path}, {controller_path}, {route_definition_path}, {e2e_test_path}</files>
             <pass>All 5 deliverable files exist on disk</pass>
             <fail>One or more deliverable files missing</fail>
           </investigator>
 
           <investigator n="2" name="Quality gates">
             <type>quality-gate</type>
-            <commands>vendor/bin/phpstan analyse {handler_path} --level=9 &amp;&amp; vendor/bin/ecs check {handler_path} {request_dto_path} {response_dto_path} &amp;&amp; vendor/bin/deptrac analyse</commands>
+            <commands>vendor/bin/phpstan analyse {controller_path} --level=9 &amp;&amp; vendor/bin/ecs check {controller_path} {request_dto_path} {response_dto_path} &amp;&amp; vendor/bin/deptrac analyse</commands>
             <pass>PHPStan, ECS, and Deptrac all exit 0 — controller imports Application layer only, code style clean</pass>
             <fail>Any quality tool reports errors or Deptrac violations</fail>
           </investigator>
@@ -1577,7 +1723,11 @@ See docs/architecture/test-strategy.md for E2E test layer conventions.
       <substep n="3.19.2" title="Resolve dependency goal IDs">
         <action>Read goals.yaml from disk. Find the goal with phase=fixtures — store its ID as FIXTURES_GOAL_ID.</action>
         <action>Find the goal with phase=error-handling — store its ID as ERROR_HANDLING_GOAL_ID.</action>
-        <action>Set AUTH_DEPENDS_ON = [FIXTURES_GOAL_ID, ERROR_HANDLING_GOAL_ID].</action>
+        <action>Find the goal with phase=auth-bootstrap — store its ID as AUTH_BOOTSTRAP_GOAL_ID (created by step 3.16a; always present when N_auth_flows >= 1, which is true here since auth flows exist).</action>
+        <action>Set AUTH_DEPENDS_ON = [FIXTURES_GOAL_ID, ERROR_HANDLING_GOAL_ID, AUTH_BOOTSTRAP_GOAL_ID].</action>
+        <check condition="AUTH_BOOTSTRAP_GOAL_ID not found">
+          <action>ABORT with error: "Cannot generate auth goals: no auth-bootstrap goal (phase=auth-bootstrap) found in goals.yaml — step 3.16a must run before 3.19 when auth flows exist"</action>
+        </check>
         <check condition="FIXTURES_GOAL_ID not found">
           <action>ABORT with error: "Cannot generate auth goals: no fixtures goal (phase=fixtures) found in goals.yaml — ensure fixtures step ran first"</action>
         </check>
@@ -1590,14 +1740,14 @@ See docs/architecture/test-strategy.md for E2E test layer conventions.
         <action>For each auth flow, build ACCEPTANCE array combining applicable AU-01..AU-10 and PC-01..PC-17 criteria:</action>
 
         <criteria-map>
-          <flow name="Register" au="AU-01, AU-05, AU-06, AU-07, AU-08, AU-09, AU-10" pc="PC-01..PC-17">Registration creates user, hashes password, returns token/session. Includes security bundle setup and User entity.</flow>
-          <flow name="Login" au="AU-02, AU-05, AU-06, AU-07, AU-08, AU-10" pc="PC-01..PC-17">Login authenticates credentials, returns token/session. Tests admin vs user role access.</flow>
+          <flow name="Register" au="AU-01, AU-05, AU-06, AU-07, AU-10" pc="PC-01..PC-17">Registration creates user, hashes password, returns token/session. Depends on auth-bootstrap for security config + User entity (AU-08/AU-09 owned there).</flow>
+          <flow name="Login" au="AU-02, AU-05, AU-06, AU-07, AU-10" pc="PC-01..PC-17">Login authenticates credentials, returns token/session. Tests admin vs user role access. Validates against bootstrap-provided security config.</flow>
           <flow name="Logout" au="AU-03, AU-07, AU-10" pc="PC-01..PC-17">Logout invalidates session/token. Verifies subsequent request returns 401.</flow>
           <flow name="Token Refresh" au="AU-02, AU-07, AU-10" pc="PC-01..PC-17">Token refresh renews session without re-authentication.</flow>
           <flow name="Password Reset" au="AU-04, AU-07, AU-10" pc="PC-01..PC-17">Password reset flow end-to-end (conditional — only if in scope).</flow>
         </criteria-map>
 
-        <rule>AU-08 (Symfony security bundle config) and AU-09 (password hashing) apply to Register — the first auth goal that creates security.yaml and User entity. Login also gets AU-08 since it validates against security config.</rule>
+        <rule>AU-08 (Symfony security bundle config) and AU-09 (password hashing) are OWNED by the auth-bootstrap goal (step 3.16a), NOT by per-flow auth goals. Every per-flow auth goal depends on AUTH_BOOTSTRAP_GOAL_ID and keeps only AU-07/AU-10 (plus its flow-specific AU-01..AU-06) — it does not re-declare security.yaml or the User entity.</rule>
         <rule>AU-05, AU-06 (role-based access) are tested within Login and Register goals — admin login returns admin token, user login returns user token. No separate role-access goal needed.</rule>
         <rule>All flows get AU-07 (unauthenticated request returns 401) and AU-10 (test users from test-environment.md).</rule>
         <rule>All flows get the full PC-01..PC-17 controller action criteria — auth endpoints ARE controller actions.</rule>
@@ -1647,13 +1797,12 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
         </section>
 
         <section name="deliverables">
-          <deliverable>Controller: src/{BC}/Infrastructure/Http/{AuthAction}Controller.php</deliverable>
+          <deliverable>Controller: RESOLVE_CONTROLLER_PATH({BC}, {AuthAction}) (3.17.0)</deliverable>
           <deliverable>Request DTO: src/{BC}/Infrastructure/Http/Request/{AuthAction}Request.php</deliverable>
           <deliverable>Response DTO: src/{BC}/Infrastructure/Http/Response/{AuthAction}Response.php</deliverable>
           <deliverable>Route config: config/routes/{bc}.yaml or PHP attributes</deliverable>
-          <deliverable>Security config: config/packages/security.yaml</deliverable>
-          <deliverable>User entity: src/{BC}/Domain/Model/User.php (with password hashing)</deliverable>
           <deliverable>Playwright E2E: tests/E2E/{BC}/{AuthAction}Test.{ext}</deliverable>
+          <note>Security config (config/packages/security.yaml) + User entity are NOT deliverables here — they are provided by the auth-bootstrap dependency (AUTH_BOOTSTRAP_GOAL_ID, step 3.16a). This goal consumes them, it does not create them.</note>
         </section>
 
         <section name="investigation-config">
@@ -1661,10 +1810,10 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
 
           <investigator n="1" name="Auth endpoint">
             <type>implementation-check</type>
-            <files>src/{BC}/Infrastructure/Http/{AuthAction}Controller.php, config/packages/security.yaml, src/{BC}/Domain/Model/User.php</files>
+            <files>RESOLVE_CONTROLLER_PATH({BC}, {AuthAction}) (3.17.0)</files>
             <commands>bin/console debug:router | grep {auth_path}</commands>
-            <pass>Route registered, controller wired, security config present</pass>
-            <fail>Missing route, controller not found, or security misconfigured</fail>
+            <pass>Route registered and controller wired (security config + User entity are pre-existing deps from auth-bootstrap, not created here)</pass>
+            <fail>Missing route or controller not found</fail>
           </investigator>
 
           <investigator n="2" name="Quality gates">
@@ -1717,7 +1866,7 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
           <action>Print error with full context and ABORT — do not continue to next flow.</action>
         </check>
 
-        <rule>The first auth goal (typically Register) includes security.yaml setup + User entity as deliverables. Subsequent auth goals reference the existing security config.</rule>
+        <rule>Every auth goal references the existing security config + User entity from the auth-bootstrap dependency (AUTH_BOOTSTRAP_GOAL_ID, step 3.16a) — no per-flow goal creates security.yaml or the User entity (D3 determinism gate).</rule>
         <rule>Never hard-code test credentials in goal descriptions or context — always reference docs/architecture/test-environment.md (GM-05, AU-10).</rule>
         <rule>description field max 120 chars (MaxGoalDescriptionLength). Detailed criteria go in acceptance and validate arrays.</rule>
       </substep>
@@ -1725,8 +1874,86 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
       <substep n="3.19.6" title="Record auth goal IDs for downstream dependencies">
         <action>Store AUTH_GOAL_IDS list as a session variable for use by subsequent steps (controller action goals).</action>
         <action>Print summary: "Auth goals created: {{N_auth_flows}} goals (phase=auth, depends_on=[{{FIXTURES_GOAL_ID}}, {{ERROR_HANDLING_GOAL_ID}}]), IDs: [{{AUTH_GOAL_IDS}}]"</action>
-        <rule critical="true">Subsequent controller action goal steps MUST add ALL AUTH_GOAL_IDS to their depends_on arrays — protected endpoint E2E tests require auth infrastructure (AU-07 verification).</rule>
+        <rule critical="true">The real auth-infrastructure prerequisite for protected endpoints is AUTH_BOOTSTRAP_GOAL_ID (security firewall/provider + User entity), NOT "all auth goals". Subsequent auth_required controller action goals (3.18.2) MUST depend on AUTH_BOOTSTRAP_GOAL_ID; the legacy "all AUTH_GOAL_IDS" dependency is retained for 401/403 flow E2E assertions but is no longer the source of the security infra itself.</rule>
         <action>Proceed to next step.</action>
+      </substep>
+    </step>
+
+    <step n="3.19a" title="Generate dev-env seed-admin goal (conditional, phase=seed)">
+      <rule critical="true">Runs strictly AFTER step 3.19 so every phase=auth and phase=auth-bootstrap goal ID already exists in goals.yaml.</rule>
+      <rule critical="true">CONDITIONAL — emit at most ONE goal, and only when seeding was requested AND at least one auth flow exists. NEVER fold this into the test-only fixtures goal (phase=fixtures, --env=test).</rule>
+      <rule critical="true">Credentials are referenced by env-var name only (admin_identifier_env, admin_password_env) — NEVER inline a secret value in description, context, acceptance, or validate (GM-05). Seeds the dev environment ONLY — NEVER prod, NEVER --env=test.</rule>
+      <rule critical="true">All inputs read from docs/architecture/* files on disk (G-16), never from conversation context.</rule>
+
+      <substep n="3.19a.1" title="Read seed decision and gate">
+        <action>Read docs/architecture/test-environment.md. Locate the `## Bootstrap / Seed Default Admin` block. Extract seed_default_admin and the env-var NAMES admin_identifier_env, admin_password_env.</action>
+        <action>Read docs/architecture/cross-cutting.md auth flows (the SAME source used by step 3.19.1). Count N_auth_flows.</action>
+        <branch condition="seed_default_admin != yes OR the Bootstrap / Seed Default Admin block is absent">
+          <action>Print: "Seed default admin not requested — skipping Step 3.19a."</action>
+          <action>SKIP — proceed to next step. Do NOT call goal-create.</action>
+        </branch>
+        <branch condition="seed_default_admin == yes AND N_auth_flows == 0">
+          <action>Print WARNING: "Seed default admin was requested but no auth flows exist — there is no User entity to seed. Skipping Step 3.19a."</action>
+          <action>SKIP — proceed to next step. Do NOT call goal-create.</action>
+        </branch>
+        <branch condition="seed_default_admin == yes AND N_auth_flows &gt;= 1">
+          <action>Proceed to substep 3.19a.2.</action>
+        </branch>
+      </substep>
+
+      <substep n="3.19a.2" title="Resolve depends_on">
+        <action>Read goals.yaml from disk. Find the goal with phase=auth-bootstrap — store its ID as SEED_DEP. The auth-bootstrap goal (step 3.16a) owns the User entity + config/packages/security.yaml, so the seed must run after it.</action>
+        <action>FALLBACK: if no phase=auth-bootstrap goal exists (D3 not present in this plan), resolve the first phase=auth goal (Register — owner of the User entity per step 3.19) and use its ID as SEED_DEP.</action>
+        <check condition="neither a phase=auth-bootstrap goal nor any phase=auth goal resolves">
+          <action>ABORT with error: "Cannot generate seed-admin goal: no auth-bootstrap or auth goal found in goals.yaml — the seed depends on the User entity owner."</action>
+        </check>
+        <action>Set SEED_DEPENDS_ON = [SEED_DEP].</action>
+      </substep>
+
+      <substep n="3.19a.3" title="Create the dev-env seed-admin goal via goal-create">
+        <action>Resolve the seed command name: default to `app:seed-admin` (Symfony `app:` namespace). If a php-symfony overlay customizes the seed command, read it from the resolved template rather than hardcoding (mirror the fixtures-template resolution pattern at 3.17.3).</action>
+        <action>Call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Seed default admin in dev via bin/console app:seed-admin</param>
+          <param name="acceptance">[
+            "SA-01: app:seed-admin console command class exists (Symfony app: namespace command)",
+            "SA-02: command reads the admin identifier and password from the named env-vars only (admin_identifier_env / admin_password_env from docs/architecture/test-environment.md) — referenced by env-var name only, never literal values",
+            "SA-03: no literal secret value appears anywhere in the source — credentials are referenced by env-var name only (GM-05)",
+            "SA-04: command is idempotent — a second run creates no duplicate admin and exits without error",
+            "SA-05: bin/console app:seed-admin --env=dev exits 0 (NEVER --env=test)",
+            "SA-06: an admin row is present in the dev database after the command runs"
+          ]</param>
+          <param name="validate">[
+            "bin/console app:seed-admin --env=dev",
+            "bin/console app:seed-admin --env=dev (second run — idempotent, exit 0, no duplicate)",
+            "assert the seeded admin row exists in the dev database after the run (e.g. bin/console dbal:run-sql to count admin users --env=dev; adapt table/column to the resolved User entity) — NEVER --env=test"
+          ]</param>
+          <param name="context">
+Seed a single default admin user into the DEV database so the running app is usable immediately after generation (the fixtures goal only seeds the --env=test database).
+This goal runs `bin/console app:seed-admin --env=dev` — NEVER --env=test, NEVER prod, and is NEVER folded into the fixtures goal.
+Admin credentials are read from the environment by NAME only: identifier from {{admin_identifier_env}}, password from {{admin_password_env}} (see docs/architecture/test-environment.md `## Bootstrap / Seed Default Admin`). Never hard-code credentials in source — referenced by env-var name only (GM-05).
+The User entity and config/packages/security.yaml are provided by the auth-bootstrap dependency (SEED_DEP) — this goal consumes them, it does not create them.
+          </param>
+          <param name="investigation_config">[
+            {name: "Seed command run", type: "command-run", paths: ["src/"], commands: ["bin/console app:seed-admin --env=dev", "bin/console app:seed-admin --env=dev"], pass: "Command exits 0 on first AND second run (idempotent), and an admin row is present in the dev database afterward", fail: "Non-zero exit, duplicate admin row, or no admin row after the run"},
+            {name: "No inlined secret", type: "file-check", paths: ["src/"], commands: ["grep -rn 'app:seed-admin' src/ to locate the command class, then confirm it reads admin_identifier_env and admin_password_env via getenv/$_ENV and contains NO literal password/secret value"], pass: "Credentials referenced by env-var name only (admin_identifier_env / admin_password_env); no literal secret value in source", fail: "A literal credential value is hardcoded in the command or related source"}
+          ]</param>
+          <param name="not_in_scope">Production seeding; role/permission seeding beyond the single default admin; test fixtures (--env=test, the fixtures goal — this is NEVER folded into the fixtures goal); creating the User entity or config/packages/security.yaml (owned by the auth-bootstrap dependency).</param>
+          <param name="depends_on">SEED_DEPENDS_ON = [SEED_DEP] from substep 3.19a.2</param>
+          <param name="max_retries">2</param>
+          <param name="phase">seed</param>
+        </params>
+        <rule>phase=seed on the created goal (a new phase value, distinct from fixtures).</rule>
+        <rule>Description is 56 chars — within the 120-char limit (MaxGoalDescriptionLength). Detailed criteria live in acceptance and validate.</rule>
+        <rule>2 investigators (GM-08 minimum): one command-run (runs --env=dev + asserts the admin row), one file-check (asserts no inlined secret). NEVER add a --env=test invocation.</rule>
+        <rule>max_retries=2.</rule>
+        <check condition="goal-create returns an error">
+          <action>Print the error with full context and ABORT — do not leave a partial seed goal.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Print: "Seed-admin goal created: goal-{NNN} (phase=seed, depends_on=[{SEED_DEP}], max_retries=2) — runs bin/console app:seed-admin --env=dev, credentials by env-var name only."</action>
+          <action>Proceed to next step.</action>
+        </check>
       </substep>
     </step>
 
@@ -2469,19 +2696,21 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide the se
     </step>
 
     <step n="3.26" title="Generate Docker/deployment goal (conditional, phase=docker)">
-      <rule critical="true">This step is CONDITIONAL — skip entirely if no Docker/container/deployment ADR exists in docs/architecture/adrs/.</rule>
+      <rule critical="true">This step is CONDITIONAL — skip ONLY if RUN_TARGET!=docker AND no Docker/container/deployment ADR exists in docs/architecture/adrs/. RUN_TARGET=docker alone fires the compose+ports goal even with no deployment ADR.</rule>
+      <rule critical="true">DECOUPLED triggers: "run in a container" (RUN_TARGET=docker → always needs compose+ports) is separate from "production deployment" (Docker/deployment ADR → adds prod extras). Either trigger fires the goal; both present emit ONE goal (ADR only adds extras), never two.</rule>
       <rule critical="true">All inputs read from docs/architecture/* files on disk (G-16), never from conversation context.</rule>
       <rule critical="true">depends_on MUST include ALL previous goal IDs from goals.yaml — Docker goal depends on the entire project (G-03).</rule>
 
-      <substep n="3.26.1" title="Check ADRs for Docker selection">
-        <action>Scan docs/architecture/adrs/ directory. Read all ADR files.</action>
-        <action>Search for Docker/container/deployment keywords: "docker", "dockerfile", "docker-compose", "container", "containerization", "deployment".</action>
-        <check condition="No ADR mentions Docker/container/deployment keywords">
-          <action>Print: "Docker/deployment not selected in ADRs — skipping step 3.26"</action>
+      <substep n="3.26.1" title="Determine compose trigger (RUN_TARGET=docker OR deployment ADR)">
+        <action>Read docs/architecture/test-environment.md from disk. Set RUN_TARGET: test-environment.md "Run Target" == docker → set RUN_TARGET=docker, else RUN_TARGET=local. (IDENTICAL rule to substep 1.2/step 0b — do not drift. If test-environment.md is absent, treat RUN_TARGET=local.)</action>
+        <action>Scan docs/architecture/adrs/ directory. Read all ADR files. Search for Docker/container/deployment keywords: "docker", "dockerfile", "docker-compose", "container", "containerization", "deployment". Set ADR_PRESENT=true if any ADR matches, else false.</action>
+        <action>Set COMPOSE_TRIGGER = (RUN_TARGET==docker) OR ADR_PRESENT.</action>
+        <check condition="RUN_TARGET!=docker AND NOT ADR_PRESENT (COMPOSE_TRIGGER is false)">
+          <action>Print: "RUN_TARGET!=docker and no Docker/deployment ADR — skipping step 3.26"</action>
           <action>SKIP entire step — proceed to next step.</action>
         </check>
-        <action>If found, store DOCKER_ADR_SUMMARY = summary of Docker decisions from the matching ADR (base image, compose services, port mappings).</action>
-        <action>Print: "Docker/deployment selected in ADRs — proceeding with goal generation"</action>
+        <action>DOCKER_ADR_SUMMARY is OPTIONAL: only when ADR_PRESENT, store DOCKER_ADR_SUMMARY = summary of Docker decisions from the matching ADR (base image, compose services, port mappings, prod extras). When RUN_TARGET=docker without an ADR, leave DOCKER_ADR_SUMMARY unset — base image/services derive from architecture files (substep 3.26.3).</action>
+        <action>Print: "Compose goal firing — trigger: RUN_TARGET={{RUN_TARGET}}, ADR_PRESENT={{ADR_PRESENT}} (ONE goal; ADR, if present, adds prod extras)"</action>
       </substep>
 
       <substep n="3.26.2" title="Collect all previous goal IDs">
@@ -2494,8 +2723,12 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide the se
       </substep>
 
       <substep n="3.26.3" title="Read architecture inputs">
-        <action>Read the matching ADR file(s) for specific Docker decisions: base image selection, compose service definitions, port mappings, volume mounts.</action>
+        <action condition="ADR_PRESENT">Read the matching ADR file(s) for specific Docker decisions: base image selection, compose service definitions, port mappings, volume mounts, production extras.</action>
         <action>Read docs/architecture/test-environment.md for service list and connection strings (GM-05 — never hardcode credentials).</action>
+        <action>Parse the "Published Ports" block in test-environment.md (the per-service table: Service | Host Port | Container Port | Purpose, persisted by discovery / D1a) into PUBLISHED_PORTS — a per-service host:container mapping keyed by service name.</action>
+        <action>Set APP_PORT = the host port of the app/web service in PUBLISHED_PORTS. App/web service heuristic: the service whose container port matches the framework's HTTP port; when ambiguous, the service named app/web/php in cross-cutting.md (document the chosen service in goal CONTEXT so the worker picks deterministically).</action>
+        <action>FALLBACK when the Published Ports block is ABSENT: set APP_PORT = the port from the base URL in test-environment.md, and record a context note that ports were defaulted from the base URL (surface as a RISK in goal CONTEXT).</action>
+        <action>Set BASE_IMAGE = from DOCKER_ADR_SUMMARY when ADR_PRESENT, else the runtime/framework default recorded in test-environment.md/cross-cutting.md (NEVER hardcoded — GM-05).</action>
         <action>Read docs/architecture/cross-cutting.md for infrastructure decisions (Redis, RabbitMQ, database, etc.) that must appear as services in docker-compose.yaml.</action>
         <action>Store INFRA_SERVICES = list of infrastructure services discovered (DB, Redis, RabbitMQ, etc.).</action>
       </substep>
@@ -2504,9 +2737,9 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide the se
         <action>Build ACCEPTANCE array from DK-01..DK-05:</action>
         <criteria>
           <c id="DK-01">Dockerfile builds successfully — docker build . exit code 0</c>
-          <c id="DK-02">docker-compose.yaml includes all services from ADRs (DB, Redis, etc.) — read compose file, services match</c>
+          <c id="DK-02">docker-compose.yaml includes each service (app + DB, Redis, etc.) with its host:container port mapping from the Published Ports block (PUBLISHED_PORTS) — read compose file, every service and mapping match</c>
           <c id="DK-03">docker compose up starts all services — services running after up</c>
-          <c id="DK-04">Application accessible at configured port — curl localhost:port, response received</c>
+          <c id="DK-04">Application accessible at the published host port APP_PORT (from PUBLISHED_PORTS) — curl localhost:$APP_PORT, response received</c>
           <c id="DK-05">.env.example lists all required environment variables — compare with actual .env needs</c>
         </criteria>
       </substep>
@@ -2516,9 +2749,9 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide the se
         <validate>
           <v>docker build .</v>
           <v>docker compose config --quiet</v>
-          <v>docker compose up -d &amp;&amp; sleep 5 &amp;&amp; curl -s http://localhost:$PORT/health</v>
+          <v>docker compose up -d &amp;&amp; sleep 5 &amp;&amp; curl -s http://localhost:$APP_PORT/health</v>
         </validate>
-        <rule>$PORT references the port defined in docs/architecture/test-environment.md — never hardcoded (GM-05).</rule>
+        <rule>$APP_PORT is the host port of the app/web service from the Published Ports block (PUBLISHED_PORTS) in docs/architecture/test-environment.md — never hardcoded (GM-05); falls back to the base-URL port when the block is absent (substep 3.26.3).</rule>
       </substep>
 
       <substep n="3.26.6" title="Compose context with Investigation Config">
@@ -2545,8 +2778,8 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide the se
 
           <investigator n="3" name="Application accessibility check">
             <type>integration-check</type>
-            <commands>docker compose up -d &amp;&amp; sleep 10 &amp;&amp; curl -sf http://localhost:$PORT/health &amp;&amp; docker compose down</commands>
-            <pass>Health endpoint responds — application accessible at configured port</pass>
+            <commands>docker compose up -d &amp;&amp; sleep 10 &amp;&amp; curl -sf http://localhost:$APP_PORT/health &amp;&amp; docker compose down</commands>
+            <pass>Health endpoint responds — application accessible at the published host port APP_PORT</pass>
             <fail>Application not reachable, health check fails, or services crash on startup</fail>
           </investigator>
 
@@ -2992,6 +3225,64 @@ Final gate goals created:
       </substep>
     </step>
 
+    <step n="5" title="Escalation bounce — turn an escalation need into a sequenced prerequisite (conditional, phase=generation)">
+      <objective>When generation is re-dispatched for a SINGLE bounced goal carrying an executor escalation (a missing out-of-scope prerequisite), create that prerequisite as a real early-phase goal and wire the bounced goal to wait on it. This is the runtime backstop for the rare prerequisite that the initial plan (Steps 0–4) did not anticipate — NOT a path the full initial plan ever takes.</objective>
+
+      <substep n="5.1" title="Detect the bounce mode and gate">
+        <action>This step runs ONLY when generation was invoked for a single bounced goal in phase=generation (set by the supervisor's bounceToGeneration after an [EXECUTE:ESCALATE need=…] was routed as a spec-defect). Otherwise — a full initial plan from docs/architecture/* — SKIP this entire step.</action>
+        <action>Bind BOUNCED_GOAL_ID = the bounced goal's ID (the goal the supervisor re-dispatched generation for).</action>
+        <check condition="not a single-goal phase=generation bounce">
+          <action>Print: "Not an escalation bounce — skipping Step 5."</action>
+          <action>SKIP to end of flow.</action>
+        </check>
+      </substep>
+
+      <substep n="5.2" title="Read the escalation need from the newest correction">
+        <action>List .tmux-cli/goals/&lt;BOUNCED_GOAL_ID&gt;/corrections/cycle-*.md and pick the NEWEST by cycle number (highest N).</action>
+        <action>Read it and extract the escalation `need` line (the concrete missing prerequisite the executor escalated). Bind NEED = that text.</action>
+        <check condition="no corrections/cycle-*.md exists OR no need line found">
+          <action>Print diagnostic: "Escalation bounce for &lt;BOUNCED_GOAL_ID&gt; but no escalation need found in corrections/cycle-*.md — cannot synthesize a prerequisite." and STOP (do NOT loop; let the SpecRetries drain / human halt take over).</action>
+        </check>
+      </substep>
+
+      <substep n="5.3" title="Resolve the scaffold anchor">
+        <action>Read goals.yaml from disk. Find the goal with phase=scaffold — bind SCAFFOLD_ANCHOR = its ID. The prerequisite depends ONLY on the scaffold anchor (the repo skeleton), NEVER on BOUNCED_GOAL_ID (that would create a cycle).</action>
+      </substep>
+
+      <substep n="5.4" title="Derive the prerequisite config from the need">
+        <action>Derive PREREQ_DESCRIPTION (≤120 chars; MaxGoalDescriptionLength invariant), PREREQ_PHASE, PREREQ_VALIDATE (commands proving the prerequisite is satisfied), and PREREQ_INVESTIGATION_CONFIG (2–4 investigators; types from the Reference Table) from NEED.</action>
+        <rule>PREREQ_PHASE: if NEED concerns authentication / JWT / identity / security config / User entity → phase=auth-bootstrap (reuse the 3.16a auth-bootstrap shape: security.yaml + User entity + JWT keypair as applicable). Otherwise → an early gate/infra prerequisite: phase=gate for a build/config/tooling prerequisite, or phase=infrastructure when the need is a real infra deliverable (an "infra-bootstrap").</rule>
+        <rule>The prerequisite is a STANDALONE early-phase goal — it must not re-declare anything the bounced goal owns; it provides only what NEED says is missing.</rule>
+      </substep>
+
+      <substep n="5.5" title="Create the prerequisite goal via goal-create">
+        <action>Call goal-create MCP tool:</action>
+        <params>
+          <param name="description">PREREQ_DESCRIPTION (≤120 chars)</param>
+          <param name="validate">PREREQ_VALIDATE</param>
+          <param name="phase">PREREQ_PHASE</param>
+          <param name="investigation_config">PREREQ_INVESTIGATION_CONFIG</param>
+          <param name="depends_on">[SCAFFOLD_ANCHOR]</param>
+          <param name="max_retries">3</param>
+        </params>
+        <rule>depends_on=[SCAFFOLD_ANCHOR] ONLY — NEVER [BOUNCED_GOAL_ID] (a cycle; goal-add-prerequisite would reject it anyway).</rule>
+        <action>Bind NEW_PREREQ_ID = the returned goal ID.</action>
+        <check condition="goal-create returns error">
+          <action>Print the error with full context and STOP.</action>
+        </check>
+      </substep>
+
+      <substep n="5.6" title="Wire the bounced goal to the new prerequisite via goal-add-prerequisite">
+        <action>Call goal-add-prerequisite MCP tool with goal_id=BOUNCED_GOAL_ID, prerequisite_id=NEW_PREREQ_ID. This appends NEW_PREREQ_ID to the bounced goal's depends_on (append order is harmless — NextPendingGoal gates on DependsOnSatisfied, so the daemon runs NEW_PREREQ_ID first) and increments the bounced goal's escalation_count.</action>
+        <check condition="goal-add-prerequisite returns an escalation-cap error">
+          <action>Print diagnostic: "Escalation cap reached for &lt;BOUNCED_GOAL_ID&gt; — refusing to chain another prerequisite. Halting; let SpecRetries drain / a human intervene." and STOP. Do NOT loop or retry.</action>
+        </check>
+        <check condition="goal-add-prerequisite succeeds">
+          <action>Print: "Escalation resolved: created &lt;NEW_PREREQ_ID&gt; (phase=&lt;PREREQ_PHASE&gt;) and wired &lt;BOUNCED_GOAL_ID&gt; to depend on it."</action>
+        </check>
+      </substep>
+    </step>
+
     <!-- ================================================================
          Steps 4+ are added by subsequent tasks.
          Insert new <step> elements ABOVE this comment block, BEFORE </flow>.
@@ -3006,6 +3297,7 @@ Final gate goals created:
     <rule>Validate ALL consistency rules before reporting errors — collect every error, never stop at the first</rule>
     <rule>Goal descriptions max 120 chars — detailed criteria belong in acceptance and validate arrays</rule>
     <rule>depends_on IDs dynamically read from goals.yaml after each goal-create — never hardcode goal IDs</rule>
+    <rule>scope on EVERY goal-create: pass a `scope` array of path globs derived from the goal's Deliverables file paths, per the &lt;scope-derivation&gt; rule in substep 1.7. A single-BC goal emits its BC-scoped dir glob(s) (e.g. ["src/{BC}/Application/**"]); a repo-wide / skeleton / final-gate goal OMITS scope. CONSERVATIVE: overlap OR omitted/unknown scope ⇒ the daemon serializes (never co-schedules) — so omission is always safe, and an explicit author `scope:` overrides derivation. The runtime reads ONLY the persisted scope, never goal.md.</rule>
   </execution-rules>
 
   <llm final="true">
@@ -3034,19 +3326,21 @@ Final gate goals created:
       * Step 3.16 (Infrastructure) creates one goal per BC with phase=infrastructure, depends_on=own BC's application goal ID, 3-4 investigators, fan-out by entity count (&gt;3 → multi-task), max_retries=3
       * Infrastructure goals: no annotations on domain objects (PI-03), flush-then-dispatch in write repos (PI-06), real DB in integration tests (PI-11), migrations generated not hand-written (PI-10)
       * ACL adapters (PI-16) and custom DBAL types (PI-08) are conditional — included only when cross-BC deps or compound VOs exist
+      * Step 3.16a (Auth Bootstrap) is CONDITIONAL — emitted ONLY when N_auth_flows >= 1 (skip entirely on 0). Single goal, phase=auth-bootstrap, depends_on=[SCAFFOLD_GOAL_ID], 3 investigators, max_retries=3. OWNS config/packages/security.yaml (firewall/provider/authenticator) + User entity with password hashing + (when uses_jwt) lexik/jwt-authentication-bundle config + bin/console lexik:jwt:generate-keypair. Carries AU-08/AU-09 (relocated from per-flow auth goals) + AB-JWT (conditional on uses_jwt). User entity defaults to src/Share/ if no identity BC exists. Stored as AUTH_BOOTSTRAP_GOAL_ID for steps 3.18 (auth_required actions) and 3.19 (all auth flows).
       * Step 3.17 (Fixtures) creates a single goal with phase=fixtures, depends_on=ALL infra goal IDs (dynamically collected), 3 investigators, single-task fan-out, max_retries=3
       * Fixtures depends_on MUST include EVERY infrastructure goal ID from goals.yaml — never just the last one (G-03)
       * Test credentials reference docs/architecture/test-environment.md only — never hardcoded in fixtures (GM-05, FX-02)
-      * Step 3.18 (Controller Actions) creates one goal per non-auth action (G-05), phase=action, depends_on=[own BC infra + fixtures + error handling + all auth goals], 2-3 investigators, 5 deliverables (GM-12), max_retries=3
+      * Step 3.18 (Controller Actions) creates one goal per non-auth action (G-05), phase=action, depends_on=[own BC infra + fixtures + error handling + all auth goals] + AUTH_BOOTSTRAP_GOAL_ID (only for auth_required actions), 2-3 investigators, 5 deliverables (GM-12), max_retries=3
       * Auth endpoints (## Auth Flows section) are EXCLUDED from controller action goals — handled by auth step 3.19 only
       * PC-01..PC-17 encoded in acceptance; PC-07..PC-14 conditional on Playwright availability
       * Fan-Out paths from api-endpoints.md used directly for deliverable file paths — never derived from conventions
-      * Step 3.19 (Auth Flows) creates one goal per auth flow (N_auth_flows), phase=auth, depends_on=[fixtures + error handling], 3 investigators, 7 deliverables, max_retries=3
+      * Step 3.19 (Auth Flows) creates one goal per auth flow (N_auth_flows), phase=auth, depends_on=[fixtures + error handling + AUTH_BOOTSTRAP_GOAL_ID], 3 investigators, 5 deliverables (security.yaml + User entity NOT declared — provided by auth-bootstrap), max_retries=3
       * Auth flows read from docs/architecture/cross-cutting.md Step 6.2 output — one goal per flow (Register, Login, Logout, Token Refresh, Password Reset)
       * Auth goals carry AU-01..AU-10 (flow-specific) + PC-01..PC-17 (all flows) acceptance criteria
-      * AU-08/AU-09 (security bundle, password hashing) apply to Register + Login; AU-05/AU-06 (role access) tested within Login/Register
+      * AU-08/AU-09 (security bundle, password hashing) are OWNED by the auth-bootstrap goal (3.16a), NOT per-flow auth goals; per-flow goals keep AU-07/AU-10 + flow-specific AU-01..AU-06 and depend on AUTH_BOOTSTRAP_GOAL_ID. AU-05/AU-06 (role access) tested within Login/Register
       * Auth goal IDs stored as AUTH_GOAL_IDS — all subsequent action goals MUST depend on them
       * Never double-count auth endpoints in per-BC N_actions — auth counted only in N_auth_flows
+      * Step 3.19a (Seed Default Admin) is CONDITIONAL — emitted ONLY when seed_default_admin=yes in test-environment.md `## Bootstrap / Seed Default Admin` AND N_auth_flows &gt;= 1 (skip silently when not requested; skip + warn when 0 auth flows). Single goal, phase=seed, depends_on=[auth-bootstrap goal; FALLBACK first phase=auth/Register goal], max_retries=2, acceptance SA-01..SA-06, 2 investigators (command-run + no-inlined-secret file-check). Validate runs `bin/console app:seed-admin --env=dev` (NEVER --env=test) and asserts the admin row exists. Credentials referenced by env-var NAME only (admin_identifier_env / admin_password_env) — never inlined (GM-05); never folded into the --env=test fixtures goal; never seeds prod.
       * Step 3.22 (HTTP Middleware) is CONDITIONAL — skip entirely if docs/architecture/cross-cutting.md has no middleware selected. If middleware selected: single goal, phase=middleware, depends_on=[fixtures goal ID], 3 investigators, max_retries=3
       * Middleware criteria MW-01 (CORS), MW-02 (logging), MW-03 (rate limiting) are each conditional on that feature being selected. MW-04 (kernel registration order) is always included.
       * Middleware files live in src/Share/Infrastructure/Http/Middleware/ (cross-cutting, not per-BC)
@@ -3073,7 +3367,8 @@ Final gate goals created:
       * Fan-out hints (G-17): Every goal.md MUST include a Fan-Out Hints section. Single-task goals state "single-task". Multi-task goals list task-0 (shared prerequisites), task-1..N (parallel work units), with explicit depends_on within the goal. Fan-out hints drive tasks.yaml generation — missing hints cause task planning failures.
       * Playwright conditional skip: When HAS_FRONTEND=false (from Step 1.2 line 141): skip PC-07..PC-14 in acceptance arrays (Step 3.18.3), skip E2E investigators in Investigation Config, skip E2E Final Gate goal (Step 3.29.3), and print a warning for each skip. HAS_FRONTEND=true preserves full behavior unchanged.
       * Ordering verification (Step 4): After all goals are generated, Step 4 validates phase ordering (G-04), depends_on acyclicity (G-15), per-BC ordering domain→application→infrastructure (G-04), and controller actions after fixtures (G-04b). Any violation is fatal — ABORT with diagnostic naming the violating goal ID and rule.
-      * Subsequent tasks insert Steps 5+ above the closing comment in &lt;flow&gt;
+      * Step 5 (Escalation bounce) is CONDITIONAL — runs ONLY when generation is re-dispatched for a SINGLE bounced goal in phase=generation (after an [EXECUTE:ESCALATE need=…] was routed as a spec-defect); a full initial plan SKIPS it. Read the bounced goal's newest corrections/cycle-*.md, extract the escalation `need`, derive a prerequisite {description≤120, phase, validate, investigation_config} (auth/JWT/identity → phase=auth-bootstrap; else phase=gate/infrastructure), goal-create it with depends_on=[SCAFFOLD_ANCHOR] (NEVER the bounced goal — that is a cycle), then goal-add-prerequisite(goal_id=BOUNCED_GOAL_ID, prerequisite_id=NEW_PREREQ_ID). Append order is harmless (NextPendingGoal gates on DependsOnSatisfied, so the daemon runs the prerequisite first). On an escalation-cap error, print the diagnostic and STOP — never loop (let SpecRetries drain / a human halt take over). A worker must NEVER call goal-create/goal-add-prerequisite — these are generation-only (they race the daemon).
+      * Subsequent tasks insert Steps 6+ above the closing comment in &lt;flow&gt;
     </critical-rules>
   </llm>
 </task>

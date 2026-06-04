@@ -23,8 +23,8 @@ func TestM01_UnsetSecret(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
-	d.lastSupervisorStatus = "done"
+	d.runtime("goal-001").phase = phaseValidating
+	d.runtime("goal-001").lastSupervisorStatus = "done"
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
@@ -85,9 +85,9 @@ func TestValidateTimeout_SynthesizesError(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
-	d.phase = phaseValidating
+	d.runtime("goal-001").phase = phaseValidating
 	d.validateTimeout = 300 * time.Second
-	d.currentGoalValidateTime = time.Now().Add(-301 * time.Second)
+	d.runtime("goal-001").validateTime = time.Now().Add(-301 * time.Second)
 	d.createWindowFn = mockCreateWindowFn("@7")
 
 	gf := &GoalsFile{
@@ -119,7 +119,7 @@ func TestValidateTimeout_SynthesizesError(t *testing.T) {
 	assert.Equal(t, 0, goal.SpecRetries, "spec retries must not move")
 	assert.Equal(t, 0, goal.Retries, "legacy code-defect retry must not move")
 	assert.Equal(t, GoalRunning, goal.Status)
-	assert.Equal(t, phaseValidating, d.phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 
 	// A fresh validator was dispatched (re-run validation only).
 	exec.AssertCalled(t, "SendMessage", testSession, "@7", mock.Anything)

@@ -23,14 +23,75 @@ type tvGoal struct {
 
 	Preconditions []taskvisor.Precondition `yaml:"preconditions,omitempty"`
 
-	Status     string   `yaml:"status"`
-	Retries    int      `yaml:"retries"`
-	MaxRetries int      `yaml:"max_retries"`
-	Phase      string   `yaml:"phase,omitempty"`
-	DependsOn  []string `yaml:"depends_on,omitempty"`
-	BlockedBy  string   `yaml:"blocked_by,omitempty"`
-	StartedAt  string   `yaml:"started_at,omitempty"`
-	FinishedAt string   `yaml:"finished_at,omitempty"`
+	Status     string `yaml:"status"`
+	Retries    int    `yaml:"retries"`
+	MaxRetries int    `yaml:"max_retries"`
+
+	// Per-class LIVE retry counters (remaining budget) mirroring
+	// taskvisor.Goal.CodeRetries/SpecRetries/ValidationRetries/BlockRetries
+	// (same yaml keys). DUAL-STRUCT (critical): must stay in lock-step with
+	// taskvisor.Goal — the daemon (de)serializes via taskvisor.Goal, these tools
+	// via tvGoal; without the mirror every MCP load-resave (GoalCreate,
+	// GoalAddPrerequisite) zeroes the counters, and the LoadGoals re-seed guard
+	// then wrongly restores a mid-decrement goal to FULL budget.
+	CodeRetries       int `yaml:"code_retries,omitempty"`
+	SpecRetries       int `yaml:"spec_retries,omitempty"`
+	ValidationRetries int `yaml:"validation_retries,omitempty"`
+	BlockRetries      int `yaml:"block_retries,omitempty"`
+
+	// Per-class retry BUDGETS mirroring taskvisor.Goal.Max…Retries (same yaml
+	// keys). DUAL-STRUCT (critical): erasing a budget to 0 corrupts the
+	// LoadGoals zero + re-seed invariant (AGENTS.md) — a 0 budget grants 0
+	// retries, so a goal whose Max… fields were dropped by an MCP resave gets
+	// hard-halted on its first defect instead of consuming its real budget.
+	MaxCodeRetries       int `yaml:"max_code_retries,omitempty"`
+	MaxSpecRetries       int `yaml:"max_spec_retries,omitempty"`
+	MaxValidationRetries int `yaml:"max_validation_retries,omitempty"`
+	MaxBlockRetries      int `yaml:"max_block_retries,omitempty"`
+
+	// Durable C6 code-route convergence circuit-breaker state mirroring
+	// taskvisor.Goal.ConvergenceSignatures/ConvergenceStreak (same yaml keys).
+	// DUAL-STRUCT (critical): an MCP resave that drops these resets the streak
+	// to 0, so a goal looping on identical failure signatures is never halted —
+	// the breaker built by sibling goal-020 work (B7) is silently disarmed.
+	ConvergenceSignatures []string `yaml:"convergence_signatures,omitempty"`
+	ConvergenceStreak     int      `yaml:"convergence_streak,omitempty"`
+
+	// Durable spec-route convergence breaker state mirroring
+	// taskvisor.Goal.SpecConvergenceSignatures/SpecConvergenceStreak (same yaml
+	// keys), ISOLATED from the code-route pair above. DUAL-STRUCT (critical):
+	// dropping these defeats the spec-bounce breaker (sibling B10) exactly like
+	// the code-route pair.
+	SpecConvergenceSignatures []string `yaml:"spec_convergence_signatures,omitempty"`
+	SpecConvergenceStreak     int      `yaml:"spec_convergence_streak,omitempty"`
+
+	Phase     string   `yaml:"phase,omitempty"`
+	DependsOn []string `yaml:"depends_on,omitempty"`
+	// EscalationCount mirrors taskvisor.Goal.EscalationCount (same yaml key). It is
+	// the durable escalation-prerequisite counter that GoalAddPrerequisite
+	// increments and caps. DUAL-STRUCT (critical): must stay in lock-step with
+	// taskvisor.Goal — the daemon (de)serializes via taskvisor.Goal, these tools
+	// via tvGoal; a drift drops the counter on a round-trip and the cap leaks.
+	EscalationCount int `yaml:"escalation_count,omitempty"`
+	// Migrates mirrors taskvisor.Goal.Migrates (same yaml key). It marks a goal
+	// that mutates the shared database schema; the daemon's co-scheduling
+	// exclusion (DisjointReadySet) runs such a goal alone. DUAL-STRUCT
+	// (critical): must stay in lock-step with taskvisor.Goal — without this
+	// mirror, every MCP load-resave (GoalCreate, GoalAddPrerequisite) silently
+	// erases migrates: true and disarms the exclusion at MaxGoals>1.
+	Migrates bool `yaml:"migrates,omitempty"`
+	// Scope mirrors taskvisor.Goal.Scope (same yaml key) so goal-create persists
+	// the disjoint-scope co-scheduling footprint that the daemon reads back.
+	Scope     []string `yaml:"scope,omitempty"`
+	BlockedBy string   `yaml:"blocked_by,omitempty"`
+	// BlockedByPrecondition mirrors taskvisor.Goal.BlockedByPrecondition (same
+	// yaml key) — the query key for the §5 auto-resume loop
+	// (scanPreconditionBlocked/resumeDownstreamLoop). DUAL-STRUCT (critical):
+	// an MCP resave that drops it strands a precondition-blocked goal forever —
+	// the resume loop only re-evaluates goals carrying this flag.
+	BlockedByPrecondition bool   `yaml:"blocked_by_precondition,omitempty"`
+	StartedAt             string `yaml:"started_at,omitempty"`
+	FinishedAt            string `yaml:"finished_at,omitempty"`
 }
 
 type tvGoalsFile struct {
@@ -148,6 +209,10 @@ var allowedInvestigatorTypes = map[string]bool{
 	"e2e-test": true, "integration-test": true,
 	"command": true, "environment-check": true, "file-check": true,
 	"implementation-check": true, "integration-check": true,
+	// own-suite-green: the mandatory B2b gate auto-derived in WriteGoalMD. Listed
+	// so an explicit planner config MAY legitimately carry it (the dedup target of
+	// hasInvestigatorType) without validateInvestigators rejecting it.
+	"own-suite-green": true,
 }
 
 // validateInvestigators enforces the explicit investigation_config contract: 2–4
@@ -182,7 +247,7 @@ func validateInvestigators(invs []taskvisor.Investigator) error {
 }
 
 // GoalCreate generates a sequential goal ID, appends the goal to goals.yaml, creates the goal directory, and writes goal.md.
-func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope, phase string, maxRetries int, dependsOn []string, preconditions []taskvisor.Precondition, investigators []taskvisor.Investigator) (*GoalCreateOutput, error) {
+func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope, phase string, maxRetries int, dependsOn []string, preconditions []taskvisor.Precondition, investigators []taskvisor.Investigator, scope []string) (*GoalCreateOutput, error) {
 	if description == "" {
 		return nil, fmt.Errorf("%w: description cannot be empty", ErrInvalidInput)
 	}
@@ -246,6 +311,7 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, c
 			MaxRetries:    maxRetries,
 			Phase:         phase,
 			DependsOn:     dependsOn,
+			Scope:         scope,
 			Preconditions: preconditions,
 		}
 		gf.Goals = append(gf.Goals, goal)
@@ -265,6 +331,122 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, c
 	}
 
 	return &GoalCreateOutput{ID: goalID}, nil
+}
+
+// escalationCap bounds the number of escalation-driven prerequisites that may be
+// wired onto a single goal via GoalAddPrerequisite, keeping runtime prerequisite
+// chains bounded. It mirrors C1a/execute-11's "Open Decision #3 = 2" (the
+// supervisor refuses a 3rd ESCALATE for the same goal). If C1a ever makes the cap
+// configurable, switch this to that single source.
+const escalationCap = 2
+
+// GoalAddPrerequisite rewrites one existing goal's depends_on to include an
+// existing prerequisite goal, under the goals-file lock. It is the generation-
+// side backstop for an escalation bounce: when an executor escalates a missing
+// out-of-scope prerequisite, generation creates the prerequisite goal and calls
+// this to make the bounced goal wait on it. Generation is the SINGLE safe writer
+// of goals.yaml during a bounce (the daemon is parked in phaseSupervising), so
+// the rewrite races nothing — a worker must NEVER call it. Validates both IDs
+// exist (reusing GoalCreate's existing-ID wording), rejects self-dependency and
+// cycles, is idempotent when the edge already exists, and enforces escalationCap.
+func (s *Server) GoalAddPrerequisite(goalID, prerequisiteID string) (*GoalAddPrerequisiteOutput, error) {
+	var out GoalAddPrerequisiteOutput
+	if err := withGoalsFileLock(s.workingDir, func() error {
+		gf, err := tvLoadGoals(s.workingDir)
+		if err != nil {
+			return fmt.Errorf("%w: failed to load goals.yaml: %w", ErrInvalidInput, err)
+		}
+		if gf == nil {
+			return fmt.Errorf("%w: depends_on references non-existent goal: %s", ErrInvalidInput, goalID)
+		}
+
+		// Locate the target goal and confirm BOTH ends exist. Reuse GoalCreate's
+		// existing-ID wording (tools_taskvisor.go: depends_on validation) so
+		// operators see a consistent message.
+		var target *tvGoal
+		existingIDs := make(map[string]bool, len(gf.Goals))
+		for i := range gf.Goals {
+			existingIDs[gf.Goals[i].ID] = true
+			if gf.Goals[i].ID == goalID {
+				target = &gf.Goals[i]
+			}
+		}
+		if target == nil {
+			return fmt.Errorf("%w: depends_on references non-existent goal: %s", ErrInvalidInput, goalID)
+		}
+		if !existingIDs[prerequisiteID] {
+			return fmt.Errorf("%w: depends_on references non-existent goal: %s", ErrInvalidInput, prerequisiteID)
+		}
+
+		// Reject a self-dependency.
+		if prerequisiteID == goalID {
+			return fmt.Errorf("%w: a goal cannot depend on itself: %s", ErrInvalidInput, goalID)
+		}
+
+		// Reject a cycle: adding goalID -> prerequisiteID closes a cycle iff
+		// prerequisiteID can already reach goalID by following depends_on edges.
+		if tvDependsOnReaches(gf.Goals, prerequisiteID, goalID) {
+			return fmt.Errorf("%w: adding %s as a prerequisite of %s would create a dependency cycle", ErrInvalidInput, prerequisiteID, goalID)
+		}
+
+		// Idempotent: if the edge already exists, succeed without re-incrementing
+		// the cap (a benign re-wire must not consume escalation budget).
+		for _, dep := range target.DependsOn {
+			if dep == prerequisiteID {
+				out = GoalAddPrerequisiteOutput{
+					DependsOn:       append([]string(nil), target.DependsOn...),
+					EscalationCount: target.EscalationCount,
+				}
+				return nil
+			}
+		}
+
+		// Enforce the escalation cap BEFORE mutating: a fresh wire pushes the
+		// counter to EscalationCount+1; reject when that would exceed the cap so
+		// the chain stays bounded and no edit persists.
+		if target.EscalationCount+1 > escalationCap {
+			return fmt.Errorf("%w: escalation cap %d reached for goal %s", ErrInvalidInput, escalationCap, goalID)
+		}
+
+		target.DependsOn = append(target.DependsOn, prerequisiteID)
+		target.EscalationCount++
+		out = GoalAddPrerequisiteOutput{
+			DependsOn:       append([]string(nil), target.DependsOn...),
+			EscalationCount: target.EscalationCount,
+		}
+
+		return tvSaveGoals(s.workingDir, gf)
+	}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// tvDependsOnReaches reports whether startID can reach targetID by following
+// depends_on edges (DFS over the goal graph). GoalAddPrerequisite uses it as a
+// generic cycle guard for hand-edited goals.yaml; the real-world escalation path
+// (a freshly-created prerequisite depending only on the scaffold anchor) never
+// cycles. The visited set bounds the walk on already-cyclic input.
+func tvDependsOnReaches(goals []tvGoal, startID, targetID string) bool {
+	deps := make(map[string][]string, len(goals))
+	for _, g := range goals {
+		deps[g.ID] = g.DependsOn
+	}
+	visited := make(map[string]bool, len(goals))
+	var dfs func(id string) bool
+	dfs = func(id string) bool {
+		if visited[id] {
+			return false
+		}
+		visited[id] = true
+		for _, dep := range deps[id] {
+			if dep == targetID || dfs(dep) {
+				return true
+			}
+		}
+		return false
+	}
+	return dfs(startID)
 }
 
 // contentlessCorrections is a small, deliberately-short deny-list of stub
@@ -296,6 +478,15 @@ var contentlessCorrections = map[string]bool{
 // error the caller writes NO signal.
 func validateFindings(verdict string, findings []ValidationFinding) error {
 	for _, f := range findings {
+		// B5a: any structured correction_edit entry must name a target file. An
+		// edit with no file is unusable by the downstream applier. Status-agnostic
+		// (a remedy may ride any finding); leaves the prose-Correction rules below
+		// untouched. Empty list is treated as absent (loop is a no-op).
+		for _, e := range f.CorrectionEdits {
+			if strings.TrimSpace(e.File) == "" {
+				return fmt.Errorf("%w: finding %q has a correction_edit entry with an empty correction_edit.file", ErrInvalidInput, f.Rule)
+			}
+		}
 		if f.Status == taskvisor.VerdictBlocked {
 			// C5/WS3: a parked goal's runbook must be actionable — require a
 			// concrete remedy. COMMAND-shaped fields stay fail-only (blocked has
@@ -404,15 +595,27 @@ func (s *Server) GoalValidationDone(goalID, verdict string, findings []Validatio
 		return nil, fmt.Errorf("%w: %w", ErrTmuxCommandFailed, err)
 	}
 
+	// Resolve the validator window the daemon spawned for THIS goal. At
+	// MaxGoals>1 the daemon suffixes the name per goal ("validator-046"), so a
+	// hard-coded "validator" match left those windows unsignalable ("no validator
+	// window found"). ValidatorWindowNames yields both the namespaced and bare
+	// forms (most-specific first) from the daemon's own naming helper; the UUID
+	// check below is the real authorization gate.
+	wantNames := taskvisor.ValidatorWindowNames(goalID)
 	var validatorWindow *tmux.WindowInfo
-	for i := range windows {
-		if windows[i].Name == "validator" {
-			validatorWindow = &windows[i]
+	for _, want := range wantNames {
+		for i := range windows {
+			if windows[i].Name == want {
+				validatorWindow = &windows[i]
+				break
+			}
+		}
+		if validatorWindow != nil {
 			break
 		}
 	}
 	if validatorWindow == nil {
-		return nil, fmt.Errorf("%w: no validator window found", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: no validator window found (expected one of %v)", ErrInvalidInput, wantNames)
 	}
 
 	validatorUUID, err := s.executor.GetWindowOption(sessionID, validatorWindow.TmuxWindowID, tmux.WindowUUIDOption)

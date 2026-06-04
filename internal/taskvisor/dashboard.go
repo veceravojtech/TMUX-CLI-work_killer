@@ -89,7 +89,7 @@ func (d *Daemon) renderDashboard(w io.Writer) error {
 	}
 
 	phaseName := "NONE"
-	switch d.phase {
+	switch d.runtime(d.currentGoal).phase {
 	case phaseSupervising:
 		phaseName = "SUPERVISING"
 	case phaseValidating:
