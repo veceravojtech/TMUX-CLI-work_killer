@@ -980,13 +980,14 @@ func TestIntegration_CompletionReport_AllCategories(t *testing.T) {
 		GlobalMaxRetries: 3,
 		Goals: []Goal{
 			{ID: "goal-001", Description: "Completed task", Status: GoalDone, Retries: 1, MaxRetries: 3,
+				MaxCodeRetries: 3, CodeRetries: 2,
 				StartedAt: "2026-05-20T10:00:00Z", FinishedAt: "2026-05-20T10:15:30Z"},
 			// consumed code budget 3 (MaxCode5-Code2) == GlobalMaxRetries 3 => ceiling reached.
-			// Legacy Retries:3 retained ONLY for the report-display assertion ("Retries: 3/5").
-			{ID: "goal-002", Description: "Ceiling-halted task", Status: GoalPending, Retries: 3, MaxRetries: 5, MaxCodeRetries: 5, CodeRetries: 2},
-			{ID: "goal-003", Description: "Cascade-blocked task", Status: GoalPending, MaxRetries: 3,
+			{ID: "goal-002", Description: "Ceiling-halted task", Status: GoalPending, MaxRetries: 5, MaxCodeRetries: 5, CodeRetries: 2},
+			{ID: "goal-003", Description: "Cascade-blocked task", Status: GoalPending, MaxRetries: 3, MaxCodeRetries: 3,
 				DependsOn: []string{"goal-002"}},
-			{ID: "goal-004", Description: "Independent ceiling-halted", Status: GoalPending, MaxRetries: 5},
+			{ID: "goal-004", Description: "Independent ceiling-halted", Status: GoalPending, MaxRetries: 5,
+				MaxCodeRetries: 5, CodeRetries: 5},
 		},
 	}
 	writeGoals(t, dir, gf)
@@ -1047,18 +1048,18 @@ func TestIntegration_CompletionReport_AllCategories(t *testing.T) {
 	g4Section := report[g4Idx:]
 
 	assert.Contains(t, g1Section, "- **Status:** done")
-	assert.Contains(t, g1Section, "- **Retries:** 1/3")
+	assert.Contains(t, g1Section, "- **Retries:** code 1/3")
 	assert.Contains(t, g1Section, "- **Duration:** 15m30s")
 
 	assert.Contains(t, g2Section, "- **Status:** failed")
-	assert.Contains(t, g2Section, "- **Retries:** 3/5")
+	assert.Contains(t, g2Section, "- **Retries:** code 3/5")
 	assert.NotContains(t, g2Section, "- **Duration:**")
 
 	assert.Contains(t, g3Section, "- **Status:** blocked")
-	assert.Contains(t, g3Section, "- **Retries:** 0/3")
+	assert.Contains(t, g3Section, "- **Retries:** code 0/3")
 
 	assert.Contains(t, g4Section, "- **Status:** failed")
-	assert.Contains(t, g4Section, "- **Retries:** 0/5")
+	assert.Contains(t, g4Section, "- **Retries:** code 0/5")
 	assert.NotContains(t, g4Section, "- **Duration:**")
 
 	guardPath := filepath.Join(dir, ".tmux-cli", "taskvisor-active")

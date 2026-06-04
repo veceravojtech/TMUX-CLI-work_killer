@@ -211,7 +211,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 // minimum derived from the per-worker budget, logging when it does so.
 //
 // It floors at one full parallel wave (workerCount = maxWorkers ⇒ ceil(max/max)=1
-// ⇒ 660s for the default budget): the daemon cannot know how many workers a
+// ⇒ 1260s for the default budget, incl. ValidatorOverheadSec): the daemon cannot know how many workers a
 // future validation spawns, so validations expecting more waves rely on a higher
 // configured validate_timeout, which this clamp will not lower.
 func (d *Daemon) clampValidateTimeout(maxWorkers int) {

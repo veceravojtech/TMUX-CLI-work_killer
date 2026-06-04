@@ -4362,8 +4362,8 @@ func TestDaemon_ClampValidateTimeout_BelowBudget(t *testing.T) {
 	d := &Daemon{validateTimeout: 300 * time.Second}
 	d.clampValidateTimeout(4)
 
-	// DeriveValidateTimeout(600,4,4) = 660.
-	assert.Equal(t, 660*time.Second, d.validateTimeout)
+	// DeriveValidateTimeout(600,4,4) = 1260 (incl. ValidatorOverheadSec).
+	assert.Equal(t, 1260*time.Second, d.validateTimeout)
 	assert.Contains(t, buf.String(), "clamping up")
 }
 
@@ -4383,7 +4383,7 @@ func TestDaemon_ClampValidateTimeout_LoadFailureStillClamps(t *testing.T) {
 	// Simulates the load-error branch: validateTimeout is the zero value from New().
 	d := &Daemon{}
 	d.clampValidateTimeout(setup.DefaultMaxWorkers)
-	assert.GreaterOrEqual(t, d.validateTimeout, 660*time.Second)
+	assert.GreaterOrEqual(t, d.validateTimeout, 1260*time.Second)
 }
 
 // countingCreateWindowFn returns a WindowCreateFunc that increments *count on

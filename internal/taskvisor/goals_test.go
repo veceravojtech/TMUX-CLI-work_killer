@@ -505,6 +505,20 @@ func TestResetGoal_ZeroesAllFourLiveCounters(t *testing.T) {
 	assert.Equal(t, 0, g.BlockRetries)
 }
 
+// TestResetGoal_ClearsFailedBy asserts ResetGoal clears the timeout-salvage
+// marker: a reset goal starts fresh, so a stale "validation-timeout" must not
+// make the salvage scan watch (or flip) the re-pended goal.
+func TestResetGoal_ClearsFailedBy(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Status: GoalFailed, FailedBy: "validation-timeout"},
+		},
+	}
+	ok := gf.ResetGoal("goal-001")
+	assert.True(t, ok)
+	assert.Equal(t, "", gf.Goals[0].FailedBy, "ResetGoal must clear the FailedBy marker")
+}
+
 // TestResetGoal_PreservesMaxCounters asserts ResetGoal never mutates the Max…
 // budget fields — they are the source the LoadGoals guard re-seeds from.
 func TestResetGoal_PreservesMaxCounters(t *testing.T) {
@@ -1577,7 +1591,7 @@ func TestDeriveInvestigators_StillCapsAt4(t *testing.T) {
 		"vendor/bin/ecs check",
 		"npx eslint .",
 	}
-	out := deriveInvestigators(validate)
+	out := deriveInvestigators(t.TempDir(), validate)
 	assert.Len(t, out, 4)
 }
 
@@ -1766,7 +1780,7 @@ func TestIsPureCommand_ExitTypeNoCommandRejected(t *testing.T) {
 }
 
 func TestIsPureCommand_DerivedExitInvestigatorsAreClassified(t *testing.T) {
-	derived := deriveInvestigators([]string{
+	derived := deriveInvestigators(t.TempDir(), []string{
 		"vendor/bin/phpstan analyse",
 		"php bin/phpunit",
 		"vendor/bin/deptrac analyse",
@@ -1778,7 +1792,7 @@ func TestIsPureCommand_DerivedExitInvestigatorsAreClassified(t *testing.T) {
 }
 
 func TestIsPureCommand_DerivedGrepInvestigatorNotPure(t *testing.T) {
-	derived := deriveInvestigators([]string{"grep -r Foo src/"})
+	derived := deriveInvestigators(t.TempDir(), []string{"grep -r Foo src/"})
 	require.NotEmpty(t, derived)
 	grep := derived[0]
 	require.Equal(t, "static-analysis", grep.Type)
@@ -1878,6 +1892,32 @@ func TestGoal_EscalationCountSurvivesSaveGoalsRoundTrip(t *testing.T) {
 	assert.Equal(t, 1, reloaded.Goals[0].EscalationCount, "escalation_count must survive SaveGoals round-trip")
 }
 
+// TestGoal_FailedBySurvivesSaveGoalsRoundTrip guards the dual-struct field:
+// the daemon (de)serializes goals via taskvisor.Goal, so failed_by MUST persist
+// across a LoadGoals/SaveGoals round-trip — otherwise the daemon's first save
+// erases the timeout-salvage marker and the late-verdict scan never fires.
+func TestGoal_FailedBySurvivesSaveGoalsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Description: "A", Status: GoalFailed, FailedBy: "validation-timeout"},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	loaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+	require.Len(t, loaded.Goals, 1)
+	assert.Equal(t, "validation-timeout", loaded.Goals[0].FailedBy)
+
+	// Re-save (the daemon round-trip) and confirm the marker is not dropped.
+	require.NoError(t, SaveGoals(dir, loaded))
+	reloaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+	require.Len(t, reloaded.Goals, 1)
+	assert.Equal(t, "validation-timeout", reloaded.Goals[0].FailedBy, "failed_by must survive SaveGoals round-trip")
+}
+
 // --- B4: repair-at-dispatch Investigation Config guard ---------------------
 
 // strippedGoalMD is a goal.md whose `## Investigation Config` section was
@@ -1936,7 +1976,7 @@ func TestEnsureInvestigationConfig_NoopWhenValidSectionPresent(t *testing.T) {
 	before, err := os.ReadFile(filepath.Join(dir, "goal.md"))
 	require.NoError(t, err)
 
-	repaired, err := EnsureInvestigationConfig(dir, []string{"go test ./..."})
+	repaired, err := EnsureInvestigationConfig(dir, dir, []string{"go test ./..."})
 	require.NoError(t, err)
 	assert.False(t, repaired, "valid section must be a no-op")
 
@@ -1949,7 +1989,7 @@ func TestEnsureInvestigationConfig_RepairsWhenSectionMissing(t *testing.T) {
 	dir := t.TempDir()
 	writeGoalMDRaw(t, dir, strippedGoalMD)
 
-	repaired, err := EnsureInvestigationConfig(dir, []string{"vendor/bin/phpstan analyse", "vendor/bin/phpunit"})
+	repaired, err := EnsureInvestigationConfig(dir, dir, []string{"vendor/bin/phpstan analyse", "vendor/bin/phpunit"})
 	require.NoError(t, err)
 	assert.True(t, repaired)
 
@@ -1983,7 +2023,7 @@ Incremental.
 `
 	writeGoalMDRaw(t, dir, malformed)
 
-	repaired, err := EnsureInvestigationConfig(dir, []string{"go test ./...", "go vet ./..."})
+	repaired, err := EnsureInvestigationConfig(dir, dir, []string{"go test ./...", "go vet ./..."})
 	require.NoError(t, err)
 	assert.True(t, repaired)
 
@@ -2001,7 +2041,7 @@ func TestEnsureInvestigationConfig_DoesNotDuplicateSection(t *testing.T) {
 	dir := t.TempDir()
 	writeGoalMDRaw(t, dir, strippedGoalMD)
 
-	repaired, err := EnsureInvestigationConfig(dir, []string{"go test ./..."})
+	repaired, err := EnsureInvestigationConfig(dir, dir, []string{"go test ./..."})
 	require.NoError(t, err)
 	assert.True(t, repaired)
 
@@ -2010,7 +2050,7 @@ func TestEnsureInvestigationConfig_DoesNotDuplicateSection(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(out), "## Investigation Config"))
 
 	// Idempotent: a second run is a no-op and still leaves exactly one.
-	repaired2, err := EnsureInvestigationConfig(dir, []string{"go test ./..."})
+	repaired2, err := EnsureInvestigationConfig(dir, dir, []string{"go test ./..."})
 	require.NoError(t, err)
 	assert.False(t, repaired2)
 	out2, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -2022,7 +2062,7 @@ func TestEnsureInvestigationConfig_PreservesSurroundingSections(t *testing.T) {
 	dir := t.TempDir()
 	writeGoalMDRaw(t, dir, strippedGoalMD)
 
-	_, err := EnsureInvestigationConfig(dir, []string{"go test ./..."})
+	_, err := EnsureInvestigationConfig(dir, dir, []string{"go test ./..."})
 	require.NoError(t, err)
 
 	out, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -2040,7 +2080,7 @@ func TestEnsureInvestigationConfig_InsertsBeforeReValidation(t *testing.T) {
 	dir := t.TempDir()
 	writeGoalMDRaw(t, dir, strippedGoalMD)
 
-	_, err := EnsureInvestigationConfig(dir, []string{"go test ./..."})
+	_, err := EnsureInvestigationConfig(dir, dir, []string{"go test ./..."})
 	require.NoError(t, err)
 
 	out, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -2057,7 +2097,7 @@ func TestEnsureInvestigationConfig_EmptyValidateStillYieldsTwo(t *testing.T) {
 	dir := t.TempDir()
 	writeGoalMDRaw(t, dir, strippedGoalMD)
 
-	repaired, err := EnsureInvestigationConfig(dir, nil)
+	repaired, err := EnsureInvestigationConfig(dir, dir, nil)
 	require.NoError(t, err)
 	assert.True(t, repaired)
 
@@ -2069,7 +2109,7 @@ func TestEnsureInvestigationConfig_EmptyValidateStillYieldsTwo(t *testing.T) {
 
 func TestEnsureInvestigationConfig_MissingFileIsNoop(t *testing.T) {
 	dir := t.TempDir() // no goal.md written
-	repaired, err := EnsureInvestigationConfig(dir, []string{"go test ./..."})
+	repaired, err := EnsureInvestigationConfig(dir, dir, []string{"go test ./..."})
 	require.NoError(t, err)
 	assert.False(t, repaired)
 	_, statErr := os.Stat(filepath.Join(dir, "goal.md"))
@@ -2080,7 +2120,7 @@ func TestEnsureInvestigationConfig_RepairSurvivesParseGoalFindings(t *testing.T)
 	dir := t.TempDir()
 	writeGoalMDRaw(t, dir, strippedGoalMD)
 
-	_, err := EnsureInvestigationConfig(dir, []string{"vendor/bin/phpstan analyse", "vendor/bin/phpunit"})
+	_, err := EnsureInvestigationConfig(dir, dir, []string{"vendor/bin/phpstan analyse", "vendor/bin/phpunit"})
 	require.NoError(t, err)
 
 	out, err := os.ReadFile(filepath.Join(dir, "goal.md"))

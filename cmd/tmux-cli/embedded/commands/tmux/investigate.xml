@@ -269,10 +269,11 @@
     <!--
       B9b inline validation fast-path decision gate. Sits AFTER the C10 (2c), C8
       (2d) and C1a (2e) preflights and BEFORE step 3 (spawn). When EVERY active
-      RERUN investigator is a pure-command exit check (build/lint/test) and this
-      is the FIRST validation cycle, the validator runs them INLINE in this window
-      (a faithful replica of investigate-worker.xml's command loop) with ZERO
-      inv-* spawns — saving 2-4 Claude instances on the goal's first validation.
+      RERUN investigator is a pure-command exit check (build/lint/test), the
+      validator runs them INLINE in this window (a faithful replica of
+      investigate-worker.xml's command loop) with ZERO inv-* spawns — on ANY
+      cycle: inline sits after C10 partitioning, so a retry cycle's RERUN set is
+      already minimized and pure-command inline is as safe as on cycle 1.
       The moment ANY active RERUN investigator needs reasoning, the whole set fans
       out via step 3 (all-or-nothing; never partially inline). The decision itself
       lives in Go (deterministic, test-covered taskvisor.InlinePlan) so this step
@@ -282,7 +283,7 @@
       <action>Decide whether the active RERUN investigators can run inline by running the read-only CLI:</action>
       <cmd>tmux-cli taskvisor inline-plan &lt;GOAL_ID&gt; --cycle &lt;CYCLE_N&gt; [--full] [--final]</cmd>
       <rule>CYCLE_N is the one-indexed cycle resolved in step 2a. In STANDALONE mode (CYCLE_N unset) pass --cycle 0. Pass --full / --final on the SAME conditions as step 2c so the RERUN set matches exactly.</rule>
-      <rule>The command prints {"mode":"inline"|"fanout","rerun":[finding ids],"reason":"..."}. mode="inline" iff CYCLE_N&lt;=1 AND the RERUN set is non-empty AND every RERUN investigator is pure-command (type:command or a whitelisted exit-only check). The rerun array is the sorted RERUN set; reason is human-readable.</rule>
+      <rule>The command prints {"mode":"inline"|"fanout","rerun":[finding ids],"reason":"..."}. mode="inline" iff the RERUN set is non-empty AND every RERUN investigator is pure-command (type:command or a whitelisted exit-only check). Retry cycles are inline-eligible too: inline runs AFTER the C10 partition, so the RERUN set is already the minimized remainder on any cycle. The rerun array is the sorted RERUN set; reason is human-readable.</rule>
       <rule critical="true">SAFE DEGENERATE: if the command errors, prints nothing, or yields mode!="inline" (including the empty-RERUN "no RERUN investigators" case), treat the decision as FAN-OUT — go to step 3 unchanged. NEVER block on a missing/garbled inline plan; the spawn path is always the safe fallback.</rule>
       <check condition="mode == &quot;inline&quot;">
         <action>Skip step 3 and step 4 ENTIRELY (no windows-spawn-worker, no inv-* windows, no idle/collect). Go to step 3-inline.</action>
@@ -370,7 +371,7 @@
         <action>Do not advance state for that worker.</action>
       </branch>
 
-      <!-- Worker budget: 10 min per worker. Daemon validate_timeout (config.go) must be >= (workerBudgetSec * ceil(workers / max_concurrent)) + margin. See C4/C7 for formula and config default. Any change here requires re-deriving the config.go default. -->
+      <!-- Worker budget: 10 min per worker. Daemon validate_timeout (config.go) must be >= validatorOverheadSec + (workerBudgetSec × ceil(workers/max_concurrent)) + margin. See C4/C7 for formula and config default. Any change here requires re-deriving the config.go default. -->
       <timeout>
         <rule>Track wall-clock time since each worker was spawned. If a worker has not reported within 10 minutes of its spawn time, it has timed out.</rule>
         <action>Send [SUPERVISOR:KILL] via windows-message to the timed-out worker.</action>

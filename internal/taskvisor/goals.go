@@ -30,6 +30,21 @@ const (
 	PhaseFinalGate = "final_gate"
 )
 
+// Goal.NextDispatch marker values (RC-D). Set at the verdict-resolution seam
+// (bounceToGeneration / handleFailedCycle), honored FIRST by dispatchCandidate,
+// and consumed (cleared) by dispatch/dispatchRetry. Unexported: the marker is a
+// daemon-internal routing fact, never authored by planners or tools.
+const (
+	// dispatchGeneration forces the next dispatch onto the FULL plan path
+	// (/tmux:plan, planner re-generation) regardless of consumed code budget —
+	// the fix for the sticky codeBudgetConsumed heuristic that re-executed a
+	// defective spec verbatim after a spec bounce.
+	dispatchGeneration = "generation"
+	// dispatchImplementer routes the next dispatch to dispatchRetry (reuse
+	// tasks.yaml, skip planning) when the per-goal tasks.yaml still exists.
+	dispatchImplementer = "implementer"
+)
+
 // Precondition is a declarative gate the daemon evaluates before spawning a
 // worker. Kind is one of "env" (environment variable named by Spec must be set
 // and non-empty) or "service" (TCP host:port in Spec must be reachable). Remedy
@@ -79,6 +94,18 @@ type Goal struct {
 	SpecConvergenceSignatures []string `yaml:"spec_convergence_signatures,omitempty"`
 	SpecConvergenceStreak     int      `yaml:"spec_convergence_streak,omitempty"`
 
+	// NextDispatch is the EXPLICIT routing marker for this goal's next dispatch
+	// (RC-D): "generation" (set by bounceToGeneration — the next dispatch MUST
+	// be a full planner re-generation) or "implementer" (set by the
+	// handleFailedCycle code-defect re-pend — retry against the existing
+	// tasks.yaml). Empty = legacy mid-flight goal; dispatchCandidate falls back
+	// to the historical codeBudgetConsumed heuristic. Persisted in goals.yaml
+	// (NOT daemon runtime) so it survives a daemon restart; consumed (cleared)
+	// by dispatch/dispatchRetry once the routing decision is acted on. NOTE:
+	// not yet mirrored by mcp.tvGoal (dual-struct) — an MCP load-resave between
+	// bounce and dispatch drops it, degrading to the legacy heuristic.
+	NextDispatch string `yaml:"next_dispatch,omitempty"`
+
 	Phase     string   `yaml:"phase,omitempty"`
 	DependsOn []string `yaml:"depends_on,omitempty"`
 
@@ -112,6 +139,12 @@ type Goal struct {
 	// flock .tmux-cli/db.lock shell wrapper documented in execute.xml/validate.xml
 	// is best-effort defense-in-depth. Absent ⇒ false (a normal goal).
 	Migrates bool `yaml:"migrates,omitempty"`
+
+	// FailedBy records WHY a goal reached GoalFailed when the cause matters
+	// post-mortem. "validation-timeout" marks a timeout-SYNTHESIZED failure (no
+	// verdict ever arrived): the salvage scan keeps watching signal.json for a
+	// late verdict on such goals. Cleared by ResetGoal and by salvage itself.
+	FailedBy string `yaml:"failed_by,omitempty"`
 
 	BlockedBy string `yaml:"blocked_by,omitempty"`
 	// BlockedByPrecondition marks a goal parked on an unmet env/infra
@@ -506,7 +539,9 @@ func WriteGoalMD(goalDir, description, phase string, acceptance, validate []stri
 	// derive 2-4 from the validate rules so the section is never missing.
 	list := investigators
 	if len(list) == 0 {
-		list = deriveInvestigators(validate)
+		// WriteGoalMD's signature is fixed (no fsRoot param) — recover the
+		// project root from the canonical goalDir shape, same as the B2b gate.
+		list = deriveInvestigators(ownSuiteFSRoot(goalDir), validate)
 		// Event goals get an extra, non-skippable emission investigator that
 		// asserts the PRODUCER actually constructs/dispatches the event (catches
 		// dead choreography). Only when the planner supplied no explicit
@@ -614,15 +649,16 @@ func countInvestigators(md string) (hasSection bool, n int) {
 //   - section present with n>=2 -> (false, nil): a valid (planner-provided)
 //     section is preserved byte-for-byte, never overwritten.
 //   - section missing or n<2    -> derive the fallback from validate (the same
-//     deriveInvestigators used at creation, padded to >=2), render it via the
-//     shared renderInvestigationConfig, splice it in (replace a malformed section
-//     in place; else insert before `## Re-validation`; else before `## Not In
-//     Scope`; else append), atomicWrite, return (true, nil).
+//     deriveInvestigators used at creation, padded to >=2 project-aware against
+//     projectRoot), render it via the shared renderInvestigationConfig, splice it
+//     in (replace a malformed section in place; else insert before
+//     `## Re-validation`; else before `## Not In Scope`; else append),
+//     atomicWrite, return (true, nil).
 //
 // SPLICE, never regenerate from the Goal struct: the planner adds prose the struct
 // does not carry, so only the one section's byte range is ever touched, and
 // exactly one `## Investigation Config` heading always remains.
-func EnsureInvestigationConfig(goalDir string, validate []string) (repaired bool, err error) {
+func EnsureInvestigationConfig(projectRoot, goalDir string, validate []string) (repaired bool, err error) {
 	mdPath := filepath.Join(goalDir, "goal.md")
 	data, readErr := os.ReadFile(mdPath)
 	if readErr != nil {
@@ -635,7 +671,7 @@ func EnsureInvestigationConfig(goalDir string, validate []string) (repaired bool
 		return false, nil // valid section: preserve verbatim
 	} else {
 		var sb strings.Builder
-		renderInvestigationConfig(&sb, deriveInvestigators(validate))
+		renderInvestigationConfig(&sb, deriveInvestigators(projectRoot, validate))
 		newMD := spliceInvestigationConfig(md, sb.String(), hasSection)
 		if werr := atomicWrite(mdPath, []byte(newMD), 0o644); werr != nil {
 			return false, werr
@@ -732,9 +768,11 @@ var investigatorTypePriority = map[string]int{
 
 // deriveInvestigators builds 2-4 Investigators from a goal's validate rules when
 // none were explicitly provided. Each rule maps to a typed investigator (see
-// inferInvestigatorType); the result is padded to >=2 with a generic build-sanity
-// investigator and capped at 4, preferring higher-signal types.
-func deriveInvestigators(validate []string) []Investigator {
+// inferInvestigatorType); the result is padded to >=2 — project-aware via marker
+// files at projectRoot (RC-B: a hardcoded `go build ./...` pad manufactured a
+// guaranteed failure in non-Go projects) — and capped at 4, preferring
+// higher-signal types. The two pad entries are always DISTINCT.
+func deriveInvestigators(projectRoot string, validate []string) []Investigator {
 	var list []Investigator
 	for _, rule := range validate {
 		rule = strings.TrimSpace(rule)
@@ -755,18 +793,65 @@ func deriveInvestigators(validate []string) []Investigator {
 		list = append(list, inv)
 	}
 
-	// Pad to the >=2 guarantee with a generic build-sanity investigator.
-	for len(list) < 2 {
-		list = append(list, Investigator{
-			Name:     "Build sanity",
-			Type:     "static-analysis",
-			Commands: []string{"go build ./..."},
-			Pass:     "command succeeds",
-			Fail:     "build fails",
-		})
+	// Pad to the >=2 guarantee. First pad: stack-aware sanity check. Second pad
+	// (validate was empty): a DIFFERENT repo-hygiene check — never two identical
+	// entries, which would double a failure and waste a validation budget slot.
+	if len(list) < 2 {
+		list = append(list, projectSanityInvestigator(projectRoot))
+	}
+	if len(list) < 2 {
+		list = append(list, repoReadableInvestigator(projectRoot))
 	}
 
 	return capInvestigators(list)
+}
+
+// projectSanityInvestigator returns the stack-aware pad entry. Detection is by
+// marker files at projectRoot, first match wins; an UNKNOWN stack gets a
+// harmless always-pass existence check — padding must never manufacture a fake
+// failure (RC-B: `go build ./...` in a PHP project failed every cycle).
+func projectSanityInvestigator(projectRoot string) Investigator {
+	for _, m := range []struct{ marker, name, cmd, fail string }{
+		{"go.mod", "Build sanity", "go build ./...", "build fails"},
+		{"composer.json", "Composer sanity", "php -v && composer validate --no-check-publish --no-check-all", "command fails"},
+		{"package.json", "Node sanity", "node --version && npm ls --depth=0", "command fails"},
+		{"Makefile", "Make dry-run sanity", "make -n test", "command fails"},
+	} {
+		if _, err := os.Stat(filepath.Join(projectRoot, m.marker)); err == nil {
+			return Investigator{
+				Name:     m.name,
+				Type:     "static-analysis",
+				Commands: []string{m.cmd},
+				Pass:     "command succeeds",
+				Fail:     m.fail,
+			}
+		}
+	}
+	return Investigator{
+		Name:     "Workspace sanity",
+		Type:     "static-analysis",
+		Commands: []string{"test -d ."},
+		Pass:     "command succeeds",
+		Fail:     "command fails",
+	}
+}
+
+// repoReadableInvestigator returns the second, generic pad entry — distinct
+// from projectSanityInvestigator by construction. `git status --short` always
+// passes in a repo (a worktree's .git is a FILE, so a bare existence check is
+// used, not IsDir); outside a repo it falls back to an always-pass read check.
+func repoReadableInvestigator(projectRoot string) Investigator {
+	cmd := "git status --short"
+	if _, err := os.Stat(filepath.Join(projectRoot, ".git")); err != nil {
+		cmd = "test -r ."
+	}
+	return Investigator{
+		Name:     "Repo readable",
+		Type:     "static-analysis",
+		Commands: []string{cmd},
+		Pass:     "command succeeds",
+		Fail:     "command fails",
+	}
 }
 
 // capInvestigators caps a list at 4, preferring higher-signal types (stable
@@ -1208,6 +1293,14 @@ func (gf *GoalsFile) ResetGoal(id string) bool {
 	g.SpecRetries = 0
 	g.ValidationRetries = 0
 	g.BlockRetries = 0
+	// A reset goal starts fresh: clear the explicit next-dispatch routing
+	// marker too (RC-D). With no marker and zeroed counters, the next dispatch
+	// takes the fresh-goal path (full planner dispatch) via the legacy
+	// heuristic — exactly what "zero + re-seed" intends.
+	g.NextDispatch = ""
+	// Clear the timeout-salvage marker too: a reset goal starts fresh, so the
+	// salvage scan must not keep watching (or late-flip) a re-pended goal.
+	g.FailedBy = ""
 	g.StartedAt = ""
 	g.FinishedAt = ""
 	return true

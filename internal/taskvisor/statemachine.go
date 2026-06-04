@@ -36,6 +36,13 @@ import (
 // calls in the same order, and the scalar CurrentGoal still head-tracks via
 // dispatchCandidate + advanceToNextGoal.
 func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
+	// Salvage late validator verdicts FIRST, before ReconcileBlocks: a late pass
+	// flips a timeout-failed goal to done, and the reconcile right after then
+	// un-sticks its cascade-blocked dependents in the SAME tick.
+	if err := d.salvageLateVerdicts(goals); err != nil {
+		return err
+	}
+
 	// Safety net (preserved from the scalar switch): a CurrentGoal naming a goal
 	// that no longer exists means the active goal vanished out from under us —
 	// tear down the idle supervisor surface and go idle. ReconcileBlocks does not
@@ -126,15 +133,26 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 }
 
 // dispatchCandidate is the single per-candidate dispatch decision shared by the
-// single- and multi-goal scheduler paths. It mirrors the old GoalPending branch
-// exactly: re-dispatch the implementer (reuse tasks.yaml, skip planning) only
-// when a prior cycle consumed code-defect budget AND a per-goal tasks.yaml
-// exists; otherwise a full dispatch (planner re-generation). CodeRetries is
-// decremented per code-defect (handleFailedCycle); a spec-defect bounce leaves
-// CodeRetries untouched and only moves SpecRetries, so it falls through to the
-// full dispatch below — keeping "code-defect -> implementer" and "spec-defect ->
-// generation" distinct. (goal.Retries > 0 kept for fixtures / pre-migration
-// goals that still carry a legacy count.)
+// single- and multi-goal scheduler paths. Decision order (RC-D):
+//
+//  1. NextDispatch == dispatchGeneration → full dispatch (planner
+//     re-generation), REGARDLESS of code budget. The legacy heuristic below
+//     keys on codeBudgetConsumed — a STICKY historical fact: once any code
+//     retry was ever burned, every later dispatch (including a spec-defect
+//     bounce) took dispatchRetry and re-executed the defective spec verbatim,
+//     so the planner never saw it (test-project goal-064, 2026-06-04). The
+//     explicit marker set by bounceToGeneration overrides that.
+//  2. NextDispatch == dispatchImplementer AND a per-goal tasks.yaml exists →
+//     dispatchRetry (reuse tasks.yaml, skip planning). A missing tasks.yaml
+//     falls through to the heuristic, which routes to full dispatch.
+//  3. Empty marker (legacy mid-flight goals.yaml) → the EXISTING heuristic,
+//     unchanged: re-dispatch the implementer only when a prior cycle consumed
+//     code-defect budget AND a per-goal tasks.yaml exists; otherwise a full
+//     dispatch. (goal.Retries > 0 kept for fixtures / pre-migration goals
+//     that still carry a legacy count.)
+//
+// The marker is consumed (cleared) inside dispatch/dispatchRetry once acted
+// on, so it never leaks into the next cycle's decision.
 //
 // It also maintains the scalar CurrentGoal head: when the current head is not a
 // running goal (e.g. it just completed, or this is the first dispatch of the
@@ -146,6 +164,12 @@ func (d *Daemon) dispatchCandidate(goal *Goal, goals *GoalsFile) error {
 	if cur, ok := goals.GoalByID(goals.CurrentGoal); !ok || cur.Status != GoalRunning {
 		goals.CurrentGoal = goal.ID
 		d.currentGoal = goal.ID
+	}
+	if goal.NextDispatch == dispatchGeneration {
+		return d.dispatch(goal, goals)
+	}
+	if goal.NextDispatch == dispatchImplementer && d.tasksYamlExists(goal.ID) {
+		return d.dispatchRetry(goal, goals)
 	}
 	codeBudgetConsumed := goal.CodeRetries < goal.MaxCodeRetries
 	if (goal.Retries > 0 || codeBudgetConsumed) && d.tasksYamlExists(goal.ID) {
@@ -256,7 +280,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 			// synthesize it and re-run validation only. Do not route through
 			// handleFailedCycle, which would charge a code-defect retry.
 			log.Printf("%s: validation timed out — no verdict; synthesizing error/ops, re-running validation only", goal.ID)
-			return d.rerunValidationOnly(goal, goals)
+			return d.rerunValidationOnly(goal, goals, nil)
 		}
 		if !rt.bootConfirmedAt.IsZero() && time.Since(rt.bootConfirmedAt) > 5*time.Second {
 			windows, err := d.listWindows()
@@ -308,7 +332,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 	// blocked/planner case below and charges SpecRetries.
 	if verdict == VerdictBlocked && owner == "planner" && !HasSubstantiveSpecDefect(valSig.Findings) {
 		log.Printf("%s: blocked/planner verdict carries no substantive spec contradiction — re-validating (not charging spec retry)", goal.ID)
-		return d.rerunValidationOnly(goal, goals)
+		return d.rerunValidationOnly(goal, goals, valSig)
 	}
 
 	// B7: per-goal/per-cycle cost record at the verdict-resolution seam. The
@@ -357,12 +381,65 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		return d.haltBlockedEnv(goal, goals, valSig)
 	case verdict == VerdictError:
 		// The validator could not run. Re-validate only — never a code defect.
-		return d.rerunValidationOnly(goal, goals)
+		return d.rerunValidationOnly(goal, goals, valSig)
 	default:
 		// Defensive: C1's enum is closed and its leaf-4 catch-all maps unknowns to
 		// (fail, implementer), so this should not occur. Treat as a code defect.
 		return d.handleFailedCycle(goal, goals, valSig.NextAction, "code-defect")
 	}
+}
+
+// salvageLateVerdicts: for every GoalFailed goal marked FailedBy ==
+// "validation-timeout", poll signal.json. A late ValidatorSignal that classifies
+// PASS flips the goal failed→done (the daemon stopped listening before the
+// validator finished — the pass is real and the work is in the base tree, the
+// marker is never set for worktree goals). Any other verdict clears the marker
+// and keeps the failure. ReconcileBlocks (running right after in tick) un-sticks
+// the hard-blocked dependents once the blocker is GoalDone — cascade reversal
+// needs no code here. Persists via SaveGoals per mutation (the tick already
+// holds the goals flock, mirroring the ReconcileBlocks self-persist pattern).
+// The exhausted-timeout branch deliberately leaves the validator window alive;
+// salvage kills it once its (late) verdict has been read.
+func (d *Daemon) salvageLateVerdicts(goals *GoalsFile) error {
+	for i := range goals.Goals {
+		g := &goals.Goals[i]
+		if g.Status != GoalFailed || g.FailedBy != "validation-timeout" {
+			continue
+		}
+		sig, err := LoadSignal(d.workDir, g.ID)
+		if err != nil || sig == nil {
+			continue // no verdict yet (or unreadable) — keep watching
+		}
+		valSig, ok := sig.(*ValidatorSignal)
+		_ = DeleteSignal(d.workDir, g.ID)
+		_ = d.killWindowByName(validatorWindow(g.ID, d.maxGoals()))
+		g.FailedBy = ""
+		if !ok {
+			// A non-validator signal settles nothing — stop watching, failure stands.
+			if err := SaveGoals(d.workDir, goals); err != nil {
+				return err
+			}
+			continue
+		}
+		// Verdict classification mirrors checkValidatingPhase: roll up the
+		// finding classes, falling back to a non-pass top-level verdict so a
+		// synthesized error/blocked never misclassifies as pass.
+		verdict, _ := ClassifyVerdict(valSig.Findings)
+		if verdict == VerdictPass && valSig.Verdict != "" && valSig.Verdict != VerdictPass {
+			verdict = valSig.Verdict
+		}
+		if verdict == VerdictPass {
+			g.Status = GoalDone
+			g.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+			log.Printf("%s: LATE pass verdict salvaged after timeout-synthesized failure — failed -> done", g.ID)
+		} else {
+			log.Printf("%s: late verdict %q after timeout failure — failure stands", g.ID, verdict)
+		}
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rerunValidationOnly handles a validator-error verdict: the validator itself
@@ -378,9 +455,42 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 // validation budget reaches 0 the goal hard-halts (verdict class "error" — kept
 // available for §5.1's CascadeFailure wiring; CascadeFailure's signature change
 // is owned by §5.1).
-func (d *Daemon) rerunValidationOnly(goal *Goal, goals *GoalsFile) error {
+//
+// valSig is the verdict signal that routed here, when the caller has one (the
+// error branch and the unsubstantiated-blocked guard pass theirs); the timeout
+// watchdog has none and passes nil — the applier treats nil as "no structured
+// remedy" and the charging path runs unchanged.
+func (d *Daemon) rerunValidationOnly(goal *Goal, goals *GoalsFile, valSig *ValidatorSignal) error {
+	// RC-C: BEFORE charging the scarce ValidationRetries (often 1 — the first
+	// infra/config error would be instantly terminal), try the B5b
+	// mechanical-correction applier, mirroring the blocked/planner call site. When
+	// the failing findings carry a structured correction_edit CONFINED to spec
+	// artifacts (goal.md / dispatch spec), the daemon applies it directly
+	// (idempotent) and re-validates the goal charging ZERO budget. If absent,
+	// out-of-scope, or ineffective (no on-disk change), applyStructuredCorrections
+	// returns handled=false and we fall through to the unchanged charging path
+	// below — that contract keeps this route budget-bounded (an edit that never
+	// fixes the finding cannot re-validate for free forever).
+	if handled, err := d.applyStructuredCorrections(goal, goals, valSig); err != nil {
+		return err
+	} else if handled {
+		log.Printf("%s: error/ops corrections applied — re-validating (zero budget)", goal.ID)
+		return nil
+	}
 	goal.ValidationRetries--
 	if goal.ValidationRetries <= 0 {
+		// Only the timeout route (valSig == nil — the watchdog passes nil) can
+		// still receive a meaningful late verdict: the validator window is left
+		// alive below and goal-validation-done may land after the daemon stopped
+		// listening (goal-061: real pass arrived 5m51s post-failure). Gate on the
+		// runtime WorktreeDir, captured HERE while the runtime still exists
+		// (advanceToNextGoal -> clearRuntime drops it): the halt path discards
+		// worktrees, so a late pass for discarded work must NOT flip to done. At
+		// MaxGoals=1 (default) WorktreeDir is always empty. The error-verdict
+		// route (valSig != nil) already has its verdict — nothing late is pending.
+		if valSig == nil && d.runtime(goal.ID).WorktreeDir == "" {
+			goal.FailedBy = "validation-timeout"
+		}
 		log.Printf("%s: validation budget exhausted (error/ops) — cascading failure to dependents", goal.ID)
 		// Exhausted validation budget is a hard halt: the goal genuinely cannot
 		// complete, so dependents are blocked (hard class "fail").
@@ -568,6 +678,10 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdict
 	}
 
 	goal.Status = GoalPending
+	// RC-D: stamp the explicit routing marker so the next dispatch retries the
+	// IMPLEMENTER against the existing tasks.yaml (dispatchCandidate honors the
+	// marker first; cleared on consume in dispatchRetry/dispatch).
+	goal.NextDispatch = dispatchImplementer
 	log.Printf("%s: running -> pending (code budget left %d)", goal.ID, goal.CodeRetries)
 	oldPhase := rt.phase
 	rt.phase = phaseSupervising
@@ -579,10 +693,12 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdict
 // the goal/spec itself is contradictory or under-specified, so it must be
 // re-planned via the generation/planner slot — NOT re-run against the unchanged
 // spec by the implementer. It charges SpecRetries only (decrement-toward-zero)
-// and leaves CodeRetries untouched; because tick() routes a pending dispatch to
-// dispatchRetry only when code budget was consumed, an untouched CodeRetries
-// makes the next dispatch a full planner re-generation. On exhausted spec budget
-// it hard-halts (verdict class "spec-defect").
+// and leaves CodeRetries untouched. The planner re-dispatch is guaranteed by
+// the EXPLICIT NextDispatch=generation marker stamped on the re-pend tail
+// (RC-D): relying on an untouched CodeRetries was wrong — codeBudgetConsumed is
+// sticky, so any previously-burned code retry silently routed the bounce to
+// dispatchRetry and the planner never saw the defective spec. On exhausted spec
+// budget it hard-halts (verdict class "spec-defect").
 func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *ValidatorSignal) error {
 	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
 	cycleNum := goal.MaxSpecRetries - goal.SpecRetries + 1
@@ -683,6 +799,12 @@ func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *Valida
 
 	goal.Status = GoalPending
 	goal.Phase = "generation"
+	// RC-D: stamp the explicit routing marker so the next dispatch is a FULL
+	// planner re-generation even when a prior cycle consumed code budget (the
+	// sticky codeBudgetConsumed heuristic would otherwise route this bounce to
+	// dispatchRetry and re-execute the defective spec verbatim). Persisted in
+	// goals.yaml — survives a daemon restart; cleared on consume in dispatch.
+	goal.NextDispatch = dispatchGeneration
 	log.Printf("%s: spec defect (planner) — bouncing to generation (spec budget left %d)", goal.ID, goal.SpecRetries)
 	rt := d.runtime(goal.ID)
 	oldPhase := rt.phase

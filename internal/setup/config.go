@@ -81,22 +81,31 @@ const WorkerBudgetSec = 600
 // used as the floor basis for the daemon's validate-timeout clamp.
 const DefaultMaxWorkers = 4
 
+// ValidatorOverheadSec covers the validator window itself: Claude boot,
+// step-2 preflights (revalidation-plan, C8, inline-plan), report collection
+// and the goal-validation-done call — wall time spent OUTSIDE the per-worker
+// budget. Observed real-world overhead is 5–8 min; 600s gives headroom.
+const ValidatorOverheadSec = 600
+
 // DeriveValidateTimeout derives a validate timeout (seconds) from the per-worker
 // budget rather than hardcoding it, so a legitimate multi-worker validation is
 // never killed below the orchestrator's per-worker budget.
 //
 // It computes the number of sequential waves needed to run workerCount workers
 // at maxWorkers parallelism (integer ceil), multiplies by the per-worker budget
-// for the base, then adds a margin of max(60, base/10). The margin covers worker
-// spawn/teardown plus result-aggregation overhead: the 60s floor dominates for
-// small single-wave budgets while the 10% term scales for large/multi-wave runs.
+// for the base, then adds a margin of max(60, base/10) plus ValidatorOverheadSec.
+// The margin covers worker spawn/teardown plus result-aggregation overhead: the
+// 60s floor dominates for small single-wave budgets while the 10% term scales
+// for large/multi-wave runs. The overhead constant covers the validator window's
+// own orchestration (boot, preflights, collection) — the rt.validateTime timer
+// starts at validator WINDOW CREATION, well before any worker spawns.
 //
 // maxWorkers<=0 and workerCount<=0 are coerced to 1 (no div-by-zero, no zero result).
 //
 // Examples:
 //
-//	DeriveValidateTimeout(600,3,3) → 600*ceil(3/3)+60   = 660
-//	DeriveValidateTimeout(600,2,3) → 600*ceil(3/2)+120  = 1320  (120 = 10% of 1200)
+//	DeriveValidateTimeout(600,3,3) → 600+600*ceil(3/3)+60   = 1260
+//	DeriveValidateTimeout(600,2,3) → 600+600*ceil(3/2)+120  = 1920  (120 = 10% of 1200)
 func DeriveValidateTimeout(workerBudgetSec, maxWorkers, workerCount int) int {
 	if maxWorkers <= 0 {
 		maxWorkers = 1
@@ -110,7 +119,7 @@ func DeriveValidateTimeout(workerBudgetSec, maxWorkers, workerCount int) int {
 	if margin < 60 {
 		margin = 60
 	}
-	return base + margin
+	return ValidatorOverheadSec + base + margin
 }
 
 type Settings struct {
@@ -148,7 +157,7 @@ func DefaultSettings() *Settings {
 		Taskvisor: TaskvisorSettings{
 			DispatchTimeout: 3600,
 			// Seed the default from the worker budget (derived, not hardcoded)
-			// so there is a single source of truth: DeriveValidateTimeout(600,4,4) = 660.
+			// so there is a single source of truth: DeriveValidateTimeout(600,4,4) = 1260.
 			ValidateTimeout:           DeriveValidateTimeout(WorkerBudgetSec, DefaultMaxWorkers, DefaultMaxWorkers),
 			PollInterval:              5,
 			CircuitBreakerK:           2,

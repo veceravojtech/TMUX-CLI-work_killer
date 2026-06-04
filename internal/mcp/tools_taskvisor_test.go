@@ -117,8 +117,11 @@ func TestGoalCreate_FirstGoal(t *testing.T) {
 	assert.Equal(t, "pending", gf.Goals[0].Status)
 	assert.Equal(t, 0, gf.Goals[0].Retries)
 	assert.Equal(t, 5, gf.Goals[0].MaxRetries)
-	assert.Empty(t, gf.Goals[0].Acceptance, "acceptance should not be in goals.yaml")
-	assert.Empty(t, gf.Goals[0].Validate, "validate should not be in goals.yaml")
+	// Inverted per supervisor AMEND (F5/RC-A): acceptance/validate are now
+	// persisted as structured Goal fields — the daemon reads them from
+	// goals.yaml (EnsureInvestigationConfig, own-suite derivation).
+	assert.Equal(t, []string{"Price matches API"}, gf.Goals[0].Acceptance, "acceptance must persist to goals.yaml")
+	assert.Equal(t, []string{"Check price"}, gf.Goals[0].Validate, "validate must persist to goals.yaml")
 
 	goalDir := filepath.Join(tmpDir, ".tmux-cli", "goals", "goal-001")
 	_, statErr := os.Stat(goalDir)
@@ -2542,6 +2545,7 @@ goals:
   scope:
   - internal/mcp/**
   migrates: true
+  failed_by: validation-timeout
   blocked_by: goal-002
   blocked_by_precondition: true
   started_at: "2026-06-03T10:00:00Z"
@@ -2614,6 +2618,7 @@ func TestTvGoal_AllDurableFieldsRoundTrip(t *testing.T) {
 	assert.Equal(t, []string{"spec-sig-a"}, g.SpecConvergenceSignatures, "spec_convergence_signatures erased")
 	assert.Equal(t, 1, g.SpecConvergenceStreak, "spec_convergence_streak erased")
 	assert.True(t, g.BlockedByPrecondition, "blocked_by_precondition erased")
+	assert.Equal(t, "validation-timeout", g.FailedBy, "failed_by erased")
 }
 
 // TestGoalAddPrerequisite_PreservesAllDurableFields: wiring a prerequisite
@@ -2648,6 +2653,7 @@ func TestGoalAddPrerequisite_PreservesAllDurableFields(t *testing.T) {
 	assert.True(t, g.BlockedByPrecondition, "blocked_by_precondition erased by GoalAddPrerequisite")
 	assert.True(t, g.Migrates, "migrates erased by GoalAddPrerequisite")
 	assert.Equal(t, 1, g.EscalationCount, "escalation_count erased by GoalAddPrerequisite")
+	assert.Equal(t, "validation-timeout", g.FailedBy, "failed_by erased by GoalAddPrerequisite")
 
 	// The wired goal itself keeps its durable state and gains the edge.
 	p := canonical.Goals[1]

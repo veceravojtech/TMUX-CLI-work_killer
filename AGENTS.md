@@ -27,7 +27,8 @@ Tests must pass without a running tmux server (unit tests use `testutil.MockTmux
 cmd/tmux-cli/
   main.go              version constant, Execute()
   root.go              cobra root command
-  session.go           all CLI subcommands (start, kill, list, windows-*, etc.)
+  session.go           all CLI subcommands (start, kill, list, windows-*, taskvisor
+                       start/goal/revalidation-plan/inline-plan, etc.)
                        embeds hook scripts and command templates via //go:embed
                        runAutoSetup() runs before every start/start-attach
   session_helper.go    ResolveWindowIdentifier helper
@@ -35,6 +36,7 @@ cmd/tmux-cli/
   embedded/            Go-embedded assets
     *.sh               hook shell scripts (5 files)
     commands/tmux/     command templates installed to .claude/commands/tmux/
+    templates/         project scaffolding templates (_base, php-symfony)
 
 internal/
   setup/               auto-setup system (setting.yaml → hooks, settings.json, commands, gitexclude)
@@ -42,13 +44,40 @@ internal/
     hooks.go           WriteHookScripts → .tmux-cli/hooks/
     claude_settings.go ClaudeSettings JSON model, Generate/Write → .claude/settings.json
     commands.go        WriteCommands → .claude/commands/tmux/ (clean-slate)
+    templates.go       WriteTemplates → project scaffolding from embedded templates/
     gitexclude.go      EnsureGitExclude → .git/info/exclude
     setup.go           Run() orchestrator (SetupConfig → calls all above)
   mcp/
-    server.go          MCP Server struct, handlers, RegisterTools()
-    tools.go           tool implementations (WindowsList/Create/Send/Message/Kill, HooksConfig)
+    server.go          MCP Server struct, Input/Output structs, handler wrappers, RegisterTools()
+    tools.go           windows-* + hooks-config core implementations
+    tools_taskvisor.go taskvisor tool cores (TaskvisorStart, GoalCreate, GoalAddPrerequisite,
+                       GoalValidationDone, GoalPrune) — delegate to internal/taskvisor
     tools_sudo.go      SudoExecute disabled stub (returns guidance to use tmux-cli sudo CLI)
     errors.go          sentinel errors
+  taskvisor/           autonomous goal-execution daemon (the largest package)
+    daemon.go          Daemon struct, mode/phase enums, New(), Run() loop
+    statemachine.go    tick() — per-goal phase transitions (supervising/validating, circuit breaker)
+    dispatch.go        dispatch()/dispatchRetry() — spawn supervisor windows, cycle markers, validate scripts
+    goals.go           Goal/GoalsFile model, Load/Save under lock, ResetGoal, CascadeFailure
+    authoring.go       GoalSpec + CreateGoal — shared authoring core (MCP goal-create + `taskvisor goal add` CLI)
+    scope_gate.go      ScopesDisjoint/coSchedulable — disjoint-scope gating for MaxGoals>1
+    correction_applier.go applyStructuredCorrections — validator-driven spec edits + revalidation
+    signal.go          SupervisorSignal/ValidatorSignal models, ClassifyVerdict
+    inline.go          InlinePlan — inline investigator re-run planning
+    ownsuite.go        OwnSuiteScope — deliverable-derived test-suite scoping
+    preconditions.go   precondition evaluation + park/resume of blocked goals
+    recovery.go        crashRecovery, downstream auto-resume
+    completion.go      deactivateOnCompletion, completion report generation
+    worktree.go        per-goal git worktree isolation (branch taskvisor/<goal-id>)
+    projectdir.go      NormalizeProjectDir — maps worktree cwd back to base project dir
+                       (shared by MCP server delegate and CLI taskvisorProjectRoot)
+    windows.go         goal-window lifecycle (create/kill/teardown), WindowCreateFunc
+    window_names.go    goal-namespaced window naming (supervisor/validator/execute/inv prefixes)
+    dashboard.go       renderDashboard — live TUI status output
+    diagnostics.go     invariant + stall checks
+    instrument.go      counter logging (cycles, investigator spawn/reuse, wall time)
+  tui/
+    settings.go        Bubble Tea settings editor for setting.yaml (must mirror Settings fields)
   sudo/
     executor.go        Executor struct, Execute() + ExecuteStream() via sudo -S bash -c
     timeout.go         ResolveTimeout helper (input > config > 30s default)
@@ -60,11 +89,13 @@ internal/
   tmux/
     executor.go        TmuxExecutor interface (the abstraction boundary)
     real_executor.go   production implementation (runs tmux commands)
+    session.go         Session model, SessionManager interface
     command_wrapper.go WrapCommandForPersistence
     window_options.go  constants (WindowUUIDOption)
     errors.go          ErrTmuxNotFound, ErrSessionAlreadyExists
   tasks/
     tasks.go           Task/TasksFile model, Load/Save/Archive
+    spec_validate.go   ValidateSpecFile — S0-S8 spec quality catalogue checks
   testutil/
     mock_tmux.go       MockTmuxExecutor (testify/mock)
 ```
@@ -73,7 +104,7 @@ internal/
 
 **Dependency injection**: `SessionManager` and MCP `Server` take `TmuxExecutor` interface. Tests use `testutil.MockTmuxExecutor`.
 
-**Adding a new MCP tool**: Define Input/Output structs in `server.go` → implement core method on `*Server` in `tools.go` → add handler wrapper in `server.go` → register in `RegisterTools()`. Use `jsonschema:"Description text"` tags (no `description=` prefix).
+**Adding a new MCP tool**: Define Input/Output structs in `server.go` → implement core method on `*Server` in `tools.go` (taskvisor tools go in `tools_taskvisor.go`) → add handler wrapper in `server.go` → register in `RegisterTools()`. Use `jsonschema:"Description text"` tags (no `description=` prefix). For taskvisor tools, keep only MCP-specific validation (e.g. enum checks) in the `*Server` method and delegate the shared business logic to an `internal/taskvisor` core function — e.g. `GoalCreate` delegates to `taskvisor.CreateGoal`, which is also the engine behind the `taskvisor goal add` CLI command, so authoring rules stay converged.
 
 **Adding a new CLI command**: Define `cobra.Command` var in `session.go` → implement `runX` function → add flags in `init()` → `rootCmd.AddCommand()` in `init()`.
 
@@ -110,7 +141,7 @@ internal/
 - **Goal description is a short title (max 120 chars)**: Detailed criteria belong in `--acceptance` and `--validate`. Both the MCP `goal-create` tool and the `goal add` CLI command enforce this limit at write time. `LoadGoals` does NOT validate length (read tolerance).
 - **TUI settings must reflect all fields in `setting.yaml`**: Every field in the `Settings` struct (`internal/setup/config.go`) must be editable in the TUI (`internal/tui/settings.go`). If a new field is added to `Settings`/`setting.yaml`, the TUI `items` list and `ToSettings()` must be updated in the same PR — including tests. `ToSettings()` must overlay displayed fields onto the loaded settings (not `DefaultSettings()`), so undisplayed fields are preserved. If this invariant is broken, fix it immediately including tests.
 - **`supervisor.max_goals` defaults to 1**: `SupervisorSettings.MaxGoals` (`yaml:"max_goals"`) bounds how many goals the daemon may have in flight concurrently; it is surfaced in the TUI as the `supervisor.max_goals` item (kind `int`, default `1`). A value `<=0` (or absent from a legacy `setting.yaml`) coerces to `1` via the daemon's `maxGoals()` accessor. At `1`, every tmux window keeps its bare singleton name; at `>1`, parallel independent-goal dispatch is enabled but gated on **disjoint goal scope** (the scheduler skips goals whose scope overlaps an in-flight goal) plus **per-goal git worktree isolation**, so concurrent goals never collide on files or windows.
-- **Goal reset is "zero + re-seed", never hand-set to Max…**: `GoalsFile.ResetGoal` (`internal/taskvisor/goals.go`) zeroes ALL FOUR live per-class retry counters (`CodeRetries`, `SpecRetries`, `ValidationRetries`, `BlockRetries`) in addition to the legacy `Retries`, then leaves the status non-terminal. With all four at `0` and the status non-terminal, the `LoadGoals` re-seed guard fires on the next load and restores each counter from its corresponding `Max…` budget. Do NOT hand-set the live counters to their `Max…` values inside `ResetGoal` — that duplicates `LoadGoals` and would wrongly grant budget when a `Max…` is `0`.
+- **Goal reset is "zero + re-seed", never hand-set to Max…**: `GoalsFile.ResetGoal` (`internal/taskvisor/goals.go`) only acts on a `failed` goal and sets it back to `pending`, zeroing ALL FOUR live per-class retry counters (`CodeRetries`, `SpecRetries`, `ValidationRetries`, `BlockRetries`) in addition to the legacy `Retries`. With all four at `0` and the status non-terminal, the `LoadGoals` re-seed guard fires on the next load and restores each counter from its corresponding `Max…` budget. Do NOT hand-set the live counters to their `Max…` values inside `ResetGoal` — that duplicates `LoadGoals` and would wrongly grant budget when a `Max…` is `0`. `ResetGoal` ALSO clears the `NextDispatch` routing marker (so the next dispatch takes the fresh-goal full-planner path via the legacy heuristic, not a stale retry route), clears the `FailedBy` timeout-salvage marker (so the salvage scan never watches — or late-flips — a re-pended goal), and blanks the `StartedAt`/`FinishedAt` timestamps. These clears are part of the invariant — a "cleanup" that removes them reintroduces stale-routing bugs (RC-D).
 
 ## Common pitfalls
 
@@ -120,7 +151,9 @@ internal/
 - `PostCommandConfig` has a 3-level fallback chain for launching Claude in new windows — errors from one level trigger the next
 - The `install` command was removed — all setup is automatic via `start`/`start-attach`
 
-## MCP tools (12 total)
+## MCP tools (16 total)
+
+Source of truth: `RegisterTools()` in `internal/mcp/server.go`. Regenerate this table when registrations change.
 
 | Tool | Read-only | Idempotent | Purpose |
 |------|-----------|-----------|---------|
@@ -133,7 +166,11 @@ internal/
 | windows-recover-workers | no | yes | Batch-recover stuck execute-N workers (Enter + continue message) |
 | tasks-validate | yes | yes | Validate tasks.yaml lean format (no extra fields) |
 | spec-validate | yes | yes | Validate spec .md against S0-S8 quality catalogue |
+| taskvisor-start | no | yes | Signal the taskvisor daemon to start (writes `.tmux-cli/taskvisor-start`; fails if no pending goals) |
+| goal-create | no | no | Create a goal in goals.yaml with sequential ID + goal dir (delegates to `taskvisor.CreateGoal`) |
 | goal-add-prerequisite | no | no | Wire an existing goal's depends_on to an existing prerequisite (generation-side escalation backstop; validates IDs, rejects self-dep/cycle, caps escalations) |
+| goal-prune | no | yes | Remove all taskvisor goal state for a clean restart (rejects if daemon active) |
+| goal-validation-done | no | yes | Report validation results for a goal (atomic signal.json write; validator-UUID authorized) |
 | hooks-config | no | yes | List/enable/disable hooks in setting.yaml |
 | sudo-execute | yes | yes | DISABLED — returns guidance to use `tmux-cli sudo` CLI instead |
 

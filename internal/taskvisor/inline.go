@@ -17,8 +17,6 @@ const (
 //
 // It first derives the RERUN set via PlanRevalidation (so the C10 reuse gate is
 // honoured, never bypassed), then returns mode="inline" iff ALL of:
-//   - cycleN <= 1 (first validation or standalone; retry cycles fall through to
-//     the normal spawn flow, where C10 reuse already suppresses re-spawns),
 //   - the RERUN set is non-empty (an all-REUSE set spawns nothing already), and
 //   - every RERUN investigator satisfies IsPureCommand (B9a) — all-or-nothing;
 //     a single reasoning investigator fans the whole set out.
@@ -44,12 +42,12 @@ func InlinePlan(investigators []Investigator, prev *Results, findings []Validati
 		return InlineModeFanout, rerun, "no RERUN investigators"
 	}
 
-	// Single-cycle gate: only the FIRST validation benefits. On retry cycles the
-	// C10 reuse gate already minimizes re-spawns, so the marginal saving is
-	// near-zero and the extra branch is not worth it.
-	if cycleN > 1 {
-		return InlineModeFanout, rerun, fmt.Sprintf("retry cycle %d: C10 reuse already minimizes spawns", cycleN)
-	}
+	// No cycle gate: inline runs AFTER C10 partitioning, so on retry cycles the
+	// RERUN set is the already-minimized remainder — when it is all pure-command,
+	// in-window execution is exactly as safe as on cycle 1 and avoids the worker
+	// spawn overhead that can blow the daemon's validate envelope (goal-061
+	// post-mortem: a 2-command retry validation forced through fan-out took ~17 min
+	// vs <1 min inline).
 
 	// All-or-nothing pure-command gate. A missing investigator config for a RERUN
 	// finding (e.g. a rule-based finding seeded from the prior ledger) cannot be

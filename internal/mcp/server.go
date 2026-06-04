@@ -35,7 +35,7 @@ type Server struct {
 func NewServer(workingDir string) *Server {
 	return &Server{
 		executor:   tmux.NewTmuxExecutor(),
-		workingDir: workingDir,
+		workingDir: normalizeProjectDir(workingDir),
 	}
 }
 
@@ -43,8 +43,16 @@ func NewServer(workingDir string) *Server {
 func NewServerWithExecutor(executor tmux.TmuxExecutor, workingDir string) *Server {
 	return &Server{
 		executor:   executor,
-		workingDir: workingDir,
+		workingDir: normalizeProjectDir(workingDir),
 	}
+}
+
+// normalizeProjectDir maps a per-goal worktree cwd (<base>/.tmux-cli/worktrees/<id>[/...])
+// back to <base>. Non-worktree paths are returned unchanged. Thin delegate to
+// the shared taskvisor.NormalizeProjectDir so the CLI goal commands and the
+// MCP server resolve the base .tmux-cli control plane identically.
+func normalizeProjectDir(dir string) string {
+	return taskvisor.NormalizeProjectDir(dir)
 }
 
 // discoverSession finds the tmux session for this working directory.

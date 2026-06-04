@@ -145,7 +145,7 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	// unreadable goal.md is logged and skipped — writeDispatchMd's own fallback
 	// still applies).
 	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
-	if rep, err := EnsureInvestigationConfig(goalDir, goal.Validate); err != nil {
+	if rep, err := EnsureInvestigationConfig(d.workDir, goalDir, goal.Validate); err != nil {
 		log.Printf("[repair] %s: %v", goal.ID, err)
 	} else if rep {
 		log.Printf("[repair] %s: re-asserted Investigation Config (was missing/<2)", goal.ID)
@@ -270,6 +270,13 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	log.Printf("dispatch: SendMessage returned successfully")
 
 	goal.Status = GoalRunning
+	// RC-D: the routing marker is consume-once — the dispatch decision it
+	// encoded has now been acted on (worker spawned), so clear it before the
+	// persist below or a stale marker would leak into the next cycle's
+	// dispatchCandidate decision. Deliberately NOT cleared on the preflight
+	// precondition-blocked early return above: no worker was spawned there, so
+	// a parked goal keeps its re-plan intent for the §5 resume.
+	goal.NextDispatch = ""
 	log.Printf("%s: pending -> running", goal.ID)
 	if goal.StartedAt == "" {
 		goal.StartedAt = time.Now().UTC().Format(time.RFC3339)
@@ -389,6 +396,10 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	log.Printf("dispatchRetry: SendMessage returned successfully")
 
 	goal.Status = GoalRunning
+	// RC-D: consume the routing marker (see dispatch) — cleared only here on
+	// the success path, so a mid-dispatch error keeps the marker for the next
+	// tick's re-decision.
+	goal.NextDispatch = ""
 	log.Printf("%s: pending -> running (retry %d/%d, reusing tasks.yaml)", goal.ID, goal.Retries, goal.MaxRetries)
 	if goal.StartedAt == "" {
 		goal.StartedAt = time.Now().UTC().Format(time.RFC3339)

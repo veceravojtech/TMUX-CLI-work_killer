@@ -306,6 +306,7 @@ var (
 	goalNotInScope  string
 	goalPhase       string
 	goalMaxRetries  int
+	goalScope       []string
 
 	revalForceFull    bool
 	revalFinalCycle   bool
@@ -370,6 +371,7 @@ func init() {
 	taskvisorGoalAddCmd.Flags().StringVar(&goalNotInScope, "not-in-scope", "", "What is explicitly out of scope")
 	taskvisorGoalAddCmd.Flags().StringVar(&goalPhase, "phase", "", "Development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final)")
 	taskvisorGoalAddCmd.Flags().IntVar(&goalMaxRetries, "max-retries", 5, "Max retry attempts")
+	taskvisorGoalAddCmd.Flags().StringArrayVar(&goalScope, "scope", nil, "Goal file/namespace footprint for co-scheduling, e.g. 'internal/x/**' (repeatable; empty = derived from --acceptance, else unknown ⇒ serialized)")
 	taskvisorGoalAddCmd.MarkFlagRequired("description")
 
 	taskvisorCmd.AddCommand(taskvisorStartCmd)
@@ -388,7 +390,7 @@ func init() {
 	taskvisorRevalidationPlanCmd.Flags().StringArrayVar(&revalChangedFiles, "changed-file", nil, "A file changed this cycle (repeatable); defaults to git diff --name-only HEAD")
 	taskvisorCmd.AddCommand(taskvisorRevalidationPlanCmd)
 
-	taskvisorInlinePlanCmd.Flags().IntVar(&inlineCycleN, "cycle", 0, "Current validation cycle (1 or standalone <=1 is inline-eligible; >=2 falls through to fan-out)")
+	taskvisorInlinePlanCmd.Flags().IntVar(&inlineCycleN, "cycle", 0, "Current validation cycle (informational; inline eligibility is per-RERUN-set pure-command, any cycle)")
 	taskvisorInlinePlanCmd.Flags().BoolVar(&revalForceFull, "full", false, "Force full re-validation — every check RERUN regardless of fingerprint")
 	taskvisorInlinePlanCmd.Flags().BoolVar(&revalFinalCycle, "final", false, "Final cycle before overall pass — re-run all checks for end-to-end verification")
 	taskvisorInlinePlanCmd.Flags().StringArrayVar(&revalChangedFiles, "changed-file", nil, "A file changed this cycle (repeatable); defaults to git diff --name-only HEAD")
@@ -1036,8 +1038,21 @@ func logSudoResult(workDir, command string, execErr error, elapsed time.Duration
 	sudo.LogExecution(workDir, entry)
 }
 
-func runTaskvisorStart(cmd *cobra.Command, args []string) error {
+// taskvisorProjectRoot resolves the taskvisor control-plane root: cwd with any
+// .tmux-cli/worktrees/<id> suffix stripped, so goal commands invoked from a
+// per-goal worktree hit the BASE goals.yaml/locks (worktrees carry no .tmux-cli).
+// Session start/windows-* commands intentionally keep raw cwd — their semantics
+// differ and the MCP server already normalizes its own working dir.
+func taskvisorProjectRoot() (string, error) {
 	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return taskvisor.NormalizeProjectDir(cwd), nil
+}
+
+func runTaskvisorStart(cmd *cobra.Command, args []string) error {
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
@@ -1068,58 +1083,56 @@ func runTaskvisorStart(cmd *cobra.Command, args []string) error {
 }
 
 func runTaskvisorGoalAdd(cmd *cobra.Command, args []string) error {
-	if len(goalDescription) > 120 {
-		return fmt.Errorf("description exceeds 120 characters (got %d); use --acceptance for detailed criteria", len(goalDescription))
-	}
-	if len(goalValidate) == 0 {
-		return fmt.Errorf("at least one --validate flag is required")
-	}
-
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
 
-	var id string
-	if err := taskvisor.WithGoalsLock(cwd, func() error {
-		gf, err := taskvisor.LoadGoals(cwd)
-		if err != nil {
-			return fmt.Errorf("load goals: %w", err)
-		}
-		if gf == nil {
-			gf = &taskvisor.GoalsFile{}
-		}
-
-		id = taskvisor.NextGoalID(gf.Goals)
-		goal := taskvisor.Goal{
-			ID:          id,
-			Description: goalDescription,
-			Status:      taskvisor.GoalPending,
-			MaxRetries:  goalMaxRetries,
-			Phase:       goalPhase,
-		}
-		gf.Goals = append(gf.Goals, goal)
-
-		return taskvisor.SaveGoals(cwd, gf)
-	}); err != nil {
+	// All validation, ID allocation, structured persistence (acceptance/
+	// validate/scope INTO goals.yaml — the RC-A fix), and goal.md writing live
+	// in the shared authoring core, converged with the MCP goal-create tool.
+	id, derivedScope, err := taskvisor.CreateGoal(cwd, taskvisor.GoalSpec{
+		Description: goalDescription,
+		Acceptance:  goalAcceptance,
+		Validate:    goalValidate,
+		Context:     goalContext,
+		NotInScope:  goalNotInScope,
+		Phase:       goalPhase,
+		MaxRetries:  goalMaxRetries,
+		Scope:       goalScope,
+	})
+	if err != nil {
 		return err
 	}
 
-	goalDir, err := taskvisor.EnsureGoalDir(cwd, id)
-	if err != nil {
-		return fmt.Errorf("create goal directory: %w", err)
-	}
-
-	if err := taskvisor.WriteGoalMD(goalDir, goalDescription, goalPhase, goalAcceptance, goalValidate, nil, goalContext, goalNotInScope, nil); err != nil {
-		return fmt.Errorf("write goal.md: %w", err)
-	}
-
 	fmt.Printf("Goal created: %s\n", id)
+	switch {
+	case len(goalScope) > 0:
+		fmt.Printf("scope: [%s]\n", strings.Join(goalScope, ", "))
+	case derivedScope:
+		// Re-derive for display only — pure function over the same input, so
+		// it always matches what CreateGoal persisted.
+		fmt.Printf("scope: [%s] (derived from acceptance)\n", strings.Join(taskvisor.DeriveScopeFromDeliverables(goalAcceptance), ", "))
+	default:
+		fmt.Println("⚠ scope: unknown — goal will serialize against all concurrent goals")
+		if len(goalScope) == 0 {
+			// Re-derive (pure) to surface a discarded incomplete derivation:
+			// name the acceptance lines that contributed no path so the author
+			// can declare --scope and regain parallelism.
+			if _, incomplete, uncovered := taskvisor.DeriveScopeWithCompleteness(goalAcceptance); incomplete && len(uncovered) > 0 {
+				fmt.Fprintf(os.Stderr, "⚠ discarded incomplete derived scope: these acceptance criteria named no file path:\n")
+				for _, c := range uncovered {
+					fmt.Fprintf(os.Stderr, "    - %s\n", c)
+				}
+				fmt.Fprintf(os.Stderr, "  pass --scope to declare the footprint and regain parallelism\n")
+			}
+		}
+	}
 	return nil
 }
 
 func runTaskvisorGoalList(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
@@ -1148,7 +1161,7 @@ func runTaskvisorGoalList(cmd *cobra.Command, args []string) error {
 // ComputeInputFingerprint, and prints the PlanRevalidation JSON the orchestrator
 // consumes before spawning inv-* workers. It writes nothing.
 func runTaskvisorRevalidationPlan(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
@@ -1202,7 +1215,7 @@ type inlinePlanOutput struct {
 // nothing. When goal.md exposes no investigators, the decision degrades to
 // fanout (the safe spawn path), never inline.
 func runTaskvisorInlinePlan(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
@@ -1412,7 +1425,7 @@ func gitChangedFiles(root string) []string {
 }
 
 func runTaskvisorGoalDelete(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
@@ -1452,7 +1465,7 @@ func runTaskvisorGoalDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runTaskvisorGoalReset(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
@@ -1487,7 +1500,7 @@ func runTaskvisorGoalReset(cmd *cobra.Command, args []string) error {
 }
 
 func runTaskvisorGoalSkip(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
@@ -1543,7 +1556,7 @@ func runTaskvisorGoalSkip(cmd *cobra.Command, args []string) error {
 }
 
 func runTaskvisorGoalStop(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
@@ -1560,7 +1573,7 @@ func runTaskvisorGoalStop(cmd *cobra.Command, args []string) error {
 }
 
 func runTaskvisorGoalPrune(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
@@ -1601,7 +1614,7 @@ func runTaskvisorGoalPrune(cmd *cobra.Command, args []string) error {
 }
 
 func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
+	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}

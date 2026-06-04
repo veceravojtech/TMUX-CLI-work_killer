@@ -788,8 +788,8 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 			assert.Equal(t, 3600, item.intVal)
 		case "taskvisor.validate_timeout":
 			assert.Equal(t, "int", item.kind)
-			// Default seeded via DeriveValidateTimeout(600,4,4) = 660 (C4).
-			assert.Equal(t, 660, item.intVal)
+			// Default seeded via DeriveValidateTimeout(600,4,4) = 1260 (C4).
+			assert.Equal(t, 1260, item.intVal)
 		case "taskvisor.poll_interval":
 			assert.Equal(t, "int", item.kind)
 			assert.Equal(t, 5, item.intVal)

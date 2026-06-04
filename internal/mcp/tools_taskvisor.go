@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +64,14 @@ type tvGoal struct {
 	SpecConvergenceSignatures []string `yaml:"spec_convergence_signatures,omitempty"`
 	SpecConvergenceStreak     int      `yaml:"spec_convergence_streak,omitempty"`
 
+	// NextDispatch mirrors taskvisor.Goal.NextDispatch (same yaml key) — the
+	// RC-D explicit routing marker ("generation"/"implementer") stamped at the
+	// verdict seam and consumed by the daemon's next dispatch. DUAL-STRUCT
+	// (critical): an MCP resave that drops it degrades a spec bounce back to
+	// the sticky codeBudgetConsumed heuristic, re-executing a defective spec
+	// verbatim instead of re-planning (guarded by TestGoalTvGoalYamlTagParity).
+	NextDispatch string `yaml:"next_dispatch,omitempty"`
+
 	Phase     string   `yaml:"phase,omitempty"`
 	DependsOn []string `yaml:"depends_on,omitempty"`
 	// EscalationCount mirrors taskvisor.Goal.EscalationCount (same yaml key). It is
@@ -80,6 +87,12 @@ type tvGoal struct {
 	// mirror, every MCP load-resave (GoalCreate, GoalAddPrerequisite) silently
 	// erases migrates: true and disarms the exclusion at MaxGoals>1.
 	Migrates bool `yaml:"migrates,omitempty"`
+	// FailedBy mirrors taskvisor.Goal.FailedBy (same yaml key) — the
+	// timeout-salvage marker ("validation-timeout") the daemon's salvage scan
+	// keys on to keep watching signal.json for a late verdict. DUAL-STRUCT
+	// (critical): an MCP load-resave that drops it stops the scan forever, so a
+	// late pass verdict for the marked goal is silently discarded again.
+	FailedBy string `yaml:"failed_by,omitempty"`
 	// Scope mirrors taskvisor.Goal.Scope (same yaml key) so goal-create persists
 	// the disjoint-scope co-scheduling footprint that the daemon reads back.
 	Scope     []string `yaml:"scope,omitempty"`
@@ -139,23 +152,6 @@ func withGoalsFileLock(projectRoot string, fn func() error) error {
 	return taskvisor.WithGoalsLock(projectRoot, fn)
 }
 
-func tvNextGoalID(goals []tvGoal) string {
-	max := 0
-	for _, g := range goals {
-		if !strings.HasPrefix(g.ID, "goal-") {
-			continue
-		}
-		n, err := strconv.Atoi(strings.TrimPrefix(g.ID, "goal-"))
-		if err != nil {
-			continue
-		}
-		if n > max {
-			max = n
-		}
-	}
-	return fmt.Sprintf("goal-%03d", max+1)
-}
-
 // TaskvisorStart checks for pending goals and writes the taskvisor-start signal file.
 func (s *Server) TaskvisorStart() (*TaskvisorStartOutput, error) {
 	gf, err := tvLoadGoals(s.workingDir)
@@ -187,8 +183,6 @@ func (s *Server) TaskvisorStart() (*TaskvisorStartOutput, error) {
 
 	return &TaskvisorStartOutput{Started: true}, nil
 }
-
-const MaxGoalDescriptionLength = 120
 
 var allowedPhases = map[string]bool{
 	"gate": true, "scaffold": true, "fixtures": true, "domain": true,
@@ -247,17 +241,14 @@ func validateInvestigators(invs []taskvisor.Investigator) error {
 }
 
 // GoalCreate generates a sequential goal ID, appends the goal to goals.yaml, creates the goal directory, and writes goal.md.
+// MCP-specific enum validation (phase, investigation_config) runs here before
+// any filesystem side effect; everything else — the core authoring rules
+// (description <=120, >=1 validate, MaxRetries 0→5), ID allocation, FULL
+// structured persistence under the goals lock (acceptance/validate/scope now
+// land in goals.yaml — F5/RC-A, with the derive-from-acceptance scope
+// fallback), and goal.md — is delegated to the shared authoring core
+// taskvisor.CreateGoal, converged with the `taskvisor goal add` CLI command.
 func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope, phase string, maxRetries int, dependsOn []string, preconditions []taskvisor.Precondition, investigators []taskvisor.Investigator, scope []string) (*GoalCreateOutput, error) {
-	if description == "" {
-		return nil, fmt.Errorf("%w: description cannot be empty", ErrInvalidInput)
-	}
-	if len(description) > MaxGoalDescriptionLength {
-		return nil, fmt.Errorf("%w: description exceeds %d characters (got %d); use --acceptance for detailed criteria", ErrInvalidInput, MaxGoalDescriptionLength, len(description))
-	}
-	if len(validate) == 0 {
-		return nil, fmt.Errorf("%w: at least one validation rule is required", ErrInvalidInput)
-	}
-
 	if phase != "" && !allowedPhases[phase] {
 		names := make([]string, 0, len(allowedPhases))
 		for k := range allowedPhases {
@@ -275,59 +266,21 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, c
 		}
 	}
 
-	if maxRetries == 0 {
-		maxRetries = 5
-	}
-
-	var goalID string
-	if err := withGoalsFileLock(s.workingDir, func() error {
-		gf, err := tvLoadGoals(s.workingDir)
-		if err != nil {
-			return fmt.Errorf("%w: failed to load goals.yaml: %w", ErrInvalidInput, err)
-		}
-		if gf == nil {
-			gf = &tvGoalsFile{}
-		}
-
-		if len(dependsOn) > 0 {
-			existingIDs := make(map[string]bool, len(gf.Goals))
-			for _, g := range gf.Goals {
-				existingIDs[g.ID] = true
-			}
-			for _, dep := range dependsOn {
-				if !existingIDs[dep] {
-					return fmt.Errorf("%w: depends_on references non-existent goal: %s", ErrInvalidInput, dep)
-				}
-			}
-		}
-
-		goalID = tvNextGoalID(gf.Goals)
-
-		goal := tvGoal{
-			ID:            goalID,
-			Description:   description,
-			Status:        "pending",
-			Retries:       0,
-			MaxRetries:    maxRetries,
-			Phase:         phase,
-			DependsOn:     dependsOn,
-			Scope:         scope,
-			Preconditions: preconditions,
-		}
-		gf.Goals = append(gf.Goals, goal)
-
-		return tvSaveGoals(s.workingDir, gf)
-	}); err != nil {
-		return nil, err
-	}
-
-	goalDir := filepath.Join(s.workingDir, ".tmux-cli", "goals", goalID)
-	if err := os.MkdirAll(filepath.Join(goalDir, "corrections"), 0o755); err != nil {
-		return nil, fmt.Errorf("%w: failed to create goal directory: %w", ErrInvalidInput, err)
-	}
-
-	if err := taskvisor.WriteGoalMD(goalDir, description, phase, acceptance, validate, preconditions, context, notInScope, investigators); err != nil {
-		return nil, fmt.Errorf("%w: failed to write goal.md: %w", ErrInvalidInput, err)
+	goalID, _, err := taskvisor.CreateGoal(s.workingDir, taskvisor.GoalSpec{
+		Description:   description,
+		Acceptance:    acceptance,
+		Validate:      validate,
+		Context:       context,
+		NotInScope:    notInScope,
+		Phase:         phase,
+		MaxRetries:    maxRetries,
+		DependsOn:     dependsOn,
+		Preconditions: preconditions,
+		Investigators: investigators,
+		Scope:         scope,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err)
 	}
 
 	return &GoalCreateOutput{ID: goalID}, nil

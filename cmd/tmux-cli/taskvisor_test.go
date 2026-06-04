@@ -155,8 +155,11 @@ func TestGoalAddCmd_WithAllFlags(t *testing.T) {
 
 		g := gf.Goals[0]
 		assert.Equal(t, "Build API endpoint", g.Description)
-		assert.Empty(t, g.Acceptance, "acceptance should not be in goals.yaml")
-		assert.Empty(t, g.Validate, "validate should not be in goals.yaml")
+		// Inverted per supervisor AMEND (F5/RC-A): acceptance/validate are now
+		// persisted as structured Goal fields — the daemon reads them from
+		// goals.yaml (EnsureInvestigationConfig, own-suite derivation).
+		assert.Equal(t, []string{"Returns 200 on success", "Validates input"}, g.Acceptance, "acceptance must persist to goals.yaml")
+		assert.Equal(t, []string{"go test ./...", "curl http://localhost/api"}, g.Validate, "validate must persist to goals.yaml")
 		assert.Equal(t, 5, g.MaxRetries)
 
 		mdData, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "goal.md"))

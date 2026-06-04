@@ -1,6 +1,9 @@
 package taskvisor
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // Disjoint-scope co-scheduling gate (E1-0f). A conservative stand-in for
 // per-goal worktree isolation (execute-33): until each goal runs in its own
@@ -162,10 +165,38 @@ func (gf *GoalsFile) DisjointReadySet(maxGoals int) []*Goal {
 // path token is found (no clear file footprint ⇒ UNKNOWN ⇒ the runtime
 // serializes the goal). It is NEVER called in the scheduler tick: the runtime
 // reads only the persisted Goal.Scope.
+//
+// Token hygiene (F5): a leading "./" is stripped AFTER the path-likeness check,
+// so './internal/x' and 'internal/x' dedupe to ONE stem — a raw './' prefix
+// never path-prefix-matches its bare twin in globsOverlap, making the two
+// FALSELY DISJOINT (dangerous co-schedule). Letterless leftovers like './...'
+// (→ "...") or bare '1/2' carry no file footprint and are dropped.
 func DeriveScopeFromDeliverables(deliverables []string) []string {
+	scope, _, _ := DeriveScopeWithCompleteness(deliverables)
+	return scope
+}
+
+// DeriveScopeWithCompleteness is the AUTHORING-TIME engine behind
+// DeriveScopeFromDeliverables. It runs the identical token-hygiene loop and
+// additionally assesses COMPLETENESS: a derivation is INCOMPLETE when any
+// non-empty deliverable line contributes zero valid path tokens. Such a line is
+// recorded (verbatim, original casing/spacing) in uncovered. Authoring callers
+// downgrade an incomplete auto-derived scope to UNKNOWN so the goal serializes
+// rather than FALSELY passing ScopesDisjoint with a partial footprint.
+//
+// Coverage is PER-LINE and decided BEFORE the output dedup: a line is covered
+// the moment one of its tokens passes every hygiene check, EVEN IF the global
+// first-seen dedup then drops that token from the returned scope. Blank or
+// whitespace-only lines are NOT criteria — they are never marked uncovered.
+//
+// The returned scope is byte-identical (contents, order, nil-ness) to what the
+// pre-completeness DeriveScopeFromDeliverables produced; completeness is layered
+// on top and never alters the slice.
+func DeriveScopeWithCompleteness(deliverables []string) (scope []string, incomplete bool, uncovered []string) {
 	var out []string
 	seen := map[string]bool{}
 	for _, line := range deliverables {
+		covered := false
 		for _, tok := range strings.Fields(line) {
 			tok = strings.TrimLeft(tok, "`'\"([")
 			tok = strings.TrimRight(tok, "`'\").,;:]")
@@ -175,11 +206,24 @@ func DeriveScopeFromDeliverables(deliverables []string) []string {
 			if !strings.Contains(tok, "/") {
 				continue
 			}
+			for strings.HasPrefix(tok, "./") {
+				tok = tok[2:]
+			}
+			if !strings.ContainsFunc(tok, unicode.IsLetter) {
+				continue
+			}
+			// This token is a valid path footprint: the line is covered even if
+			// dedup skips it from the output slice below.
+			covered = true
 			if !seen[tok] {
 				seen[tok] = true
 				out = append(out, tok)
 			}
 		}
+		if strings.TrimSpace(line) != "" && !covered {
+			uncovered = append(uncovered, line)
+			incomplete = true
+		}
 	}
-	return out
+	return out, incomplete, uncovered
 }

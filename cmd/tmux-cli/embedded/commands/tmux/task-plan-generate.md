@@ -90,6 +90,16 @@ Each goal needs 2-4 investigators (GM-08) with type, files, commands, pass/fail 
 | GM-10 | Paths follow src/{BC}/Domain|App|Infra/ | Flat src/ structure without DDD layers |
 | GM-12 | Action goal: request DTO, response DTO, controller, route, E2E test | Missing Playwright test deliverable |
 
+## Structured validate/acceptance/scope mandate (CRITICAL)
+
+Every goal-creation call (`goal-create` MCP or `tmux-cli taskvisor goal add`) MUST pass **structured** params:
+
+- `validate`: >= 1 concrete, project-runnable command resolved against the detected stack (e.g. `vendor/bin/phpstan analyse src/Booking/`, `go test ./internal/booking/`, `npx playwright test tests/e2e/booking.spec.ts`) — never prose.
+- `acceptance`: >= 1 criterion.
+- `scope`: path globs whenever the file footprint is known. Empty scope ⇒ the goal serializes against ALL concurrent goals (DisjointReadySet gate) — scope is the price of parallelism.
+
+Validation rules written only as prose in goal.md are **NOT sufficient** — the daemon reads only the structured fields. Prose-only rules produce `validate: None`, which makes the dispatch-time repair inject wrong default investigators (guaranteed validation failures in non-Go projects → budget-exhaustion cascade).
+
 ## Fan-out patterns quick reference
 
 | Goal type | Pattern | Task structure |

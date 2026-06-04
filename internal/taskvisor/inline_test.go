@@ -49,15 +49,35 @@ func TestInlinePlan_MixedTypes_Fanout(t *testing.T) {
 	}
 }
 
-func TestInlinePlan_RetryCycle_Fanout(t *testing.T) {
+func TestInlinePlan_RetryCycle_AllCommand_Inline(t *testing.T) {
+	// Retry cycles are inline-eligible: inline runs AFTER C10 partitioning, so
+	// the RERUN set on cycle 2 is the already-minimized remainder — pure-command
+	// is exactly as safe as on cycle 1 (goal-061 post-mortem).
 	invs := []Investigator{cmdInv("build"), cmdInv("lint")}
+	mode, rerun, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 2, false, false)
+
+	if mode != "inline" {
+		t.Fatalf("mode = %q, want inline on cycle 2 for pure-command RERUN set (reason=%q)", mode, reason)
+	}
+	want := []string{"build", "lint"} // sorted
+	if strings.Join(rerun, ",") != strings.Join(want, ",") {
+		t.Fatalf("rerun = %v, want %v", rerun, want)
+	}
+}
+
+func TestInlinePlan_RetryCycle_MixedTypes_Fanout(t *testing.T) {
+	// A reasoning investigator in the retry-cycle RERUN set still fans the whole
+	// set out (all-or-nothing) — removing the cycle gate does not weaken the
+	// pure-command gate.
+	review := Investigator{Name: "review", Type: "code-review", Pass: "matches expected"}
+	invs := []Investigator{cmdInv("build"), review}
 	mode, _, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 2, false, false)
 
 	if mode != "fanout" {
-		t.Fatalf("mode = %q, want fanout on cycle 2", mode)
+		t.Fatalf("mode = %q, want fanout on cycle 2 with a reasoning investigator", mode)
 	}
-	if !strings.Contains(strings.ToLower(reason), "retry") && !strings.Contains(reason, "C10") {
-		t.Fatalf("reason %q should explain the retry-cycle fall-through", reason)
+	if !strings.Contains(reason, "review") {
+		t.Fatalf("reason %q should cite the reasoning investigator %q", reason, "review")
 	}
 }
 

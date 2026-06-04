@@ -331,9 +331,9 @@ func TestDefaultSettings_TaskvisorDefaults(t *testing.T) {
 	s := DefaultSettings()
 	assert.Equal(t, 3600, s.Taskvisor.DispatchTimeout)
 	// ValidateTimeout is seeded from the worker budget via DeriveValidateTimeout,
-	// NOT a hardcoded literal — DeriveValidateTimeout(600,4,4) = 660.
+	// NOT a hardcoded literal — DeriveValidateTimeout(600,4,4) = 1260.
 	assert.Equal(t, DeriveValidateTimeout(WorkerBudgetSec, DefaultMaxWorkers, DefaultMaxWorkers), s.Taskvisor.ValidateTimeout)
-	assert.Equal(t, 660, s.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 1260, s.Taskvisor.ValidateTimeout)
 	assert.Greater(t, s.Taskvisor.ValidateTimeout, 300)
 	assert.Equal(t, 5, s.Taskvisor.PollInterval)
 	// C4-cont transient-retry knobs.
@@ -380,31 +380,49 @@ func TestLoadSettings_TransientRetryRoundTrip(t *testing.T) {
 }
 
 func TestDeriveValidateTimeout_SingleWorker(t *testing.T) {
-	// 600*ceil(1/1)+max(60,60) = 660
-	assert.Equal(t, 660, DeriveValidateTimeout(600, 1, 1))
+	// 600 + 600*ceil(1/1)+max(60,60) = 1260
+	assert.Equal(t, 1260, DeriveValidateTimeout(600, 1, 1))
 }
 
 func TestDeriveValidateTimeout_ParallelUnderMax(t *testing.T) {
-	// 600*ceil(3/3)+60 = 660
-	assert.Equal(t, 660, DeriveValidateTimeout(600, 3, 3))
+	// 600 + 600*ceil(3/3)+60 = 1260
+	assert.Equal(t, 1260, DeriveValidateTimeout(600, 3, 3))
 }
 
 func TestDeriveValidateTimeout_OverMax(t *testing.T) {
-	// 600*ceil(3/2)+max(60,120) = 600*2+120 = 1320
-	assert.Equal(t, 1320, DeriveValidateTimeout(600, 2, 3))
+	// 600 + 600*ceil(3/2)+max(60,120) = 600+1200+120 = 1920
+	assert.Equal(t, 1920, DeriveValidateTimeout(600, 2, 3))
 }
 
 func TestDeriveValidateTimeout_ManyWavesFloor(t *testing.T) {
-	// 600*3+max(60,180) = 1980, which is >= 1800
+	// 600 + 600*3+max(60,180) = 2580, which is >= 2400
 	got := DeriveValidateTimeout(600, 1, 3)
-	assert.GreaterOrEqual(t, got, 1800)
-	assert.Equal(t, 1980, got)
+	assert.GreaterOrEqual(t, got, 2400)
+	assert.Equal(t, 2580, got)
 }
 
 func TestDeriveValidateTimeout_ZeroMaxWorkers(t *testing.T) {
-	// maxWorkers<=0 coerced to 1: equivalent to (600,1,3) = 1980, no panic/div-zero
+	// maxWorkers<=0 coerced to 1: equivalent to (600,1,3) = 2580, no panic/div-zero
 	assert.NotPanics(t, func() {
-		assert.Equal(t, 1980, DeriveValidateTimeout(600, 0, 3))
+		assert.Equal(t, 2580, DeriveValidateTimeout(600, 0, 3))
+	})
+}
+
+// TestDeriveValidateTimeout_IncludesValidatorOverhead pins the goal-061 fix:
+// the envelope must include ValidatorOverheadSec (Claude boot, step-2
+// preflights, report collection, goal-validation-done) ON TOP of the
+// per-wave worker budget — at 1 wave AND at N waves.
+func TestDeriveValidateTimeout_IncludesValidatorOverhead(t *testing.T) {
+	t.Run("one wave", func(t *testing.T) {
+		base := 600 * 1
+		margin := 60 // max(60, 600/10)
+		assert.Equal(t, ValidatorOverheadSec+base+margin, DeriveValidateTimeout(600, 4, 4))
+	})
+
+	t.Run("three waves", func(t *testing.T) {
+		base := 600 * 3 // ceil(12/4)=3 waves
+		margin := 180   // max(60, 1800/10)
+		assert.Equal(t, ValidatorOverheadSec+base+margin, DeriveValidateTimeout(600, 4, 12))
 	})
 }
 
