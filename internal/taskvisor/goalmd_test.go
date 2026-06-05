@@ -719,7 +719,7 @@ func TestRenderInvestigationConfig_MatchesWriteGoalMDOutput(t *testing.T) {
 			Pass: "all green", Fail: "red", Condition: "when changed"},
 	}
 	var b strings.Builder
-	renderInvestigationConfig(&b, invs)
+	renderInvestigationConfig(&b, invs, LocalExecRuntime())
 	section := b.String()
 
 	// WriteGoalMD with these explicit investigators (no src/ deliverable, no

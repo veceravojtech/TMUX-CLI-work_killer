@@ -84,7 +84,7 @@ func WriteGoalMD(goalDir, description, phase string, acceptance, validate []stri
 		}
 	}
 
-	renderInvestigationConfig(&b, list)
+	renderInvestigationConfig(&b, list, ResolveExecRuntime(ownSuiteFSRoot(goalDir)))
 
 	// C10: incremental re-validation reuses a prior cycle's pass when its input
 	// fingerprint (rule + in-scope changed files + preconditions) is unchanged.
@@ -103,7 +103,7 @@ func WriteGoalMD(goalDir, description, phase string, acceptance, validate []stri
 // EnsureInvestigationConfig (repair-at-dispatch) so the two can never drift;
 // TestRenderInvestigationConfig_MatchesWriteGoalMDOutput guards parity. The
 // output is byte-identical to the inline loop it was extracted from.
-func renderInvestigationConfig(b *strings.Builder, list []Investigator) {
+func renderInvestigationConfig(b *strings.Builder, list []Investigator, er ExecRuntime) {
 	b.WriteString("\n## Investigation Config\n\n")
 	for i, inv := range list {
 		fmt.Fprintf(b, "### Investigator %d: %s\n", i+1, inv.Name)
@@ -112,7 +112,10 @@ func renderInvestigationConfig(b *strings.Builder, list []Investigator) {
 			fmt.Fprintf(b, "- paths: %s\n", strings.Join(inv.Paths, ", "))
 		}
 		for _, c := range inv.Commands {
-			fmt.Fprintf(b, "- command: %s\n", c)
+			// wrapCommand routes the command into the project's runtime (docker
+			// app/node container or host) so the daemon — not the generating LLM —
+			// is the deterministic source of truth. Local mode is a no-op.
+			fmt.Fprintf(b, "- command: %s\n", wrapCommand(c, er))
 		}
 		fmt.Fprintf(b, "- Pass: %s\n", inv.Pass)
 		fmt.Fprintf(b, "- Fail: %s\n", inv.Fail)
@@ -185,7 +188,7 @@ func EnsureInvestigationConfig(projectRoot, goalDir string, validate []string) (
 		return false, nil // valid section: preserve verbatim
 	} else {
 		var sb strings.Builder
-		renderInvestigationConfig(&sb, deriveInvestigators(projectRoot, validate))
+		renderInvestigationConfig(&sb, deriveInvestigators(projectRoot, validate), ResolveExecRuntime(projectRoot))
 		newMD := spliceInvestigationConfig(md, sb.String(), hasSection)
 		if werr := atomicWrite(mdPath, []byte(newMD), 0o644); werr != nil {
 			return false, werr

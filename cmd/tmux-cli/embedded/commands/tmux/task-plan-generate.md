@@ -31,7 +31,7 @@ goals = 1 (gate 0) + 1 (scaffold)
 
 Bracketed items are conditional — include only when selected in ADRs/discovery. Auth endpoints count in N_auth_flows only, NOT in per-BC N_actions (G-09, no double counting).
 
-`[1 Docker]` is conditional on `RUN_TARGET=docker OR a deployment ADR`: the compose+ports goal (step 3.26) fires whenever `RUN_TARGET=docker` (read from `test-environment.md`) — a deployment ADR is NOT required — and also when a Docker/container/deployment ADR is present. When both hold, exactly ONE goal is emitted (the ADR only adds production extras). Its host:container port mappings and `APP_PORT` come from the `Published Ports` block in `test-environment.md`.
+`[1 Docker]` (step 3.26) is **production-deployment-only**: it fires solely when a Docker/container/deployment ADR is present, producing production extras (multi-stage prod Dockerfile, prod compose, `.env.example`). The **dev runtime** for `RUN_TARGET=docker` is created EARLY by goal-002 (`task-R`: `docker-compose.yaml` + dev Dockerfile, `docker compose up -d --build`) — `RUN_TARGET=docker` ALONE no longer fires step 3.26. Host:container port mappings and `APP_PORT` come from the `Published Ports` block in `test-environment.md`.
 
 ## Phase ordering chain
 
@@ -104,7 +104,7 @@ Validation rules written only as prose in goal.md are **NOT sufficient** — the
 
 | Goal type | Pattern | Task structure |
 |-----------|---------|----------------|
-| Scaffold | Multi-task (3) | task-0: composer → task-1: DDD dirs (depends 0) → task-2: configs (depends 0) |
+| Scaffold | Multi-task (3; 4 in docker) | docker only: task-R (runtime: docker-compose.yaml + dev Dockerfile, `docker compose up -d`, runs first) → task-0: composer → task-1: DDD dirs (depends 0) → task-2: configs (depends 0) |
 | Domain (>1 agg) | Multi-task | task-0: shared (trait, base exception, ACL) → task-1..N: per aggregate (parallel) |
 | Domain (1 agg) | Single-task | All deliverables in one task |
 | Application | Single-task | One task per BC (handlers share ports — splitting duplicates mocks) |

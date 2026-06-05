@@ -23,23 +23,30 @@ func readGenerateTemplate(t *testing.T, name string) string {
 	return string(data)
 }
 
-// 3.26.1 fires the compose goal keyed on RUN_TARGET==docker, not ADR-presence alone.
-func TestGenerateXML_ComposeGoalFiresOnRunTargetDocker(t *testing.T) {
+// Dev compose for a docker project is FRONT-LOADED into goal-002 (task-R), firing on
+// RUN_TARGET=docker — so the container exists before any PHP command, not deferred to
+// the late step-3.26 deployment goal (the ordering bug the front-load fixed).
+func TestGenerateXML_DevComposeFrontloadedOnRunTargetDocker(t *testing.T) {
 	content := readGenerateTemplate(t, "task-plan-generate.xml")
 
-	assert.Contains(t, content, "Determine compose trigger (RUN_TARGET=docker OR deployment ADR)")
-	assert.Contains(t, content, "COMPOSE_TRIGGER = (RUN_TARGET==docker) OR ADR_PRESENT")
-	// RUN_TARGET read rule must be byte-identical to substep 1.2 / step 0b.
-	assert.Contains(t, content, `"Run Target" == docker → set RUN_TARGET=docker, else RUN_TARGET=local`)
+	assert.Contains(t, content, `id="DOCKER-RUNTIME-FRONTLOAD" condition="RUN_TARGET=docker"`)
+	assert.Contains(t, content, "goal-002 MUST first MATERIALIZE AND START the dev runtime container")
+	assert.Contains(t, content, `Prepend a fan-out task "task-R"`)
+	assert.Contains(t, content, "docker compose up -d --build")
 }
 
-// The critical skip rule now AND-s RUN_TARGET!=docker with no ADR — it is no longer ADR-only.
-func TestGenerateXML_SkipRuleNoLongerAdrOnly(t *testing.T) {
+// Post-front-load, the late step-3.26 docker goal is PRODUCTION-DEPLOYMENT-ONLY: the
+// dev runtime moved to goal-002 task-R, so RUN_TARGET=docker ALONE no longer fires
+// 3.26 — only a Docker/deployment ADR does.
+func TestGenerateXML_ProdDockerGoalIsAdrOnly(t *testing.T) {
 	content := readGenerateTemplate(t, "task-plan-generate.xml")
 
-	assert.Contains(t, content, "skip ONLY if RUN_TARGET!=docker AND no Docker/container/deployment ADR")
-	assert.NotContains(t, content, "skip entirely if no Docker/container/deployment ADR exists",
-		"the bare ADR-only skip gate must be gone")
+	assert.Contains(t, content, "PRODUCTION-DEPLOYMENT-ONLY")
+	assert.Contains(t, content, "skip unless a Docker/container/deployment ADR exists")
+	assert.Contains(t, content, "COMPOSE_TRIGGER = ADR_PRESENT")
+	assert.Contains(t, content, "RUN_TARGET=docker ALONE no longer fires this goal")
+	// the old docker-firing trigger must be gone
+	assert.NotContains(t, content, "COMPOSE_TRIGGER = (RUN_TARGET==docker) OR ADR_PRESENT")
 }
 
 // DK-02/DK-04 source port mappings from the Published Ports block, not DOCKER_ADR_SUMMARY.
@@ -88,10 +95,14 @@ func TestGenerateXML_PublishedPortsFallbackToBaseUrl(t *testing.T) {
 	assert.Contains(t, content, "record a context note that ports were defaulted from the base URL")
 }
 
-// The companion cheat-sheet states the Docker goal fires on RUN_TARGET=docker OR a deployment ADR.
+// The companion cheat-sheet states the dev runtime is front-loaded to goal-002
+// task-R on RUN_TARGET=docker, and that step 3.26 is production-deployment-only.
 func TestGenerateMD_DockerTriggerNoteUpdated(t *testing.T) {
 	content := readGenerateTemplate(t, "task-plan-generate.md")
 
-	assert.Contains(t, content, "RUN_TARGET=docker OR a deployment ADR")
+	assert.Contains(t, content, "production-deployment-only")
+	assert.Contains(t, content, "task-R")
 	assert.Contains(t, content, "Published Ports")
+	assert.NotContains(t, content, "RUN_TARGET=docker OR a deployment ADR",
+		"the stale docker-OR-ADR trigger note must be gone")
 }

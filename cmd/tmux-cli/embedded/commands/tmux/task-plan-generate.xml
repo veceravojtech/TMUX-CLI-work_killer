@@ -147,19 +147,12 @@ Re-run /tmux:task-plan-discover to regenerate discovery outputs, or edit the fil
     </step>
 
     <step n="0c" title="Resolve runtime command-execution model (RUN_TARGET-aware)">
-      <rule critical="true">Runs after Step 0b and BEFORE any goal generation. Resolves HOW every PHP-world and browser-tool command is executed across ALL later goals, based on RUN_TARGET from test-environment.md. This is the single seam that makes a docker-mode plan executable on a host with no local PHP.</rule>
+      <rule critical="true">Runs after Step 0b and BEFORE any goal generation. Records HOW commands will be executed so the rest of generation emits the RIGHT commands — but does NOT hand-prefix them. The taskvisor daemon OWNS command-runtime wrapping: it resolves the project ExecRuntime from test-environment.md and wraps every validate/investigator command into the correct container at dispatch (internal/taskvisor wrapcmd.go / execruntime.go). So generation emits BARE, host-style commands and the daemon makes them runnable. This is the single seam that makes a docker-mode plan executable on a host with no local PHP — and there is exactly ONE source of truth (the daemon), never hand-maintained prefixes.</rule>
       <action>Set RUN_TARGET: read docs/architecture/test-environment.md "Run Target" — docker → RUN_TARGET=docker, else local. (IDENTICAL rule to step 0b / substep 1.2 / step 3.26 — do not drift.)</action>
-      <action>Resolve APP_SVC (the application/PHP container service name) when RUN_TARGET=docker: prefer a compose service literally named "app" or "php"; else the app/web service from the test-environment.md Published Ports block. The runtime front-load in step 2 MUST create a compose service by this exact name. Default APP_SVC=app.</action>
-      <action>Set CMD_PREFIX (PHP toolchain → the app/PHP container):
-        - RUN_TARGET=docker → CMD_PREFIX = "docker compose exec -T {{APP_SVC}} "
-        - RUN_TARGET=local  → CMD_PREFIX = "" (empty string)</action>
-      <action>Set NODE_CMD_PREFIX (Node/browser tools — node, npm, npx, playwright — which do NOT live in the PHP app container):
-        - RUN_TARGET=docker AND HAS_FRONTEND/Playwright-applicable → set NODE_SVC (a dedicated Node/Playwright compose service, default "e2e", built FROM an official Playwright image, on the same compose network as {{APP_SVC}}) and NODE_CMD_PREFIX = "docker compose exec -T {{NODE_SVC}} ". The runtime front-load (step 2 task-R) MUST add this service.
-        - RUN_TARGET=docker AND API-only / Playwright N/A → Node tools are NOT emitted at all (NODE-TOOL-CONV); leave NODE_SVC/NODE_CMD_PREFIX unset.
-        - RUN_TARGET=local → NODE_CMD_PREFIX = "" (host Node, when applicable).</action>
-      <rule critical="true" id="CMD-CONV">COMMAND EXECUTION CONVENTION — BINDING ON EVERY LATER STEP. Every command emitted into ANY goal's VALIDATE / validate array (and every Investigation-Config &lt;commands&gt; entry) is prefixed by RUNTIME, by tool family: PHP toolchain (php, composer, bin/console, vendor/bin/*, phpunit, phpstan, ecs, deptrac) → {{CMD_PREFIX}} (the {{APP_SVC}} container). Node/browser tools (node, npm, npx, playwright) → {{NODE_CMD_PREFIX}} (the {{NODE_SVC}} container) — and only when NODE-TOOL-CONV permits them at all. In local mode both prefixes are empty, so emitted commands are byte-identical to today. Pure host/file commands (test -f, grep, ls, python3, docker *, docker compose *, curl against a published host port) are NEVER prefixed.</rule>
-      <rule id="HTTP-CONV">HTTP / health-check convention: a validate command that curls the running app MUST target the Base URL / published host port from test-environment.md (e.g. http://localhost:8080), NEVER a hardcoded port (no :8000). Once the runtime stack is up the app is reachable on the host's published port.</rule>
-      <rule critical="true" id="NODE-TOOL-CONV">NODE-TOOLING CONVENTION — BINDING. Any validate/investigator command invoking a Node-runtime tool (node, npm, npx, playwright, swagger-cli, etc.) is conditional on Node being available for this project. Node is available ONLY when test-environment.md indicates a frontend/Playwright toolchain (HAS_FRONTEND==true or Playwright installed). A docker-mode app container for a PHP project is PHP-only and carries no Node. Therefore: in a PHP project that is API-only / Playwright-N/A, NEVER emit a Node-tool command — substitute the PHP-native equivalent (e.g. validate OpenAPI via `{{CMD_PREFIX}}bin/console nelmio:apidoc:dump` instead of `npx swagger-cli validate`; never emit `npx playwright` — see steps 3.18/3.19 guards). When a Node tool IS genuinely required (HAS_FRONTEND==true / Playwright applicable) in docker mode, it runs via {{NODE_CMD_PREFIX}} against the dedicated {{NODE_SVC}} Playwright/Node service that task-R provisions (step 2) — NOT inside the PHP {{APP_SVC}} container. In local mode it runs on host Node. Either way the Node-runtime requirement is recorded in the goal-002 deliverables.</rule>
+      <action>Fix the runtime SERVICE NAMES that step 2 task-R must create and the daemon execs into (they MUST agree, since the daemon defaults to these): APP_SVC = the PHP/app compose service, default "app" (prefer a service literally named "app"/"php" in the Published Ports block). NODE_SVC = a dedicated Node/Playwright service, default "e2e", created ONLY when RUN_TARGET=docker AND Playwright is applicable.</action>
+      <rule critical="true" id="CMD-CONV">COMMAND EXECUTION CONVENTION — BINDING ON EVERY LATER STEP. Emit every validate / Investigation-Config command BARE, host-style (`composer install`, `vendor/bin/phpstan analyse --level=9`, `npx playwright test …`). Do NOT hand-prefix with `docker compose exec …`. At dispatch the taskvisor daemon wraps each command by tool family: PHP toolchain (php, composer, bin/console, vendor/bin/*, phpunit, phpstan, ecs, deptrac) → the {{APP_SVC}} container; Node/browser tools (node, npm, npx, playwright) → the {{NODE_SVC}} container; pure host/file commands (test, grep, ls, python3, docker, curl against a published port) left untouched. In local mode the daemon wrap is a no-op, so bare commands run on the host exactly as today. (The wrap is idempotent, so a stray hand-written prefix is harmless — but do not add one.)</rule>
+      <rule id="HTTP-CONV">HTTP / health-check convention: a validate command that curls the running app MUST target the Base URL / published host port from test-environment.md (e.g. http://localhost:8080), NEVER a hardcoded port (no :8000). The daemon does NOT rewrite ports — emit the published one. Once the runtime stack is up the app is reachable on the host's published port.</rule>
+      <rule critical="true" id="NODE-TOOL-CONV">NODE-TOOLING CONVENTION — BINDING (governs WHETHER a Node command is emitted; the daemon wraps a Node command into {{NODE_SVC}} but never REMOVES one). A Node-runtime tool (node, npm, npx, playwright, swagger-cli) may be emitted ONLY when test-environment.md indicates a frontend/Playwright toolchain (HAS_FRONTEND==true or Playwright installed) — then task-R provisions {{NODE_SVC}} and the daemon routes the command there. In a PHP project that is API-only / Playwright-N/A, NEVER emit a Node-tool command — use the PHP-native equivalent (e.g. validate OpenAPI via `bin/console nelmio:apidoc:dump`, not `npx swagger-cli validate`; never emit `npx playwright` — see the steps 3.18/3.19 guards). The Node-runtime requirement, when present, is recorded in the goal-002 deliverables.</rule>
       <action>Proceed to Step 1.</action>
     </step>
 
@@ -449,7 +442,7 @@ Correction ordering protocol (E-13): when multiple failures are detected, apply 
       <rule critical="true">Step 1 must have completed successfully (goal-001 created) before this step executes.</rule>
       <rule critical="true">Scaffold is always goal-002 with phase=scaffold, depends_on=[goal-001] (G-02).</rule>
       <rule critical="true">All inputs are read from docs/architecture/* files and templates on disk — never from conversation context (G-16).</rule>
-      <rule critical="true" id="DOCKER-RUNTIME-FRONTLOAD" condition="RUN_TARGET=docker">In docker mode goal-002 MUST first MATERIALIZE AND START the dev runtime container BEFORE running any PHP-toolchain command. Prepend a fan-out task "task-R" (runtime, prerequisite, runs before task-0): create docker-compose.yaml (service {{APP_SVC}} built from a dev Dockerfile carrying PHP {{php_version}} + the required extensions, plus the DB/services + host:container port mappings from test-environment.md Published Ports) and that Dockerfile, then start the stack with `docker compose up -d --build`. task-0 (composer) and tasks 1-2 then add depends_on=task-R and run every PHP command via {{CMD_PREFIX}} (CMD-CONV). This is the DEV runtime — it replaces the late-stage compose goal for development; step 3.26 is reserved for PRODUCTION deployment extras (ADR-driven) only. Add SC-00 "docker-compose.yaml + dev Dockerfile exist and `docker compose up -d` brings {{APP_SVC}} up healthy" to the acceptance array as the first criterion. ADDITIONALLY when HAS_FRONTEND==true / Playwright is applicable: task-R MUST also add the {{NODE_SVC}} service (default "e2e", FROM an official Playwright image, same compose network as {{APP_SVC}}, with the app source mounted) so browser/E2E commands run via {{NODE_CMD_PREFIX}} resolve in-container — and extend SC-00 to require {{NODE_SVC}} up too. When API-only, do NOT add {{NODE_SVC}}.</rule>
+      <rule critical="true" id="DOCKER-RUNTIME-FRONTLOAD" condition="RUN_TARGET=docker">In docker mode goal-002 MUST first MATERIALIZE AND START the dev runtime container BEFORE running any PHP-toolchain command. Prepend a fan-out task "task-R" (runtime, prerequisite, runs before task-0): create docker-compose.yaml (service {{APP_SVC}} built from a dev Dockerfile carrying PHP {{php_version}} + the required extensions, plus the DB/services + host:container port mappings from test-environment.md Published Ports) and that Dockerfile, then start the stack with `docker compose up -d --build`. task-0 (composer) and tasks 1-2 then add depends_on=task-R; their PHP commands are emitted BARE and the daemon wraps them into {{APP_SVC}} at dispatch (CMD-CONV). This is the DEV runtime — it replaces the late-stage compose goal for development; step 3.26 is reserved for PRODUCTION deployment extras (ADR-driven) only. Add SC-00 "docker-compose.yaml + dev Dockerfile exist and `docker compose up -d` brings {{APP_SVC}} up healthy" to the acceptance array as the first criterion. ADDITIONALLY when HAS_FRONTEND==true / Playwright is applicable: task-R MUST also add the {{NODE_SVC}} service (default "e2e", FROM an official Playwright image, same compose network as {{APP_SVC}}, with the app source mounted) so the daemon can route bare browser/E2E commands into it — and extend SC-00 to require {{NODE_SVC}} up too. When API-only, do NOT add {{NODE_SVC}}.</rule>
 
       <substep n="2.1" title="Resolve scaffold template">
         <action>Attempt to read the language-specific overlay template first, then fall back to base:</action>
@@ -501,14 +494,14 @@ Correction ordering protocol (E-13): when multiple failures are detected, apply 
       <substep n="2.4" title="Compose validation commands">
         <action>Build VALIDATE array with 6 CLI commands that verify the scaffold is functional:</action>
         <commands>
-          <cmd source="SC-02">{{CMD_PREFIX}}composer install</cmd>
-          <cmd source="SC-05">{{CMD_PREFIX}}bin/console</cmd>
-          <cmd source="SC-06">{{CMD_PREFIX}}vendor/bin/phpunit</cmd>
-          <cmd source="SC-07">{{CMD_PREFIX}}vendor/bin/phpstan analyse --level=9</cmd>
-          <cmd source="SC-08">{{CMD_PREFIX}}vendor/bin/ecs check src/</cmd>
-          <cmd source="SC-09">{{CMD_PREFIX}}vendor/bin/deptrac analyse</cmd>
+          <cmd source="SC-02">composer install</cmd>
+          <cmd source="SC-05">bin/console</cmd>
+          <cmd source="SC-06">vendor/bin/phpunit</cmd>
+          <cmd source="SC-07">vendor/bin/phpstan analyse --level=9</cmd>
+          <cmd source="SC-08">vendor/bin/ecs check src/</cmd>
+          <cmd source="SC-09">vendor/bin/deptrac analyse</cmd>
         </commands>
-        <rule>These commands run via {{CMD_PREFIX}} (CMD-CONV): in local mode they run on the host (Gate 0 having verified host Composer); in docker mode they run inside the {{APP_SVC}} container started by task-R, so no host PHP/Composer is required.</rule>
+        <rule>These commands are emitted BARE (CMD-CONV): in local mode the daemon runs them on the host (Gate 0 having verified host Composer); in docker mode the daemon wraps them into the {{APP_SVC}} container started by task-R, so no host PHP/Composer is required.</rule>
       </substep>
 
       <substep n="2.5" title="Compose context with Investigation Config and fan-out hints">
@@ -1645,7 +1638,7 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide Doctri
           <cmd source="PC-15">vendor/bin/phpstan analyse {controller_path} --level=9</cmd>
           <cmd source="PC-16">vendor/bin/ecs check {controller_path} {request_dto_path} {response_dto_path}</cmd>
           <cmd source="PC-17">vendor/bin/deptrac analyse</cmd>
-          <cmd source="PC-14" condition="Playwright available">{{NODE_CMD_PREFIX}}npx playwright test {e2e_test_path}</cmd>
+          <cmd source="PC-14" condition="Playwright available">npx playwright test {e2e_test_path}</cmd>
         </commands>
         <rule>Request/Response DTO, route, and e2e paths come from the Fan-Out section of each action block in api-endpoints.md — use them directly. The controller path is produced by RESOLVE_CONTROLLER_PATH (3.17.0), the single source of truth — do not derive any other path from conventions.</rule>
         <rule>PC-14 command is conditional on Playwright availability from test-environment.md.</rule>
@@ -1690,7 +1683,7 @@ See docs/architecture/test-strategy.md for E2E test layer conventions.
 
           <investigator n="3" name="E2E test" condition="Playwright available in test-environment.md">
             <type>test-execution</type>
-            <commands>{{NODE_CMD_PREFIX}}npx playwright test {e2e_test_path}</commands>
+            <commands>npx playwright test {e2e_test_path}</commands>
             <pass>E2E test passes — correct status code, response body, error cases verified</pass>
             <fail>Test failure, timeout, or missing test file</fail>
           </investigator>
@@ -1856,7 +1849,7 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
 
           <investigator n="3" name="E2E test" condition="Playwright available in test-environment.md (HAS_FRONTEND==true AND Playwright installed)">
             <type>test-execution</type>
-            <commands>{{NODE_CMD_PREFIX}}npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}</commands>
+            <commands>npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}</commands>
             <pass>Test passes — correct status codes, token/session handling, error responses verified</pass>
             <fail>Test failure or missing test file</fail>
           </investigator>
@@ -1878,7 +1871,7 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
             - "Auth: implement password reset flow with email verification"
           </param>
           <param name="acceptance">Combined AU + PC criteria from substep 3.19.3 for this specific flow. Each criterion is a separate string in the array.</param>
-          <param name="validate">When Playwright is available: ["{{NODE_CMD_PREFIX}}npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}", "{{CMD_PREFIX}}vendor/bin/phpstan analyse src/ --level=9", "{{CMD_PREFIX}}vendor/bin/ecs check src/", "{{CMD_PREFIX}}vendor/bin/deptrac analyse"]. When Playwright is N/A / not installed (API-only): OMIT the playwright entry → ["{{CMD_PREFIX}}vendor/bin/phpstan analyse src/ --level=9", "{{CMD_PREFIX}}vendor/bin/ecs check src/", "{{CMD_PREFIX}}vendor/bin/deptrac analyse"]. Per CMD-CONV: the playwright entry uses {{NODE_CMD_PREFIX}} (the {{NODE_SVC}} container); the PHP entries use {{CMD_PREFIX}} (the {{APP_SVC}} container). Both empty in local mode.</param>
+          <param name="validate">Emit BARE (CMD-CONV; the daemon wraps each into its runtime). When Playwright is available: ["npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}", "vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/", "vendor/bin/deptrac analyse"]. When Playwright is N/A / not installed (API-only): OMIT the playwright entry → ["vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/", "vendor/bin/deptrac analyse"]. The daemon routes the playwright entry to {{NODE_SVC}} and the PHP entries to {{APP_SVC}}; in local mode it runs them on the host.</param>
           <param name="context">CONTEXT string from substep 3.19.4 (purpose + deliverables)</param>
           <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.19.4's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
           <param name="not_in_scope">Other auth flows not covered by this goal, business logic beyond authentication/authorization, frontend UI, non-auth controller actions, database migrations.</param>
@@ -2464,7 +2457,7 @@ Middleware files live in src/Share/Infrastructure/Http/Middleware/ (cross-cuttin
 
           <investigator n="3" name="Schema validation">
             <type>quality-gate</type>
-            <commands>{{CMD_PREFIX}}bin/console nelmio:apidoc:dump --format=json &gt; /dev/null</commands>
+            <commands>bin/console nelmio:apidoc:dump --format=json &gt; /dev/null</commands>
             <pass>Exit 0 — the bundle renders a structurally valid OpenAPI 3.0 spec (PHP-native; no Node required)</pass>
             <fail>Dump fails — invalid annotations or unresolved schema references</fail>
           </investigator>
@@ -3112,13 +3105,13 @@ Final gate: validates that the entire codebase passes Deptrac layer dependency a
               "FG-09: No test isolation issues (order-dependent failures) — run Playwright tests in random order",
               "G-08: Last 3 goals in goals.yaml are final gates (Deptrac, E2E, Quality) — verify ordering"
             ]</param>
-            <param name="validate">["{{NODE_CMD_PREFIX}}npx playwright test", "{{NODE_CMD_PREFIX}}npx playwright test --shard=random"]</param>
+            <param name="validate">["npx playwright test", "npx playwright test --shard=random"]</param>
             <param name="context">
 Final gate: validates that all Playwright E2E tests pass when run together as a full suite, detecting isolation issues that per-action test runs miss.
             </param>
             <param name="investigation_config">[
-              {name: "Full Suite Runner", type: "test-execution", paths: ["tests/"], commands: ["{{NODE_CMD_PREFIX}}npx playwright test"], pass: "Exit 0, all E2E tests green when run as a single suite — no failures from shared state or missing fixtures", fail: "Any test failure when run together that passed in isolation"},
-              {name: "Isolation Checker", type: "test-execution", paths: ["tests/"], commands: ["{{NODE_CMD_PREFIX}}npx playwright test --shard=random"], pass: "Exit 0, all tests pass in randomized order — no order-dependent failures", fail: "Test failure in randomized order indicates shared mutable state between tests"}
+              {name: "Full Suite Runner", type: "test-execution", paths: ["tests/"], commands: ["npx playwright test"], pass: "Exit 0, all E2E tests green when run as a single suite — no failures from shared state or missing fixtures", fail: "Any test failure when run together that passed in isolation"},
+              {name: "Isolation Checker", type: "test-execution", paths: ["tests/"], commands: ["npx playwright test --shard=random"], pass: "Exit 0, all tests pass in randomized order — no order-dependent failures", fail: "Test failure in randomized order indicates shared mutable state between tests"}
             ]</param>
             <param name="not_in_scope">Individual endpoint tests, Deptrac, PHPStan, ECS, unit tests, schema validation</param>
             <param name="depends_on">ALL_GOAL_IDS</param>
