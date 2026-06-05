@@ -1,0 +1,17 @@
+    <step n="3.17.0" title="Controller Path Resolver (shared)">
+      <rule critical="true">This step defines the SINGLE source of truth for every controller file path the planner produces. Both the action step (3.18) and the auth step (3.19) MUST route their controller deliverable, investigator file list, and phpstan/ecs paths through RESOLVE_CONTROLLER_PATH. No other location may restate the canonical controller-path shape — they reference this resolver by name.</rule>
+
+      <resolver name="RESOLVE_CONTROLLER_PATH">
+        <signature>RESOLVE_CONTROLLER_PATH(BC, NAME)</signature>
+        <inputs>
+          <input name="BC">PascalCase bounded-context name (e.g. Booking, Identity).</input>
+          <input name="NAME">Controller base name — the action name or auth-flow name (e.g. CreateBooking, Login).</input>
+        </inputs>
+        <produces>src/{BC}/Infrastructure/Http/Controller/{NAME}Controller.php</produces>
+        <normalization>
+          <rule>Strip a trailing "Controller" from NAME before appending the "Controller.php" suffix. So NAME=Login yields LoginController.php, and a NAME that already arrives as LoginController still yields LoginController.php — never LoginControllerController.php.</rule>
+          <rule>If a candidate controller path lacks the "/Controller/" segment immediately after "Infrastructure/Http/" (e.g. a Fan-Out value or a legacy string of the form src/{BC}/Infrastructure/Http/{NAME}Controller.php), insert "/Controller/" after "Infrastructure/Http/" so it matches the canonical shape above.</rule>
+        </normalization>
+        <result>The canonical controller path. The produces line above is the ONLY place the full canonical shape is stated; every controller reference elsewhere uses RESOLVE_CONTROLLER_PATH(BC, NAME).</result>
+      </resolver>
+    </step>

@@ -95,6 +95,15 @@ The install script registers `tmux-cli` as an MCP server in Claude Code automati
 
 `windows-list`, `windows-create`, `windows-send`, `windows-kill`, `windows-message`, `windows-spawn-worker`, `windows-recover-workers`, `tasks-validate`, `spec-validate`, `hooks-config`
 
+## Restart protocol
+
+After running `make install` (or replacing the `tmux-cli` binary by any other means), restart both:
+
+1. **MCP server** — the Claude Code process caches the binary path; a new `tmux-cli mcp` must be spawned for the updated binary to serve tool calls.
+2. **Taskvisor daemon** — if `tmux-cli taskvisor --run` is active, kill and restart it so the daemon runs the new code.
+
+The stale-binary guard (see Taskvisor Spec) warns when the binary has changed — the dashboard shows a `BINARY STALE` banner and every MCP tool response is prefixed with a warning — but the warning is a detection prompt, not an auto-reload mechanism. You must still restart manually.
+
 ## Task tracking
 
 The supervisor uses `.tmux-cli/tasks.yaml` as a persistent task queue:

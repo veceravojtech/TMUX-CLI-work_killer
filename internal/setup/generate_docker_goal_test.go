@@ -3,6 +3,8 @@ package setup
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,11 +25,25 @@ func readGenerateTemplate(t *testing.T, name string) string {
 	return string(data)
 }
 
+func readGenerateBundle(t *testing.T) string {
+	t.Helper()
+	spine := readGenerateTemplate(t, "task-plan-generate.xml")
+	stubRe := regexp.MustCompile(`(?s)<step n="[^"]+" title="[^"]+">\s*<load file="([^"]+)">[^<]*</load>\s*</step>`)
+	result := stubRe.ReplaceAllStringFunc(spine, func(stub string) string {
+		m := stubRe.FindStringSubmatch(stub)
+		require.Len(t, m, 2, "stub must capture file path")
+		rel := strings.Replace(m[1], ".claude/commands/tmux/", "", 1)
+		shard := readGenerateTemplate(t, rel)
+		return shard
+	})
+	return result
+}
+
 // Dev compose for a docker project is FRONT-LOADED into goal-002 (task-R), firing on
 // RUN_TARGET=docker — so the container exists before any PHP command, not deferred to
 // the late step-3.26 deployment goal (the ordering bug the front-load fixed).
 func TestGenerateXML_DevComposeFrontloadedOnRunTargetDocker(t *testing.T) {
-	content := readGenerateTemplate(t, "task-plan-generate.xml")
+	content := readGenerateBundle(t)
 
 	assert.Contains(t, content, `id="DOCKER-RUNTIME-FRONTLOAD" condition="RUN_TARGET=docker"`)
 	assert.Contains(t, content, "goal-002 MUST first MATERIALIZE AND START the dev runtime container")
@@ -39,7 +55,7 @@ func TestGenerateXML_DevComposeFrontloadedOnRunTargetDocker(t *testing.T) {
 // dev runtime moved to goal-002 task-R, so RUN_TARGET=docker ALONE no longer fires
 // 3.26 — only a Docker/deployment ADR does.
 func TestGenerateXML_ProdDockerGoalIsAdrOnly(t *testing.T) {
-	content := readGenerateTemplate(t, "task-plan-generate.xml")
+	content := readGenerateBundle(t)
 
 	assert.Contains(t, content, "PRODUCTION-DEPLOYMENT-ONLY")
 	assert.Contains(t, content, "skip unless a Docker/container/deployment ADR exists")
@@ -51,7 +67,7 @@ func TestGenerateXML_ProdDockerGoalIsAdrOnly(t *testing.T) {
 
 // DK-02/DK-04 source port mappings from the Published Ports block, not DOCKER_ADR_SUMMARY.
 func TestGenerateXML_ComposePortsFromPublishedPorts(t *testing.T) {
-	content := readGenerateTemplate(t, "task-plan-generate.xml")
+	content := readGenerateBundle(t)
 
 	// DK-02: each service + host:container mapping from PUBLISHED_PORTS.
 	assert.Contains(t, content, "host:container port mapping from the Published Ports block (PUBLISHED_PORTS)")
@@ -63,16 +79,16 @@ func TestGenerateXML_ComposePortsFromPublishedPorts(t *testing.T) {
 
 // 3.26.5 validate curls $APP_PORT (from published ports), with no hardcoded port literal or stale $PORT.
 func TestGenerateXML_ValidateUsesPublishedAppPort(t *testing.T) {
-	content := readGenerateTemplate(t, "task-plan-generate.xml")
+	content := readGenerateBundle(t)
 
-	assert.Contains(t, content, "curl -s http://localhost:$APP_PORT/health")
+	assert.Contains(t, content, "curl -sf http://localhost:$APP_PORT/health")
 	assert.NotContains(t, content, "http://localhost:$PORT/health",
 		"the stale hardcoded $PORT reference must be replaced by $APP_PORT")
 }
 
 // When RUN_TARGET=docker without an ADR, DOCKER_ADR_SUMMARY is optional and base image derives from architecture files.
 func TestGenerateXML_DockerAdrSummaryOptional(t *testing.T) {
-	content := readGenerateTemplate(t, "task-plan-generate.xml")
+	content := readGenerateBundle(t)
 
 	assert.Contains(t, content, "DOCKER_ADR_SUMMARY is OPTIONAL")
 	assert.Contains(t, content, "When RUN_TARGET=docker without an ADR, leave DOCKER_ADR_SUMMARY unset")
@@ -81,7 +97,7 @@ func TestGenerateXML_DockerAdrSummaryOptional(t *testing.T) {
 
 // 3.26.7 not_in_scope preserves the production-deployment exclusions verbatim.
 func TestGenerateXML_ProdDeployExtrasPreserved(t *testing.T) {
-	content := readGenerateTemplate(t, "task-plan-generate.xml")
+	content := readGenerateBundle(t)
 
 	assert.Contains(t, content,
 		"production deployment orchestration (Kubernetes, Swarm), cloud provider setup, SSL/TLS configuration.")
@@ -89,7 +105,7 @@ func TestGenerateXML_ProdDeployExtrasPreserved(t *testing.T) {
 
 // 3.26.3 defines an APP_PORT fallback to the base-URL port plus a recorded context note when the block is absent.
 func TestGenerateXML_PublishedPortsFallbackToBaseUrl(t *testing.T) {
-	content := readGenerateTemplate(t, "task-plan-generate.xml")
+	content := readGenerateBundle(t)
 
 	assert.Contains(t, content, "FALLBACK when the Published Ports block is ABSENT: set APP_PORT = the port from the base URL")
 	assert.Contains(t, content, "record a context note that ports were defaulted from the base URL")

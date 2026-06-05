@@ -182,9 +182,10 @@ The `--run` flag is internal — it starts the daemon loop directly. The daemon 
 
 1. Write `.tmux-cli/taskvisor-active` guard file (suppresses hooks)
 2. Verify `plan.auto_approve` and `plan.auto_execute` are true in setting.yaml — if not, set them (required for autonomous operation)
-3. Set `current_goal` to first pending goal in goals.yaml
-4. Sweep leftover per-goal windows (`supervisor-<ns>` / `execute-<ns>-` / `validator-<ns>` / `inv-<ns>-`) from a prior run — window-0 `supervisor` is NOT in the sweep set
-5. Begin dispatch loop
+3. **RequirePlanApproval gate**: if `require_plan_approval: true` in setting.yaml and `docs/architecture/plan-approval.md` does not exist, set `haltReason` and call `deactivate()`. The `/tmux:plan-audit` command produces this approval file — run it before starting the daemon when the gate is enabled.
+4. Set `current_goal` to first pending goal in goals.yaml
+5. Sweep leftover per-goal windows (`supervisor-<ns>` / `execute-<ns>-` / `validator-<ns>` / `inv-<ns>-`) from a prior run — window-0 `supervisor` is NOT in the sweep set
+6. Begin dispatch loop
 
 ### deactivate() — when all goals done/failed
 
@@ -222,6 +223,18 @@ Validation rules are deliberately excluded — the supervisor should implement t
 ## Corrections from Previous Cycles
 <contents of corrections/cycle-1.md, cycle-2.md, etc. — or "None (first attempt)" if no corrections>
 ```
+
+### Dispatch-time spec-drift gate
+
+At dispatch time (both `dispatch()` and `dispatchRetry()`), the daemon detects divergence between the per-goal `goal.md` "Validation Rules" section and the canonical `goals.yaml` validate entries. goals.yaml is always the source of truth — if drift is detected, `repairValidationRules` splices only the "Validation Rules" section in goal.md back to match goals.yaml, preserving all other goal.md prose (Context, Not In Scope, Investigation Config, etc.).
+
+**Detection**: symmetric set comparison — rules present in goal.md but absent in goals.yaml (extras) and rules in goals.yaml but missing from goal.md (missing) both count as drift.
+
+**Repair**: splice-based via `repairValidationRules` — only the Validation Rules section between its `## ` heading and the next heading (or EOF) is replaced. A missing goal.md is a no-op (not an error).
+
+**Budget**: drift repair incurs zero retry budget charge — the goal's retry counters are untouched. The daemon increments a `specRepairs` counter and the dashboard renders a `spec repairs: N` line when N > 0.
+
+**Fail-loud**: if the splice repair itself fails (e.g. unwritable goal directory), dispatch aborts with an error.
 
 ### checkProgress(goal)
 
@@ -267,6 +280,36 @@ When writing `corrections/cycle-N.md`, the daemon prefixes the validator's `next
       - "validator" exists -> resume validating phase, reset timeout clock to now
       - "supervisor" exists -> resume supervising phase, reset timeout clock to now
       - Neither exists -> treat as failed cycle, set status=pending (retries permitting)
+
+### Stale-binary guard
+
+Detects when the `tmux-cli` binary on disk has changed since the daemon (or MCP server) started, indicating a `make install` was run without restarting.
+
+**Detection**: `setup.BinaryStale()` compares the current mtime and size of `os.Executable()` against a snapshot taken at process init (`sync.Once`). Checked once per minute in `tick()` (throttled via `d.lastStaleCheck`). If `os.Executable()` fails at init, the guard degrades gracefully — `BinaryStale()` always returns false.
+
+**Dashboard banner** (non-fatal): when staleness is detected, the dashboard renders a yellow/bold warning: `BINARY STALE — restart taskvisor to apply (<mtime>)`. The daemon continues operating — this is informational only.
+
+**Opt-in halt** (`halt_on_stale_binary: true`): when enabled, after setting the banner the daemon calls `haltStaleBinary()` which mirrors the `haltWallClock()` pattern — sets `haltReason`, calls `deactivate()`, and leaves all goal statuses untouched (no forced failures). The in-flight goal finishes its current phase before the halt takes effect on the next tick.
+
+**MCP tool-result warning**: independently, every MCP tool handler checks `BinaryStale()` via `prependStaleWarning`. When stale, the handler prepends a text warning `[tmux-cli mcp is stale: <detail>; restart the MCP server]` before the normal JSON output. No schema changes — the warning is an additional `TextContent` item.
+
+**Version info**: `vcs.revision` from `debug.ReadBuildInfo()` is displayed in both the `--version` CLI output and the dashboard header (IDLE and ACTIVE modes). Falls back to `"dev"` when build info is unavailable.
+
+### Runtime-resource co-scheduling guard
+
+At `max_goals > 1` the daemon gates co-dispatch on disjoint file scope (`ScopesDisjoint` in `scope_gate.go`) and per-goal git worktrees isolate checkouts. However, the docker compose stack, its database, and host ports are SHARED runtime resources that worktrees do not isolate. Two co-scheduled goals each running `bash bin/ensure-test-stack.sh` would trigger concurrent `doctrine:fixtures:load` — one goal's fixture truncate wipes the DB under the other goal's in-flight Playwright run.
+
+**Stack-consuming classifier**: `isStackConsuming(g *Goal) bool` mechanically scans a goal's `Validate` and `Acceptance` lines for a conservative substring marker set: `ensure-test-stack`, `npx playwright`, `docker compose`, `curl -sf http`, `curl -s http`, `curl -s -o`. Detection is case-sensitive (matching the generator's exact command conventions), pure (no I/O), and substring-based (so `bash bin/ensure-test-stack.sh && echo done` still matches). False positives (over-serialization) are safe; false negatives (concurrent stack access) are not.
+
+**Co-schedulability extension**: `coSchedulable` is extended so that AFTER the existing `ScopesDisjoint` check, if the candidate is stack-consuming AND any in-flight goal is also stack-consuming, the candidate is rejected. Pure-unit goals co-schedule freely with stack-consumers. The check runs after scope disjointness (the common path stays cheap).
+
+**Dashboard/log surfacing**: `Daemon.stackGateSkips` counts runnable stack-consuming candidates deferred due to an in-flight stack-consumer. A `log.Printf` line per skip includes the goal ID and "stack-gated". The dashboard renders a yellow `stack-gated: N` line when > 0, mirroring the `dep warnings` pattern. The counter resets in `activate()`.
+
+**Byte-identical at `max_goals = 1`**: the stack-consuming gate runs inside `coSchedulable`, which is only consulted by `DisjointReadySet`. At `max_goals = 1` the dispatch budget caps to one goal regardless, so the gate is never the deciding factor. The `stackGateSkips` counter is only computed when `maxGoals() > 1`.
+
+**Zero-config**: the guard is always-on at `max_goals > 1` — no new config keys. It is a correctness invariant, not a preference; disabling it re-opens the concurrent-fixture-load race.
+
+**No schema changes**: `isStackConsuming` reads existing `Goal.Validate` and `Goal.Acceptance` fields. No new Goal struct fields, no new MCP tools, no modification of `modeIdle`/`modeActive` contract.
 
 ## Communication Protocol
 
@@ -377,9 +420,11 @@ Added to `internal/setup/config.go`:
 
 ```go
 type TaskvisorSettings struct {
-    DispatchTimeout int `yaml:"dispatch_timeout"` // default 3600 (60 min) — covers planning + execution phases
-    ValidateTimeout int `yaml:"validate_timeout"` // default 300 (5 min)
-    PollInterval    int `yaml:"poll_interval"`    // default 5 (seconds)
+    DispatchTimeout    int  `yaml:"dispatch_timeout"`     // default 3600 (60 min) — covers planning + execution phases
+    ValidateTimeout    int  `yaml:"validate_timeout"`     // default 300 (5 min)
+    PollInterval       int  `yaml:"poll_interval"`        // default 5 (seconds)
+    RequirePlanApproval bool `yaml:"require_plan_approval"` // default false
+    HaltOnStaleBinary   bool `yaml:"halt_on_stale_binary"`  // default false
 }
 ```
 
@@ -392,6 +437,13 @@ type Settings struct {
     Taskvisor TaskvisorSettings `yaml:"taskvisor"`
 }
 ```
+
+### Hardening config keys
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `require_plan_approval` | bool | `false` | When true, `activate()` halts unless `docs/architecture/plan-approval.md` exists. Run `/tmux:plan-audit` to produce the approval file. |
+| `halt_on_stale_binary` | bool | `false` | When true, the daemon halts (after finishing the in-flight goal phase) if the binary on disk has changed since startup. When false, only a dashboard banner is shown. |
 
 ## CLI Commands
 

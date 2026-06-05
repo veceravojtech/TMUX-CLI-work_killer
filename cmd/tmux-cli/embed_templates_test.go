@@ -19,6 +19,13 @@ func TestEmbeddedTemplates_IncludesBaseTier(t *testing.T) {
 	assert.NotEmpty(t, content, "_base/agents.md should have content")
 }
 
+func TestEmbeddedTemplates_PhpSymfonyFixturesContainsEnsureStack(t *testing.T) {
+	content, err := fs.ReadFile(embeddedTemplates, "embedded/templates/php-symfony/fixtures.md")
+	require.NoError(t, err, "php-symfony fixtures.md must be embedded")
+	assert.Contains(t, string(content), "ensure-test-stack",
+		"php-symfony fixtures.md must contain ensure-test-stack section")
+}
+
 // TestEmbeddedTemplates_BaseAndOverlayBothPresent walks the embedded FS and
 // asserts both the `_base` (base) and `php-symfony` (overlay) tiers ship.
 func TestEmbeddedTemplates_BaseAndOverlayBothPresent(t *testing.T) {

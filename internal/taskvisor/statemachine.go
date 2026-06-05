@@ -70,6 +70,13 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 	d.checkInvariant(goals)
 	d.checkStall(goals)
 
+	if err := d.checkStaleBinary(goals); err != nil {
+		return err
+	}
+	if d.mode != modeActive {
+		return nil
+	}
+
 	// (2) Drive every in-flight goal. Snapshot the running set FIRST so the free
 	// budget in (3) reflects the tick-start in-flight count, not mid-tick
 	// completions.
@@ -132,6 +139,40 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 				return err
 			}
 			free--
+		}
+	}
+
+	// Stack-gate skip counter: after the dispatch loop, count runnable
+	// stack-consuming candidates that were NOT admitted due to an in-flight
+	// stack-consumer. Keeps DisjointReadySet pure (no side-channel metadata).
+	d.stackGateSkips = 0
+	if d.maxGoals() > 1 {
+		admitted := make(map[string]bool, len(goals.DisjointReadySet(d.maxGoals())))
+		for _, a := range goals.DisjointReadySet(d.maxGoals()) {
+			admitted[a.ID] = true
+		}
+		var inflightStack bool
+		for _, id := range goals.RunningGoalIDs() {
+			if g, ok := goals.GoalByID(id); ok && isStackConsuming(g) {
+				inflightStack = true
+				break
+			}
+		}
+		if !inflightStack {
+			for _, a := range goals.DisjointReadySet(d.maxGoals()) {
+				if isStackConsuming(a) {
+					inflightStack = true
+					break
+				}
+			}
+		}
+		if inflightStack {
+			for _, c := range goals.RunnableCandidates() {
+				if !admitted[c.ID] && isStackConsuming(c) {
+					d.stackGateSkips++
+					log.Printf("%s: stack-gated (runtime-resource co-scheduling guard)", c.ID)
+				}
+			}
 		}
 	}
 
@@ -1059,6 +1100,31 @@ func (d *Daemon) haltRetryCeiling(goal *Goal, goals *GoalsFile) error {
 // surfaces the loud banner with no extra render call. The goals argument mirrors
 // haltRetryCeiling's signature (and documents that goal state is intentionally
 // left alone); it is not mutated here.
+func (d *Daemon) checkStaleBinary(goals *GoalsFile) error {
+	if d.now().Sub(d.lastStaleCheck) < time.Minute {
+		return nil
+	}
+	d.lastStaleCheck = d.now()
+
+	stale, detail := setup.BinaryStale()
+	if !stale {
+		d.staleBanner = ""
+		return nil
+	}
+
+	d.staleBanner = fmt.Sprintf("BINARY STALE — restart taskvisor to apply (%s)", detail)
+	if d.haltOnStaleBinary {
+		return d.haltStaleBinary(goals, detail)
+	}
+	return nil
+}
+
+func (d *Daemon) haltStaleBinary(goals *GoalsFile, detail string) error {
+	log.Printf("ALARM: binary stale (%s) — halting daemon (HaltOnStaleBinary=true)", detail)
+	d.haltReason = fmt.Sprintf("HALTED: binary replaced — restart taskvisor (%s)", detail)
+	return d.deactivate()
+}
+
 func (d *Daemon) haltWallClock(goals *GoalsFile, elapsed time.Duration) error {
 	log.Printf("ALARM: wall-clock budget exhausted (%s elapsed >= %s budget) — halting daemon",
 		elapsed.Round(time.Second), d.maxWallClock)

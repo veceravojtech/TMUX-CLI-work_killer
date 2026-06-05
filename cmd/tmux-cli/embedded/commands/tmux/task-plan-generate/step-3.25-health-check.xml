@@ -1,0 +1,102 @@
+    <step n="3.25" title="Generate Health Check goal (single goal, phase=health_check)">
+      <rule critical="true">This step is UNCONDITIONAL — every project needs a health check endpoint.</rule>
+      <rule critical="true">depends_on MUST include EVERY infrastructure goal ID — dynamically collected from goals.yaml, not hardcoded (G-03).</rule>
+      <rule critical="true">Single goal — never split per-BC. Health check is a cross-cutting concern covering all services.</rule>
+
+      <substep n="3.25.1" title="Collect all infrastructure goal IDs">
+        <action>Read goals.yaml from disk. Filter all goal entries where phase=infrastructure. Collect their goal IDs into INFRA_GOAL_IDS list.</action>
+        <check condition="INFRA_GOAL_IDS is empty">
+          <action>ABORT with error: "No infrastructure goals found in goals.yaml — cannot generate health check goal without infrastructure dependencies"</action>
+        </check>
+        <action>Print: "Found {{count(INFRA_GOAL_IDS)}} infrastructure goals: {{INFRA_GOAL_IDS}}"</action>
+        <rule>This MUST be dynamic — BC count varies per project. Never hardcode goal IDs.</rule>
+      </substep>
+
+      <substep n="3.25.2" title="Identify services from discovery outputs">
+        <action>Read docs/architecture/cross-cutting.md and docs/architecture/bounded-contexts.md. Extract infrastructure services present in the project (database, Redis, message queue if selected).</action>
+        <action>Build SERVICES list containing only the services actually configured for this project.</action>
+        <rule>Never hardcode the service list — derive from discovery outputs. Different projects may have only DB, or DB+Redis, or DB+Redis+queue.</rule>
+      </substep>
+
+      <substep n="3.25.3" title="Compose acceptance criteria (HC-01..HC-03)">
+        <action>Build ACCEPTANCE array with all 3 health check criteria from docs/task-plan-spec.md:</action>
+        <criteria>
+          <item id="HC-01">GET /health returns 200 when all services up</item>
+          <item id="HC-02">GET /health returns 503 when a service is down</item>
+          <item id="HC-03">Response includes individual service statuses</item>
+          <item id="HC-04" condition="HAS_DATABASE">GET /health response includes env field equal to APP_ENV value and database field matching connected DB name (E2E-ENV-CONV)</item>
+        </criteria>
+        <rule>All 3 criteria (plus HC-04 when HAS_DATABASE) must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+      </substep>
+
+      <substep n="3.25.4" title="Compose validation commands">
+        <action>Build VALIDATE array with commands that verify the health check endpoint:</action>
+        <commands>
+          <cmd source="HC-01">curl -s -o /dev/null -w "%{http_code}" {{BASE_URL}}/health (expect 200; {{BASE_URL}} = test-environment.md Base URL / published host port, per HTTP-CONV — never a hardcoded :8000)</cmd>
+          <cmd source="HC-03">curl -s {{BASE_URL}}/health | jq . (expect JSON with per-service status keys matching SERVICES)</cmd>
+          <cmd source="HC-04" condition="HAS_DATABASE">curl -s {{BASE_URL}}/health | jq -e '.env == "test" and (.database | test("test"))'</cmd>
+        </commands>
+      </substep>
+
+      <substep n="3.25.5" title="Compose context with Investigation Config">
+        <action>Build CONTEXT string with these sections:</action>
+
+        <section name="purpose">
+Health check goal creates a single GET /health endpoint that reports system status with per-service checks for {{SERVICES}}.
+Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide the services that health check monitors.
+        </section>
+
+        <section name="fan-out-hint">
+          <hint>single-task — one endpoint, one controller, one set of service checks.</hint>
+        </section>
+
+        <section name="investigation-config">
+          <action>Build 2 investigators:</action>
+
+          <investigator n="1" name="Health endpoint response">
+            <type>command</type>
+            <commands>curl -s {{BASE_URL}}/health</commands>
+            <pass>HTTP 200, JSON body contains status keys for each service in SERVICES, all marked healthy</pass>
+            <fail>Non-200 status code, missing service keys, or non-JSON response</fail>
+          </investigator>
+
+          <investigator n="2" name="Degraded health check">
+            <type>command</type>
+            <commands>Integration test with mocked failing service — stop one service dependency, hit /health</commands>
+            <pass>HTTP 503, response body shows failed service with unhealthy status while others remain healthy</pass>
+            <fail>Still returns 200 when a service is down, or missing per-service status detail</fail>
+          </investigator>
+
+          <rule>Exactly 2 investigators (GM-08 allows 2-4). Each has type, commands, and pass/fail criteria (GM-09).</rule>
+        </section>
+
+        <section name="not-in-scope">
+          <value>Kubernetes liveness/readiness probes, metrics endpoints, detailed performance diagnostics — these are deployment-specific concerns beyond the health check endpoint itself.</value>
+        </section>
+      </substep>
+
+      <substep n="3.25.6" title="Call goal-create MCP">
+        <action>Call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Create GET /health endpoint returning system status with per-service checks</param>
+          <param name="acceptance">ACCEPTANCE array from substep 3.25.3 (exactly 3 items, HC-01..HC-03)</param>
+          <param name="validate">VALIDATE array from substep 3.25.4</param>
+          <param name="context">CONTEXT string from substep 3.25.5 (purpose + fan-out hint)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.25.5's 2 investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+          <param name="not_in_scope">NOT_IN_SCOPE from substep 3.25.5</param>
+          <param name="depends_on">INFRA_GOAL_IDS — ALL infrastructure goal IDs collected in substep 3.25.1</param>
+          <param name="max_retries">3</param>
+        </params>
+        <rule>Description is 73 characters — within the 120-char limit (MaxGoalDescriptionLength).</rule>
+        <rule>max_retries=3 (G-11) — health check is a single focused goal, fixable in few cycles.</rule>
+        <rule>depends_on MUST be the FULL INFRA_GOAL_IDS list — never just the last one (G-03).</rule>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Print: "Health check created: goal ID (phase=health_check, depends_on={{INFRA_GOAL_IDS}}) with 2 investigators, single-task fan-out, max_retries=3"</action>
+          <action>Proceed to next step.</action>
+        </check>
+      </substep>
+    </step>

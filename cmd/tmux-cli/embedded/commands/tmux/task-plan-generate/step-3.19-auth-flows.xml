@@ -1,0 +1,173 @@
+    <step n="3.19" title="Generate Auth flow goals (phase=auth)">
+      <rule critical="true">Fixtures goal (phase=fixtures) and error handling goal (phase=error-handling) MUST exist in goals.yaml before this step runs. If either is missing, ABORT with error.</rule>
+      <rule critical="true">Auth flows are counted in N_auth_flows ONLY — never in per-BC N_actions (no double counting).</rule>
+      <rule critical="true">One goal per auth flow — never batch multiple flows into one goal.</rule>
+      <rule critical="true">All inputs read from docs/architecture/* files on disk (G-16), never from conversation context.</rule>
+
+      <substep n="3.19.1" title="Read auth flow inventory from discovery output">
+        <action>Read docs/architecture/cross-cutting.md. Extract the auth flows section written by discover.xml Step 6.2.</action>
+        <action>Build AUTH_FLOWS list — each entry has: flow_name (Register, Login, Logout, Token Refresh, Password Reset), description, steps involved.</action>
+        <action>Count N_auth_flows = length of AUTH_FLOWS.</action>
+        <rule>Only include flows confirmed during discovery. If Password Reset was marked "not in scope", exclude it (AU-04 is conditional).</rule>
+        <rule>Token Refresh is a valid auth flow if discovered — do not skip it.</rule>
+      </substep>
+
+      <substep n="3.19.2" title="Resolve dependency goal IDs">
+        <action>Read goals.yaml from disk. Find the goal with phase=fixtures — store its ID as FIXTURES_GOAL_ID.</action>
+        <action>Find the goal with phase=error-handling — store its ID as ERROR_HANDLING_GOAL_ID.</action>
+        <action>Find the goal with phase=auth-bootstrap — store its ID as AUTH_BOOTSTRAP_GOAL_ID (created by step 3.16a; always present when N_auth_flows >= 1, which is true here since auth flows exist).</action>
+        <action>Set AUTH_DEPENDS_ON = [FIXTURES_GOAL_ID, ERROR_HANDLING_GOAL_ID, AUTH_BOOTSTRAP_GOAL_ID].</action>
+        <check condition="AUTH_BOOTSTRAP_GOAL_ID not found">
+          <action>ABORT with error: "Cannot generate auth goals: no auth-bootstrap goal (phase=auth-bootstrap) found in goals.yaml — step 3.16a must run before 3.19 when auth flows exist"</action>
+        </check>
+        <check condition="FIXTURES_GOAL_ID not found">
+          <action>ABORT with error: "Cannot generate auth goals: no fixtures goal (phase=fixtures) found in goals.yaml — ensure fixtures step ran first"</action>
+        </check>
+        <check condition="ERROR_HANDLING_GOAL_ID not found">
+          <action>ABORT with error: "Cannot generate auth goals: no error handling goal (phase=error-handling) found in goals.yaml — ensure error handling step ran first"</action>
+        </check>
+      </substep>
+
+      <substep n="3.19.3" title="Map acceptance criteria per auth flow">
+        <action>For each auth flow, build ACCEPTANCE array combining applicable AU-01..AU-10 and PC-01..PC-17 criteria:</action>
+
+        <criteria-map>
+          <flow name="Register" au="AU-01, AU-05, AU-06, AU-07, AU-10" pc="PC-01..PC-17">Registration creates user, hashes password, returns token/session. Depends on auth-bootstrap for security config + User entity (AU-08/AU-09 owned there).</flow>
+          <flow name="Login" au="AU-02, AU-05, AU-06, AU-07, AU-10" pc="PC-01..PC-17">Login authenticates credentials, returns token/session. Tests admin vs user role access. Validates against bootstrap-provided security config.</flow>
+          <flow name="Logout" au="AU-03, AU-07, AU-10" pc="PC-01..PC-17">Logout invalidates session/token. Verifies subsequent request returns 401.</flow>
+          <flow name="Token Refresh" au="AU-02, AU-07, AU-10" pc="PC-01..PC-17">Token refresh renews session without re-authentication.</flow>
+          <flow name="Password Reset" au="AU-04, AU-07, AU-10" pc="PC-01..PC-17">Password reset flow end-to-end (conditional — only if in scope).</flow>
+        </criteria-map>
+
+        <rule>AU-08 (Symfony security bundle config) and AU-09 (password hashing) are OWNED by the auth-bootstrap goal (step 3.16a), NOT by per-flow auth goals. Every per-flow auth goal depends on AUTH_BOOTSTRAP_GOAL_ID and keeps only AU-07/AU-10 (plus its flow-specific AU-01..AU-06) — it does not re-declare security.yaml or the User entity.</rule>
+        <rule>AU-05, AU-06 (role-based access) are tested within Login and Register goals — admin login returns admin token, user login returns user token. No separate role-access goal needed.</rule>
+        <rule>All flows get AU-07 (unauthenticated request returns 401) and AU-10 (test users from test-environment.md).</rule>
+        <rule>All flows get the full PC-01..PC-17 controller action criteria — auth endpoints ARE controller actions.</rule>
+
+        <criteria-reference name="AU-01..AU-10" source="docs/task-plan-spec.md:650-663">
+          <item id="AU-01">Registration action creates user, hashes password, returns token/session</item>
+          <item id="AU-02">Login action authenticates, returns token/session</item>
+          <item id="AU-03">Logout action invalidates session/token</item>
+          <item id="AU-04">Password reset flow works end-to-end (if in scope)</item>
+          <item id="AU-05">Role-based access: admin can access admin endpoints</item>
+          <item id="AU-06">Role-based access: regular user gets 403 on admin endpoints</item>
+          <item id="AU-07">Unauthenticated request to protected endpoint returns 401</item>
+          <item id="AU-08">Security configuration uses Symfony security bundle properly (firewall config)</item>
+          <item id="AU-09">User entity has proper password hashing (bcrypt/argon2)</item>
+          <item id="AU-10">Auth tests use dedicated test users from docs/architecture/test-environment.md</item>
+        </criteria-reference>
+
+        <criteria-reference name="PC-01..PC-17" source="docs/task-plan-spec.md:630-646">
+          <item id="PC-01">Controller class has maximum ~20 lines in action method</item>
+          <item id="PC-02">Controller action: deserialize, dispatch, serialize (nothing else)</item>
+          <item id="PC-03">Request DTO has Symfony validation constraints matching business rules</item>
+          <item id="PC-04">Response DTO serializes data, does not expose internal domain structure</item>
+          <item id="PC-05">Route is configured (YAML or attributes) with correct method + path</item>
+          <item id="PC-06">Controller imports only from Application layer, never Domain directly</item>
+          <item id="PC-07">Playwright E2E test exists at tests/E2E/{BC}/{ActionName}Test.{ext}</item>
+          <item id="PC-08">Playwright test resets fixtures before running</item>
+          <item id="PC-09">Playwright test uses credentials from docs/architecture/test-environment.md</item>
+          <item id="PC-10">Playwright test verifies: correct status code</item>
+          <item id="PC-11">Playwright test verifies: response body structure and values</item>
+          <item id="PC-12">Playwright test verifies: error cases (422 for invalid input, 401 for no auth)</item>
+          <item id="PC-13">Playwright test verifies: state change in DB (if applicable)</item>
+          <item id="PC-14">Playwright test passes when run individually</item>
+          <item id="PC-15">PHPStan level 9 passes on controller file</item>
+          <item id="PC-16">ECS passes on all new files</item>
+          <item id="PC-17">Deptrac passes — controller imports Application layer only</item>
+        </criteria-reference>
+        <branch condition="HAS_FRONTEND==false OR Playwright status in test-environment.md is 'not installed' / 'not applicable'">
+          <action>Exclude PC-07..PC-14 (all Playwright E2E criteria) from this auth goal's acceptance — IDENTICAL reduction to step 3.18's HAS_FRONTEND==false branch. Keep the AU criteria + PC-01..PC-06, PC-15..PC-17.</action>
+          <action>Also drop, for this goal: the Playwright E2E investigator (3.19.4 investigator n=3), the `npx playwright ...` validate command (3.19.5), and the "Playwright E2E: tests/E2E/..." deliverable (3.19.4). The goal then validates via the route check + quality gates only. Print: "API-only / Playwright N/A — auth goal E2E criteria PC-07..PC-14 and the playwright command excluded for {{flow_name}}."</action>
+        </branch>
+        <rule critical="true">PC-07..PC-14, the E2E investigator, the playwright validate command, and the Playwright deliverable are ALL conditional on Playwright availability from test-environment.md — the SAME gate step 3.18 uses. When Playwright is unavailable they are omitted TOGETHER; never emit an `npx playwright` command in a project where Playwright is not applicable (it cannot pass and the docker app container has no Node/Playwright).</rule>
+      </substep>
+
+      <substep n="3.19.4" title="Compose context with deliverables and Investigation Config">
+        <action>For each auth goal, build CONTEXT string with these sections:</action>
+
+        <section name="purpose">
+Auth endpoint implementing {{flow_name}} flow. Uses Symfony security bundle for authentication/authorization.
+All auth flows use dedicated test users from docs/architecture/test-environment.md — never hard-code credentials.
+Security configuration in config/packages/security.yaml — firewall, authenticator, and provider config.
+See docs/architecture/cross-cutting.md for auth method decisions and flow details.
+        </section>
+
+        <section name="deliverables">
+          <deliverable>Controller: RESOLVE_CONTROLLER_PATH({BC}, {AuthAction}) (3.17.0)</deliverable>
+          <deliverable>Request DTO: src/{BC}/Infrastructure/Http/Request/{AuthAction}Request.php</deliverable>
+          <deliverable>Response DTO: src/{BC}/Infrastructure/Http/Response/{AuthAction}Response.php</deliverable>
+          <deliverable>Route config: config/routes/{bc}.yaml or PHP attributes</deliverable>
+          <deliverable>Playwright E2E: tests/E2E/{BC}/{AuthAction}Test.{ext}</deliverable>
+          <note>Security config (config/packages/security.yaml) + User entity are NOT deliverables here — they are provided by the auth-bootstrap dependency (AUTH_BOOTSTRAP_GOAL_ID, step 3.16a). This goal consumes them, it does not create them.</note>
+          <note>Auth-flow E2E specs test the REAL login/register/logout UI — they MUST NOT use storageState or skip the login form. storageState (E2E-AUTH-STATE-CONV) is for OTHER suites' precondition only.</note>
+        </section>
+
+        <section name="investigation-config">
+          <action>Build 3 investigators per auth goal:</action>
+
+          <investigator n="1" name="Auth endpoint">
+            <type>implementation-check</type>
+            <files>RESOLVE_CONTROLLER_PATH({BC}, {AuthAction}) (3.17.0)</files>
+            <commands>bin/console debug:router | grep {auth_path}</commands>
+            <pass>Route registered and controller wired (security config + User entity are pre-existing deps from auth-bootstrap, not created here)</pass>
+            <fail>Missing route or controller not found</fail>
+          </investigator>
+
+          <investigator n="2" name="Quality gates">
+            <type>quality-gate</type>
+            <commands>vendor/bin/phpstan analyse --level=9 &amp;&amp; vendor/bin/ecs check src/ &amp;&amp; vendor/bin/deptrac analyse</commands>
+            <pass>All three commands exit 0 — zero errors, zero violations</pass>
+            <fail>Any tool reports errors or violations</fail>
+          </investigator>
+
+          <investigator n="3" name="E2E test" condition="Playwright available in test-environment.md (HAS_FRONTEND==true AND Playwright installed)">
+            <type>test-execution</type>
+            <commands>npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}</commands>
+            <pass>Test passes — correct status codes, token/session handling, error responses verified</pass>
+            <fail>Test failure or missing test file</fail>
+          </investigator>
+
+          <rule>When Playwright is available: 3 investigators per auth goal. When Playwright is N/A (API-only): omit investigator n=3 and emit 2 (route check + quality gates) — GM-08 minimum is 2. Each has type, files, commands, pass/fail (GM-09).</rule>
+        </section>
+      </substep>
+
+      <substep n="3.19.5" title="Generate one goal per auth flow via goal-create">
+        <action>For each AUTH_FLOW in AUTH_FLOWS, call goal-create MCP tool:</action>
+
+        <params>
+          <param name="description">Short title, &lt;=120 chars. Pattern: "Auth: implement {flow_name} endpoint with {key_behavior}"
+            Examples:
+            - "Auth: implement user registration with password hashing and session token"
+            - "Auth: implement login endpoint with credential validation and JWT response"
+            - "Auth: implement logout endpoint with session/token invalidation"
+            - "Auth: implement token refresh endpoint with session renewal"
+            - "Auth: implement password reset flow with email verification"
+          </param>
+          <param name="acceptance">Combined AU + PC criteria from substep 3.19.3 for this specific flow. Each criterion is a separate string in the array.</param>
+          <param name="validate">Emit BARE (CMD-CONV; the daemon wraps each into its runtime). When Playwright is available AND HAS_DATABASE: ["bash bin/ensure-test-stack.sh", "npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}", "vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/", "vendor/bin/deptrac analyse"]. When Playwright is available but NOT HAS_DATABASE: ["npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}", "vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/", "vendor/bin/deptrac analyse"]. When Playwright is N/A / not installed (API-only): OMIT the playwright entry → ["vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/", "vendor/bin/deptrac analyse"]. ENSURE-STACK-CONV: bash bin/ensure-test-stack.sh is a separate validate line immediately before the E2E probe. The daemon routes the playwright entry to {{NODE_SVC}} and the PHP entries to {{APP_SVC}}; in local mode it runs them on the host.</param>
+          <param name="context">CONTEXT string from substep 3.19.4 (purpose + deliverables)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.19.4's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+          <param name="not_in_scope">Other auth flows not covered by this goal, business logic beyond authentication/authorization, frontend UI, non-auth controller actions, database migrations.</param>
+          <param name="depends_on">AUTH_DEPENDS_ON = [FIXTURES_GOAL_ID, ERROR_HANDLING_GOAL_ID] from substep 3.19.2</param>
+          <param name="max_retries">3</param>
+        </params>
+
+        <action>After each successful goal-create, record the returned goal ID. Append to AUTH_GOAL_IDS list.</action>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT — do not continue to next flow.</action>
+        </check>
+
+        <rule>Every auth goal references the existing security config + User entity from the auth-bootstrap dependency (AUTH_BOOTSTRAP_GOAL_ID, step 3.16a) — no per-flow goal creates security.yaml or the User entity (D3 determinism gate).</rule>
+        <rule>Never hard-code test credentials in goal descriptions or context — always reference docs/architecture/test-environment.md (GM-05, AU-10).</rule>
+        <rule>description field max 120 chars (MaxGoalDescriptionLength). Detailed criteria go in acceptance and validate arrays.</rule>
+      </substep>
+
+      <substep n="3.19.6" title="Record auth goal IDs for downstream dependencies">
+        <action>Store AUTH_GOAL_IDS list as a session variable for use by subsequent steps (controller action goals).</action>
+        <action>Print summary: "Auth goals created: {{N_auth_flows}} goals (phase=auth, depends_on=[{{FIXTURES_GOAL_ID}}, {{ERROR_HANDLING_GOAL_ID}}]), IDs: [{{AUTH_GOAL_IDS}}]"</action>
+        <rule critical="true">The real auth-infrastructure prerequisite for protected endpoints is AUTH_BOOTSTRAP_GOAL_ID (security firewall/provider + User entity), NOT "all auth goals". Subsequent auth_required controller action goals (3.18.2) MUST depend on AUTH_BOOTSTRAP_GOAL_ID; the legacy "all AUTH_GOAL_IDS" dependency is retained for 401/403 flow E2E assertions but is no longer the source of the security infra itself.</rule>
+        <action>Proceed to next step.</action>
+      </substep>
+    </step>

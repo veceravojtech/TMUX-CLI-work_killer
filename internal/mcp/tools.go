@@ -761,7 +761,7 @@ func (s *Server) SpecValidate(file string) (*SpecValidateOutput, error) {
 	for i, g := range result.Gaps {
 		gaps[i] = SpecValidateGap{ID: g.ID, Message: g.Message}
 	}
-	return &SpecValidateOutput{
+	output := &SpecValidateOutput{
 		Valid: result.Valid,
 		Gaps:  gaps,
 		Stats: SpecValidateStats{
@@ -769,7 +769,26 @@ func (s *Server) SpecValidate(file string) (*SpecValidateOutput, error) {
 			AcceptanceCriteria: result.Stats.AcceptanceCriteria,
 			CodeMapEntries:     result.Stats.CodeMapEntries,
 		},
-	}, nil
+	}
+
+	goalsFile, loadErr := taskvisor.LoadGoals(s.workingDir)
+	if loadErr == nil && goalsFile != nil {
+		depFindings := taskvisor.InferMissingDeps(goalsFile)
+		if len(depFindings) > 0 {
+			depWarnings := make([]DepWarning, len(depFindings))
+			for i, f := range depFindings {
+				depWarnings[i] = DepWarning{
+					Consumer: f.Consumer,
+					Producer: f.Producer,
+					Stem:     f.Stem,
+					Evidence: f.Evidence,
+				}
+			}
+			output.DepWarnings = depWarnings
+		}
+	}
+
+	return output, nil
 }
 
 func (s *Server) TasksValidate(in TasksValidateInput) (*TasksValidateOutput, error) {

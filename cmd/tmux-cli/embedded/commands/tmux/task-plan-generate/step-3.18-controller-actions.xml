@@ -1,0 +1,159 @@
+    <step n="3.18" title="Generate Controller Action Goals">
+      <rule critical="true">Step 3.17 (Fixtures) must have completed successfully before this step executes — action E2E tests need fixture data.</rule>
+      <rule critical="true">One goal per non-auth controller action (G-05). Auth endpoints are handled by a separate auth step (3.19) — never count them here.</rule>
+      <rule critical="true">All inputs are read from docs/architecture/* files and templates on disk — never from conversation context (G-16).</rule>
+
+      <substep n="3.18.1" title="Parse api-endpoints.md and filter auth">
+        <action>Read docs/architecture/api-endpoints.md. Parse the file into two regions:</action>
+        <parse>
+          <region name="actions" section="## Endpoint Inventory">All ### blocks under this heading are non-auth actions. Extract each ### {action_name} block with: action_name, http_method, endpoint_path, bc_name (from "Bounded Context" table cell), description, auth_required, request fields, success_status_code, error responses, and Fan-Out paths (Handler, Request DTO, Response DTO, Route, E2E Test).</region>
+          <region name="auth" section="## Auth Flows">SKIP this entire section and all its sub-blocks. These are counted as N_auth_flows and handled by the auth goal step (3.19).</region>
+        </parse>
+        <action>As a secondary guard, also exclude any action whose name matches auth patterns (register, login, logout, password-reset, token-refresh) even if misplaced outside Auth Flows section.</action>
+        <action>Store the filtered list as ACTION_LIST. Record ACTION_COUNT = len(ACTION_LIST).</action>
+        <rule>ACTION_COUNT must equal N_actions in the goal count formula (spec line 276) — non-auth actions only.</rule>
+      </substep>
+
+      <substep n="3.18.2" title="Resolve depends_on for action goals">
+        <action>Read goals.yaml from disk. For each action in ACTION_LIST, resolve depends_on from previously generated goal IDs:</action>
+        <dependencies>
+          <dep name="own BC infrastructure goal">Filter goals.yaml for phase=infrastructure where BC name matches this action's bc_name. Required — every action depends on its BC's infra layer being built.</dep>
+          <dep name="fixtures goal">Filter goals.yaml for phase=fixtures. Required — E2E tests need test data.</dep>
+          <dep name="error handling goal">Filter goals.yaml for phase matching error-handling or cross-cutting with error-handling description. Required — E2E tests assert RFC 7807 error responses.</dep>
+          <dep name="all auth goals">Filter goals.yaml for phase=auth. Required — protected endpoint E2E tests need auth infrastructure for 401/403 assertions.</dep>
+          <dep name="auth bootstrap goal" condition="this action is auth_required">Filter goals.yaml for phase=auth-bootstrap. For every action whose auth_required flag is true, add AUTH_BOOTSTRAP_GOAL_ID — the protected endpoint needs the security firewall/provider + User entity from the bootstrap goal. Skip for public (auth_required=false) actions.</dep>
+        </dependencies>
+        <action>Collect these goal IDs into DEPENDS_ON array for each action: [own_bc_infra_goal_id, fixtures_goal_id, error_handling_goal_id] + all_auth_goal_ids + (AUTH_BOOTSTRAP_GOAL_ID when this action is auth_required).</action>
+        <rule>If fixtures or error handling goal ID cannot be resolved, ABORT — prior steps did not run correctly.</rule>
+        <rule>Auth goal IDs may be empty if the project has no auth flows — that is valid. Infrastructure goal for the action's BC must always resolve.</rule>
+        <rule>AUTH_BOOTSTRAP_GOAL_ID is appended ONLY for auth_required actions. If no auth flows exist (3.16a skipped), there is no bootstrap goal and no action is auth_required — the append is empty, which is valid.</rule>
+      </substep>
+
+      <substep n="3.18.3" title="Compose acceptance criteria (PC-01..PC-17)">
+        <action>Build ACCEPTANCE array with all 17 controller action criteria from docs/task-plan-spec.md:630-646:</action>
+        <criteria>
+          <item id="PC-01">Controller class has maximum ~20 lines in action method</item>
+          <item id="PC-02">Controller action: deserialize → dispatch → serialize (nothing else)</item>
+          <item id="PC-03">Request DTO has Symfony validation constraints matching business rules</item>
+          <item id="PC-04">Response DTO serializes data, does not expose internal domain structure</item>
+          <item id="PC-05">Route is configured (YAML or attributes) with correct method + path</item>
+          <item id="PC-06">Controller imports only from Application layer (handlers, DTOs), never Domain directly</item>
+          <item id="PC-07">Playwright E2E test exists at tests/E2E/{BC}/{ActionName}Test.{ext}</item>
+          <item id="PC-08">Playwright test resets fixtures before running</item>
+          <item id="PC-09">Playwright test uses credentials from docs/architecture/test-environment.md</item>
+          <item id="PC-10">Playwright test verifies: correct status code</item>
+          <item id="PC-11">Playwright test verifies: response body structure and values</item>
+          <item id="PC-12">Playwright test verifies: error cases (422 for invalid input, 401 for no auth)</item>
+          <item id="PC-13">Playwright test verifies: state change in DB (if applicable)</item>
+          <item id="PC-14">Playwright test passes when run individually</item>
+          <item id="PC-15">PHPStan level 9 passes on controller file</item>
+          <item id="PC-16">ECS passes on all new files</item>
+          <item id="PC-17">Deptrac passes — controller imports Application layer only</item>
+        </criteria>
+        <branch condition="HAS_FRONTEND==false">
+          <action>Reduce ACCEPTANCE array to 9 criteria: PC-01..PC-06, PC-15..PC-17. Exclude PC-07..PC-14 (all Playwright E2E criteria).</action>
+          <action>Print warning: "HAS_FRONTEND=false — Playwright E2E criteria PC-07..PC-14 excluded from controller action goals. 9 criteria remain."</action>
+          <rule>E2E test deliverables (tests/E2E/{BC}/{ActionName}Test.{ext}) are also excluded from the deliverables list for this action goal.</rule>
+        </branch>
+        <branch condition="HAS_FRONTEND==true">
+          <rule>All 17 criteria must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+        </branch>
+        <rule>PC-07..PC-14 are conditional on Playwright availability. If Playwright status in test-environment.md is "not installed" or "not applicable", reduce to PC-01..PC-06, PC-15..PC-17 (9 criteria) and note E2E tests are out of scope for this goal.</rule>
+      </substep>
+
+      <substep n="3.18.4" title="Compose validation commands per action">
+        <action>Build VALIDATE array per action using the Fan-Out paths from api-endpoints.md:</action>
+        <commands>
+          <cmd source="PC-05">bin/console debug:router | grep {endpoint_path}</cmd>
+          <cmd source="PC-15">vendor/bin/phpstan analyse {controller_path} --level=9</cmd>
+          <cmd source="PC-16">vendor/bin/ecs check {controller_path} {request_dto_path} {response_dto_path}</cmd>
+          <cmd source="PC-17">vendor/bin/deptrac analyse</cmd>
+          <cmd source="ENSURE-STACK-CONV" condition="HAS_DATABASE">bash bin/ensure-test-stack.sh</cmd>
+          <cmd source="PC-14" condition="Playwright available">npx playwright test {e2e_test_path}</cmd>
+        </commands>
+        <rule>Request/Response DTO, route, and e2e paths come from the Fan-Out section of each action block in api-endpoints.md — use them directly. The controller path is produced by RESOLVE_CONTROLLER_PATH (3.17.0), the single source of truth — do not derive any other path from conventions.</rule>
+        <rule>PC-14 command is conditional on Playwright availability from test-environment.md.</rule>
+        <rule>ENSURE-STACK-CONV: bash bin/ensure-test-stack.sh is a separate validate line immediately before the E2E probe (ENSURE-STACK-CONV). Conditional on HAS_DATABASE.</rule>
+      </substep>
+
+      <substep n="3.18.5" title="Compose context with Investigation Config per action">
+        <action>Build CONTEXT string per action with these sections:</action>
+
+        <section name="purpose">
+This controller action implements the HTTP adapter for {METHOD} {endpoint_path} in the {bc_name} bounded context.
+The controller is a thin adapter: deserialize request → dispatch command/query to Application layer → serialize response.
+See docs/architecture/api-endpoints.md for request/response schema, validation rules, and error responses.
+See docs/architecture/test-environment.md for E2E test credentials and base URL — never duplicate credentials (GM-05).
+See docs/architecture/test-strategy.md for E2E test layer conventions.
+When auth_required is true, the E2E test file MUST use the authenticated Playwright project (which inherits storageState from the setup project via E2E-AUTH-STATE-CONV) instead of adding inline login steps — the setup project handles login once per role and all authenticated tests reuse the stored state.
+        </section>
+
+        <section name="deliverables">
+          <action>Bind controller_path = RESOLVE_CONTROLLER_PATH({bc_name}, {action_name}) (3.17.0) ONCE for this action. Then list the 5 deliverables (GM-12) using Fan-Out paths from api-endpoints.md for DTO/route/e2e and controller_path for the controller:</action>
+          <deliverable n="1">Request DTO: {request_dto_path}</deliverable>
+          <deliverable n="2">Response DTO: {response_dto_path}</deliverable>
+          <deliverable n="3">Controller: {controller_path}</deliverable>
+          <deliverable n="4">Route: {route_definition_path}</deliverable>
+          <deliverable n="5">E2E Test: {e2e_test_path}</deliverable>
+        </section>
+
+        <section name="investigation-config">
+          <action>Build 2-3 investigators (GM-08):</action>
+
+          <investigator n="1" name="File existence">
+            <type>file-check</type>
+            <files>{request_dto_path}, {response_dto_path}, {controller_path}, {route_definition_path}, {e2e_test_path}</files>
+            <pass>All 5 deliverable files exist on disk</pass>
+            <fail>One or more deliverable files missing</fail>
+          </investigator>
+
+          <investigator n="2" name="Quality gates">
+            <type>quality-gate</type>
+            <commands>vendor/bin/phpstan analyse {controller_path} --level=9 &amp;&amp; vendor/bin/ecs check {controller_path} {request_dto_path} {response_dto_path} &amp;&amp; vendor/bin/deptrac analyse</commands>
+            <pass>PHPStan, ECS, and Deptrac all exit 0 — controller imports Application layer only, code style clean</pass>
+            <fail>Any quality tool reports errors or Deptrac violations</fail>
+          </investigator>
+
+          <investigator n="3" name="E2E test" condition="Playwright available in test-environment.md">
+            <type>test-execution</type>
+            <commands>npx playwright test {e2e_test_path}</commands>
+            <pass>E2E test passes — correct status code, response body, error cases verified</pass>
+            <fail>Test failure, timeout, or missing test file — on failure check test-results/ for traces and screenshots</fail>
+          </investigator>
+
+          <rule>Investigator 3 is conditional on Playwright availability. If not available, include only investigators 1 and 2 (minimum 2 per GM-08).</rule>
+        </section>
+      </substep>
+
+      <substep n="3.18.6" title="Compose not-in-scope per action">
+        <action>Set NOT_IN_SCOPE to:</action>
+        <value>Domain logic (aggregate roots, value objects, domain events, repository interfaces — built by domain goals). Application handlers and command/query buses (built by application goals). Infrastructure persistence (Doctrine mappings, migrations — built by infrastructure goals). Auth endpoints (handled by auth goals). Fixtures and seed data (built by fixtures goal). Error handling middleware (built by error handling goal).</value>
+      </substep>
+
+      <substep n="3.18.7" title="Iterate and call goal-create for each action">
+        <action>For each action in ACTION_LIST, call goal-create MCP with:</action>
+        <params>
+          <param name="description">{METHOD} {endpoint_path} — {bc_name} controller action</param>
+          <param name="acceptance">ACCEPTANCE array from substep 3.18.3 (17 items if Playwright available, 9 if not)</param>
+          <param name="validate">VALIDATE array from substep 3.18.4 (5 commands if Playwright, 4 if not)</param>
+          <param name="context">CONTEXT string from substep 3.18.5 (purpose + deliverables)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.18.5's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+          <param name="not_in_scope">NOT_IN_SCOPE from substep 3.18.6</param>
+          <param name="depends_on">DEPENDS_ON from substep 3.18.2 (own BC infra + fixtures + error handling + auth goal IDs)</param>
+          <param name="max_retries">3</param>
+        </params>
+        <rule>Description format "{METHOD} {path} — {BC} controller action" ensures uniqueness (G-12) because paths are unique per endpoint.</rule>
+        <rule>Description must be ≤120 characters (MaxGoalDescriptionLength invariant). If the natural description exceeds 120 chars, truncate the path or BC name with ellipsis while preserving METHOD and key path segments.</rule>
+        <rule>max_retries=3 per G-11.</rule>
+        <rule>phase=action on every created goal.</rule>
+
+        <check condition="goal-create returns error for any action">
+          <action>Print error with action name, endpoint path, and full context. ABORT — partial goal creation leaves an inconsistent state.</action>
+        </check>
+        <check condition="all goal-create calls succeed">
+          <action>Print: "Controller action goals created: {{ACTION_COUNT}} goals (phase=action), each with {{investigator_count}} investigators, 5 deliverables, max_retries=3"</action>
+          <action>Verify: created goal count == ACTION_COUNT. If mismatch, print warning with expected vs actual counts.</action>
+          <action>Proceed to next step.</action>
+        </check>
+      </substep>
+    </step>

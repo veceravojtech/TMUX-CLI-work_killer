@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -148,7 +149,27 @@ type Daemon struct {
 	// daemon-level halt (currently only the wall-clock ceiling). Set BEFORE
 	// deactivate() (whose tail render surfaces it) and cleared in activate() so a
 	// (re)start shows a clean IDLE/ACTIVE surface.
-	haltReason string
+	haltReason        string
+	haltOnStaleBinary bool
+	vcsRevision       string
+	lastStaleCheck    time.Time
+	staleBanner       string
+	specRepairs       int
+	depWarningCount   int
+	stackGateSkips    int
+}
+
+func readVCSRevision() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	for _, s := range info.Settings {
+		if s.Key == "vcs.revision" && len(s.Value) >= 7 {
+			return s.Value[:7]
+		}
+	}
+	return "dev"
 }
 
 func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
@@ -156,6 +177,7 @@ func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
 		workDir:         workDir,
 		executor:        executor,
 		mode:            modeIdle,
+		vcsRevision:     readVCSRevision(),
 		pollInterval:    10 * time.Second,
 		dispatchTimeout: time.Hour,
 		// clock/progressTimeout seed the P2 heartbeat. clock defaults to the real
@@ -229,6 +251,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		if settings.Taskvisor.MaxWallClockSec > 0 {
 			d.maxWallClock = time.Duration(settings.Taskvisor.MaxWallClockSec) * time.Second
 		}
+		d.haltOnStaleBinary = settings.Taskvisor.HaltOnStaleBinary
 	}
 
 	// Single authoritative finalization of d.validateTimeout. Runs UNCONDITIONALLY
@@ -422,6 +445,14 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 		}
 	}
 
+	if settings.Taskvisor.RequirePlanApproval {
+		approvalPath := filepath.Join(d.workDir, "docs", "architecture", "plan-approval.md")
+		if _, err := os.Stat(approvalPath); os.IsNotExist(err) {
+			d.haltReason = "HALTED: RequirePlanApproval is true but docs/architecture/plan-approval.md is absent — run /tmux:plan-audit first"
+			return d.deactivate()
+		}
+	}
+
 	// Prune worktrees orphaned by a crashed run BEFORE selecting/dispatching the
 	// next goal: `git worktree prune` + remove .tmux-cli-worktrees/<id> dirs whose
 	// goal is not GoalRunning. No-op with zero git when the worktrees dir is absent
@@ -433,6 +464,13 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	// looks for the next pending goal. Persist a heal even when no pending goal
 	// is selected (the NextPendingGoal block below only saves when one is found).
 	reconciled := goals.ReconcileBlocks()
+
+	depFindings := InferMissingDeps(goals)
+	d.depWarningCount = len(depFindings)
+	for _, f := range depFindings {
+		log.Printf("dep warning: %s references %s (produced by %s) without depends_on edge [evidence: %s]",
+			f.Consumer, f.Stem, f.Producer, f.Evidence)
+	}
 
 	if g, ok := goals.NextPendingGoal(); ok {
 		goals.CurrentGoal = g.ID
@@ -466,6 +504,7 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	// dashboard render below.
 	d.activatedAt = d.now()
 	d.haltReason = ""
+	d.stackGateSkips = 0
 	d.mode = modeActive
 	if err := d.renderDashboard(os.Stdout); err != nil {
 		log.Printf("dashboard render error: %v", err)

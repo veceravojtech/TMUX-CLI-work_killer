@@ -1,0 +1,279 @@
+    <step n="3.14" title="Generate domain layer goals (one per BC)">
+      <rule critical="true">Step 2 must have completed successfully (goal-002 created) before this step executes.</rule>
+      <rule critical="true">Exactly one goal per BC. phase=domain. depends_on=[goal-002]. Goal IDs are sequential starting from goal-003.</rule>
+      <rule critical="true">All inputs read from docs/architecture/* files and templates on disk — never from conversation context (G-16).</rule>
+
+      <substep n="3.14.1" title="Resolve domain templates">
+        <action>Attempt to read language-specific overlay templates first, then fall back to base:</action>
+        <lookup>
+          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/domain-model.md" label="overlay-domain"/>
+          <fallback path=".tmux-cli/templates/_base/domain-model.md" label="base-domain"/>
+        </lookup>
+        <lookup>
+          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/context-mapping.md" label="overlay-context"/>
+          <fallback path=".tmux-cli/templates/_base/context-mapping.md" label="base-context"/>
+        </lookup>
+        <lookup>
+          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/service-contracts.md" label="overlay-contracts"/>
+          <fallback path=".tmux-cli/templates/_base/service-contracts.md" label="base-contracts"/>
+        </lookup>
+        <action>Store resolved templates as DOMAIN_TEMPLATE, CONTEXT_MAP_TEMPLATE, SERVICE_CONTRACTS_TEMPLATE. Record which tier was used for each.</action>
+        <rule>DDD patterns (aggregate roots, VOs, events, ACL) MUST come from resolved templates, not hardcoded in this XML.</rule>
+      </substep>
+
+      <substep n="3.14.2" title="Read architecture inputs for domain generation">
+        <action>Read the following files and extract structured data:</action>
+        <reads>
+          <read file="docs/architecture/bounded-contexts.md">
+            <extract what="BC_LIST">Use BC_LIST from Step 0 (already validated). Each BC name maps to aggregates via AGGREGATE_MAP.</extract>
+          </read>
+          <read file="docs/architecture/domain-model.md">
+            <extract what="Per-BC domain detail">For each BC, extract: aggregate roots (### headings under BC section), value objects per aggregate, domain events per aggregate, domain services, repository interface descriptions, read model interface presence, invariants.</extract>
+          </read>
+          <read file="docs/architecture/context-mapping.md" condition="multi-BC project (BC_LIST.length > 1)">
+            <extract what="Cross-BC dependencies">For each BC, extract: upstream BCs it depends on, relationship type (ACL, Published Language, Shared Kernel), event contracts, ID VO references.</extract>
+          </read>
+        </reads>
+        <rule>Single-BC projects skip context-mapping.md reading (D-27). Single-BC goals have no ACL interfaces.</rule>
+      </substep>
+
+      <substep n="3.14.3" title="Initialize Share type ownership tracker">
+        <action>Create an in-memory map SHARE_OWNERSHIP = {} to track which BC's goal owns each Share file.</action>
+        <action>As BCs are processed in order, the first BC that introduces a shared type claims it. Subsequent BCs reference it but do NOT include it in their deliverables.</action>
+        <action>Tracked files: src/Share/DomainEventTrait.php, src/Share/Exception/DomainException.php, src/Share/DataType/*.php, src/Share/Event/*.php</action>
+        <rule>DomainEventTrait and base DomainException are always owned by the FIRST BC processed — they go into task-0 of that BC's goal.</rule>
+      </substep>
+
+      <substep n="3.14.4" title="Iterate BCs and generate domain goals">
+        <action>For each BC in BC_LIST (order from bounded-contexts.md), execute substeps 3.14.4a through 3.14.4i:</action>
+        <action>Maintain a running GOAL_INDEX starting at 3 (goal-003 is the first domain goal).</action>
+
+        <substep n="3.14.4a" title="Extract BC aggregates">
+          <action>From domain-model.md, extract for this BC:</action>
+          <field>AGGREGATES — list of aggregate root names (### headings under this BC)</field>
+          <field>VOS_PER_AGGREGATE — map of aggregate name to list of value object names</field>
+          <field>EVENTS_PER_AGGREGATE — map of aggregate name to list of domain event names</field>
+          <field>DOMAIN_SERVICES — list of domain service names (if any span multiple aggregates)</field>
+          <field>REPO_INTERFACES — one per aggregate (write side)</field>
+          <field>READ_MODEL_INTERFACES — list of read model interfaces (query side, Application layer)</field>
+          <field>INVARIANTS — per aggregate, the business rules enforced</field>
+          <action>Set AGGREGATE_COUNT = len(AGGREGATES).</action>
+        </substep>
+
+        <substep n="3.14.4b" title="Extract cross-BC dependencies">
+          <action>From context-mapping.md (if multi-BC), extract for this BC:</action>
+          <field>UPSTREAM_DEPS — list of {external_bc, relationship_type, acl_interface_name}</field>
+          <field>PUBLISHED_EVENTS — list of {event_name, producer_bc, consumer_bcs} where this BC is producer or consumer</field>
+          <field>FOREIGN_ID_VOS — list of ID value objects for cross-BC references</field>
+          <action>For single-BC projects: UPSTREAM_DEPS=[], PUBLISHED_EVENTS=[], FOREIGN_ID_VOS=[].</action>
+        </substep>
+
+        <substep n="3.14.4c" title="Collect deliverable file paths">
+          <action>Build DELIVERABLES list for this BC:</action>
+          <paths>
+            <path per="aggregate">src/{{BC}}/Domain/{{Aggregate}}.php</path>
+            <path per="vo">src/{{BC}}/Domain/ValueObject/{{VO}}.php</path>
+            <path per="event">src/{{BC}}/Domain/Event/{{Event}}.php</path>
+            <path per="aggregate">src/{{BC}}/Domain/Repository/{{Aggregate}}RepositoryInterface.php</path>
+            <path per="domain_service" condition="domain services identified">src/{{BC}}/Domain/Service/{{Service}}.php</path>
+            <path per="upstream_dep" condition="cross-BC deps exist">src/{{BC}}/Domain/ACL/{{ExternalBC}}ACLInterface.php</path>
+            <path per="read_model" condition="BC has list/search actions">src/{{BC}}/Application/ReadModel/{{ReadModel}}Interface.php</path>
+            <path per="aggregate">tests/Unit/{{BC}}/Domain/{{Aggregate}}Test.php</path>
+          </paths>
+          <action>For Share types introduced by this BC (not already in SHARE_OWNERSHIP):</action>
+          <paths>
+            <path per="shared_datatype">src/Share/DataType/{{DataType}}.php</path>
+            <path per="published_event" condition="this BC is producer">src/Share/Event/{{Event}}.php</path>
+          </paths>
+          <action>If this is the FIRST BC processed AND DomainEventTrait not yet in SHARE_OWNERSHIP:</action>
+          <paths>
+            <path>src/Share/DomainEventTrait.php</path>
+            <path>src/Share/Exception/DomainException.php</path>
+          </paths>
+          <action>Update SHARE_OWNERSHIP for all newly claimed Share files.</action>
+        </substep>
+
+        <substep n="3.14.4d" title="Build fan-out hints">
+          <branch condition="AGGREGATE_COUNT > 1">
+            <action>Build multi-task fan-out:</action>
+
+            <task n="0" name="Shared infrastructure (prerequisite)">
+              <scope>DomainEventTrait (if owned by this BC), base DomainException (if owned), Share DataTypes introduced by this BC, Share Events produced by this BC, ACL interfaces (cross-BC deps)</scope>
+              <owns>All src/Share/ files owned by this BC + src/{{BC}}/Domain/ACL/*.php</owns>
+              <depends_on>none (first task within this goal)</depends_on>
+              <rule>If this is NOT the first BC and DomainEventTrait/DomainException are already owned, task-0 still exists for BC-specific Share types and ACL interfaces. If task-0 would be empty (no Share types, no ACL interfaces), skip task-0 and make all aggregate tasks independent.</rule>
+            </task>
+
+            <task n="1..N" name="Per-aggregate task (parallel)">
+              <scope>One aggregate root, its VOs, its events, its repo interface, its unit tests</scope>
+              <owns>src/{{BC}}/Domain/{{Aggregate}}.php, src/{{BC}}/Domain/ValueObject/{{AggregateVOs}}/, src/{{BC}}/Domain/Event/{{AggregateEvents}}/, src/{{BC}}/Domain/Repository/{{Aggregate}}RepositoryInterface.php, tests/Unit/{{BC}}/Domain/{{Aggregate}}Test.php</owns>
+              <depends_on>task-0 (if task-0 exists)</depends_on>
+            </task>
+
+            <action>Assign domain services to the aggregate task with the strongest dependency, or to task-0 if service spans all aggregates.</action>
+            <action>Assign read model interfaces to the aggregate task whose query contract they serve.</action>
+            <rule>File-disjoint rule: verify zero overlap between task deliverable sets. If overlap found, move shared file to task-0.</rule>
+          </branch>
+
+          <branch condition="AGGREGATE_COUNT == 1">
+            <action>Single task — all deliverables in one task.</action>
+            <task n="single">
+              <scope>All deliverables for this BC's domain layer</scope>
+              <owns>All DELIVERABLES paths</owns>
+              <depends_on>none</depends_on>
+            </task>
+          </branch>
+        </substep>
+
+        <substep n="3.14.4e" title="Compose acceptance criteria from PD-01..PD-20">
+          <action>Build ACCEPTANCE array, filtering PD-01..PD-20 to BC-relevant items:</action>
+          <criteria>
+            <item id="PD-01" always="true">Aggregate root class has private constructor — verify via PHPStan rule or AST check on src/{{BC}}/Domain/{{Aggregate}}.php</item>
+            <item id="PD-02" always="true">Aggregate root has at least one named constructor (public static factory method returning self)</item>
+            <item id="PD-03" always="true">All value objects are final class — grep src/{{BC}}/Domain/ValueObject/ for class without final</item>
+            <item id="PD-04" always="true">Value object constructor validates input, throws DomainException on invalid state — unit test per VO</item>
+            <item id="PD-05" always="true">Value objects implement equals() method — grep VO files for equals</item>
+            <item id="PD-06" always="true">Domain events named in past tense (e.g. {{Aggregate}}Created, not Create{{Aggregate}})</item>
+            <item id="PD-07" always="true">Repository interface has domain-specific methods (findByEmail, nextIdentity), not generic find($id)</item>
+            <item id="PD-08" condition="BC has list/search actions">Read model interface exists in src/{{BC}}/Application/ReadModel/, returns DTOs</item>
+            <item id="PD-09" always="true">Zero imports from Infrastructure or Application namespace in Domain files — deptrac or grep check</item>
+            <item id="PD-10a" always="true">Unit test for creation via each aggregate's named constructor exists (per aggregate)</item>
+            <item id="PD-10b" always="true">Unit tests for each mutation method exist (one per state-changing method on each aggregate)</item>
+            <item id="PD-10c" always="true">Event-generation assertion exists per aggregate (each domain event asserted recorded by a test)</item>
+            <item id="PD-10-INV" always="true" per-invariant="true">DECOMPOSE PER INVARIANT — for EACH invariant/uniqueness/existence rule named in the {{BC}} domain model, emit ONE atomic criterion of the form: "{{Invariant}} invariant — {{Invariant}}Checker domain service enforces it AND a test asserts {{Invariant}}Exception is thrown when violated". Name the checker class (src/{{BC}}/Domain/Service/) and the exception thrown-test (tests/Unit/{{BC}}/Domain/) so each is independently greppable. NEVER collapse these into a single 'tests cover invariant violations' line.</item>
+            <item id="PD-11" always="true">Unit tests run green — vendor/bin/phpunit --filter={{BC}}\\Domain passes</item>
+            <item id="PD-12" always="true">PHPStan level 9 passes on Domain namespace — vendor/bin/phpstan analyse src/{{BC}}/Domain</item>
+            <item id="PD-13" always="true">No Doctrine annotations/attributes on domain objects — grep for @ORM\ and #[ORM\ (must be zero)</item>
+            <item id="PD-14" condition="domain services identified">Domain services exist for cross-aggregate operations</item>
+            <item id="PD-15" condition="cross-BC deps exist">Cross-BC references use ID value objects, not entity imports</item>
+            <item id="PD-16" condition="cross-BC deps exist">ACL interfaces defined in src/{{BC}}/Domain/ACL/ for each upstream dependency</item>
+            <item id="PD-17" always="true">DomainEventTrait implemented with collect-only pattern — events not dispatched from aggregate</item>
+            <item id="PD-18" condition="shared types introduced">Shared types live in src/Share/, not duplicated per BC</item>
+            <item id="PD-19" condition="published events exist">Cross-BC event DTOs live in src/Share/Event/ as Published Language</item>
+            <item id="PD-20" always="true">Aggregate sizing follows one-aggregate-per-transaction — prefer small aggregates referencing by ID</item>
+          </criteria>
+          <rule>Include conditional criteria only when their condition is true for this BC.</rule>
+          <rule>Replace {{BC}} and {{Aggregate}} placeholders with actual BC and aggregate names from discovery.</rule>
+        </substep>
+
+        <substep n="3.14.4f" title="Compose validation commands">
+          <action>Build VALIDATE array with CLI commands that verify the domain layer:</action>
+          <commands>
+            <cmd source="PD-11">vendor/bin/phpunit --filter={{BC}}\\Domain</cmd>
+            <cmd source="PD-12">vendor/bin/phpstan analyse src/{{BC}}/Domain --level=9</cmd>
+            <cmd source="PD-13">grep -r '@ORM\|#\[ORM' src/{{BC}}/Domain/ | wc -l (must output 0)</cmd>
+            <cmd source="PD-09">grep -rn 'use App\\{{BC}}\\Infrastructure\|use App\\{{BC}}\\Application' src/{{BC}}/Domain/ | grep -v 'Application\\ReadModel' | wc -l (must output 0)</cmd>
+            <cmd source="PD-10-INV" per-invariant="true">For EACH {{BC}} invariant emit a presence pair (GM-09b/GM-09c): grep -rl 'class {{Invariant}}Checker' src/{{BC}}/Domain/Service/ (must return ≥1) and grep -rlE '{{Invariant}}(AlreadyInUse|NotFound|Invalid)Exception' tests/Unit/{{BC}}/Domain/ (must return ≥1)</cmd>
+          </commands>
+          <rule>The PD-09 grep excludes Application\ReadModel imports which are allowed for read model interface references from Domain services. All other Application/Infrastructure imports are violations.</rule>
+          <rule>GM-09b/GM-09c: PD-10 invariant coverage is gated by the per-invariant presence-greps above, NOT by a coverage judgment on a green suite. Emit one PD-10-INV pair per invariant named in the {{BC}} domain model — the same set decomposed into the PD-10-INV acceptance items. A green suite with a missing presence-grep is a FAIL.</rule>
+          <rule>Replace {{BC}} with the actual BC namespace name from discovery.</rule>
+        </substep>
+
+        <substep n="3.14.4g" title="Compose context with Investigation Config">
+          <action>Build CONTEXT string with these sections:</action>
+
+          <section name="purpose">
+Domain layer for {{BC}}: implements aggregate roots, value objects, domain events, repository interfaces, and unit tests following DDD patterns.
+All domain model details come from docs/architecture/domain-model.md ({{BC}} section).
+Cross-BC dependencies from docs/architecture/context-mapping.md.
+DDD patterns from resolved domain template ({{DOMAIN_TEMPLATE tier}}).
+ACL patterns from resolved context-mapping template ({{CONTEXT_MAP_TEMPLATE tier}}).
+          </section>
+
+          <section name="fan-out-hints">
+            <action>Include the fan-out structure from substep 3.14.4d — task-0 (shared) followed by task-1..N (per aggregate) for multi-aggregate BCs, or single task for single-aggregate BCs.</action>
+            <action>List each task's owned files explicitly. State the depends_on chain.</action>
+            <rule>File-disjoint rule: parallel tasks have zero overlapping deliverable files. State this explicitly.</rule>
+          </section>
+
+          <section name="investigation-config">
+            <action>Build 4 investigators:</action>
+
+            <investigator n="1" name="Unit test runner + invariant coverage" type="mandatory">
+              <type>test-execution</type>
+              <commands>vendor/bin/phpunit --filter={{BC}}\\Domain; AND for EACH {{BC}} invariant a presence pair: grep -rl 'class {{Invariant}}Checker' src/{{BC}}/Domain/Service/ and grep -rlE '{{Invariant}}(AlreadyInUse|NotFound|Invalid)Exception' tests/Unit/{{BC}}/Domain/</commands>
+              <pass>phpunit exits 0 and is non-empty (test count "OK (N tests"/"N tests", NOT "No tests executed!"), all green; AND every invariant presence-grep returns ≥1 line</pass>
+              <fail>Non-zero/empty phpunit run ("No tests executed!", any failure/error), OR any invariant presence-grep returns 0 — an enforced invariant that lacks its Service checker class or its thrown-exception test is a FAIL even when the suite is green (GM-09b: objective gate, never a coverage judgment)</fail>
+            </investigator>
+
+            <investigator n="2" name="Static analysis" type="mandatory">
+              <type>quality-gate</type>
+              <commands>vendor/bin/phpstan analyse src/{{BC}}/Domain --level=9</commands>
+              <pass>Exit 0, zero errors at level 9</pass>
+              <fail>Type errors, missing return types, incorrect signatures</fail>
+            </investigator>
+
+            <investigator n="3" name="Layer violation check" type="mandatory">
+              <type>quality-gate</type>
+              <commands>grep -rn 'use App\\{{BC}}\\Infrastructure' src/{{BC}}/Domain/, grep -r '@ORM\|#\[ORM' src/{{BC}}/Domain/</commands>
+              <pass>Zero matches for both greps — no infrastructure leakage, no Doctrine annotations</pass>
+              <fail>Infrastructure imports or Doctrine annotations found in Domain namespace</fail>
+            </investigator>
+
+            <investigator n="4" name="DDD convention check" type="conditional" condition="AGGREGATE_COUNT > 1 or cross-BC deps exist">
+              <type>convention-audit</type>
+              <commands>grep -r 'private function __construct' src/{{BC}}/Domain/ (must match aggregate count), grep -rn 'final class' src/{{BC}}/Domain/ValueObject/ (must match VO count), grep -rn 'function equals' src/{{BC}}/Domain/ValueObject/ (must match VO count)</commands>
+              <pass>Private constructors on all aggregates, final on all VOs, equals() on all VOs</pass>
+              <fail>Missing private constructor, non-final VO, missing equals()</fail>
+            </investigator>
+
+            <rule>Minimum 3 investigators (Unit tests + Static analysis + Layer violation). Investigator 4 added when AGGREGATE_COUNT > 1 or cross-BC deps exist (GM-08).</rule>
+            <rule>Each investigator has type, commands, pass/fail criteria (GM-09).</rule>
+          </section>
+
+          <section name="template-references">
+            <action>Include references to resolved templates so the executing agent can read DDD patterns:</action>
+            <ref>Domain model patterns: {{DOMAIN_TEMPLATE path}}</ref>
+            <ref>Service contracts: {{SERVICE_CONTRACTS_TEMPLATE path}}</ref>
+            <ref>Context mapping / ACL: {{CONTEXT_MAP_TEMPLATE path}} (if multi-BC)</ref>
+          </section>
+        </substep>
+
+        <substep n="3.14.4h" title="Compose not-in-scope">
+          <action>Set NOT_IN_SCOPE to:</action>
+          <value>Doctrine XML mappings, infrastructure repository implementations, command/query handlers, controllers, API endpoints, database migrations, fixtures, E2E tests, Messenger transport config, ACL adapters (Infrastructure layer) — all handled by subsequent Application/Infrastructure goals.</value>
+        </substep>
+
+        <substep n="3.14.4i" title="Call goal-create MCP">
+          <action>Call the goal-create MCP tool with these parameters:</action>
+          <params>
+            <param name="description">Implement {{BC}} domain: aggregates, VOs, events, repo interfaces (≤120 chars — truncate aggregate list if needed)</param>
+            <param name="acceptance">ACCEPTANCE array from substep 3.14.4e (10-20 items depending on BC conditionals)</param>
+            <param name="validate">VALIDATE array from substep 3.14.4f (4 commands)</param>
+            <param name="context">CONTEXT string from substep 3.14.4g (purpose + fan-out hints + template refs)</param>
+            <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.14.4g's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+            <param name="not_in_scope">NOT_IN_SCOPE from substep 3.14.4h</param>
+            <param name="depends_on">goal-002</param>
+            <param name="max_retries">3</param>
+            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in the spine &lt;conventions&gt; block. Derive from this BC's domain Deliverables (substep 3.14.4c): emit ["src/{{BC}}/Domain/**"] (add any extra distinct deliverable dirs). A focused single-BC domain footprint lets the gate co-schedule this goal with a DIFFERENT BC's goal under MaxGoals&gt;1.</param>
+          </params>
+          <rule>Description must be ≤120 chars. If BC name + aggregate list exceeds limit, use "Implement {{BC}} domain layer: {{N}} aggregates, VOs, events, interfaces".</rule>
+          <rule>max_retries=3 — domain goals have focused scope within a single BC.</rule>
+
+          <check condition="goal-create returns error">
+            <action>Print error with full context. Continue to next BC (do not abort entire step for one BC failure).</action>
+          </check>
+          <check condition="goal-create succeeds">
+            <action>Print: "Domain goal created: goal-{{GOAL_INDEX:03d}} (phase=domain, BC={{BC}}, depends_on=[goal-002]) with {{investigator_count}} investigators, {{task_count}} fan-out tasks, max_retries=3"</action>
+            <action>Increment GOAL_INDEX.</action>
+          </check>
+        </substep>
+      </substep>
+
+      <substep n="3.14.5" title="Report domain goal generation results">
+        <action>After all BCs processed, print summary:</action>
+        <template>
+Domain layer goals generated: {{domain_goal_count}}/{{bc_count}} BCs
+  - Multi-aggregate BCs (fan-out): {{multi_aggregate_bc_names}}
+  - Single-aggregate BCs: {{single_aggregate_bc_names}}
+  - Share type ownership: {{share_ownership_summary}}
+  - Goal IDs: goal-003 through goal-{{last_domain_goal_id}}
+  - All depend on goal-002 (scaffold)
+        </template>
+        <check condition="domain_goal_count != bc_count">
+          <action>Print warning: "{{bc_count - domain_goal_count}} BC(s) failed goal creation — review errors above."</action>
+        </check>
+        <action>Proceed to Step 3.15 (Application layer goals).</action>
+      </substep>
+    </step>

@@ -26,7 +26,7 @@ func readApiEndpointsTemplate(t *testing.T) string {
 }
 
 func TestTaskPlanGenerate_ResolverDefinedExactlyOnce(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	assert.Equal(t, 1, strings.Count(content, `n="3.17.0"`),
 		"the shared resolver step id 3.17.0 must appear exactly once")
 	assert.Equal(t, 1, strings.Count(content, canonicalControllerLiteral),
@@ -34,13 +34,13 @@ func TestTaskPlanGenerate_ResolverDefinedExactlyOnce(t *testing.T) {
 }
 
 func TestTaskPlanGenerate_NoDivergentAuthControllerPath(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	assert.NotContains(t, content, "Infrastructure/Http/{AuthAction}Controller.php",
 		"the legacy hardcoded auth controller path (no /Controller/ segment) must be gone")
 }
 
 func TestTaskPlanGenerate_AuthSectionUsesResolver(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	block := sliceBetween(t, content, `n="3.19.4"`, `n="3.19.5"`)
 	assert.Contains(t, block, "RESOLVE_CONTROLLER_PATH",
 		"the auth controller deliverable/investigator (3.19.4) must reference RESOLVE_CONTROLLER_PATH, not a literal path")
@@ -49,7 +49,7 @@ func TestTaskPlanGenerate_AuthSectionUsesResolver(t *testing.T) {
 }
 
 func TestTaskPlanGenerate_ActionSectionUsesResolver(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	block := sliceBetween(t, content, `n="3.18.5"`, `n="3.18.6"`)
 	assert.Contains(t, block, "RESOLVE_CONTROLLER_PATH",
 		"the action context block (3.18.5) must bind the controller path via RESOLVE_CONTROLLER_PATH")
@@ -60,7 +60,7 @@ func TestTaskPlanGenerate_ActionSectionUsesResolver(t *testing.T) {
 }
 
 func TestTaskPlanGenerate_CanonicalShapeIsControllerSubdir(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	resolver := sliceBetween(t, content, `<resolver name="RESOLVE_CONTROLLER_PATH">`, `</resolver>`)
 	produced := sliceBetween(t, resolver, "<produces>", "</produces>")
 	assert.Equal(t, canonicalControllerLiteral, strings.TrimSpace(produced),

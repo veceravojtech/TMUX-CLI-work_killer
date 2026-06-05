@@ -1,0 +1,191 @@
+    <step n="2" title="Generate Scaffold goal (goal-002)">
+      <rule critical="true">Step 1 must have completed successfully (goal-001 created) before this step executes.</rule>
+      <rule critical="true">Scaffold is always goal-002 with phase=scaffold, depends_on=[goal-001] (G-02).</rule>
+      <rule critical="true">All inputs are read from docs/architecture/* files and templates on disk — never from conversation context (G-16).</rule>
+      <rule ref="DOCKER-RUNTIME-FRONTLOAD">See the &lt;conventions&gt; block in the spine.</rule>
+
+      <substep n="2.1" title="Resolve scaffold template">
+        <action>Attempt to read the language-specific overlay template first, then fall back to base:</action>
+        <lookup>
+          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/scaffold.md" label="overlay"/>
+          <fallback path=".tmux-cli/templates/_base/scaffold.md" label="base"/>
+        </lookup>
+        <action>Store the resolved template content as SCAFFOLD_TEMPLATE. Record which tier was used (overlay or base).</action>
+        <rule>Directory structure and Share namespace layout MUST come from the resolved template, not hardcoded in this XML.</rule>
+      </substep>
+
+      <substep n="2.2" title="Read architecture inputs">
+        <action>Read the following files and extract structured data:</action>
+        <reads>
+          <read file="docs/architecture/bounded-contexts.md">
+            <extract what="BC_LIST">All level-3 headings under "## Bounded Context Inventory" — these are the BC names for DDD directory structure and Deptrac layers.</extract>
+          </read>
+          <read file="docs/architecture/libraries.md" condition="exists">
+            <extract what="COMPOSER_PACKAGES">Composer package names from the file. If file does not exist, fall back to .tmux-cli/templates/php-symfony/libraries.md.</extract>
+          </read>
+          <read file="docs/architecture/test-environment.md">
+            <extract what="ENV_TEST_VARS">.env.test variable names and values for SC-10.</extract>
+          </read>
+        </reads>
+        <action>Read Deptrac layer template from .tmux-cli/templates/php-symfony/bounded-contexts.md (lines 79-128) for DomainAndShare composite layer pattern and ruleset.</action>
+        <action>Read quality tool configs from .tmux-cli/templates/php-symfony/quality-gates.md for PHPStan level 9, ECS, and Deptrac enforcement commands.</action>
+      </substep>
+
+      <substep n="2.3" title="Compose acceptance criteria (SC-01..SC-13 + conditional SC-17..SC-24)">
+        <action>Build ACCEPTANCE array with the 13 base scaffold criteria from docs/task-plan-spec.md:420-434 (plus the conditional criteria below):</action>
+        <criteria>
+          <item id="SC-01">composer.json contains all packages from docs/architecture/ decisions</item>
+          <item id="SC-02">composer install completes without errors (exit code 0)</item>
+          <item id="SC-03">DDD directory structure exists for every BC from discovery: src/{BC}/Domain/, src/{BC}/Application/, src/{BC}/Infrastructure/</item>
+          <item id="SC-04">Share namespace exists: src/Share/ with DataType, Event, Exception, Messaging subdirectories</item>
+          <item id="SC-05">bin/console boots without errors (exit code 0)</item>
+          <item id="SC-06">vendor/bin/phpunit runs with zero tests, zero errors (exit code 0)</item>
+          <item id="SC-07">vendor/bin/phpstan analyse src/ --level=9 passes on empty project (exit code 0)</item>
+          <item id="SC-08">vendor/bin/ecs check src/ passes on empty project (exit code 0)</item>
+          <item id="SC-09">vendor/bin/deptrac analyse passes with no violations on empty structure (exit code 0)</item>
+          <item id="SC-10">.env.test exists with variables matching docs/architecture/test-environment.md</item>
+          <item id="SC-11">phpunit.xml has separate unit and integration test suites configured</item>
+          <item id="SC-12">Deptrac config has DDD layers: Domain (depends on nothing + Share), Application (depends on DomainAndShare), Infrastructure (depends on DomainAndShare + Application), Share (depends on nothing)</item>
+          <item id="SC-13">Deptrac config groups Domain + Share into {BC}DomainAndShare composite layer (previo2 pattern using bool collector with must/must_not)</item>
+          <item id="SC-17" condition="HAS_DATABASE">bin/ensure-test-stack.sh exists, is executable, runs: stack up → test-env migrations → test fixtures</item>
+          <item id="SC-18" condition="HAS_DATABASE">Compose spec or .env.test pins APP_ENV=test for the E2E-facing service (E2E-ENV-CONV)</item>
+          <item id="SC-19" condition="Playwright available">Playwright Chromium browser binary installed — npx playwright install --with-deps chromium exits 0</item>
+          <item id="SC-20" condition="HAS_FRONTEND">playwright.config.ts exists with trace retain-on-failure, screenshot only-on-failure, reporter [['list'],['html',{open:'never'}]], outputDir test-results, retries: 0, and test-results/ in .gitignore</item>
+          <item id="SC-21" condition="HAS_FRONTEND AND N_auth_flows>=1">playwright.config.ts defines a setup project (auth.setup.ts → playwright/.auth/*.json storageState) and an authenticated project with setup dependency (E2E-AUTH-STATE-CONV)</item>
+          <item id="SC-23" condition="symfony/mailer in composer.json">.env.test contains MAILER_DSN=null://null (Symfony recipe default, asserted by E2E-SIDEFX-CONV)</item>
+          <item id="SC-24" condition="symfony/messenger in composer.json">config/packages/test/messenger.yaml exists and routes transports to sync:// (E2E-SIDEFX-CONV)</item>
+        </criteria>
+        <rule>All 13 criteria (plus SC-17/SC-18 when HAS_DATABASE, SC-19 when Playwright available, SC-20 when HAS_FRONTEND, SC-21 when HAS_FRONTEND AND N_auth_flows>=1, SC-23 when symfony/mailer present, SC-24 when symfony/messenger present) must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+      </substep>
+
+      <substep n="2.4" title="Compose validation commands">
+        <action>Build VALIDATE array with 6 base CLI commands (+ conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24 cmds) that verify the scaffold is functional:</action>
+        <commands>
+          <cmd source="SC-02">composer install</cmd>
+          <cmd source="SC-05">bin/console</cmd>
+          <cmd source="SC-06">vendor/bin/phpunit</cmd>
+          <cmd source="SC-07">vendor/bin/phpstan analyse --level=9</cmd>
+          <cmd source="SC-08">vendor/bin/ecs check src/</cmd>
+          <cmd source="SC-09">vendor/bin/deptrac analyse</cmd>
+          <cmd source="SC-17" condition="HAS_DATABASE">test -x bin/ensure-test-stack.sh</cmd>
+          <cmd source="SC-18" condition="HAS_DATABASE AND RUN_TARGET=docker">grep -q 'APP_ENV=test' docker-compose.yaml</cmd>
+          <cmd source="SC-18" condition="HAS_DATABASE AND RUN_TARGET=local">grep -q 'APP_ENV=test' .env.test</cmd>
+          <cmd source="SC-19" condition="Playwright available">npx playwright install --with-deps chromium</cmd>
+          <cmd source="SC-20" condition="HAS_FRONTEND">test -f playwright.config.ts</cmd>
+          <cmd source="SC-21" condition="HAS_FRONTEND AND N_auth_flows>=1">grep -q 'auth.setup' playwright.config.ts</cmd>
+          <cmd source="SC-23" condition="symfony/mailer in composer.json">grep -q 'MAILER_DSN=null://null' .env.test</cmd>
+          <cmd source="SC-24" condition="symfony/messenger in composer.json">test -f config/packages/test/messenger.yaml</cmd>
+        </commands>
+        <rule>These commands are emitted BARE (CMD-CONV): in local mode the daemon runs them on the host (Gate 0 having verified host Composer); in docker mode the daemon wraps them into the {{APP_SVC}} container started by task-R, so no host PHP/Composer is required.</rule>
+      </substep>
+
+      <substep n="2.5" title="Compose context with Investigation Config and fan-out hints">
+        <action>Build CONTEXT string with these sections:</action>
+
+        <section name="purpose">
+Scaffold creates a bootable, TDD-ready Symfony skeleton with DDD directory structure, quality tools, and Share namespace.
+All BC names come from docs/architecture/bounded-contexts.md. Composer packages from docs/architecture/libraries.md.
+Deptrac layer definitions and {BC}DomainAndShare composite from .tmux-cli/templates/php-symfony/bounded-contexts.md.
+Quality tool configs (PHPStan level 9, ECS, Deptrac) from .tmux-cli/templates/php-symfony/quality-gates.md.
+Test environment variables from docs/architecture/test-environment.md.
+        </section>
+
+        <section name="fan-out-hints">
+          <action>Build fan-out hints for multi-task execution (4 file-disjoint tasks; task-3 conditional on HAS_DATABASE; + task-R prepended when RUN_TARGET=docker per DOCKER-RUNTIME-FRONTLOAD):</action>
+
+          <task n="0" name="Composer setup" prerequisite="true">
+            <scope>composer.json with all packages + composer install</scope>
+            <criteria>SC-01, SC-02</criteria>
+            <owns>composer.json, composer.lock, vendor/</owns>
+            <depends_on>none (first task)</depends_on>
+          </task>
+
+          <task n="1" name="DDD directory structure">
+            <scope>Create DDD directories per BC + Share namespace</scope>
+            <criteria>SC-03, SC-04</criteria>
+            <owns>src/*/Domain/, src/*/Application/, src/*/Infrastructure/, src/Share/</owns>
+            <depends_on>task-0 (needs autoloader from composer install)</depends_on>
+          </task>
+
+          <task n="2" name="Config files and quality tools">
+            <scope>phpunit.xml, phpstan.neon, ecs.php, deptrac.yaml, .env.test, APP_ENV=test pinning in Compose spec or .env.test (conditional on HAS_DATABASE, E2E-ENV-CONV SC-18), Playwright browser provisioning (conditional on Playwright available), playwright.config.ts + .gitignore test-results/ entry (conditional on HAS_FRONTEND), playwright.config.ts setup project + authenticated project + playwright/.auth/ gitignore (conditional on HAS_FRONTEND AND N_auth_flows>=1, E2E-AUTH-STATE-CONV SC-21), config/packages/test/messenger.yaml (conditional on symfony/messenger, E2E-SIDEFX-CONV SC-24)</scope>
+            <criteria>SC-06, SC-07, SC-08, SC-09, SC-10, SC-11, SC-12, SC-13, SC-18 (conditional), SC-19 (conditional), SC-20 (conditional), SC-21 (conditional), SC-23 (conditional), SC-24 (conditional)</criteria>
+            <owns>phpunit.xml, phpstan.neon, ecs.php, deptrac.yaml, .env.test, playwright.config.ts (conditional), .gitignore (conditional)</owns>
+            <depends_on>task-0 (needs vendor/bin/* from composer install)</depends_on>
+          </task>
+
+          <task n="3" name="Ensure-stack script" condition="HAS_DATABASE">
+            <scope>bin/ensure-test-stack.sh — three-phase stack-readiness script (stack up → test-env migrations → test fixtures)</scope>
+            <criteria>SC-17</criteria>
+            <owns>bin/ensure-test-stack.sh</owns>
+            <depends_on>task-0 (needs composer for bin/console)</depends_on>
+          </task>
+
+          <rule>File-disjoint: task-0 owns composer root, task-1 owns src/*/, task-2 owns config root files, task-3 owns bin/ensure-test-stack.sh. task-R (docker mode) owns docker-compose.yaml + the dev Dockerfile. Zero overlap.</rule>
+          <rule>SC-05 (bin/console boots) is verified after ALL tasks complete — it depends on both Composer packages and Symfony kernel config.</rule>
+        </section>
+
+        <section name="investigation-config">
+          <action>Build 4 investigators:</action>
+
+          <investigator n="1" name="Composer check">
+            <type>environment-check</type>
+            <commands>composer validate --strict</commands>
+            <pass>Exit 0 — composer.json is valid and all dependencies resolved</pass>
+            <fail>Invalid composer.json or unresolved dependencies</fail>
+          </investigator>
+
+          <investigator n="2" name="Kernel boot">
+            <type>environment-check</type>
+            <commands>bin/console</commands>
+            <pass>Exit 0 — Symfony kernel boots successfully</pass>
+            <fail>Kernel boot error or missing service configuration</fail>
+          </investigator>
+
+          <investigator n="3" name="Quality tools">
+            <type>quality-gate</type>
+            <commands>vendor/bin/phpstan analyse --level=9 &amp;&amp; vendor/bin/ecs check src/ &amp;&amp; vendor/bin/deptrac analyse</commands>
+            <pass>All three commands exit 0 — zero errors, zero violations</pass>
+            <fail>Any tool reports errors or violations</fail>
+          </investigator>
+
+          <investigator n="4" name="Test runner">
+            <type>test-execution</type>
+            <commands>vendor/bin/phpunit</commands>
+            <pass>Exit 0, zero errors — test suites discovered and run successfully</pass>
+            <fail>Test discovery failure, errors, or non-zero exit</fail>
+          </investigator>
+
+          <rule>Minimum 4 investigators for scaffold (GM-08). Each has type, commands, pass/fail criteria (GM-09).</rule>
+        </section>
+      </substep>
+
+      <substep n="2.6" title="Compose not-in-scope">
+        <action>Set NOT_IN_SCOPE to:</action>
+        <value>Application code, domain logic, controller actions, fixtures, E2E tests, Playwright setup — all handled by subsequent goals (goal-003+).</value>
+      </substep>
+
+      <substep n="2.7" title="Call goal-create MCP">
+        <action>Call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Create bootable TDD-ready Symfony skeleton with DDD structure, quality tools, and Share namespace</param>
+          <param name="acceptance">ACCEPTANCE array from substep 2.3 (base 13 items SC-01..SC-13, +SC-17 when HAS_DATABASE, +SC-18 when HAS_DATABASE (G2), +SC-19 when Playwright available, +SC-20 when HAS_FRONTEND, +SC-21 when HAS_FRONTEND AND N_auth_flows>=1 (G6), +SC-23 when symfony/mailer present (G7), +SC-24 when symfony/messenger present (G7))</param>
+          <param name="validate">VALIDATE array from substep 2.4 (6 base commands + conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24 cmds)</param>
+          <param name="context">CONTEXT string from substep 2.5 (purpose + fan-out hints)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 2.5's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+          <param name="not_in_scope">NOT_IN_SCOPE from substep 2.6</param>
+          <param name="max_retries">3</param>
+          <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in the spine &lt;conventions&gt; block. Scaffold lays down the repo-wide skeleton (config/, composer.json, src/Share/**, quality-tool configs) and runs before any BC goal, so OMIT scope (unknown ⇒ serialized — correct for the skeleton goal).</param>
+        </params>
+        <rule>Description is 97 characters — within the 120-char limit (MaxGoalDescriptionLength).</rule>
+        <rule>max_retries=3 — scaffold has fewer independent failure categories than Gate 0.</rule>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Print: "Scaffold created: goal-002 (phase=scaffold, depends_on=[goal-001]) with 4 investigators, 4 fan-out tasks (task-3 conditional on HAS_DATABASE; + task-R when RUN_TARGET=docker), max_retries=3"</action>
+          <action>Proceed to Step 3 (when added by subsequent tasks).</action>
+        </check>
+      </substep>
+    </step>

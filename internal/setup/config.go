@@ -89,7 +89,9 @@ type TaskvisorSettings struct {
 	// files in the same package can each pass in isolation yet break the combined
 	// suite. A non-zero exit fails the goal and cascades to its dependents. Empty
 	// (the default) disables the gate — byte-identical to the pre-gate build.
-	IntegrationCmd string `yaml:"integration_cmd"`
+	IntegrationCmd      string `yaml:"integration_cmd"`
+	RequirePlanApproval bool   `yaml:"require_plan_approval"`
+	HaltOnStaleBinary   bool   `yaml:"halt_on_stale_binary"`
 }
 
 // WorkerBudgetSec is the per-worker time budget in seconds, mirroring the

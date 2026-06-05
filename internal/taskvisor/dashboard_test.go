@@ -278,3 +278,47 @@ func TestDashboard_Render_NoGoals(t *testing.T) {
 	assert.Contains(t, out, "ACTIVE")
 	assert.NotContains(t, out, "goal-")
 }
+
+func TestDashboardRendersStackGateSkips(t *testing.T) {
+	d, dir := setupDashboardDaemon(t)
+	d.mode = modeActive
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
+	d.stackGateSkips = 2
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "Some task", Status: GoalRunning,
+				Retries: 0, MaxRetries: 3},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	var buf bytes.Buffer
+	require.NoError(t, d.renderDashboard(&buf))
+	out := buf.String()
+	assert.Contains(t, out, "stack-gated: 2")
+}
+
+func TestDashboardOmitsStackGateSkipsWhenZero(t *testing.T) {
+	d, dir := setupDashboardDaemon(t)
+	d.mode = modeActive
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
+	d.stackGateSkips = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "Some task", Status: GoalRunning,
+				Retries: 0, MaxRetries: 3},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	var buf bytes.Buffer
+	require.NoError(t, d.renderDashboard(&buf))
+	out := buf.String()
+	assert.NotContains(t, out, "stack-gated")
+}

@@ -12,6 +12,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -78,9 +79,18 @@ type SpecValidateInput struct {
 
 // SpecValidateOutput defines the output schema for spec-validate tool
 type SpecValidateOutput struct {
-	Valid bool              `json:"valid" jsonschema:"True if spec passes all S0-S8 checks"`
-	Gaps  []SpecValidateGap `json:"gaps,omitempty" jsonschema:"Quality gaps found, each with ID and message"`
-	Stats SpecValidateStats `json:"stats" jsonschema:"Spec statistics — test cases, acceptance criteria, code map entries"`
+	Valid       bool              `json:"valid" jsonschema:"True if spec passes all S0-S8 checks"`
+	Gaps        []SpecValidateGap `json:"gaps,omitempty" jsonschema:"Quality gaps found, each with ID and message"`
+	Stats       SpecValidateStats `json:"stats" jsonschema:"Spec statistics — test cases, acceptance criteria, code map entries"`
+	DepWarnings []DepWarning      `json:"dep_warnings,omitempty" jsonschema:"Cross-goal dependency warnings from InferMissingDeps"`
+}
+
+// DepWarning represents a missing cross-goal dependency edge
+type DepWarning struct {
+	Consumer string `json:"consumer" jsonschema:"Goal ID that references the stem without a dependency edge"`
+	Producer string `json:"producer" jsonschema:"Goal ID that produces the stem"`
+	Stem     string `json:"stem" jsonschema:"File-path stem linking consumer to producer"`
+	Evidence string `json:"evidence" jsonschema:"Field where consumer references the stem (acceptance or validate)"`
 }
 
 // SpecValidateGap represents a single quality gap found during validation
@@ -106,7 +116,8 @@ func (s *Server) SpecValidateHandler(ctx context.Context, req *sdkmcp.CallToolRe
 	if err != nil {
 		return nil, SpecValidateOutput{}, err
 	}
-	return nil, *output, nil
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
 }
 
 // TasksValidateInput defines the input schema for tasks-validate tool.
@@ -130,7 +141,8 @@ func (s *Server) TasksValidateHandler(ctx context.Context, req *sdkmcp.CallToolR
 	if err != nil {
 		return nil, TasksValidateOutput{}, err
 	}
-	return nil, *output, nil
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
 }
 
 // WindowsListInput defines the input schema for windows-list tool (no parameters needed)
@@ -253,7 +265,11 @@ func (s *Server) SudoExecuteHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	error,
 ) {
 	_, err := s.SudoExecute(input.Command)
-	return nil, SudoExecuteOutput{}, err
+	if err != nil {
+		return nil, SudoExecuteOutput{}, err
+	}
+	result, out := prependStaleWarning(SudoExecuteOutput{})
+	return result, out, nil
 }
 
 // TaskvisorStartInput defines the input schema for taskvisor-start tool (no parameters needed)
@@ -274,7 +290,8 @@ func (s *Server) TaskvisorStartHandler(ctx context.Context, req *sdkmcp.CallTool
 	if err != nil {
 		return nil, TaskvisorStartOutput{}, err
 	}
-	return nil, *output, nil
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
 }
 
 // GoalCreateInput defines the input schema for goal-create tool
@@ -320,9 +337,6 @@ func (s *Server) GoalCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequ
 	GoalCreateOutput,
 	error,
 ) {
-	// Build the []taskvisor.Investigator only when the config is non-empty, so
-	// omission passes nil (not an empty slice) and GoalCreate/WriteGoalMD branch
-	// onto M1's deriveInvestigators fallback.
 	var investigators []taskvisor.Investigator
 	if len(input.InvestigationConfig) > 0 {
 		investigators = make([]taskvisor.Investigator, len(input.InvestigationConfig))
@@ -343,7 +357,8 @@ func (s *Server) GoalCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequ
 	if err != nil {
 		return nil, GoalCreateOutput{}, err
 	}
-	return nil, *output, nil
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
 }
 
 // GoalAddPrerequisiteInput defines the input schema for goal-add-prerequisite tool.
@@ -368,7 +383,8 @@ func (s *Server) GoalAddPrerequisiteHandler(ctx context.Context, req *sdkmcp.Cal
 	if err != nil {
 		return nil, GoalAddPrerequisiteOutput{}, err
 	}
-	return nil, *output, nil
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
 }
 
 // GoalPruneInput defines the input schema for goal-prune tool (no parameters needed)
@@ -390,7 +406,8 @@ func (s *Server) GoalPruneHandler(ctx context.Context, req *sdkmcp.CallToolReque
 	if err != nil {
 		return nil, GoalPruneOutput{}, err
 	}
-	return nil, *output, nil
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
 }
 
 // ValidationFinding represents a single validation finding for goal-validation-done.
@@ -475,7 +492,8 @@ func (s *Server) GoalValidationDoneHandler(ctx context.Context, req *sdkmcp.Call
 	if err != nil {
 		return nil, GoalValidationDoneOutput{}, err
 	}
-	return nil, *output, nil
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
 }
 
 // HooksConfigHandler is the MCP tool handler for hooks-config operation.
@@ -488,8 +506,8 @@ func (s *Server) HooksConfigHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	if err != nil {
 		return nil, HooksConfigOutput{}, err
 	}
-
-	return nil, *output, nil
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
 }
 
 // WindowsListHandler is the MCP tool handler for windows-list operation.
@@ -502,8 +520,8 @@ func (s *Server) WindowsListHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	if err != nil {
 		return nil, WindowsListOutput{}, err
 	}
-
-	return nil, WindowsListOutput{Windows: windows}, nil
+	result, out := prependStaleWarning(WindowsListOutput{Windows: windows})
+	return result, out, nil
 }
 
 // WindowsSendHandler is the MCP tool handler for windows-send operation.
@@ -516,8 +534,8 @@ func (s *Server) WindowsSendHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	if err != nil {
 		return nil, WindowsSendOutput{}, err
 	}
-
-	return nil, WindowsSendOutput{Success: success}, nil
+	result, out := prependStaleWarning(WindowsSendOutput{Success: success})
+	return result, out, nil
 }
 
 // WindowsMessageHandler is the MCP tool handler for windows-message operation.
@@ -530,8 +548,8 @@ func (s *Server) WindowsMessageHandler(ctx context.Context, req *sdkmcp.CallTool
 	if err != nil {
 		return nil, WindowsMessageOutput{}, err
 	}
-
-	return nil, WindowsMessageOutput{Success: success, Sender: sender}, nil
+	result, out := prependStaleWarning(WindowsMessageOutput{Success: success, Sender: sender})
+	return result, out, nil
 }
 
 // WindowsCreateHandler is the MCP tool handler for windows-create operation.
@@ -544,8 +562,8 @@ func (s *Server) WindowsCreateHandler(ctx context.Context, req *sdkmcp.CallToolR
 	if err != nil {
 		return nil, WindowsCreateOutput{}, err
 	}
-
-	return nil, WindowsCreateOutput{Window: window}, nil
+	result, out := prependStaleWarning(WindowsCreateOutput{Window: window})
+	return result, out, nil
 }
 
 // WindowsKillHandler is the MCP tool handler for windows-kill operation.
@@ -558,8 +576,8 @@ func (s *Server) WindowsKillHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	if err != nil {
 		return nil, WindowsKillOutput{}, err
 	}
-
-	return nil, WindowsKillOutput{Success: success}, nil
+	result, out := prependStaleWarning(WindowsKillOutput{Success: success})
+	return result, out, nil
 }
 
 // WindowsRecoverWorkersHandler is the MCP tool handler for windows-recover-workers.
@@ -572,8 +590,8 @@ func (s *Server) WindowsRecoverWorkersHandler(ctx context.Context, req *sdkmcp.C
 	if err != nil {
 		return nil, WindowsRecoverWorkersOutput{}, err
 	}
-
-	return nil, *output, nil
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
 }
 
 // WindowsSpawnWorkerHandler is the MCP tool handler for windows-spawn-worker.
@@ -588,12 +606,30 @@ func (s *Server) WindowsSpawnWorkerHandler(ctx context.Context, req *sdkmcp.Call
 	if err != nil {
 		return nil, WindowsSpawnWorkerOutput{}, err
 	}
-
-	return nil, WindowsSpawnWorkerOutput{
+	result, out := prependStaleWarning(WindowsSpawnWorkerOutput{
 		Window:      window,
 		WorkerName:  workerName,
 		TaskMessage: taskMessage,
-	}, nil
+	})
+	return result, out, nil
+}
+
+func prependStaleWarning[Out any](output Out) (*sdkmcp.CallToolResult, Out) {
+	stale, detail := setup.BinaryStale()
+	if !stale {
+		return nil, output
+	}
+	warning := fmt.Sprintf("[tmux-cli mcp is stale: %s; restart the MCP server]", detail)
+	data, err := json.Marshal(output)
+	if err != nil {
+		return nil, output
+	}
+	return &sdkmcp.CallToolResult{
+		Content: []sdkmcp.Content{
+			&sdkmcp.TextContent{Text: warning},
+			&sdkmcp.TextContent{Text: string(data)},
+		},
+	}, output
 }
 
 // RegisterTools registers all MCP tools with the given SDK server.

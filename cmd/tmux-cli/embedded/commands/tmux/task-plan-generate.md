@@ -73,6 +73,21 @@ Error handling before actions: action E2E tests assert RFC 7807 errors (422/400)
 
 Each goal needs 2-4 investigators (GM-08) with type, files, commands, pass/fail criteria (GM-09).
 
+## Step 0c conventions (binding on all later steps)
+
+| Rule ID | Condition | Summary |
+|---------|-----------|---------|
+| CMD-CONV | always | Emit validate/investigation commands BARE host-style; daemon wraps at dispatch |
+| HTTP-CONV | always | curl must target published host port from test-environment.md, not hardcoded |
+| NODE-TOOL-CONV | HAS_FRONTEND | Node-runtime tools only when Playwright/frontend detected; else PHP-native equivalent |
+| ENSURE-STACK-CONV | HAS_DATABASE | Scaffold delivers bin/ensure-test-stack.sh (3 phases: stack up → migrations → fixtures); every E2E/host-HTTP goal prepends `bash bin/ensure-test-stack.sh` as a separate validate line before the probe |
+| HTTP-WAIT-CONV | always | Never emit fixed `sleep N` before HTTP/DB readiness probe; use `docker compose up -d --wait` (preferred) or bounded POSIX poll (`until curl -sf ...`) |
+| E2E-ENV-CONV | HAS_DATABASE | HTTP vhost serving E2E probes must serve APP_ENV=test against the seeded test DB; scaffold pins APP_ENV=test, health-check exposes env/database fields, Gate-0 re-asserts |
+| E2E-SIDEFX-CONV | HAS_DATABASE | E2E side-effect isolation: mailer null-transport asserted (SC-23), messenger sync transport created (SC-24), HTTP-client specs assert application-visible outcomes only; extends E2E-ENV-CONV at the G7 seam |
+| E2E-ARTIFACT-CONV | HAS_FRONTEND | Scaffold delivers playwright.config.ts with trace/screenshot on failure, deterministic test-results/ output dir, non-interactive reporter; E2E investigator fail criteria cite test-results/ |
+| E2E-DATA-ISOLATION-CONV | HAS_DATABASE | Fixture rows are read-only reference data; E2E specs create own mutable data with unique keys (timestamp/UUID); count/list assertions filter to own data; mid-suite doctrine:fixtures:load forbidden; dama/doctrine-test-bundle rollback does NOT apply to E2E |
+| E2E-AUTH-STATE-CONV | N_auth_flows>=1 AND HAS_FRONTEND | Playwright setup project logs in once per role (admin+user), writes storageState to gitignored playwright/.auth/; authenticated tests reuse state; auth-flow specs (3.19) never use storageState; SC-21 scaffold, AU-11 auth-bootstrap |
+
 ## Common pitfalls from AC tables
 
 | AC ID | Constraint | Typical violation |
@@ -89,6 +104,8 @@ Each goal needs 2-4 investigators (GM-08) with type, files, commands, pass/fail 
 | GM-08 | 2-4 investigators per goal | Only 1 investigator or more than 4 |
 | GM-10 | Paths follow src/{BC}/Domain|App|Infra/ | Flat src/ structure without DDD layers |
 | GM-12 | Action goal: request DTO, response DTO, controller, route, E2E test | Missing Playwright test deliverable |
+| SC-17 | HAS_DATABASE → scaffold delivers bin/ensure-test-stack.sh; E2E goals prepend it | Missing ensure-stack validate line before E2E probe, or &&-joined with probe command |
+| SC-19 | Playwright available → scaffold provisions chromium browser binary | Missing npx playwright install --with-deps chromium in scaffold, or unconditional (fires without E2E runner) |
 
 ## Structured validate/acceptance/scope mandate (CRITICAL)
 
@@ -104,19 +121,47 @@ Validation rules written only as prose in goal.md are **NOT sufficient** — the
 
 | Goal type | Pattern | Task structure |
 |-----------|---------|----------------|
-| Scaffold | Multi-task (3; 4 in docker) | docker only: task-R (runtime: docker-compose.yaml + dev Dockerfile, `docker compose up -d`, runs first) → task-0: composer → task-1: DDD dirs (depends 0) → task-2: configs (depends 0) |
+| Scaffold | Multi-task (4; task-3 only with DB; +task-R in docker) | docker only: task-R (runtime: docker-compose.yaml + dev Dockerfile, `docker compose up -d`, runs first) → task-0: composer → task-1: DDD dirs (depends 0) → task-2: configs (depends 0) → task-3: bin/ensure-test-stack.sh (HAS_DATABASE only, depends 0) |
 | Domain (>1 agg) | Multi-task | task-0: shared (trait, base exception, ACL) → task-1..N: per aggregate (parallel) |
 | Domain (1 agg) | Single-task | All deliverables in one task |
-| Application | Single-task | One task per BC (handlers share ports — splitting duplicates mocks) |
-| Infrastructure (>3 entities) | Multi-task | task-0: services.yaml + DBAL types → task-1..N: per aggregate mapping+repo |
+| Application | Single-task (multi if >6 handlers) | One task per BC (handlers share ports — splitting duplicates mocks) |
+| Infrastructure (>3 entities) | Multi-task | task-0: services.yaml + DBAL types → task-1..N: per aggregate mapping+repo → task-last: migrations + ACL adapters (depends on all per-aggregate tasks) |
 | Infrastructure (<=3) | Single-task | All mappings, repos, tests in one task |
 | Action | Single-task | One goal per action: controller + DTO + route + E2E test (G-05) |
-| Final quality | Multi-task | Parallel: PHPStan, ECS, Deptrac, test suites |
+| Final quality | Multi-task | Parallel: PHPStan, ECS, test suites |
 
 File-disjoint rule: parallel tasks within a goal must have non-overlapping deliverable files. Shared files go in a prerequisite task-0.
 
 ## Share type ownership
 
 DomainEventTrait and base DomainException are always owned by the FIRST BC processed — assigned to task-0 of that BC's domain goal. BC-specific Share types (DataTypes, Events) are owned by the first BC that introduces them. Subsequent BCs reference but do not include them in deliverables.
+
+## Shard index (spine + per-step files)
+
+The generation flow is split into a spine (`task-plan-generate.xml`) plus per-step shard files in `task-plan-generate/`. The spine loads each shard at its stub via `<load file="...">`. Steps 0/0b/0c/4/5/6 remain inline in the spine.
+
+| Step | Shard file | Fires when |
+|------|-----------|------------|
+| 1 | `step-1-gate0.xml` | always |
+| 2 | `step-2-scaffold.xml` | always |
+| 3.14 | `step-3.14-domain.xml` | always |
+| 3.15 | `step-3.15-application.xml` | always |
+| 3.16 | `step-3.16-infrastructure.xml` | always |
+| 3.16a | `step-3.16a-auth-bootstrap.xml` | N_auth_flows >= 1 |
+| 3.17 | `step-3.17-fixtures.xml` | always |
+| 3.17.0 | `step-3.17.0-controller-path-resolver.xml` | always |
+| 3.18 | `step-3.18-controller-actions.xml` | always |
+| 3.19 | `step-3.19-auth-flows.xml` | always |
+| 3.19a | `step-3.19a-seed-admin.xml` | seed_default_admin=yes AND N_auth_flows >= 1 |
+| 3.20 | `step-3.20-event-listeners.xml` | always |
+| 3.21 | `step-3.21-error-handling.xml` | always |
+| 3.22 | `step-3.22-middleware.xml` | middleware selected |
+| 3.23 | `step-3.23-api-docs.xml` | OpenAPI/nelmio selected |
+| 3.24 | `step-3.24-messenger.xml` | async/Messenger selected |
+| 3.25 | `step-3.25-health-check.xml` | always |
+| 3.26 | `step-3.26-docker.xml` | Docker/deployment ADR exists |
+| 3.27 | `step-3.27-cicd.xml` | CI/CD platform selected |
+| 3.28 | `step-3.28-dx.xml` | always |
+| 3.29 | `step-3.29-final-gates.xml` | always |
 
 Follow `.claude/commands/tmux/task-plan-generate.xml` EXACTLY as written. That file defines the complete generation flow, all validation gates, and hard constraints. Do not improvise beyond it.

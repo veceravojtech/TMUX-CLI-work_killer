@@ -140,6 +140,25 @@
 4. After correction, Gate 0 re-runs failed checks and any checks whose inputs changed; on the final cycle before overall pass, re-run all checks for end-to-end verification.
 5. Apply corrections in this order: container runtime (docker mode only) → system packages → extensions → services → connections
 
+## Readiness Polling Convention
+
+Never use a fixed `sleep N` before an HTTP or database readiness probe — fixed delays race cold builds and waste retry budget on timing flakes.
+
+**Docker mode (preferred):** define `healthcheck:` on each compose service and start the stack with `docker compose up -d --wait`. The `--wait` flag blocks until every healthcheck passes, then proceed with the probe.
+
+**Fallback bounded poll (POSIX sh):** when docker healthchecks are not available (local mode, Gate-0 checks, scaffold goals), use a bounded retry loop:
+
+```sh
+i=0
+until curl -sf http://localhost:$PORT/health; do
+  i=$((i+1))
+  [ $i -ge 30 ] && exit 1
+  sleep 2
+done
+```
+
+The loop exits successfully as soon as the service responds, or fails after 30 attempts (~60 s). Adjust the iteration cap and sleep interval to match the service's expected startup time.
+
 ---
 
 ## 8. Check Results

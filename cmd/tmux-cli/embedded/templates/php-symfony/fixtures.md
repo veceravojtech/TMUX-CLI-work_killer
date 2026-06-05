@@ -57,9 +57,43 @@ Follows the same class pattern. Inject `UserPasswordHasherInterface` via constru
 - Alternative: `--purge-with-delete` respects FK ordering (slower, always safe)
 - Append mode: `$manager->getRepository({{entity_name}}::class)->findOneBy(...)` to skip existing
 
+## E2E Data Isolation
+
+Fixtures are read-only reference data for E2E specs. Specs create their own mutable test data via the API, never by mutating fixture rows.
+
+- **Unique keys**: use `uniqid('test-')` or `Uuid::v4()->toRfc4122()` suffix on entity names/identifiers to avoid collision across specs
+- **Filtered assertions**: use API query parameters or repository `findBy(['name' => $uniqueName])` to scope list/count checks to own data
+- **WARNING**: `dama/doctrine-test-bundle` wraps each test in a transaction rollback — this does NOT work for E2E/Playwright tests where the HTTP server runs in a separate process with its own DB connection. Do NOT configure it for E2E test suites.
+- **No mid-suite reload**: `doctrine:fixtures:load -n` purges and reloads — calling it between specs destroys all spec-created data. The load runs once in ensure-stack (phase 3) before the suite starts.
+
 ## CLI Integration
 
 ```bash
 bin/console doctrine:fixtures:load --env=test
 bin/console doctrine:fixtures:load --env=test --group=test
 ```
+
+## Ensure-stack script
+
+File: `bin/ensure-test-stack.sh`
+
+The ensure-test-stack.sh script guarantees the runtime stack is up, migrated, and fixture-loaded before any E2E or host-HTTP probe runs. This script assumes APP_ENV=test is pinned by the compose spec or .env.test (E2E-ENV-CONV). Three phases, executed in order:
+
+```bash
+#!/bin/sh -e
+
+# Phase 1: Stack up
+docker compose up -d
+
+# Phase 2: Test-env migrations
+bin/console doctrine:migrations:migrate -n --env=test
+
+# Phase 3: Test fixtures
+bin/console doctrine:fixtures:load -n --env=test
+```
+
+- The script MUST be executable (`chmod +x bin/ensure-test-stack.sh`)
+- Each phase runs independently — if any fails, the script exits non-zero immediately (`set -e`)
+- In docker mode, the daemon wraps `bin/console` commands into the app container (CMD-CONV) — emit bare host-style commands
+- In local mode without docker, omit the `docker compose up -d` phase (the stack is already the host)
+- The generator references this template for the Symfony-specific script body when HAS_DATABASE is true

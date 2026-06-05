@@ -50,6 +50,8 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.progress_timeout_sec", label: "Taskvisor Progress Timeout (s)", kind: "int", intVal: settings.Taskvisor.ProgressTimeoutSec},
 			{key: "taskvisor.max_wall_clock_sec", label: "Taskvisor Max Wall Clock (sec)", kind: "int", intVal: settings.Taskvisor.MaxWallClockSec},
 			{key: "taskvisor.integration_cmd", label: "Taskvisor Integration Cmd", kind: "string", strVal: settings.Taskvisor.IntegrationCmd},
+			{key: "taskvisor.require_plan_approval", label: "Require Plan Approval", kind: "bool", value: settings.Taskvisor.RequirePlanApproval},
+			{key: "taskvisor.halt_on_stale_binary", label: "Halt On Stale Binary", kind: "bool", value: settings.Taskvisor.HaltOnStaleBinary},
 		},
 	}
 }
@@ -222,6 +224,10 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Taskvisor.TransientRetryBackoffMs = item.intVal
 		case "taskvisor.integration_cmd":
 			s.Taskvisor.IntegrationCmd = item.strVal
+		case "taskvisor.require_plan_approval":
+			s.Taskvisor.RequirePlanApproval = item.value
+		case "taskvisor.halt_on_stale_binary":
+			s.Taskvisor.HaltOnStaleBinary = item.value
 		}
 	}
 	return &s

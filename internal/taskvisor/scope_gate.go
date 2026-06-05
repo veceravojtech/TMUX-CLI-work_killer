@@ -78,14 +78,58 @@ func pathPrefix(p, q string) bool {
 	return p == q || strings.HasPrefix(q, strings.TrimRight(p, "/")+"/")
 }
 
+// stackMarkers is the conservative substring set for runtime-resource
+// classification. A goal whose Validate or Acceptance lines contain any of
+// these substrings is "stack-consuming" — it touches the shared docker compose
+// stack, database, or host ports. Two stack-consuming goals must never be
+// co-scheduled because concurrent fixture loads corrupt each other's data.
+var stackMarkers = []string{
+	"ensure-test-stack",
+	"npx playwright",
+	"docker compose",
+	"curl -sf http",
+	"curl -s http",
+	"curl -s -o",
+}
+
+// isStackConsuming reports whether the goal touches shared runtime resources
+// (docker stack, DB, host ports). Detection is mechanical substring matching
+// against stackMarkers over Validate and Acceptance lines — conservative,
+// case-sensitive, pure (no I/O).
+func isStackConsuming(g *Goal) bool {
+	for _, line := range g.Validate {
+		for _, m := range stackMarkers {
+			if strings.Contains(line, m) {
+				return true
+			}
+		}
+	}
+	for _, line := range g.Acceptance {
+		for _, m := range stackMarkers {
+			if strings.Contains(line, m) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // coSchedulable reports whether candidate c may join the in-flight set this
-// tick: its scope must be disjoint from EVERY in-flight goal. Vacuously true
-// over an empty in-flight set, so the very first goal of a tick always
-// dispatches regardless of scope.
+// tick: its scope must be disjoint from EVERY in-flight goal, AND the candidate
+// and in-flight set must not both be stack-consuming. Vacuously true over an
+// empty in-flight set, so the very first goal of a tick always dispatches
+// regardless of scope or stack status.
 func coSchedulable(c *Goal, inflight []*Goal) bool {
 	for _, f := range inflight {
 		if !ScopesDisjoint(c, f) {
 			return false
+		}
+	}
+	if isStackConsuming(c) {
+		for _, f := range inflight {
+			if isStackConsuming(f) {
+				return false
+			}
 		}
 	}
 	return true

@@ -36,6 +36,9 @@ cmd/tmux-cli/
   embedded/            Go-embedded assets
     *.sh               hook shell scripts (5 files)
     commands/tmux/     command templates installed to .claude/commands/tmux/
+      plan-audit.xml + plan-audit.md  blind 8-dimension plan audit command
+      task-plan-generate/             21 per-step shard files loaded by spine stubs
+                                      (new step = new shard + spine stub)
     templates/         project scaffolding templates (_base, php-symfony)
 
 internal/
@@ -47,6 +50,7 @@ internal/
     templates.go       WriteTemplates → project scaffolding from embedded templates/
     gitexclude.go      EnsureGitExclude → .git/info/exclude
     setup.go           Run() orchestrator (SetupConfig → calls all above)
+    buildstamp.go      BinaryStale() — executable identity stamp + stale-binary guard
   mcp/
     server.go          MCP Server struct, Input/Output structs, handler wrappers, RegisterTools()
     tools.go           windows-* + hooks-config core implementations
@@ -76,6 +80,13 @@ internal/
     dashboard.go       renderDashboard — live TUI status output
     diagnostics.go     invariant + stall checks
     instrument.go      counter logging (cycles, investigator spawn/reuse, wall time)
+    specdrift.go       goalMDDrift/repairValidationRules — dispatch-time goal.md↔goals.yaml drift gate
+    depinfer.go        InferMissingDeps — read-only cross-goal dependency inference
+    goalmd.go          WriteGoalMD + goal.md section helpers (investigation config, heading index)
+    eventgoals.go      detectEventGoal, deriveEmissionInvestigator — event-driven goal detection + investigator
+    execruntime.go     ExecRuntime model, ResolveExecRuntime — docker/local command runtime selection
+    investigator.go    Investigator model, deriveInvestigators, IsPureCommand — investigation config authoring
+    wrapcmd.go         wrapCommand — rewrite validate/investigator commands for docker exec runtime
   tui/
     settings.go        Bubble Tea settings editor for setting.yaml (must mirror Settings fields)
   sudo/
@@ -124,8 +135,10 @@ internal/
 
 ## What users edit
 
-- `.tmux-cli/setting.yaml` — the single config file (hooks toggle, custom hooks, commands enable, supervisor.max_cycles)
+- `.tmux-cli/setting.yaml` — the single config file (hooks toggle, custom hooks, commands enable, supervisor.max_cycles,
+  taskvisor.require_plan_approval (default false), taskvisor.halt_on_stale_binary (default false))
 - `.tmux-cli/tasks.yaml` — can be pre-created to queue planned work for the supervisor
+- TUI settings editor exposes 23 items — must mirror all `Settings` struct fields
 
 ## Testing conventions
 

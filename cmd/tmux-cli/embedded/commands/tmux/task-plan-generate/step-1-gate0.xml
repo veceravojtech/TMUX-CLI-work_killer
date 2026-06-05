@@ -1,0 +1,277 @@
+    <step n="1" title="Generate Gate 0 goal (goal-001)">
+      <rule critical="true">Step 0 must have passed before this step executes. If Step 0 aborted, do NOT run Step 1.</rule>
+      <rule critical="true">Gate 0 is always goal-001 with phase=gate. This is hardcoded, not computed.</rule>
+
+      <substep n="1.1" title="Resolve environment-gate template">
+        <action>Attempt to read the language-specific overlay template first, then fall back to base:</action>
+        <lookup>
+          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/environment-gate.md" label="overlay"/>
+          <fallback path=".tmux-cli/templates/_base/environment-gate.md" label="base"/>
+        </lookup>
+        <action>Store the resolved template content as GATE_TEMPLATE. Record which tier was used (overlay or base).</action>
+        <rule>Checks MUST be loaded from the resolved template, not hardcoded in this XML (E-10).</rule>
+        <action>Resolve the AGENTS.md template the same overlay→base way, so the AGENTS.md bootstrap (substep 1.5) has a defined source:</action>
+        <lookup>
+          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/agents.md" label="overlay"/>
+          <fallback path=".tmux-cli/templates/_base/agents.md" label="base"/>
+        </lookup>
+        <action>Store the resolved template content as AGENTS_TEMPLATE. Record which tier was used (overlay or base).</action>
+      </substep>
+
+      <substep n="1.2" title="Read project state for conditional checks">
+        <action>Read docs/architecture/test-environment.md. Determine:</action>
+        <check name="is_docker">test-environment.md "Run Target" == docker → set RUN_TARGET=docker, else RUN_TARGET=local.</check>
+        <check name="services_external">test-environment.md "DB/services location" == external → set SERVICES_EXTERNAL=true (default false in docker mode).</check>
+        <check name="has_database">test-environment.md defines DB connection fields (host, port, user, password, db_name). If yes, set HAS_DATABASE=true.</check>
+        <check name="has_frontend">test-environment.md Playwright status is "installed" or "needs". If yes, set HAS_FRONTEND=true.</check>
+
+        <action>Scan docs/architecture/adrs/ directory. Determine:</action>
+        <check name="has_redis">Any ADR selects Redis or Memcached as a caching/session backend. If yes, set HAS_REDIS=true.</check>
+        <check name="has_rabbitmq">Any ADR selects RabbitMQ or async Messenger transport. If yes, set HAS_RABBITMQ=true.</check>
+        <action>Set HAS_SERVICES = HAS_REDIS OR HAS_RABBITMQ.</action>
+
+        <action>Read composer.json to extract PHP version constraint from require.php and any ext-* requirements beyond the template defaults (pdo_pgsql, intl, mbstring).</action>
+      </substep>
+
+      <substep n="1.3" title="Compose acceptance criteria from GE-01..GE-13">
+        <action>Build ACCEPTANCE array from the spec criteria (docs/task-plan-spec.md:469-488), filtered by project conditionals:</action>
+        <criteria>
+          <item always="true">Each check targets only system-level deps relevant to this project (E-01)</item>
+          <item always="true">Each check runs independently — one failure does not skip other checks (E-02)</item>
+          <item always="true">Missing dep recorded in correction with exact install command (E-03)</item>
+          <item always="true">Gate 0 does NOT check Composer dev-dependencies: PHPStan, ECS, Deptrac, PHPUnit (E-04)</item>
+          <item always="true">Gate 0 does NOT create quality tool config files: phpstan.neon, deptrac.yaml, ecs.php (E-05)</item>
+          <item condition="RUN_TARGET=local">Gate 0 checks PHP extensions required by the project (E-06)</item>
+          <item condition="RUN_TARGET=docker">Gate 0 verifies Docker engine + Compose v2 + running daemon, can pull+run a container (E-14)</item>
+          <item condition="RUN_TARGET=docker">Host PHP/extension checks deferred to in-container scaffold — not run on host (E-15)</item>
+          <item always="true">After correction, Gate 0 re-runs failed checks and any checks whose inputs changed; on the final cycle before overall pass, re-run all checks for end-to-end verification. (E-07)</item>
+          <item always="true">Gate 0 passes only when ALL checks are green (E-08)</item>
+          <item always="true">No subsequent goal dispatched while Gate 0 is pending/failed (E-09)</item>
+          <item always="true">Check list generated from templates, not hardcoded (E-10)</item>
+          <item condition="HAS_FRONTEND AND (RUN_TARGET=local OR SERVICES_EXTERNAL)">Playwright system check verifies Node/npm presence only, not Playwright package (E-12)</item>
+          <item always="true">Correction ordering: system packages → extensions → services → frontend (E-13)</item>
+          <item always="true">Gate 0 writes a valid AGENTS.md at project root containing all goal-001 results: run target, verified runtime/extensions/Composer, DB + services config, base URL, gate status (E-16)</item>
+        </criteria>
+        <rule>Include conditional criteria (E-12) only when its condition is true for this project.</rule>
+        <rule>E-06 and host-extension criteria render in RUN_TARGET=local mode only; E-14/E-15 render in RUN_TARGET=docker mode only; E-16 is always included (both modes). In local mode the array is identical to today plus the always-on E-16.</rule>
+      </substep>
+
+      <substep n="1.4" title="Compose validation commands from template">
+        <action>Extract executable shell commands from GATE_TEMPLATE check_command fields. Build VALIDATE array:</action>
+        <commands condition="RUN_TARGET=docker">
+          <cmd source="ENV-C01">docker --version</cmd>
+          <cmd source="ENV-C02">docker compose version</cmd>
+          <cmd source="ENV-C03">docker info</cmd>
+          <cmd source="ENV-C04">docker run --rm hello-world</cmd>
+        </commands>
+        <commands condition="RUN_TARGET=local">
+          <cmd source="ENV-R01">php -r "echo PHP_VERSION;"</cmd>
+          <cmd source="ENV-P01">composer --version</cmd>
+          <cmd source="ENV-X01">php -m | grep -i pdo_pgsql</cmd>
+          <cmd source="ENV-X02">php -m | grep -i intl</cmd>
+          <cmd source="ENV-X03">php -m | grep -i mbstring</cmd>
+        </commands>
+        <commands always="true">
+          <cmd source="ENV-A01">test -f AGENTS.md</cmd>
+          <cmd source="ENV-A02">grep -q "&lt;!-- GATE0:BEGIN --&gt;" AGENTS.md &amp;&amp; grep -q "## Run Target" AGENTS.md &amp;&amp; grep -q "## Gate 0 Status" AGENTS.md</cmd>
+        </commands>
+        <commands condition="RUN_TARGET=local AND extra_extensions from composer.json ext-*">
+          <cmd source="ENV-X{N}">php -m | grep -i {extension_name}</cmd>
+        </commands>
+        <commands condition="HAS_DATABASE AND (RUN_TARGET=local OR SERVICES_EXTERNAL)">
+          <cmd source="ENV-D03">command -v psql</cmd>
+        </commands>
+        <commands condition="HAS_DATABASE">
+          <cmd source="ENV-E01">grep -q 'APP_ENV=test' docker-compose.yaml || grep -q 'APP_ENV=test' .env.test</cmd>
+        </commands>
+        <commands condition="HAS_FRONTEND AND (RUN_TARGET=local OR SERVICES_EXTERNAL)">
+          <cmd source="ENV-F01">node --version</cmd>
+          <cmd source="ENV-F02">npm --version</cmd>
+        </commands>
+        <commands condition="HAS_REDIS AND (RUN_TARGET=local OR SERVICES_EXTERNAL)">
+          <cmd source="ENV-S01">redis-cli ping</cmd>
+        </commands>
+        <commands condition="HAS_RABBITMQ AND (RUN_TARGET=local OR SERVICES_EXTERNAL)">
+          <cmd source="ENV-S02">rabbitmqctl status</cmd>
+        </commands>
+        <rule>ENV-A01/ENV-A02 are always-on (both modes): they assert Gate 0 wrote a valid AGENTS.md. ENV-A02 greps the EXACT sentinel/heading strings the agents.md template writes — `&lt;!-- GATE0:BEGIN --&gt;`, `## Run Target`, `## Gate 0 Status` — do not alter these strings (contract with the agents.md template).</rule>
+        <rule>In RUN_TARGET=docker mode, host PHP-world checks (ENV-R01/P01/X*) and host frontend checks (ENV-F01/F02) are deferred to the in-container scaffold (E-15); the docker block (ENV-C01..C04) proves the host can actually run containers.</rule>
+        <rule>DB credential variables ($DB_HOST etc.) reference values from docs/architecture/test-environment.md — never inline passwords (GM-05).</rule>
+        <rule>Never include vendor/bin/* commands — those are Scaffold goal-002 (E-04).</rule>
+        <rule>Every validate command MUST be satisfiable by the implementer inside its sandbox (a local binary, file, or already-present extension). A rule requiring a LIVE external service, network reachability, or a runtime secret is NOT a validate rule — emit it as a ## Preconditions line ([service] host:port or [env] VAR) for the daemon to gate, never in validate or acceptance.</rule>
+      </substep>
+
+      <!--
+        C8 / M-06 spec-defect prevention (insert before substep 1.5; existing
+        substeps are NOT renumbered). The planner loads the project's bindings
+        (reusing C3's AGENTS.md + docs/architecture/adrs/ parse) and builds a
+        FORBIDDEN_ARTIFACTS set from the data table below. Any artifact a later
+        substep would write into the Investigation Config (a <files> or
+        <commands> reference in substep 1.5) that matches the set is a planning
+        contradiction — substep 1.5's guard writes a SPEC-DEFECT marker in its
+        place instead of the live reference, so a self-contradicting Config is
+        never emitted. The validator preflight (investigate.xml / investigate-worker.xml)
+        re-checks the same contract as defense-in-depth.
+      -->
+      <substep n="1.45" title="Detect bindings and build FORBIDDEN_ARTIFACTS (C8 spec-defect guard)">
+        <action>Reuse C3's binding parse: scan the project-root AGENTS.md and docs/architecture/adrs/ for the binding keywords in binding-forbidden-map below. Treat an ABSENT AGENTS.md AND absent adrs/ as "no binding" — FORBIDDEN_ARTIFACTS is empty and every reference is allowed; this is a clean no-op, never an error or a block.</action>
+        <action>For every detected binding keyword, union its forbidden-artifact patterns into FORBIDDEN_ARTIFACTS. Multiple bindings union their sets; a keyword that matches no row adds nothing (safe no-op).</action>
+
+        <binding-forbidden-map>
+          <note>Documented + extensible: exactly one &lt;binding&gt; row per keyword. Match patterns CONSERVATIVELY (basename / path-suffix) so a doc that merely mentions the word is not flagged — only a real artifact reference is. Adding a new &lt;binding&gt; row takes effect at runtime with NO Go code change (this block is DATA, read at runtime).</note>
+          <binding keyword="greenfield">
+            <forbids>composer.json</forbids>
+            <forbids>vendor/</forbids>
+            <forbids>package-lock.json</forbids>
+            <forbids>yarn.lock</forbids>
+            <forbids>Gemfile.lock</forbids>
+            <forbids>poetry.lock</forbids>
+          </binding>
+          <binding keyword="service-oriented microservice">
+            <forbids>shared_db</forbids>
+            <forbids>schema.sql (single shared/monolithic schema)</forbids>
+            <forbids>one-DB-for-all-services references</forbids>
+          </binding>
+          <binding keyword="no-orm">
+            <forbids>doctrine.yaml</forbids>
+            <forbids>*.orm.xml</forbids>
+            <forbids>prisma/schema.prisma</forbids>
+            <forbids>ORM entity-mapping config</forbids>
+          </binding>
+        </binding-forbidden-map>
+
+        <rule>FORBIDDEN_ARTIFACTS is consumed by the guard rule in substep 1.5 (investigation-config section) and is the SAME contract the investigate.xml and investigate-worker.xml preflights re-check at validation time. A binding contradiction is ALWAYS a spec-defect owned by the planner — never an implementer code defect.</rule>
+      </substep>
+
+      <substep n="1.5" title="Compose context with Investigation Config">
+        <action>Build CONTEXT string with these sections:</action>
+
+        <section name="purpose">
+Gate 0 verifies system-level prerequisites for the chosen run target (docker|local) before any code generation, and bootstraps a valid project-root AGENTS.md from the verified results. All checks run independently — a single failure does not skip remaining checks.
+See docs/architecture/test-environment.md for the run target, DB credentials, and test environment configuration.
+        </section>
+
+        <section name="investigation-config">
+          <action>Build 2-4 investigators based on RUN_TARGET and project conditionals. The two mandatory investigators are run-target-specific: local mode uses Core Runtime + PHP Extensions; docker mode uses Docker Engine &amp; Daemon + Compose Readiness.</action>
+
+          <investigator n="1" type="conditional" condition="RUN_TARGET=local">
+            <name>Core Runtime</name>
+            <type>environment-check</type>
+            <files>composer.json, docs/architecture/test-environment.md</files>
+            <commands>php -r "echo PHP_VERSION;", composer --version</commands>
+            <pass>All commands exit 0, PHP version satisfies composer.json constraint</pass>
+            <fail>Missing binary or version mismatch</fail>
+          </investigator>
+
+          <investigator n="2" type="conditional" condition="RUN_TARGET=local">
+            <name>PHP Extensions</name>
+            <type>environment-check</type>
+            <files>composer.json (ext-* requirements)</files>
+            <commands>php -m | grep -i pdo_pgsql, php -m | grep -i intl, php -m | grep -i mbstring (+ project-specific ext-*)</commands>
+            <pass>All required extensions present in php -m output</pass>
+            <fail>One or more extensions missing</fail>
+          </investigator>
+
+          <investigator n="1" type="conditional" condition="RUN_TARGET=docker">
+            <name>Docker Engine &amp; Daemon</name>
+            <type>environment-check</type>
+            <files>docs/architecture/test-environment.md</files>
+            <commands>docker --version, docker info, docker run --rm hello-world</commands>
+            <pass>Engine installed, daemon up, can pull+run a container</pass>
+            <fail>Docker missing, daemon down, or cannot run a container</fail>
+          </investigator>
+
+          <investigator n="2" type="conditional" condition="RUN_TARGET=docker">
+            <name>Compose Readiness</name>
+            <type>environment-check</type>
+            <files>docs/architecture/test-environment.md</files>
+            <commands>docker compose version</commands>
+            <pass>Compose v2 available. Also writes/replaces the AGENTS.md GATE0 block from verified results (see AGENTS.md Bootstrap).</pass>
+            <fail>Compose v2 missing</fail>
+          </investigator>
+
+          <investigator n="3" type="conditional" condition="HAS_SERVICES AND (RUN_TARGET=local OR SERVICES_EXTERNAL) — Redis or RabbitMQ selected in ADRs; in docker mode only when the service is marked external">
+            <name>Service Dependencies</name>
+            <type>environment-check</type>
+            <files>docs/architecture/adrs/</files>
+            <commands>redis-cli ping (if Redis), rabbitmqctl status (if RabbitMQ)</commands>
+            <pass>All selected services respond</pass>
+            <fail>Service unreachable or not running</fail>
+          </investigator>
+
+          <rule>RUN_TARGET=local emits Core Runtime + PHP Extensions; RUN_TARGET=docker emits Docker Engine &amp; Daemon + Compose Readiness. Exactly one of these pairs is the mandatory floor — the two are mutually exclusive by RUN_TARGET.</rule>
+          <rule>Include Service Dependencies only when HAS_SERVICES=true AND (RUN_TARGET=local OR SERVICES_EXTERNAL). In docker mode with compose-internal services these are skipped (the compose stack does not exist until Scaffold). DB reachability/auth is no longer an investigator — it is emitted as a ## Preconditions line (substep 1.65) for the daemon to gate.</rule>
+          <rule>Investigator-floor holds per branch (GM-08): local = Core Runtime + PHP Extensions (+ Services) = 2-4; docker = Docker Engine + Compose (+ external Services) = 2-4. Both satisfy minimum 2 / maximum 4.</rule>
+          <rule>Each investigator has type, file paths, commands, and pass/fail criteria (GM-09).</rule>
+          <rule>C8 spec-defect guard: before writing any &lt;files&gt; or &lt;commands&gt; artifact reference into an investigator, match it (basename / path-suffix) against FORBIDDEN_ARTIFACTS from substep 1.45. On a match, DO NOT write the reference — write a marker comment in its place instead: &lt;!-- SPEC-DEFECT: &lt;artifact&gt; forbidden by &lt;binding&gt; binding --&gt;. With no binding detected, FORBIDDEN_ARTIFACTS is empty and every reference is written normally (no-op).</rule>
+        </section>
+
+        <section name="agents-md-bootstrap">
+AGENTS.md Bootstrap (E-16, ENV-A01/ENV-A02 — a deliverable of the Compose Readiness / Core Runtime investigator):
+1. Resolve AGENTS_TEMPLATE (substep 1.1 overlay→base lookup).
+2. Fill it from the verified gate results: run target (and DB/services location if docker), runtime/extensions/Composer or container runtime versions, DB + services config, base URL, gate status ({{passed_count}}/{{total_count}}).
+3. Write the filled block to AGENTS.md at the PROJECT ROOT. The block is delimited by the sentinels `&lt;!-- GATE0:BEGIN --&gt;` … `&lt;!-- GATE0:END --&gt;`.
+4. Idempotent replace: if `&lt;!-- GATE0:BEGIN --&gt;`…`&lt;!-- GATE0:END --&gt;` already exists, replace everything between the sentinels (inclusive); else append the block. NEVER touch content outside the sentinels (later goals and any human-authored sections are preserved).
+5. Guard: if a pre-existing AGENTS.md has NO GATE0 sentinels, append the block — never overwrite the human file.
+        </section>
+
+        <section name="correction-ordering">
+Correction ordering protocol (E-13): when multiple failures are detected, apply corrections in this order:
+0. Container runtime — Docker engine, daemon, can-run-container, Compose (ENV-C01..C04) — only if RUN_TARGET=docker
+1. System packages — PHP CLI, Composer (ENV-R01, ENV-P01) — only if RUN_TARGET=local
+2. PHP extensions — pdo_pgsql, intl, mbstring + project-specific (ENV-X01..XN) — only if RUN_TARGET=local
+3. Services — Redis, RabbitMQ (ENV-S01, ENV-S02) — only if selected and (RUN_TARGET=local OR SERVICES_EXTERNAL)
+4. Frontend — Node.js, npm (ENV-F01, ENV-F02) — only if Playwright/frontend detected and (RUN_TARGET=local OR SERVICES_EXTERNAL)
+        </section>
+      </substep>
+
+      <substep n="1.6" title="Compose not-in-scope">
+        <action>Set NOT_IN_SCOPE to:</action>
+        <value>Composer dev-dependencies (PHPStan, ECS, Deptrac, PHPUnit), quality tool configs (phpstan.neon, deptrac.yaml, ecs.php), Playwright npm package — all handled by Scaffold (goal-002).</value>
+        <rule>AGENTS.md is deliberately IN scope as a results artifact (E-16); the no-config-file rule (E-05) covers only quality-tool configs (phpstan.neon, deptrac.yaml, ecs.php), not AGENTS.md.</rule>
+      </substep>
+
+      <substep n="1.65" title="Compose Gate-0 preconditions">
+        <action>Build the PRECONDITIONS list — the daemon-gated ops requirements an in-sandbox implementer CANNOT satisfy (a live DB server plus its secret). These are NOT validate rules: they are emitted to the goal's ## Preconditions section so the daemon parks goal-001 until each is met (evaluatePreconditions TCP-dials each [service] spec and os.LookupEnv each [env] spec).</action>
+        <branch condition="HAS_DATABASE AND (RUN_TARGET=local OR SERVICES_EXTERNAL)">
+          <action>Resolve the LITERAL DB host and port from docs/architecture/test-environment.md — the actual values the doc declares (e.g. 127.0.0.1 and 5432), NOT the shell variables $DB_HOST/$DB_PORT. The daemon TCP-dials the literal [service] spec, so shell-variable syntax would never resolve.</action>
+          <action>Set PRECONDITIONS to these two lines (reuse the per-goal `- [kind] spec — remedy` format):</action>
+          <lines>
+            <line>- [service] &lt;host&gt;:&lt;port&gt; — start/provision the test DB per docs/architecture/test-environment.md</line>
+            <line>- [env] DB_PASSWORD — set DB_PASSWORD from docs/architecture/test-environment.md (do not inline the value)</line>
+          </lines>
+          <rule critical="true">&lt;host&gt;/&lt;port&gt; MUST be substituted with the literal values from test-environment.md. NEVER emit shell-variable syntax ($DB_HOST/$DB_PORT) and NEVER inline the password — the [env] spec is the bare variable NAME (DB_PASSWORD), which the daemon checks via os.LookupEnv (GM-05).</rule>
+        </branch>
+        <branch condition="otherwise (no DB, or docker compose-internal DB)">
+          <action>Set PRECONDITIONS = none. Compose-internal DB/services are provisioned by Scaffold (goal-002), so no ops precondition is required at Gate 0.</action>
+        </branch>
+      </substep>
+
+      <substep n="1.7" title="Call goal-create MCP">
+        <action>Call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Verify environment prerequisites for the chosen run target (docker|local)</param>
+          <param name="acceptance">ACCEPTANCE array from substep 1.3 (12-15 items depending on run target and conditionals)</param>
+          <param name="validate">VALIDATE array from substep 1.4</param>
+          <param name="context">CONTEXT string from substep 1.5 (purpose + correction ordering)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 1.5's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+          <param name="not_in_scope">NOT_IN_SCOPE from substep 1.6</param>
+          <param name="max_retries">5</param>
+          <param name="preconditions">PRECONDITIONS from substep 1.65 (array of {kind,spec,remedy}; goal-create persists them to BOTH goals.yaml and goal.md's ## Preconditions section). Pass nothing/empty when PRECONDITIONS=none.</param>
+          <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in the spine &lt;conventions&gt; block. Gate 0 touches repo-root skeleton files (no src/ BC footprint) and is the FIRST goal with no concurrent sibling, so OMIT scope (unknown ⇒ serialized, which is correct for the bootstrap gate).</param>
+        </params>
+        <scope-derivation ref="scope-derivation">See the &lt;conventions&gt; block in the spine.</scope-derivation>
+        <validate-acceptance-mandate ref="validate-acceptance-mandate">See the &lt;conventions&gt; block in the spine.</validate-acceptance-mandate>
+        <rule critical="true">Validation Rules written only as prose in goal.md are NOT sufficient — the daemon reads ONLY the structured fields; prose-only rules leave `goal.Validate` empty, which triggers the dispatch-time repair (EnsureInvestigationConfig) to inject wrong default investigators (guaranteed validation failures in non-Go projects → retry-budget exhaustion cascade). Structured validate/acceptance are the contract; goal.md prose is commentary.</rule>
+        <rule>Description is 73 characters — well within the 120-char limit (MaxGoalDescriptionLength).</rule>
+        <rule>max_retries=5 because Gate 0 has 4 independent failure categories that may each need a correction cycle.</rule>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Print: "Gate 0 created: goal-001 (phase=gate) with {{investigator_count}} investigators, max_retries=5"</action>
+          <action>Proceed to Step 2 (when added by subsequent tasks).</action>
+        </check>
+      </substep>
+    </step>

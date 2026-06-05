@@ -1,0 +1,215 @@
+<task id="plan-audit" name="Blind 8-dimension plan audit">
+  <objective>Read the on-disk plan artifacts (goals.yaml, goal.md files, docs/architecture/*), evaluate each goal against an 8-dimension checklist with a severity-weighted scoring rubric, and produce a verdict: approved (score >=90 with zero open SEV-1/SEV-2 findings) or a findings report requiring remediation.</objective>
+
+  <glossary>
+    <term name="AUDITOR_WID">Name of this auditor's tmux window.</term>
+    <term name="PROJECT_DIR">Project root directory (cwd). All paths are relative to this.</term>
+    <term name="GOALS_FILE">Path to .tmux-cli/goals.yaml — the plan's goal definitions.</term>
+    <term name="APPROVAL_FILE">docs/architecture/plan-approval.md — written ONLY when score >=90 AND zero open SEV-1/SEV-2.</term>
+    <term name="AUDIT_FILE">docs/architecture/plan-audit-N.md — written on fail with per-finding detail at file:line.</term>
+    <term name="PASS_N">Current audit pass number (1-based). Incremented by the caller on each re-invocation.</term>
+  </glossary>
+
+  <scoring-rubric>
+    <note>Start at 100 points. Deduct per finding by severity. A plan passes when score >=90 AND zero open SEV-1 or SEV-2 findings remain.</note>
+    <severity name="SEV-1" deduction="−25">Critical: blocks execution outright or produces wrong results (missing validate, circular dependency, impossible acceptance criterion).</severity>
+    <severity name="SEV-2" deduction="−15">Major: likely to cause retry loops, cascading failures, or silent data corruption (ambiguous validate, tautological acceptance, missing depends_on edge).</severity>
+    <severity name="SEV-3" deduction="−8">Moderate: unclear spec that may confuse the executor or waste retries (vague scope, overlapping deliverables, under-specified investigation config).</severity>
+    <severity name="SEV-4" deduction="−3">Minor: style or convention violation that does not block execution (description over 120 chars, missing fan-out hints, non-standard phase name).</severity>
+  </scoring-rubric>
+
+  <llm critical="true">
+    <mandate>NEVER modify any project files, goals, specs, or code — the auditor is strictly read-only</mandate>
+    <mandate>NEVER weaken validate commands or acceptance criteria to improve the score</mandate>
+    <mandate>NEVER invent scoring dimensions beyond the 8 defined in the checklist</mandate>
+    <mandate>NEVER use AskUserQuestion or any interactive prompt — all decisions are autonomous</mandate>
+    <mandate>NEVER edit goal.md, goals.yaml, or any code file — role separation is absolute</mandate>
+    <mandate>ONLY write docs/architecture/plan-approval.md (on pass) or docs/architecture/plan-audit-N.md (on fail)</mandate>
+    <mandate>One pass per invocation — the 3-pass stop condition is driven by the CALLER re-invoking plan-audit</mandate>
+    <mandate>reach 90% by fixing the plan, never by weakening validate/acceptance to make red turn green</mandate>
+  </llm>
+
+  <flow>
+    <step n="1" title="MCP precondition and project context">
+      <action>Call windows-list to verify tmux-cli MCP is available.</action>
+      <check condition="tmux-cli not available">
+        <action>Print exactly: ERROR: tmux-cli MCP required but not available — enable it and retry.</action>
+        <action>STOP</action>
+      </check>
+      <action>Check if AGENTS.md exists in the project root. If it does, Read it and internalize project conventions, architecture, and constraints.</action>
+      <action>If AGENTS.md does not exist, check for CLAUDE.md instead. Read whichever is found first.</action>
+      <action>If neither exists, proceed without project context.</action>
+    </step>
+
+    <step n="2" title="Read on-disk artifacts (blind audit)">
+      <action>Read .tmux-cli/goals.yaml. Parse all goal entries: ID, description, status, phase, depends_on, validate, acceptance, scope, investigation_config.</action>
+      <check condition="goals.yaml missing or empty">
+        <action>Print: "ERROR: No goals.yaml found — nothing to audit."</action>
+        <action>STOP</action>
+      </check>
+      <action>For each goal, read .tmux-cli/goals/&lt;goal-id&gt;/goal.md to get the full goal specification.</action>
+      <action>Read all files under docs/architecture/ for cross-referencing (ADRs, bounded-contexts, api-endpoints, test-environment, cross-cutting, etc.).</action>
+      <action>Read any prior audit files: docs/architecture/plan-audit-*.md. Extract PASS_N as max(prior pass numbers) + 1, or 1 if no prior audits exist.</action>
+      <rule>This is a BLIND audit — never read planner conversation history, only on-disk artifacts.</rule>
+    </step>
+
+    <step n="3" title="Daemon's-eye validate evaluation">
+      <action>For each goal, evaluate its validate commands exactly as the daemon would run them:</action>
+      <substep n="3.1" title="Command validity">
+        <action>Check that each validate command is a concrete, runnable shell command (not prose, not a placeholder).</action>
+        <action>Verify commands reference real paths and tools available in the project stack.</action>
+      </substep>
+      <substep n="3.2" title="Dependency order">
+        <action>Verify that depends_on edges form a valid DAG — no cycles, no missing references.</action>
+        <action>Verify phase ordering: gate before scaffold before domain before application before infrastructure before fixtures before actions/auth/events.</action>
+      </substep>
+      <substep n="3.3" title="CMD-CONV wrapping">
+        <action>Verify each validate command is a bare command (the daemon wraps it). No shell wrappers, no &amp;&amp; chains within a single validate entry.</action>
+      </substep>
+    </step>
+
+    <step n="4" title="8-dimension checklist">
+      <action>Evaluate every goal against all 8 dimensions. Record each finding with: severity (SEV-1 through SEV-4), dimension name, goal ID, file:line reference, and a one-line description.</action>
+
+      <dimension n="1" name="validate-executability">
+        <description>Every validate command must be a concrete, project-runnable shell command. Prose-only, placeholder, or unresolvable commands are SEV-1.</description>
+      </dimension>
+
+      <dimension n="2" name="dependency-correctness">
+        <description>Verify declared depends_on edges match the goal graph: no dangling references, no missing edges that would cause execution-order violations, no cycles. Run spec-validate and treat each dep_warning as a SEV-2 candidate: a consumer goal references a file-path stem produced by another goal without a transitive depends_on path.</description>
+      </dimension>
+
+      <dimension n="3" name="runtime-state-gating">
+        <description>Goals requiring runtime state (database, services, auth tokens) must depend on the goal that provisions that state. A goal that runs DB queries without depending on fixtures/migrations is SEV-1.</description>
+      </dimension>
+
+      <dimension n="4" name="host-container-split">
+        <description>Validate commands must target the correct execution context (host vs container). A PHP command routed to a Node container or vice versa is SEV-2.</description>
+      </dimension>
+
+      <dimension n="5" name="objective-acceptance">
+        <description>Acceptance criteria must be objectively decidable. Tautologies, subjective language ("appropriate", "sufficient", "properly"), and criteria that restate the description without adding verifiable detail are SEV-2.</description>
+      </dimension>
+
+      <dimension n="6" name="spec-discovery-consistency">
+        <description>Goal specs must be consistent with discovery outputs (docs/architecture/*). A goal referencing entities, endpoints, or bounded contexts not present in discovery is SEV-2. A goal missing entities documented in discovery is SEV-3.</description>
+      </dimension>
+
+      <dimension n="7" name="environment-prerequisites">
+        <description>Goals referencing environment variables, services, or credentials must document or depend on their provisioning. Undeclared environment dependencies are SEV-2.</description>
+      </dimension>
+
+      <dimension n="8" name="scope-sanity">
+        <description>Goal scope must be well-bounded. Overlapping scopes between concurrent goals (at MaxGoals>1) are SEV-3. Scope arrays with paths outside the project or referencing non-existent directories are SEV-3.</description>
+      </dimension>
+    </step>
+
+    <step n="5" title="Score calculation">
+      <action>Start at 100 points.</action>
+      <action>For each finding, deduct by severity: SEV-1 = −25, SEV-2 = −15, SEV-3 = −8, SEV-4 = −3.</action>
+      <action>Floor at 0 (score cannot go negative).</action>
+      <action>List every finding in a structured table: severity | dimension | goal ID | file:line | description.</action>
+      <rule>The score reflects plan QUALITY, not coverage — a perfect plan scores 100.</rule>
+    </step>
+
+    <step n="6" title="Re-verify RESOLVED claims">
+      <action>If prior audit files exist (docs/architecture/plan-audit-*.md), extract every finding marked RESOLVED in subsequent passes.</action>
+      <action>For each RESOLVED claim, re-verify it against current on-disk state. If the issue persists, re-open it at its original severity.</action>
+      <rule critical="true">Never trust a prior pass's resolved-issue ledger without re-verification. A RESOLVED claim is a HYPOTHESIS until re-confirmed against current artifacts.</rule>
+    </step>
+
+    <step n="7" title="Corruption re-sweep">
+      <action>When a defect is found in one goal (e.g. a missing depends_on edge, a prose validate command, a tautological acceptance criterion), grep the entire .tmux-cli/ tree for the same pattern in other goals.</action>
+      <action>Record any additional instances as separate findings with the same severity.</action>
+      <rule>A systemic defect found in one goal is likely present in others — always sweep.</rule>
+    </step>
+
+    <step n="8" title="Verdict">
+      <action>Determine the verdict based on the final score and open findings:</action>
+
+      <substep n="8.1" title="PASS — write approval" condition="score >= 90 AND zero open SEV-1 AND zero open SEV-2">
+        <action>Create docs/architecture/ directory if it does not exist.</action>
+        <action>Write docs/architecture/plan-approval.md with:</action>
+        <template>
+# Plan Approval
+
+**Score:** {score}/100
+**Pass:** {PASS_N}
+**Timestamp:** {ISO-8601 timestamp}
+**Verdict:** APPROVED
+
+## Summary
+
+{1-3 sentence summary of the plan's quality}
+
+## Findings
+
+{table of any remaining SEV-3/SEV-4 findings, or "No findings."}
+        </template>
+      </substep>
+
+      <substep n="8.2" title="FAIL — write audit findings" condition="score &lt; 90 OR any open SEV-1 OR any open SEV-2">
+        <action>Create docs/architecture/ directory if it does not exist.</action>
+        <action>Write docs/architecture/plan-audit-{PASS_N}.md with:</action>
+        <template>
+# Plan Audit — Pass {PASS_N}
+
+**Score:** {score}/100
+**Timestamp:** {ISO-8601 timestamp}
+**Verdict:** FAILED
+
+## Findings
+
+| # | Severity | Dimension | Goal | Location | Description | Status |
+|---|----------|-----------|------|----------|-------------|--------|
+{one row per finding, Status = OPEN}
+
+## Remediation Priority
+
+1. {highest-severity finding first}
+2. ...
+
+## Guardrail
+
+reach 90% by fixing the plan, never by weakening validate/acceptance to make red turn green
+        </template>
+      </substep>
+    </step>
+
+    <step n="9" title="Stop condition">
+      <action>This is a single-pass auditor. After writing the verdict file, print a summary:</action>
+      <action>If APPROVED: "Plan approved (score {score}/100, pass {PASS_N}). docs/architecture/plan-approval.md written."</action>
+      <action>If FAILED and PASS_N &lt; 3: "Plan audit failed (score {score}/100, pass {PASS_N}). Fix the {N} findings in docs/architecture/plan-audit-{PASS_N}.md and re-run /tmux:plan-audit."</action>
+      <action>If FAILED and PASS_N >= 3: "Plan audit failed after 3 passes (score {score}/100). Escalating to human review. Open findings listed in docs/architecture/plan-audit-{PASS_N}.md."</action>
+      <rule>The caller drives the re-invocation loop (up to 3 passes). This step only prints guidance.</rule>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>Read-only: only write docs/architecture/plan-approval.md or docs/architecture/plan-audit-N.md</rule>
+    <rule>Role separation: auditor never edits goals, specs, code, or architecture docs (except its own output files)</rule>
+    <rule>No interactivity: all decisions autonomous, no AskUserQuestion</rule>
+    <rule>Exactly 8 dimensions: validate-executability, dependency-correctness, runtime-state-gating, host-container-split, objective-acceptance, spec-discovery-consistency, environment-prerequisites, scope-sanity</rule>
+    <rule>Scoring: 100 baseline; SEV-1 = −25, SEV-2 = −15, SEV-3 = −8, SEV-4 = −3; floor at 0</rule>
+    <rule>Approval threshold: score >= 90 AND zero open SEV-1/SEV-2</rule>
+    <rule>Single pass per invocation — 3-pass loop is caller-driven</rule>
+    <rule>Re-verify every RESOLVED claim from prior passes against current on-disk state</rule>
+    <rule>Corruption re-sweep: when a defect pattern is found in one goal, grep the tree for the same pattern</rule>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      * Auditor is READ-ONLY — only writes plan-approval.md or plan-audit-N.md
+      * Role separation — never edit what you audit (goals, specs, code, architecture docs)
+      * Exactly 8 dimensions — no inventions, no omissions
+      * Scoring: 100 start, SEV-1 = −25, SEV-2 = −15, SEV-3 = −8, SEV-4 = −3
+      * Approval: score >= 90 AND zero open SEV-1/SEV-2
+      * Re-verify every RESOLVED claim — never trust a prior pass's ledger without re-confirmation
+      * Corruption re-sweep — a defect in one goal means grep the tree for the same pattern
+      * Single pass per invocation — the 3-pass stop is caller-driven
+      * reach 90% by fixing the plan, never by weakening validate/acceptance to make red turn green
+      * No interactivity — no AskUserQuestion, all decisions autonomous
+      * Dependency-correctness dimension: run spec-validate and treat each dep_warning as a SEV-2 candidate
+    </critical-rules>
+  </llm>
+</task>

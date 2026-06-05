@@ -1,0 +1,104 @@
+    <step n="3.27" title="Generate CI/CD pipeline goal (conditional, phase=cicd)">
+      <rule critical="true">This step is CONDITIONAL — skip entirely if docs/architecture/cross-cutting.md has no CI/CD platform selected.</rule>
+      <rule critical="true">All inputs read from docs/architecture/* files on disk (G-16), never from conversation context.</rule>
+      <rule critical="true">depends_on MUST include ALL previous goal IDs from goals.yaml — CI/CD pipeline runs all quality gates that previous goals produce (G-03).</rule>
+
+      <substep n="3.27.1" title="Check CI/CD selection in cross-cutting.md">
+        <action>Read docs/architecture/cross-cutting.md from disk.</action>
+        <action>Search for CI/CD platform selection keywords: "GitHub Actions", "GitLab CI", "CI/CD", "pipeline", "continuous integration".</action>
+        <check condition="No CI/CD platform selection found, or section explicitly says 'none' / 'not selected'">
+          <action>Print: "CI/CD pipeline not selected — skipping step 3.27"</action>
+          <action>SKIP entire step — proceed to next step.</action>
+        </check>
+        <action>Extract CI_PLATFORM from the matched text:</action>
+        <mapping>
+          <map match="GitHub Actions" value="github-actions" config_path=".github/workflows/ci.yml"/>
+          <map match="GitLab CI" value="gitlab-ci" config_path=".gitlab-ci.yml"/>
+          <map match="CI/CD mentioned but no specific platform" value="github-actions" config_path=".github/workflows/ci.yml" note="Default to GitHub Actions when platform unspecified — record in context"/>
+        </mapping>
+        <action>Store CI_PLATFORM and CI_CONFIG_PATH.</action>
+        <action>Print: "CI/CD platform detected: {{CI_PLATFORM}} — config path: {{CI_CONFIG_PATH}}"</action>
+      </substep>
+
+      <substep n="3.27.2" title="Collect all previous goal IDs">
+        <action>Read goals.yaml from disk. Collect ALL goal IDs (every entry, regardless of phase) into ALL_GOAL_IDS list.</action>
+        <check condition="ALL_GOAL_IDS is empty">
+          <action>ABORT with error: "No goals found in goals.yaml — cannot generate CI/CD goal without prior goals"</action>
+        </check>
+        <action>Set CICD_DEPENDS_ON = ALL_GOAL_IDS.</action>
+        <action>Print: "CI/CD goal depends on {{count(ALL_GOAL_IDS)}} previous goals (all phases)"</action>
+        <rule>This MUST be a full scan of goals.yaml — not filtered by phase. CI/CD pipeline must run ALL quality gates (PHPStan, ECS, Deptrac, PHPUnit, Playwright) that prior goals produce.</rule>
+      </substep>
+
+      <substep n="3.27.3" title="Build acceptance criteria (CI-01..CI-04)">
+        <action>Build ACCEPTANCE array from CI-01..CI-04 (docs/task-plan-spec.md:795-802):</action>
+        <criteria>
+          <c id="CI-01">CI config file exists in correct location ({{CI_CONFIG_PATH}}) — file exists on disk</c>
+          <c id="CI-02">Pipeline runs: PHPStan, ECS, Deptrac, PHPUnit (unit + integration), Playwright — read config, all steps present</c>
+          <c id="CI-03">Pipeline uses same PHP version as project — read config, version matches composer.json</c>
+          <c id="CI-04">Pipeline fails on any quality gate failure — verify fail-fast or required steps</c>
+        </criteria>
+      </substep>
+
+      <substep n="3.27.4" title="Compose context with deliverables and Investigation Config">
+        <action>Build CONTEXT string with three sections: Purpose, Deliverables, Investigation Config.</action>
+        <action>Purpose: "Create CI/CD pipeline configuration for {{CI_PLATFORM}}. Pipeline must run all quality gates: static analysis (PHPStan), code style (ECS), architecture checks (Deptrac), unit + integration tests (PHPUnit), and E2E tests (Playwright). Config file at {{CI_CONFIG_PATH}}."</action>
+        <action>Deliverables: CI config file at {{CI_CONFIG_PATH}} with all quality gate steps, correct PHP version, and fail-fast behavior.</action>
+
+        <section name="investigation-config">
+          <action>Build 2 investigators:</action>
+
+          <investigator n="1" name="Config validation">
+            <type>file-check</type>
+            <commands>test -f {{CI_CONFIG_PATH}} &amp;&amp; grep -q "phpstan\|PHPStan" {{CI_CONFIG_PATH}} &amp;&amp; grep -q "ecs\|ECS\|cs-fixer" {{CI_CONFIG_PATH}} &amp;&amp; grep -q "deptrac\|Deptrac" {{CI_CONFIG_PATH}} &amp;&amp; grep -q "phpunit\|PHPUnit" {{CI_CONFIG_PATH}} &amp;&amp; grep -q "playwright\|Playwright" {{CI_CONFIG_PATH}} &amp;&amp; echo "ALL_GATES_PRESENT"</commands>
+            <pass>ALL_GATES_PRESENT printed — config file exists and contains all 5 quality gate steps</pass>
+            <fail>Config file missing, or one or more quality gates not found in config</fail>
+          </investigator>
+
+          <investigator n="2" name="Pipeline syntax validation">
+            <type>environment-check</type>
+            <commands_github_actions>actionlint {{CI_CONFIG_PATH}} &amp;&amp; echo "SYNTAX_OK"</commands_github_actions>
+            <commands_gitlab_ci>gitlab-ci-lint {{CI_CONFIG_PATH}} &amp;&amp; echo "SYNTAX_OK"</commands_gitlab_ci>
+            <pass>SYNTAX_OK printed — pipeline config syntax is valid for {{CI_PLATFORM}}</pass>
+            <fail>Syntax validation fails — invalid YAML structure or platform-specific syntax errors</fail>
+          </investigator>
+
+          <rule>2 investigators for CI/CD goal (GM-08 minimum is 2). Each has type, commands, pass/fail criteria (GM-09).</rule>
+          <rule>Investigator 2 commands are platform-aware — use actionlint for GitHub Actions, gitlab-ci-lint for GitLab CI.</rule>
+        </section>
+      </substep>
+
+      <substep n="3.27.5" title="Call goal-create MCP">
+        <action>Call goal-create MCP tool:</action>
+
+        <params>
+          <param name="description">Create {{CI_PLATFORM}} pipeline config with all quality gates</param>
+          <param name="acceptance">ACCEPTANCE array from substep 3.27.3 (CI-01..CI-04 — 4 items)</param>
+          <param name="validate">VALIDATE array: ["test -f {{CI_CONFIG_PATH}}", "grep -c 'phpstan\\|ecs\\|deptrac\\|phpunit\\|playwright' {{CI_CONFIG_PATH}}"]</param>
+          <param name="context">CONTEXT string from substep 3.27.4 (purpose + deliverables)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.27.4's 2 investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+          <param name="not_in_scope">Application code implementation, test writing (covered by domain/infra/action goals), Docker/deployment configuration, production deployment secrets, pipeline caching optimization, branch protection rules.</param>
+          <param name="depends_on">CICD_DEPENDS_ON — ALL goal IDs collected in substep 3.27.2</param>
+          <param name="max_retries">3</param>
+        </params>
+
+        <action>After successful goal-create, record the returned goal ID as CICD_GOAL_ID.</action>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Print: "CI/CD pipeline goal created: {{CICD_GOAL_ID}} (phase=cicd, depends_on={{count(ALL_GOAL_IDS)}} goals [all phases]) with 2 investigators, max_retries=3"</action>
+          <action>Proceed to next step.</action>
+        </check>
+
+        <rule>description is under 120 characters — within MaxGoalDescriptionLength invariant.</rule>
+        <rule>depends_on MUST be the FULL CICD_DEPENDS_ON list — never subset or phase-filtered (G-03).</rule>
+        <rule>max_retries=3 per G-11.</rule>
+        <rule>phase=cicd on the created goal.</rule>
+      </substep>
+
+      <substep n="3.27.6" title="Print summary">
+        <action>Print: "CI/CD pipeline created: goal-{{CICD_GOAL_ID}} (phase=cicd, depends_on=[all previous goals]) with 2 investigators, max_retries=3"</action>
+      </substep>
+    </step>

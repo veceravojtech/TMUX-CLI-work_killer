@@ -15,9 +15,8 @@ func TestRootCmd_Execute_NoArgs_ShowsHelp(t *testing.T) {
 }
 
 func TestRootCmd_Version_IsSet(t *testing.T) {
-	// Verify that version is properly configured on root command
-	if rootCmd.Version != version {
-		t.Errorf("rootCmd.Version = %q, want %q", rootCmd.Version, version)
+	if rootCmd.Version != versionString() {
+		t.Errorf("rootCmd.Version = %q, want %q", rootCmd.Version, versionString())
 	}
 }
 

@@ -1,0 +1,133 @@
+    <step n="3.21" title="Generate Error Handling goal (single goal, phase=error_handling)">
+      <rule critical="true">Fixtures goal (phase=fixtures) MUST exist in goals.yaml before this step runs. If not found, ABORT with error.</rule>
+      <rule critical="true">This is a SINGLE goal — error handling is cross-cutting (exception listener, RFC 7807 response factory, status code mapping) and tightly coupled. Never split.</rule>
+      <rule critical="true">This step is UNCONDITIONAL — every DDD project needs global error handling. No skip logic.</rule>
+      <rule critical="true">depends_on MUST include the fixtures goal ID — error handling integration tests need seeded data to trigger exception scenarios.</rule>
+
+      <substep n="3.21.1" title="Collect fixtures goal ID">
+        <action>Read goals.yaml from disk. Filter for phase=fixtures. Store the goal ID as FIXTURES_GOAL_ID.</action>
+        <check condition="FIXTURES_GOAL_ID not found">
+          <action>ABORT with error: "No fixtures goal (phase=fixtures) found in goals.yaml — cannot generate error handling goal without fixture dependencies"</action>
+        </check>
+        <action>Print: "Found fixtures goal: {{FIXTURES_GOAL_ID}}"</action>
+        <rule>FIXTURES_GOAL_ID MUST be dynamically resolved from goals.yaml — never hardcoded (G-03).</rule>
+      </substep>
+
+      <substep n="3.21.2" title="Resolve error handling template">
+        <action>Attempt to read the language-specific overlay template first, then fall back to base:</action>
+        <lookup>
+          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/error-handling.md" label="overlay"/>
+          <fallback path=".tmux-cli/templates/_base/error-handling.md" label="base"/>
+        </lookup>
+        <action>Store the resolved template content as ERROR_HANDLING_TEMPLATE. Record which tier was used (overlay or base).</action>
+        <rule>Exception listener patterns, RFC 7807 format structure, and status code mapping conventions MUST come from the resolved template, not hardcoded in this XML.</rule>
+      </substep>
+
+      <substep n="3.21.3" title="Read architecture inputs">
+        <action>Read docs/architecture/domain-model.md. Extract domain exception types across all BCs — DomainException, EntityNotFoundException, AccessDeniedException, ValidationException, and any BC-specific exceptions.</action>
+        <action>Read docs/architecture/cross-cutting.md. Find error handling decisions: RFC 7807 Problem Details format, status code mapping rules, whether internal details are exposed in production.</action>
+        <action>Store extracted exception types as DOMAIN_EXCEPTIONS and error handling decisions as EH_DECISIONS.</action>
+      </substep>
+
+      <substep n="3.21.4" title="Compose acceptance criteria (EH-01..EH-08)">
+        <action>Build ACCEPTANCE array with all 8 error handling criteria from docs/task-plan-spec.md:712-723:</action>
+        <criteria-reference name="EH-01..EH-08" source="docs/task-plan-spec.md:712-723">
+          <item id="EH-01">Symfony exception listener registered and catches all unhandled exceptions — verify via bin/console debug:event-dispatcher</item>
+          <item id="EH-02">All error responses use RFC 7807 Problem Details format — verify type/title/status/detail fields in response</item>
+          <item id="EH-03">DomainException maps to 422 — integration test</item>
+          <item id="EH-04">EntityNotFoundException maps to 404 — integration test</item>
+          <item id="EH-05">AccessDeniedException maps to 403 — integration test</item>
+          <item id="EH-06">ValidationException maps to 422 with field-level errors — integration test</item>
+          <item id="EH-07">Unexpected exceptions map to 500 with no internal details exposed — integration test</item>
+          <item id="EH-08">PHPStan clean, ECS clean on error handling files — static analysis passes</item>
+        </criteria-reference>
+        <rule>All 8 criteria are UNCONDITIONAL — every project gets all of them. No condition= attributes.</rule>
+        <rule>All 8 criteria must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+      </substep>
+
+      <substep n="3.21.5" title="Compose validation commands">
+        <action>Build VALIDATE array with commands that verify error handling works correctly:</action>
+        <commands>
+          <cmd source="EH-01">bin/console debug:event-dispatcher | grep ExceptionListener</cmd>
+          <cmd source="EH-03..EH-07">vendor/bin/phpunit --filter=ErrorHandling</cmd>
+          <cmd source="EH-08">vendor/bin/phpstan analyse src/Share/Infrastructure/ErrorHandling/ --level=9</cmd>
+          <cmd source="EH-08">vendor/bin/ecs check src/Share/Infrastructure/ErrorHandling/</cmd>
+        </commands>
+        <rule>4 validation commands covering listener registration (EH-01), integration tests (EH-03..EH-07), and static analysis (EH-08).</rule>
+      </substep>
+
+      <substep n="3.21.6" title="Compose context with Investigation Config">
+        <action>Build CONTEXT string with these sections:</action>
+
+        <section name="purpose">
+Error handling goal: implement global exception listener, RFC 7807 Problem Details response factory, and domain exception → HTTP status code mapping.
+Exception types from docs/architecture/domain-model.md: {{DOMAIN_EXCEPTIONS}}.
+Error handling decisions from docs/architecture/cross-cutting.md: {{EH_DECISIONS}}.
+Error handling patterns from {{ERROR_HANDLING_TEMPLATE}} (exception listener, response factory, status code map).
+All error handling files live in src/Share/Infrastructure/ErrorHandling/ (cross-cutting, not per-BC).
+Depends on fixtures goal: {{FIXTURES_GOAL_ID}} — integration tests need seeded data to trigger exception scenarios.
+        </section>
+
+        <section name="fan-out-hint">
+          <hint>single-task — exception listener, response factory, and status code mapping are tightly coupled. All components must be consistent.</hint>
+        </section>
+
+        <section name="investigation-config">
+          <action>Build 3 investigators:</action>
+
+          <investigator n="1" name="Implementation check">
+            <type>implementation-check</type>
+            <commands>bin/console debug:event-dispatcher | grep ExceptionListener</commands>
+            <pass>Exception listener registered in Symfony event dispatcher — catches kernel.exception events</pass>
+            <fail>Listener not registered, missing service tag, or not catching kernel.exception</fail>
+          </investigator>
+
+          <investigator n="2" name="Quality gate">
+            <type>quality-gate</type>
+            <commands>vendor/bin/phpstan analyse src/Share/Infrastructure/ErrorHandling/ --level=9 &amp;&amp; vendor/bin/ecs check src/Share/Infrastructure/ErrorHandling/</commands>
+            <pass>PHPStan and ECS both exit 0 — zero errors on error handling files</pass>
+            <fail>Type errors or code style violations in error handling files</fail>
+          </investigator>
+
+          <investigator n="3" name="Test execution">
+            <type>test-execution</type>
+            <commands>vendor/bin/phpunit --filter=ErrorHandling</commands>
+            <pass>Exit 0, all error handling integration tests green — each exception type maps to correct HTTP status, RFC 7807 format verified, no internal details in 500 responses</pass>
+            <fail>Test failure, missing test coverage for exception type, or internal details leaked in 500 response</fail>
+          </investigator>
+
+          <rule>Exactly 3 investigators (GM-08 allows 2-4). Each has type, commands, and pass/fail criteria (GM-09).</rule>
+        </section>
+      </substep>
+
+      <substep n="3.21.7" title="Compose not-in-scope">
+        <action>Set NOT_IN_SCOPE to:</action>
+        <value>Domain exception class definitions (built by domain goals), controller actions (handled by action goals), auth flows (handled by auth goals), fixtures (handled by fixtures goal), application-level validation logic (handled by application goals) — error handling goal covers only the cross-cutting exception listener, response factory, and status code mapping infrastructure.</value>
+      </substep>
+
+      <substep n="3.21.8" title="Call goal-create MCP and record ID">
+        <action>Call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Implement global error handling: exception listener, RFC 7807 responses, status code mapping</param>
+          <param name="acceptance">ACCEPTANCE array from substep 3.21.4 (exactly 8 items, EH-01..EH-08)</param>
+          <param name="validate">VALIDATE array from substep 3.21.5 (4 commands)</param>
+          <param name="context">CONTEXT string from substep 3.21.6 (purpose + fan-out hint)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.21.6's 3 investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+          <param name="not_in_scope">NOT_IN_SCOPE from substep 3.21.7</param>
+          <param name="depends_on">[FIXTURES_GOAL_ID] — the fixtures goal ID collected in substep 3.21.1</param>
+          <param name="max_retries">3</param>
+        </params>
+        <rule>Description is 88 characters — within the 120-char limit (MaxGoalDescriptionLength).</rule>
+        <rule>max_retries=3 (G-11) — error handling issues are typically missing listener registration or wrong status code, fixable in few cycles.</rule>
+        <rule>phase=error_handling on the created goal.</rule>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Record the returned goal ID as ERROR_HANDLING_GOAL_ID session variable — steps 3.18 and 3.19 depend on this.</action>
+          <action>Print: "Error handling created: goal-{{ID}} (phase=error_handling, depends_on=[{{FIXTURES_GOAL_ID}}]) with 3 investigators, single-task fan-out, max_retries=3"</action>
+          <action>Proceed to next step.</action>
+        </check>
+      </substep>
+    </step>

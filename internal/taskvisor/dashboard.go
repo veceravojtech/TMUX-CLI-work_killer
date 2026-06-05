@@ -78,8 +78,8 @@ func (d *Daemon) renderDashboard(w io.Writer) error {
 	}
 
 	if d.mode == modeIdle {
-		if _, err := fmt.Fprintf(w, "%s%sTASKVISOR%s  %sIDLE%s — waiting for start signal\n",
-			ansiBold, ansiCyan, ansiReset, ansiDim, ansiReset); err != nil {
+		if _, err := fmt.Fprintf(w, "%s%sTASKVISOR%s  %sIDLE%s — waiting for start signal  %s%s%s\n",
+			ansiBold, ansiCyan, ansiReset, ansiDim, ansiReset, ansiDim, d.vcsRevision, ansiReset); err != nil {
 			return err
 		}
 		// A daemon-level halt (P3 wall-clock ceiling) surfaces its reason as a loud
@@ -103,15 +103,39 @@ func (d *Daemon) renderDashboard(w io.Writer) error {
 		phaseName = "VALIDATING"
 	}
 
-	if _, err := fmt.Fprintf(w, "%s%sTASKVISOR%s  %s%sACTIVE%s / %s%s%s\n",
+	if _, err := fmt.Fprintf(w, "%s%sTASKVISOR%s  %s%sACTIVE%s / %s%s%s  %s%s%s\n",
 		ansiBold, ansiCyan, ansiReset,
 		ansiBold, ansiGreen, ansiReset,
-		ansiBold, phaseName, ansiReset); err != nil {
+		ansiBold, phaseName, ansiReset,
+		ansiDim, d.vcsRevision, ansiReset); err != nil {
 		return err
 	}
 
-	if _, err := fmt.Fprintf(w, "Poll: %s  Dispatch timeout: %s  Validate timeout: %s\n\n",
+	if _, err := fmt.Fprintf(w, "Poll: %s  Dispatch timeout: %s  Validate timeout: %s\n",
 		d.pollInterval, d.dispatchTimeout, d.validateTimeout); err != nil {
+		return err
+	}
+	if d.staleBanner != "" {
+		if _, err := fmt.Fprintf(w, "%s%s%s%s\n", ansiBold, ansiYellow, d.staleBanner, ansiReset); err != nil {
+			return err
+		}
+	}
+	if d.specRepairs > 0 {
+		if _, err := fmt.Fprintf(w, "spec repairs: %d\n", d.specRepairs); err != nil {
+			return err
+		}
+	}
+	if d.depWarningCount > 0 {
+		if _, err := fmt.Fprintf(w, "%sdep warnings: %d%s\n", ansiYellow, d.depWarningCount, ansiReset); err != nil {
+			return err
+		}
+	}
+	if d.stackGateSkips > 0 {
+		if _, err := fmt.Fprintf(w, "%sstack-gated: %d%s\n", ansiYellow, d.stackGateSkips, ansiReset); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprint(w, "\n"); err != nil {
 		return err
 	}
 

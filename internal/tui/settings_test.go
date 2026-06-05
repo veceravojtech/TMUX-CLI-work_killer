@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 21)
+	assert.Len(t, m.items, 23)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -157,17 +157,27 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 20, m.cursor)
 
-	// Can't go past last item (21 items → max index 20)
+	// One more down to reach the 22nd item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 20, m.cursor)
+	assert.Equal(t, 21, m.cursor)
+
+	// One more down to reach the 23rd item
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 22, m.cursor)
+
+	// Can't go past last item (23 items → max index 22)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 22, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 19, m.cursor)
+	assert.Equal(t, 21, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 22; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -824,7 +834,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 21)
+	assert.Len(t, m.items, 23)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -837,6 +847,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	assert.Contains(t, keys, "taskvisor.auto_resume_interval_sec")
 	assert.Contains(t, keys, "taskvisor.transient_retry_max_attempts")
 	assert.Contains(t, keys, "taskvisor.transient_retry_backoff_ms")
+	assert.Contains(t, keys, "taskvisor.require_plan_approval")
 
 	for _, item := range m.items {
 		switch item.key {
@@ -873,7 +884,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 21)
+	assert.Len(t, m.items, 23)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -1283,6 +1294,46 @@ taskvisor:
 	assert.Equal(t, 4, result.Taskvisor.CircuitBreakerK)
 	assert.Equal(t, 7, result.Supervisor.MaxCycles)
 	assert.Equal(t, 2, result.Supervisor.MaxGoals)
+}
+
+func TestToSettings_RequirePlanApproval(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	found := false
+	for i, item := range m.items {
+		if item.key == "taskvisor.require_plan_approval" {
+			found = true
+			assert.Equal(t, "bool", item.kind)
+			assert.False(t, item.value, "default should be false")
+			m.items[i].value = true
+		}
+	}
+	assert.True(t, found, "taskvisor.require_plan_approval must be in TUI items")
+
+	result := m.ToSettings()
+	assert.True(t, result.Taskvisor.RequirePlanApproval, "toggled require_plan_approval must overlay into ToSettings")
+}
+
+func TestToSettings_HaltOnStaleBinary(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	found := false
+	for i, item := range m.items {
+		if item.key == "taskvisor.halt_on_stale_binary" {
+			found = true
+			assert.Equal(t, "bool", item.kind)
+			assert.False(t, item.value, "default should be false")
+			m.items[i].value = true
+		}
+	}
+	assert.True(t, found, "taskvisor.halt_on_stale_binary must be in TUI items")
+
+	result := m.ToSettings()
+	assert.True(t, result.Taskvisor.HaltOnStaleBinary, "toggled halt_on_stale_binary must overlay into ToSettings")
 }
 
 func TestModel_VimKeys(t *testing.T) {

@@ -21,7 +21,7 @@ var rootCmd = &cobra.Command{
 	Short: "A tmux session manager CLI",
 	Long: `tmux-cli is a command-line interface for managing tmux sessions and windows.
 It provides structured session management with JSON-based persistence and crash recovery.`,
-	Version: version,
+	Version: versionString(),
 	// Root command does nothing by itself - all functionality is in subcommands
 	Run: func(cmd *cobra.Command, args []string) {
 		// When no subcommand is provided, show help

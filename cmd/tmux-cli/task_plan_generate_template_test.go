@@ -36,7 +36,7 @@ func sliceBetween(t *testing.T, s, start, end string) string {
 }
 
 func TestTemplate_AuthBootstrapStepPresent(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	assert.Contains(t, content, "phase=auth-bootstrap",
 		"template must declare a phase=auth-bootstrap goal")
 	assert.Contains(t, content, "Generate Auth Bootstrap goal",
@@ -44,7 +44,7 @@ func TestTemplate_AuthBootstrapStepPresent(t *testing.T) {
 }
 
 func TestTemplate_AuthBootstrapConditionalOnFlows(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	bootstrap := sliceBetween(t, content, `n="3.16a"`, `n="3.17"`)
 	assert.Contains(t, bootstrap, "N_auth_flows == 0",
 		"auth-bootstrap step must contain a skip branch keyed on N_auth_flows == 0")
@@ -53,13 +53,13 @@ func TestTemplate_AuthBootstrapConditionalOnFlows(t *testing.T) {
 }
 
 func TestTemplate_SoftFirstAuthGoalRuleRemoved(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	assert.NotContains(t, content, "first auth goal (typically Register) includes security.yaml",
 		"the non-deterministic soft rule must be removed entirely")
 }
 
 func TestTemplate_AuthDependsOnIncludesBootstrap(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	block := sliceBetween(t, content, `n="3.19.2"`, `n="3.19.3"`)
 	assert.Contains(t, block, "AUTH_DEPENDS_ON",
 		"substep 3.19.2 must define AUTH_DEPENDS_ON")
@@ -68,7 +68,7 @@ func TestTemplate_AuthDependsOnIncludesBootstrap(t *testing.T) {
 }
 
 func TestTemplate_ControllerActionDependsOnBootstrap(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	block := sliceBetween(t, content, `n="3.18.2"`, `n="3.18.3"`)
 	assert.Contains(t, block, "AUTH_BOOTSTRAP_GOAL_ID",
 		"substep 3.18.2 must add AUTH_BOOTSTRAP_GOAL_ID to depends_on for auth_required actions")
@@ -77,7 +77,7 @@ func TestTemplate_ControllerActionDependsOnBootstrap(t *testing.T) {
 }
 
 func TestTemplate_PerFlowDeliverablesDropSecurityConfig(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	// Scope strictly to the per-flow auth deliverables block (3.19.4) so the
 	// auth-bootstrap step's legitimate security.yaml ownership does not cause a
 	// false pass.
@@ -91,7 +91,7 @@ func TestTemplate_PerFlowDeliverablesDropSecurityConfig(t *testing.T) {
 }
 
 func TestTemplate_JwtKeygenGatedOnUsesJwt(t *testing.T) {
-	content := readTaskPlanGenerateTemplate(t)
+	content := readGenerateBundle(t)
 	bootstrap := sliceBetween(t, content, `n="3.16a"`, `n="3.17"`)
 	assert.Contains(t, bootstrap, "lexik:jwt:generate-keypair",
 		"auth-bootstrap step must generate the JWT keypair")

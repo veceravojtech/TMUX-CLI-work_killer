@@ -1,0 +1,142 @@
+    <step n="3.29" title="Generate Final Gate goals (goal-T+3..T+5)">
+      <rule critical="true">Steps 3.20-3.28 must have completed before this step executes.</rule>
+      <rule critical="true">This step is NOT conditional — final gates always run regardless of project configuration.</rule>
+      <rule critical="true">Creates exactly 3 goals, each with phase=final_gate, depends_on=ALL previous goal IDs, max_retries=5.</rule>
+      <rule critical="true">The 3 final gate goals MUST be the last 3 entries in goals.yaml (G-08 compliance).</rule>
+
+      <substep n="3.29.1" title="Collect all previous goal IDs">
+        <action>Read goals.yaml from disk. Collect every goal ID created so far (from goal-001 through the last goal created by Steps 1-3.28) into ALL_GOAL_IDS list.</action>
+        <action>This list is the depends_on value for all 3 final gate goals — they are terminal gates that run only after the entire pipeline is complete.</action>
+        <rule>ALL_GOAL_IDS must be dynamically collected from goals.yaml, never hardcoded — the exact count varies per project.</rule>
+      </substep>
+
+      <substep n="3.29.2" title="Generate Deptrac Full Analysis goal (goal-T+3)">
+        <action>Call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Final gate: Deptrac full codebase layer dependency verification</param>
+          <param name="acceptance">[
+            "FG-01: Deptrac zero violations across entire codebase — vendor/bin/deptrac analyse exit code 0",
+            "FG-02: Domain + Share layer depends on nothing (pure, no framework imports)",
+            "FG-03: Application layer depends only on Domain + Share layer",
+            "FG-04: Infrastructure layer depends on Domain + Share + Application only",
+            "FG-05: Controllers (inbound adapters) import only Application layer",
+            "FG-06: No cross-BC imports in Domain or Application layers",
+            "FG-07: ACL adapters are the only cross-BC touchpoints in Infrastructure"
+          ]</param>
+          <param name="validate">["vendor/bin/deptrac analyse"]</param>
+          <param name="context">
+Final gate: validates that the entire codebase passes Deptrac layer dependency analysis after all BC goals, fixtures, actions, auth, and cross-cutting goals are complete.
+          </param>
+          <param name="investigation_config">[
+            {name: "Layer Structure Verifier", type: "architecture-check", paths: ["src/"], commands: ["vendor/bin/deptrac analyse", "vendor/bin/deptrac analyse --formatter=json"], pass: "Exit 0, zero violations — all 4 DDD layers (Domain, Application, Infrastructure, Share) respect dependency rules", fail: "Any layer violation detected — dependency flows upward or crosses BC boundary"},
+            {name: "Cross-BC Boundary Checker", type: "architecture-check", paths: ["src/"], commands: ["vendor/bin/deptrac analyse --filter=cross-bc", "per-BC grep for cross-BC use-imports inside each Domain layer, excluding Share and the same BC namespace"], pass: "Zero cross-BC imports in Domain/Application layers; only ACL adapters in Infrastructure cross BC boundaries", fail: "Direct cross-BC import found outside ACL adapter"}
+          ]</param>
+          <param name="not_in_scope">PHPStan, ECS, unit/integration tests, Playwright E2E, coverage, console boot, schema validation, migrations</param>
+          <param name="depends_on">ALL_GOAL_IDS</param>
+          <param name="max_retries">5</param>
+          <param name="phase">final_gate</param>
+        </params>
+        <rule>Description is 60 chars — well within the 120-char limit.</rule>
+        <rule>7 acceptance criteria (FG-01..FG-07) — all Deptrac-specific.</rule>
+      </substep>
+
+      <substep n="3.29.3" title="Generate E2E Regression goal (goal-T+4)">
+        <branch condition="HAS_FRONTEND==true">
+          <action>Call the goal-create MCP tool with these parameters:</action>
+          <params>
+            <param name="description">Final gate: Playwright E2E regression — all tests run together</param>
+            <param name="acceptance">[
+              "FG-08: All Playwright E2E tests pass when run together (not just individually) — npx playwright test all green",
+              "FG-09: No test isolation issues (order-dependent failures) — run Playwright tests in random order",
+              "G-08: Last 3 goals in goals.yaml are final gates (Deptrac, E2E, Quality) — verify ordering"
+            ]</param>
+            <param name="validate">["bash bin/ensure-test-stack.sh", "npx playwright test", "npx playwright test --shard=random"]</param>
+            <param name="context">
+Final gate: validates that all Playwright E2E tests pass when run together as a full suite, detecting isolation issues that per-action test runs miss.
+            </param>
+            <param name="investigation_config">[
+              {name: "Full Suite Runner", type: "test-execution", paths: ["tests/"], commands: ["npx playwright test"], pass: "Exit 0, all E2E tests green when run as a single suite — no failures from shared state or missing fixtures", fail: "Any test failure when run together that passed in isolation — check test-results/ for traces and screenshots"},
+              {name: "Isolation Checker", type: "test-execution", paths: ["tests/"], commands: ["npx playwright test --shard=random"], pass: "Exit 0, all tests pass in randomized order — no order-dependent failures", fail: "Test failure in randomized order indicates shared mutable state between tests — check test-results/ for traces and screenshots"}
+            ]</param>
+            <param name="not_in_scope">Individual endpoint tests, Deptrac, PHPStan, ECS, unit tests, schema validation</param>
+            <param name="depends_on">ALL_GOAL_IDS</param>
+            <param name="max_retries">5</param>
+            <param name="phase">final_gate</param>
+          </params>
+          <rule>Description is 59 chars — well within the 120-char limit.</rule>
+          <rule>3 acceptance criteria (FG-08, FG-09, G-08).</rule>
+        </branch>
+        <branch condition="HAS_FRONTEND==false">
+          <action>Print warning: "HAS_FRONTEND=false — skipping E2E Regression final gate goal (3.29.3). No Playwright tests to regress."</action>
+          <action>Do NOT call goal-create. Record that E2E final gate was skipped — adjust G-08 compliance check in 3.29.6 to expect 2 final gates (Deptrac + Quality) instead of 3.</action>
+        </branch>
+      </substep>
+
+      <substep n="3.29.4" title="Generate Quality Sweep goal (goal-T+5)">
+        <action>Call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Final gate: PHPStan, ECS, test suites, coverage, schema, migrations</param>
+          <param name="acceptance">[
+            "FG-10: PHPStan level 9 zero errors across entire codebase — vendor/bin/phpstan analyse exit code 0",
+            "FG-11: ECS zero violations across entire codebase — vendor/bin/ecs check exit code 0",
+            "FG-12: Unit test suite all green — vendor/bin/phpunit --testsuite=unit passes",
+            "FG-13: Integration test suite all green — vendor/bin/phpunit --testsuite=integration passes",
+            "FG-14: Test coverage meets threshold (configurable, default 80%) — coverage report generated, threshold met",
+            "FG-15: No TODO/FIXME/HACK comments in codebase — grep check, zero results",
+            "FG-16: bin/console boots without errors — exit code 0",
+            "FG-17: doctrine:schema:validate passes — exit code 0",
+            "FG-18: All migrations applied cleanly — doctrine:migrations:status shows no pending"
+          ]</param>
+          <param name="validate">[
+            "vendor/bin/phpstan analyse src/ --level=9",
+            "vendor/bin/ecs check src/",
+            "vendor/bin/phpunit --testsuite=unit",
+            "vendor/bin/phpunit --testsuite=integration",
+            "vendor/bin/phpunit --coverage-text",
+            "grep -rn 'TODO\\|FIXME\\|HACK' src/ | wc -l",
+            "bin/console",
+            "bin/console doctrine:schema:validate",
+            "bin/console doctrine:migrations:status"
+          ]</param>
+          <param name="context">
+Final gate: validates full codebase quality — PHPStan, ECS, all test suites, coverage threshold, and Doctrine schema/migration health after all goals complete.
+          </param>
+          <param name="investigation_config">[
+            {name: "Static Analysis Verifier", type: "quality-gate", paths: ["src/"], commands: ["vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/"], pass: "Both exit 0 — zero PHPStan errors at level 9, zero ECS violations", fail: "Any static analysis error or coding standard violation"},
+            {name: "Test Suite Runner", type: "test-execution", paths: ["tests/"], commands: ["vendor/bin/phpunit --testsuite=unit", "vendor/bin/phpunit --testsuite=integration", "vendor/bin/phpunit --coverage-text"], pass: "All suites green, coverage meets threshold (default 80%)", fail: "Test failure or coverage below threshold"},
+            {name: "Runtime Health Checker", type: "environment-check", paths: ["src/"], commands: ["bin/console", "bin/console doctrine:schema:validate", "bin/console doctrine:migrations:status", "grep for TODO/FIXME/HACK comments in src/ (expect zero)"], pass: "Console boots, schema valid, no pending migrations, zero TODO/FIXME/HACK", fail: "Boot failure, schema mismatch, pending migrations, or stale comments found"}
+          ]</param>
+          <param name="not_in_scope">Deptrac analysis, Playwright E2E, new feature code, refactoring</param>
+          <param name="depends_on">ALL_GOAL_IDS</param>
+          <param name="max_retries">5</param>
+          <param name="phase">final_gate</param>
+        </params>
+        <rule>Description is 67 chars — well within the 120-char limit.</rule>
+        <rule>9 acceptance criteria (FG-10..FG-18) — all quality/runtime checks.</rule>
+      </substep>
+
+      <substep n="3.29.5" title="Record final gate goal IDs">
+        <action>Store FINAL_GATE_IDS = [goal-T+3, goal-T+4, goal-T+5] where T+3/T+4/T+5 are the actual goal IDs returned by goal-create.</action>
+        <action>Print summary:</action>
+        <template>
+Final gate goals created:
+  - Deptrac Full Analysis: goal-{{T+3}} (FG-01..FG-07, 2 investigators)
+  - E2E Regression: goal-{{T+4}} (FG-08, FG-09, G-08, 2 investigators)
+  - Quality Sweep: goal-{{T+5}} (FG-10..FG-18, 3 investigators)
+  - All 3: phase=final_gate, depends_on={{ALL_GOAL_IDS count}} goals, max_retries=5
+        </template>
+      </substep>
+
+      <substep n="3.29.6" title="Verify G-08 compliance">
+        <action>Read goals.yaml from disk. Verify that the last 3 entries are the 3 final gate goals just created.</action>
+        <action>Check that all 3 have phase=final_gate.</action>
+        <action>Check that descriptions match the Deptrac/E2E/Quality pattern from G-08 (docs/task-plan-spec.md line 359).</action>
+        <check condition="last 3 goals are NOT the final gates">
+          <action>Print error: "G-08 VIOLATION: last 3 goals in goals.yaml are not the final gate goals — another goal was appended after final gates. Investigate and fix ordering."</action>
+          <action>ABORT.</action>
+        </check>
+        <check condition="last 3 goals ARE the final gates">
+          <action>Print: "G-08 verified: last 3 goals in goals.yaml are Deptrac → E2E → Quality final gates."</action>
+        </check>
+      </substep>
+    </step>

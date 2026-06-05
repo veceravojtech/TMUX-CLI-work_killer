@@ -3,6 +3,7 @@ package setup
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -35,17 +36,25 @@ func readEmbeddedTemplate(t *testing.T, rel ...string) string {
 	return string(data)
 }
 
-// step319a extracts the Step 3.19a block from task-plan-generate.xml so that
-// "never" assertions are scoped to the seed step and not tripped by sibling
-// steps (e.g. the fixtures goal legitimately uses --env=test).
-func step319a(t *testing.T, content string) string {
+func readSeedGenerateBundle(t *testing.T) string {
 	t.Helper()
-	start := strings.Index(content, `<step n="3.19a"`)
-	require.GreaterOrEqual(t, start, 0, "Step 3.19a must exist in task-plan-generate.xml")
-	rest := content[start:]
-	end := strings.Index(rest, `<step n="3.20"`)
-	require.Greater(t, end, 0, "Step 3.20 must follow Step 3.19a")
-	return rest[:end]
+	spine := readEmbeddedCommand(t, "task-plan-generate.xml")
+	stubRe := regexp.MustCompile(`(?s)<step n="[^"]+" title="[^"]+">\s*<load file="([^"]+)">[^<]*</load>\s*</step>`)
+	result := stubRe.ReplaceAllStringFunc(spine, func(stub string) string {
+		m := stubRe.FindStringSubmatch(stub)
+		require.Len(t, m, 2, "stub must capture file path")
+		rel := strings.Replace(m[1], ".claude/commands/tmux/", "", 1)
+		shard := readEmbeddedCommand(t, rel)
+		return shard
+	})
+	return result
+}
+
+// step319a reads the step-3.19a shard directly so "never" assertions are
+// scoped to the seed step and not tripped by sibling steps.
+func step319a(t *testing.T) string {
+	t.Helper()
+	return readEmbeddedCommand(t, "task-plan-generate/step-3.19a-seed-admin.xml")
 }
 
 func TestDiscover_SeedAdminQuestionPresent(t *testing.T) {
@@ -95,8 +104,7 @@ func TestDiscoveryTemplate_SeedAdminPlaceholders(t *testing.T) {
 }
 
 func TestGenerate_SeedStepEmitsDevEnvGoal(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-generate.xml")
-	step := step319a(t, content)
+	step := step319a(t)
 
 	assert.Contains(t, step, "bin/console app:seed-admin --env=dev",
 		"Step 3.19a must run the seed command against the dev env")
@@ -107,8 +115,7 @@ func TestGenerate_SeedStepEmitsDevEnvGoal(t *testing.T) {
 }
 
 func TestGenerate_SeedStepNotEnvTest(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-generate.xml")
-	step := step319a(t, content)
+	step := step319a(t)
 
 	// The seed command must NEVER be invoked against the test env.
 	assert.NotContains(t, step, "app:seed-admin --env=test",
@@ -121,8 +128,7 @@ func TestGenerate_SeedStepNotEnvTest(t *testing.T) {
 }
 
 func TestGenerate_SeedDependsOnAuthBootstrap(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-generate.xml")
-	step := step319a(t, content)
+	step := step319a(t)
 
 	assert.Contains(t, step, "phase=auth-bootstrap",
 		"depends_on must resolve the auth-bootstrap goal")
@@ -133,8 +139,7 @@ func TestGenerate_SeedDependsOnAuthBootstrap(t *testing.T) {
 }
 
 func TestGenerate_SeedStepConditionalSkip(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-generate.xml")
-	step := step319a(t, content)
+	step := step319a(t)
 
 	assert.Contains(t, step, "SKIP",
 		"the step must skip when seeding is not requested / no auth flows")
@@ -145,8 +150,7 @@ func TestGenerate_SeedStepConditionalSkip(t *testing.T) {
 }
 
 func TestGenerate_SeedNoInlinedSecret(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-generate.xml")
-	step := step319a(t, content)
+	step := step319a(t)
 
 	assert.Contains(t, step, "env-var name only",
 		"credentials must be referenced by env-var name only")

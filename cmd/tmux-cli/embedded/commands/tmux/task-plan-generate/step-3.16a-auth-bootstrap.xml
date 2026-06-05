@@ -1,0 +1,119 @@
+    <step n="3.16a" title="Generate Auth Bootstrap goal (conditional, phase=auth-bootstrap)">
+      <rule critical="true">This step runs AFTER infrastructure (3.16) and BEFORE fixtures (3.17), controller actions (3.18), and auth flows (3.19) — every downstream auth/protected goal depends on the bootstrap goal, so it must exist first.</rule>
+      <rule critical="true">Emit the auth-bootstrap goal ONLY when N_auth_flows >= 1. When N_auth_flows == 0, SKIP entirely — downstream deps resolve to empty without error.</rule>
+      <rule critical="true">Security wiring is OWNED by this single goal — never leave security.yaml / User entity as a side-effect of the first auth flow goal (D3 determinism gate).</rule>
+      <rule critical="true">All inputs read from docs/architecture/* files and discovery output on disk (G-16), never from conversation context.</rule>
+
+      <substep n="3.16a.1" title="Read auth-flow inventory and count flows">
+        <action>Read docs/architecture/cross-cutting.md — the SAME auth-flow source used by step 3.19.1. Build the auth-flow inventory and count N_auth_flows.</action>
+        <check condition="N_auth_flows == 0">
+          <action>Print: "No auth flows discovered (N_auth_flows == 0) — skipping auth-bootstrap goal. Downstream auth/action deps resolve empty."</action>
+          <action>SKIP this step entirely. Do NOT create any goal. Proceed to Step 3.17 (Fixtures).</action>
+        </check>
+      </substep>
+
+      <substep n="3.16a.2" title="Resolve scaffold goal ID">
+        <action>Read goals.yaml from disk. Find the goal with phase=scaffold — store its ID as SCAFFOLD_GOAL_ID.</action>
+        <check condition="SCAFFOLD_GOAL_ID not found">
+          <action>ABORT with error: "Cannot generate auth-bootstrap goal: no scaffold goal (phase=scaffold) found in goals.yaml — ensure Step 2 ran first"</action>
+        </check>
+      </substep>
+
+      <substep n="3.16a.3" title="Read auth method (session vs JWT)">
+        <action>Read the auth method from docs/architecture/cross-cutting.md security section and the discovery `uses_jwt` flag (php-symfony/discovery.md §10a security, php-symfony/libraries.md `{{#uses_jwt}}`).</action>
+        <action>If uses_jwt is true → JWT identity provider via lexik/jwt-authentication-bundle + keypair generation. If false → Symfony session/form-login authenticator.</action>
+        <rule>The library is resolvable by convention (`lexik/jwt-authentication-bundle` gated on uses_jwt, else `symfony/security-bundle`) — do not escalate unless the JWT choice is genuinely unknowable from project context.</rule>
+        <action>Resolve the User entity placement: the identity/auth BC named in discovery. If no dedicated identity BC exists, default to src/Share/ (Share-ownership convention) — do not invent a new BC.</action>
+      </substep>
+
+      <substep n="3.16a.4" title="Compose acceptance criteria">
+        <action>Build ACCEPTANCE array. AU-08 and AU-09 are OWNED here (relocated from the per-flow auth goals):</action>
+        <criteria>
+          <item id="AU-08">Security configuration uses Symfony security bundle properly (firewall, provider, authenticator in config/packages/security.yaml)</item>
+          <item id="AU-09">User entity has proper password hashing (bcrypt/argon2) and implements the security user interface</item>
+          <item id="AB-JWT" condition="uses_jwt">JWT keypair generated via bin/console lexik:jwt:generate-keypair and lexik config present at config/packages/lexik_jwt_authentication.yaml</item>
+          <item id="AU-11" condition="HAS_FRONTEND">playwright/auth.setup.ts logs in as admin and regular user using seeded credentials (env-var names from test-environment.md) and writes storageState JSON to playwright/.auth/admin.json and playwright/.auth/user.json (E2E-AUTH-STATE-CONV)</item>
+        </criteria>
+        <rule>Include AB-JWT only when uses_jwt is true. Include AU-11 only when HAS_FRONTEND is true. AU-08/AU-09 are always present.</rule>
+      </substep>
+
+      <substep n="3.16a.5" title="Compose context with deliverables and Investigation Config">
+        <section name="purpose">
+Auth bootstrap goal — the single deterministic owner of authentication infrastructure for the project.
+Owns config/packages/security.yaml (firewall, provider, authenticator) and the User entity with password hashing (bcrypt/argon2).
+{{#uses_jwt}}Uses lexik/jwt-authentication-bundle as the JWT identity provider; generates the signing keypair.{{/uses_jwt}}
+{{^uses_jwt}}Uses the Symfony session/form-login authenticator.{{/uses_jwt}}
+See docs/architecture/cross-cutting.md for auth method decisions. See docs/architecture/test-environment.md for test user credentials — never hard-code credentials.
+        </section>
+
+        <section name="deliverables">
+          <deliverable>Security config: config/packages/security.yaml (firewall, provider, authenticator)</deliverable>
+          <deliverable>User entity with password hashing: src/{IdentityBC|Share}/Domain/Model/User.php</deliverable>
+          <deliverable condition="uses_jwt">JWT config: config/packages/lexik_jwt_authentication.yaml + keypair via bin/console lexik:jwt:generate-keypair</deliverable>
+          <deliverable condition="HAS_FRONTEND">Playwright auth setup: playwright/auth.setup.ts — logs in as admin and regular user using seeded credentials (env-var names from docs/architecture/test-environment.md, GM-05), writes storageState JSON to playwright/.auth/admin.json and playwright/.auth/user.json (E2E-AUTH-STATE-CONV)</deliverable>
+        </section>
+
+        <section name="investigation-config">
+          <action>Build 3 investigators:</action>
+
+          <investigator n="1" name="Security config presence">
+            <type>file-check</type>
+            <files>config/packages/security.yaml, src/{IdentityBC|Share}/Domain/Model/User.php</files>
+            <commands>test -f config/packages/security.yaml &amp;&amp; grep -c 'firewall\|provider' config/packages/security.yaml</commands>
+            <pass>security.yaml and User entity exist; firewall/provider grep returns >= 1</pass>
+            <fail>Missing security.yaml, missing User entity, or no firewall/provider config</fail>
+          </investigator>
+
+          <investigator n="2" name="Auth wiring check">
+            <type>environment-check</type>
+            <commands>{{#uses_jwt}}bin/console lexik:jwt:check-config{{/uses_jwt}}{{^uses_jwt}}bin/console debug:firewall{{/uses_jwt}}</commands>
+            <pass>Exit 0 — JWT keypair/config valid (uses_jwt) or firewall configured (session)</pass>
+            <fail>JWT config invalid or firewall not configured</fail>
+          </investigator>
+
+          <investigator n="3" name="Quality gates">
+            <type>quality-gate</type>
+            <commands>vendor/bin/phpstan analyse src/ --level=9 &amp;&amp; vendor/bin/ecs check src/ &amp;&amp; vendor/bin/deptrac analyse</commands>
+            <pass>PHPStan, ECS, and Deptrac all exit 0</pass>
+            <fail>Any tool reports errors or violations</fail>
+          </investigator>
+
+          <rule>3 investigators (GM-08 minimum is 2). Investigator 2's command is gated on uses_jwt (JWT key/config check vs firewall check).</rule>
+        </section>
+      </substep>
+
+      <substep n="3.16a.6" title="Create the auth-bootstrap goal via goal-create">
+        <action>Set NOT_IN_SCOPE:</action>
+        <value>Auth endpoint controllers/DTOs/routes (built by per-flow auth goals 3.19), business logic beyond authentication, fixtures/seed users (built by fixtures goal), non-auth controller actions.</value>
+
+        <action>Call goal-create MCP tool:</action>
+        <params>
+          <param name="description">Auth bootstrap: security.yaml firewall/provider/authenticator + User entity with password hashing</param>
+          <param name="acceptance">ACCEPTANCE array from substep 3.16a.4 (AU-08, AU-09, + AB-JWT when uses_jwt)</param>
+          <param name="validate">[
+            "test -f config/packages/security.yaml",
+            "vendor/bin/phpstan analyse src/ --level=9",
+            "vendor/bin/ecs check src/",
+            "vendor/bin/deptrac analyse"
+          ]{{#uses_jwt}} plus "bin/console lexik:jwt:check-config"{{/uses_jwt}}</param>
+          <param name="context">CONTEXT string from substep 3.16a.5 (purpose + deliverables)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.16a.5's investigators (3; types from the Reference Table).</param>
+          <param name="not_in_scope">NOT_IN_SCOPE</param>
+          <param name="depends_on">[SCAFFOLD_GOAL_ID]</param>
+          <param name="max_retries">3</param>
+        </params>
+        <rule>phase=auth-bootstrap on the created goal.</rule>
+        <rule>depends_on=[SCAFFOLD_GOAL_ID] — bootstrap leans on the project skeleton + bundle install only.</rule>
+        <rule>Description must be ≤120 chars (MaxGoalDescriptionLength invariant).</rule>
+
+        <action>Store the returned goal ID as AUTH_BOOTSTRAP_GOAL_ID — used by substeps 3.18.2 (auth_required actions) and 3.19.2 (auth flows).</action>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Print: "Auth bootstrap created: goal-{NNN} (phase=auth-bootstrap, depends_on=[{SCAFFOLD_GOAL_ID}], uses_jwt={uses_jwt}) with 3 investigators, max_retries=3"</action>
+          <action>Proceed to Step 3.17 (Fixtures).</action>
+        </check>
+      </substep>
+    </step>

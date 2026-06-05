@@ -475,6 +475,45 @@ taskvisor:
 		"transient_retry_backoff_ms is still backfilled to 500")
 }
 
+func TestDefaultSettings_RequirePlanApproval_False(t *testing.T) {
+	s := DefaultSettings()
+	assert.False(t, s.Taskvisor.RequirePlanApproval,
+		"RequirePlanApproval must default to false (Go zero value, no backfill)")
+}
+
+func TestSaveSettings_RequirePlanApprovalRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	original := DefaultSettings()
+	original.Taskvisor.RequirePlanApproval = true
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.True(t, loaded.Taskvisor.RequirePlanApproval, "require_plan_approval must survive a save/load round-trip")
+}
+
+func TestLoadSettings_LegacyMissing_RequirePlanApproval_False(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+taskvisor:
+  dispatch_timeout: 3600
+  poll_interval: 5
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.False(t, s.Taskvisor.RequirePlanApproval,
+		"missing require_plan_approval must load as false (zero value, no backfill)")
+}
+
 func TestDeriveValidateTimeout_SingleWorker(t *testing.T) {
 	// 600 + 600*ceil(1/1)+max(60,60) = 1260
 	assert.Equal(t, 1260, DeriveValidateTimeout(600, 1, 1))

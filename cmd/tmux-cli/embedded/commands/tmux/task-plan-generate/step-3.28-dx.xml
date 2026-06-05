@@ -1,0 +1,110 @@
+    <step n="3.28" title="Generate Makefile / DX goal (single goal, phase=dx)">
+      <rule critical="true">This step is UNCONDITIONAL — every project needs DX commands (make test, make lint, make fix, .env.test).</rule>
+      <rule critical="true">depends_on MUST include ALL cross-cutting goal IDs — dynamically collected from goals.yaml, excluding phase=gate and phase=scaffold (G-03).</rule>
+      <rule critical="true">Single goal — never split per-BC. Makefile wraps project-wide quality tooling.</rule>
+
+      <substep n="3.28.1" title="Collect all cross-cutting goal IDs">
+        <action>Read goals.yaml from disk. Filter all goal entries where phase is NOT gate AND NOT scaffold. Collect their goal IDs into CROSS_CUTTING_GOAL_IDS list.</action>
+        <check condition="CROSS_CUTTING_GOAL_IDS is empty">
+          <action>Fallback: collect ALL goal IDs from goals.yaml (DX wraps everything). Print warning: "No non-gate/scaffold goals found — using all goal IDs as depends_on"</action>
+        </check>
+        <action>Print: "Found {{count(CROSS_CUTTING_GOAL_IDS)}} dependency goals: {{CROSS_CUTTING_GOAL_IDS}}"</action>
+        <rule>This MUST be dynamic — goal count varies per project. Never hardcode goal IDs.</rule>
+      </substep>
+
+      <substep n="3.28.2" title="Read test-environment.md for .env.test variables">
+        <action>Read docs/architecture/test-environment.md. Extract environment variable names and values needed for .env.test file (DX-04).</action>
+        <action>Store as ENV_TEST_VARS — list of VAR_NAME=value entries the .env.test must contain.</action>
+        <rule>Never inline .env.test content in the goal — reference test-environment.md as the source of truth (GM-05).</rule>
+      </substep>
+
+      <substep n="3.28.3" title="Compose acceptance criteria (DX-01..DX-04)">
+        <action>Build ACCEPTANCE array with all 4 DX criteria from docs/task-plan-spec.md:808-815:</action>
+        <criteria>
+          <item id="DX-01">`make test` or `composer test` runs full test suite</item>
+          <item id="DX-02">`make lint` or `composer lint` runs PHPStan + ECS</item>
+          <item id="DX-03">`make fix` or `composer fix` auto-fixes CS violations</item>
+          <item id="DX-04">.env.test file exists with test environment variables matching docs/architecture/test-environment.md</item>
+        </criteria>
+        <rule>All 4 criteria must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+      </substep>
+
+      <substep n="3.28.4" title="Compose validation commands">
+        <action>Build VALIDATE array with commands that verify DX tooling works:</action>
+        <commands>
+          <cmd source="DX-01">make test (or composer test) — must exit 0</cmd>
+          <cmd source="DX-02">make lint (or composer lint) — must exit 0 on clean codebase</cmd>
+          <cmd source="DX-03">make fix (or composer fix) — must exit 0, verify it auto-corrects a deliberately broken file</cmd>
+          <cmd source="DX-04">test -f .env.test — verify file exists and contains expected variables from test-environment.md</cmd>
+        </commands>
+        <rule>Validation must prove all four DX targets work end-to-end — not just that the Makefile parses.</rule>
+      </substep>
+
+      <substep n="3.28.5" title="Compose context with Investigation Config">
+        <action>Build CONTEXT string with these sections:</action>
+
+        <section name="purpose">
+Makefile / DX goal creates developer convenience commands (make test, make lint, make fix) and .env.test for the test environment.
+Single goal because all DX targets share the same Makefile and wrap project-wide quality tools.
+Environment variables for .env.test from docs/architecture/test-environment.md (never hardcoded — GM-05).
+Depends on ALL non-gate/scaffold goals: {{CROSS_CUTTING_GOAL_IDS}} — DX is the final cross-cutting goal and must know what tools/targets exist.
+        </section>
+
+        <section name="fan-out-hint">
+          <hint>single-task — Makefile targets and .env.test are project-wide, not per-BC. One task handles all four DX criteria.</hint>
+        </section>
+
+        <section name="investigation-config">
+          <action>Build 3 investigators:</action>
+
+          <investigator n="1" name="Makefile targets">
+            <type>command</type>
+            <commands>make test &amp;&amp; make lint &amp;&amp; make fix</commands>
+            <pass>All three targets exit 0 — test suite passes, linter clean, fixer runs</pass>
+            <fail>Any target fails, command not found, or Makefile missing</fail>
+          </investigator>
+
+          <investigator n="2" name=".env.test file">
+            <type>file-check</type>
+            <commands>Verify .env.test exists in project root. Compare variable names against docs/architecture/test-environment.md — all required variables present.</commands>
+            <pass>.env.test exists with all variables from test-environment.md</pass>
+            <fail>File missing, variables missing, or values don't match test-environment.md</fail>
+          </investigator>
+
+          <investigator n="3" name="Lint/fix cycle">
+            <type>command</type>
+            <commands>Introduce a deliberate CS violation, run make fix, verify it auto-corrects, then run make lint to confirm clean output</commands>
+            <pass>make fix corrects the violation, make lint exits 0 afterwards</pass>
+            <fail>make fix doesn't correct the violation, or make lint still reports errors</fail>
+          </investigator>
+
+          <rule>Exactly 3 investigators (GM-08 allows 2-4). Each has type, commands, and pass/fail criteria (GM-09).</rule>
+        </section>
+      </substep>
+
+      <substep n="3.28.6" title="Call goal-create MCP">
+        <action>Call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Create Makefile with test, lint, fix targets and .env.test file</param>
+          <param name="acceptance">ACCEPTANCE array from substep 3.28.3 (exactly 4 items, DX-01..DX-04)</param>
+          <param name="validate">VALIDATE array from substep 3.28.4</param>
+          <param name="context">CONTEXT string from substep 3.28.5 (purpose + fan-out hint)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.28.5's 3 investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+          <param name="not_in_scope">CI/CD pipeline config (handled by Step 3.27), Docker/deployment targets, production Makefile targets, IDE-specific config files — these are separate concerns handled by their own goals.</param>
+          <param name="depends_on">CROSS_CUTTING_GOAL_IDS — ALL non-gate/scaffold goal IDs collected in substep 3.28.1</param>
+          <param name="max_retries">3</param>
+        </params>
+        <rule>Description is 60 characters — within the 120-char limit (MaxGoalDescriptionLength).</rule>
+        <rule>depends_on MUST be the FULL CROSS_CUTTING_GOAL_IDS list — never subset or phase-filtered (G-03).</rule>
+        <rule>max_retries=3 per G-11.</rule>
+        <rule>phase=dx on the created goal.</rule>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Print: "DX goal created: goal-{{DX_GOAL_ID}} (phase=dx, depends_on={{CROSS_CUTTING_GOAL_IDS}}) with 3 investigators, single-task fan-out, max_retries=3"</action>
+          <action>Proceed to next step.</action>
+        </check>
+      </substep>
+    </step>

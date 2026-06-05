@@ -21,40 +21,36 @@ import (
 // pass structured validate (>=1 project-runnable command), acceptance (>=1
 // criterion), and scope when the footprint is known.
 func TestTaskPlanGenerateXml_ValidateMandateInGoalEmissionStep(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-generate.xml")
+	content := readGenerateBundle(t)
 
-	// --- Locate the goal-emission step by its stable anchor ---
-	anchor := `<substep n="1.7" title="Call goal-create MCP">`
-	start := strings.Index(content, anchor)
-	require.NotEqual(t, -1, start,
-		"task-plan-generate.xml must have the goal-emission substep 1.7 (Call goal-create MCP)")
-	end := strings.Index(content[start:], "</substep>")
-	require.NotEqual(t, -1, end, "substep 1.7 must be well-formed")
-	body := content[start : start+end]
+	// The mandate body lives in the spine <conventions> block (hoisted from
+	// substep 1.7 during the spine+shard decomposition); the prose-insufficiency
+	// rule stays inline in the step-1 shard's substep 1.7. Both are present in
+	// the bundle.
 
-	// --- The mandate lives INSIDE the emission step, not merely anywhere ---
-	assert.Contains(t, body, "--validate",
+	// --- The mandate ---
+	assert.Contains(t, content, "--validate",
 		"the emission step must mandate the --validate flag / validate param by name")
-	assert.Contains(t, body, "--acceptance",
+	assert.Contains(t, content, "--acceptance",
 		"the emission step must mandate the --acceptance flag / acceptance param by name")
-	assert.Contains(t, body, "PROJECT-RUNNABLE",
+	assert.Contains(t, content, "PROJECT-RUNNABLE",
 		"the emission step must require validate commands to be PROJECT-RUNNABLE "+
 			"(resolved against the detected language/stack), not generic")
-	assert.Contains(t, body, "NOT prose",
+	assert.Contains(t, content, "NOT prose",
 		"the emission step must state validate entries are commands, NOT prose")
 
 	// --- Prose-insufficiency statement (the RC-A root cause) ---
-	assert.Contains(t, body, "prose in goal.md are NOT sufficient",
+	assert.Contains(t, content, "prose in goal.md are NOT sufficient",
 		"the mandate must state prose-only Validation Rules in goal.md are NOT sufficient")
-	assert.Contains(t, body, "daemon reads ONLY the structured fields",
+	assert.Contains(t, content, "daemon reads ONLY the structured fields",
 		"the mandate must explain WHY prose fails: the daemon reads only structured fields")
-	assert.Contains(t, body, "default investigators",
+	assert.Contains(t, content, "default investigators",
 		"the mandate must name the consequence: the repair fallback injects wrong default investigators")
 
 	// --- Scope/parallelism note (empty scope serializes) ---
-	assert.Contains(t, body, "DisjointReadySet",
+	assert.Contains(t, content, "DisjointReadySet",
 		"the mandate must name the DisjointReadySet gate that serializes scopeless goals")
-	assert.Contains(t, body, "scope is the price of parallelism",
+	assert.Contains(t, content, "scope is the price of parallelism",
 		"the mandate must state that scope is the price of parallelism")
 }
 
@@ -65,7 +61,7 @@ func TestTaskPlanGenerateXml_ValidateMandateInGoalEmissionStep(t *testing.T) {
 // validate/acceptance mandate must get the same treatment so no later phase
 // can emit a structurally-empty goal.
 func TestTaskPlanGenerateXml_ValidateMandateAppliesToEveryGoalCreate(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-generate.xml")
+	content := readGenerateBundle(t)
 
 	rulesStart := strings.Index(content, "<execution-rules>")
 	rulesEnd := strings.Index(content, "</execution-rules>")

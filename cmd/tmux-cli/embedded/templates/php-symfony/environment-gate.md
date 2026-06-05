@@ -138,6 +138,74 @@ This template extends `_base/environment-gate.md` with concrete PHP/Symfony chec
 
 ---
 
+## 4a. E2E Environment Contract — conditional `{{#if has_database}}`
+
+{{#if has_database}}
+
+The E2E environment contract (E2E-ENV-CONV) guarantees that the HTTP vhost serving E2E/host-HTTP probes runs APP_ENV=test against the same database that `bin/ensure-test-stack.sh` seeds with `--env=test`.
+
+### Invariant
+
+The compose spec (docker mode) or `.env.test` (local mode) MUST pin `APP_ENV=test` for the E2E-facing service. Without this pinning, the runtime may default to `APP_ENV=dev`, serving the dev database while all seeded test data lives in the test database — every E2E assertion fails deterministically.
+
+### Verification probe
+
+The `/health` endpoint exposes `env` (from `kernel.environment`) and `database` (connected DB name) fields. The mechanical assertion:
+
+```sh
+curl -s {{BASE_URL}}/health | jq -e '.env == "test" and (.database | test("test"))'
+```
+
+This probe uses stock Symfony (`kernel.environment`) and Doctrine (`doctrine.dbal.default_connection` or `SELECT current_database()`) — no third-party bundle required.
+
+### Gate-0 re-assertion
+
+After scaffold completes, Gate-0 re-validates the pinning:
+
+```sh
+grep -q 'APP_ENV=test' docker-compose.yaml || grep -q 'APP_ENV=test' .env.test
+```
+
+{{/if}}
+
+---
+
+## 4b. Side-Effect Isolation (E2E-SIDEFX-CONV) — conditional `{{#if has_database}}`
+
+{{#if has_database}}
+
+The side-effect isolation contract (E2E-SIDEFX-CONV) extends E2E-ENV-CONV at the G7 seam. It guarantees that the E2E-serving test environment isolates all side effects so assertions are deterministic and no external system is contacted.
+
+### Mailer — symfony/mailer
+
+When `symfony/mailer` is present in `composer.json`, `.env.test` MUST contain `MAILER_DSN=null://null`. This is the Symfony Flex recipe default — the scaffold ASSERTS it (`grep -q 'MAILER_DSN=null://null' .env.test`), it does not re-deliver it. Generated E2E specs for mail-sending flows (registration, password reset) assert application-visible outcomes (HTTP status, flash message, API response), never actual email delivery.
+
+### Messenger — symfony/messenger
+
+When `symfony/messenger` is present in `composer.json`, `config/packages/test/messenger.yaml` MUST exist and route all transports to `sync://`:
+
+```yaml
+framework:
+    messenger:
+        transports:
+            async:
+                dsn: 'sync://'
+```
+
+This forces message handlers to complete synchronously before E2E assertions run. The scaffold CREATES this file (`test -f config/packages/test/messenger.yaml`). This is the delta — Symfony recipes do NOT default messenger to sync in test env. The config-file form is committed to the repo, explicit, and survives `.env.test` regeneration or env-var drift. A single env-var DSN cannot override multiple named transports.
+
+### HTTP-Client — symfony/http-client
+
+When `symfony/http-client` is present in `composer.json`, generated E2E specs MUST assert application-visible outcomes (HTTP status codes, DB state changes, response bodies), never actual external delivery or third-party service responses. No env-var mandate for http-client — isolation is a spec-generation rule, not a runtime config.
+
+### Why not mailcatcher/mailpit?
+
+The null transport (`MAILER_DSN=null://null`) suffices for generated E2E scope. Adding mailcatcher or mailpit containers introduces compose complexity, port management, and a mail-content assertion dependency that contradicts the "assert application-visible outcomes" principle. Mail-content assertions (subject line, body text, recipient addresses) are outside the generated E2E scope — if needed later, they belong in a dedicated mail-testing goal with an explicit mail-capture service, not in the general side-effect isolation contract.
+
+{{/if}}
+
+---
+
 ## 5. Frontend Prerequisites — conditional `{{#if playwright_detected}}`
 
 {{#if playwright_detected}}
@@ -204,3 +272,33 @@ When Gate 0 detects failures, apply corrections in this order:
 3. **Services** — Redis, RabbitMQ (ENV-S01, ENV-S02)
 4. **Connections** — Database reachability and auth (ENV-D01, ENV-D02)
 5. **Frontend** — Node.js, npm (ENV-F01, ENV-F02)
+
+---
+
+## HTTP / Database Readiness Polling
+
+Never use a fixed `sleep N` before a readiness probe. Use bounded polling instead.
+
+**Database (PostgreSQL):**
+
+```sh
+i=0
+until pg_isready -h {{db_host}} -p {{db_port}}; do
+  i=$((i+1))
+  [ $i -ge 30 ] && exit 1
+  sleep 2
+done
+```
+
+**HTTP health endpoint:**
+
+```sh
+i=0
+until curl -sf http://localhost:$APP_PORT/health; do
+  i=$((i+1))
+  [ $i -ge 30 ] && exit 1
+  sleep 2
+done
+```
+
+**Docker mode:** prefer `docker compose up -d --wait` with service-level `healthcheck:` definitions — the `--wait` flag blocks until all healthchecks pass.

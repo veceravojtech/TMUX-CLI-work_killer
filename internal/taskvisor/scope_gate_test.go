@@ -223,3 +223,152 @@ func TestDeriveScopeFromDeliverables_NoPathTokens_ReturnsNil(t *testing.T) {
 	})
 	assert.Nil(t, got)
 }
+
+// --- isStackConsuming -------------------------------------------------------
+
+func TestIsStackConsuming_EnsureTestStack(t *testing.T) {
+	g := &Goal{Validate: []string{"bash bin/ensure-test-stack.sh"}}
+	assert.True(t, isStackConsuming(g))
+}
+
+func TestIsStackConsuming_NpxPlaywright(t *testing.T) {
+	g := &Goal{Validate: []string{"npx playwright test tests/E2E/LoginTest.ts"}}
+	assert.True(t, isStackConsuming(g))
+}
+
+func TestIsStackConsuming_DockerCompose(t *testing.T) {
+	g := &Goal{Validate: []string{"docker compose config --quiet"}}
+	assert.True(t, isStackConsuming(g))
+}
+
+func TestIsStackConsuming_CurlHttpProbe(t *testing.T) {
+	g := &Goal{Validate: []string{"curl -sf http://localhost:8080/health"}}
+	assert.True(t, isStackConsuming(g))
+}
+
+func TestIsStackConsuming_AcceptanceLine(t *testing.T) {
+	g := &Goal{Acceptance: []string{"ensure-test-stack.sh runs successfully"}}
+	assert.True(t, isStackConsuming(g))
+}
+
+func TestIsStackConsuming_PureUnit(t *testing.T) {
+	g := &Goal{Validate: []string{"go test ./internal/...", "vendor/bin/phpstan analyse src/"}}
+	assert.False(t, isStackConsuming(g))
+}
+
+func TestIsStackConsuming_EmptyGoal(t *testing.T) {
+	g := &Goal{}
+	assert.False(t, isStackConsuming(g))
+}
+
+func TestIsStackConsuming_NoFalseNegativeOnSubstring(t *testing.T) {
+	g := &Goal{Validate: []string{"bash bin/ensure-test-stack.sh && echo done"}}
+	assert.True(t, isStackConsuming(g))
+}
+
+// --- coSchedulable + stack-consuming ----------------------------------------
+
+func TestCoSchedulable_TwoStackConsumers_Rejected(t *testing.T) {
+	candidate := &Goal{
+		ID:       "goal-002",
+		Scope:    []string{"internal/a/**"},
+		Validate: []string{"bash bin/ensure-test-stack.sh"},
+	}
+	inflight := []*Goal{{
+		ID:       "goal-001",
+		Scope:    []string{"internal/b/**"},
+		Validate: []string{"bash bin/ensure-test-stack.sh"},
+	}}
+	assert.False(t, coSchedulable(candidate, inflight))
+}
+
+func TestCoSchedulable_StackPlusUnit_Admitted(t *testing.T) {
+	candidate := &Goal{
+		ID:       "goal-002",
+		Scope:    []string{"internal/a/**"},
+		Validate: []string{"bash bin/ensure-test-stack.sh"},
+	}
+	inflight := []*Goal{{
+		ID:       "goal-001",
+		Scope:    []string{"internal/b/**"},
+		Validate: []string{"go test ./internal/..."},
+	}}
+	assert.True(t, coSchedulable(candidate, inflight))
+}
+
+func TestCoSchedulable_UnitPlusUnit_Admitted(t *testing.T) {
+	candidate := &Goal{
+		ID:       "goal-002",
+		Scope:    []string{"internal/a/**"},
+		Validate: []string{"go test ./internal/a/..."},
+	}
+	inflight := []*Goal{{
+		ID:       "goal-001",
+		Scope:    []string{"internal/b/**"},
+		Validate: []string{"go test ./internal/b/..."},
+	}}
+	assert.True(t, coSchedulable(candidate, inflight))
+}
+
+func TestCoSchedulable_StackConsumerUnknownScope_AlreadyRejected(t *testing.T) {
+	candidate := &Goal{
+		ID:       "goal-002",
+		Validate: []string{"bash bin/ensure-test-stack.sh"},
+	}
+	inflight := []*Goal{{
+		ID:       "goal-001",
+		Scope:    []string{"internal/b/**"},
+		Validate: []string{"bash bin/ensure-test-stack.sh"},
+	}}
+	assert.False(t, coSchedulable(candidate, inflight))
+}
+
+// --- DisjointReadySet + stack-consuming -------------------------------------
+
+func TestDisjointReadySet_TwoStackConsumers_OnlyOneAdmitted(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/a/**"},
+			Validate: []string{"bash bin/ensure-test-stack.sh"}},
+		{ID: "goal-002", Status: GoalPending, Scope: []string{"internal/b/**"},
+			Validate: []string{"bash bin/ensure-test-stack.sh"}},
+	}}
+	got := gf.DisjointReadySet(2)
+	require.Len(t, got, 1)
+	assert.Equal(t, "goal-001", got[0].ID)
+}
+
+func TestDisjointReadySet_StackPlusUnit_BothAdmitted(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/a/**"},
+			Validate: []string{"bash bin/ensure-test-stack.sh"}},
+		{ID: "goal-002", Status: GoalPending, Scope: []string{"internal/b/**"},
+			Validate: []string{"go test ./internal/b/..."}},
+	}}
+	got := gf.DisjointReadySet(2)
+	require.Len(t, got, 2)
+	assert.Equal(t, "goal-001", got[0].ID)
+	assert.Equal(t, "goal-002", got[1].ID)
+}
+
+func TestDisjointReadySet_MaxGoals1_StackConsuming_ByteIdentical(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/a/**"},
+			Validate: []string{"bash bin/ensure-test-stack.sh"}},
+		{ID: "goal-002", Status: GoalPending, Scope: []string{"internal/b/**"},
+			Validate: []string{"bash bin/ensure-test-stack.sh"}},
+	}}
+	got := gf.DisjointReadySet(1)
+	require.Len(t, got, 1)
+	assert.Equal(t, "goal-001", got[0].ID)
+}
+
+func TestDisjointReadySet_MigratesAndStackConsuming_MigratesWins(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalRunning, Scope: []string{"internal/a/**"},
+			Validate: []string{"bash bin/ensure-test-stack.sh"}, Migrates: true},
+		{ID: "goal-002", Status: GoalPending, Scope: []string{"internal/b/**"},
+			Validate: []string{"go test ./internal/b/..."}},
+	}}
+	got := gf.DisjointReadySet(2)
+	assert.Nil(t, got, "migration exclusion still prevents any co-scheduling")
+}

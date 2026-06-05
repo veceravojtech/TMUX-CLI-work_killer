@@ -1,0 +1,109 @@
+    <step n="3.24" title="Generate Messenger transport goal (conditional, phase=messenger)">
+      <rule critical="true">Steps 3.20-3.23 must have completed before this step executes.</rule>
+      <rule critical="true">This step is CONDITIONAL — skip entirely if docs/architecture/cross-cutting.md has no async/Messenger selection.</rule>
+      <rule critical="true">Single goal (cross-cutting infrastructure, not per-BC). phase=messenger. depends_on=ALL event listener goal IDs.</rule>
+      <rule critical="true">All inputs read from docs/architecture/* files on disk — never from conversation context (G-16).</rule>
+      <rule critical="true">Transport DSN is NOT hardcoded — references test-environment.md for connection details and cross-cutting.md for ADR transport choice (GM-05).</rule>
+
+      <substep n="3.24.1" title="Check async/Messenger selection from discovery output">
+        <action>Read docs/architecture/cross-cutting.md from disk.</action>
+        <action>Search for Messenger/async transport selection (keywords: "Messenger", "async", "async transport", "message queue").</action>
+        <branch condition="Messenger/async NOT selected in cross-cutting.md">
+          <action>Print: "Messenger transport not selected — skipping step 3.24"</action>
+          <action>SKIP entire step 3.24. Do NOT proceed to substep 3.24.2.</action>
+        </branch>
+        <branch condition="Messenger/async IS selected">
+          <action>Extract transport type choice (doctrine vs AMQP) from cross-cutting.md or ADRs.</action>
+          <action>Extract list of async messages/events to route through Messenger.</action>
+          <action>Proceed to substep 3.24.2.</action>
+        </branch>
+      </substep>
+
+      <substep n="3.24.2" title="Resolve event listener dependency goal IDs">
+        <action>Read goals.yaml from disk.</action>
+        <action>Find all goals with phase=event_listener. Collect their IDs as EVENT_LISTENER_GOAL_IDS.</action>
+        <action>Set MESSENGER_DEPENDS_ON = EVENT_LISTENER_GOAL_IDS.</action>
+        <check condition="no event listener goals found in goals.yaml">
+          <action>ABORT with error: "Step 3.24 requires event listener goals (phase=event_listener) but none found in goals.yaml — run event listener generation (step 3.20) first"</action>
+        </check>
+        <rule>Events must exist before transport routing — Messenger transport depends on event listener goals.</rule>
+      </substep>
+
+      <substep n="3.24.3" title="Compose acceptance criteria (MT-01..MT-05)">
+        <action>Build ACCEPTANCE array from MT-01 through MT-05 (docs/task-plan-spec.md:757-763):</action>
+        <criteria>
+          <item id="MT-01">messenger.yaml has transport configured per ADR choice (doctrine://default or AMQP per cross-cutting.md decision)</item>
+          <item id="MT-02">Failed message transport configured — `failed` transport present in messenger.yaml</item>
+          <item id="MT-03">Retry strategy configured with reasonable defaults (3 retries, 1000ms delay, 2x multiplier per context-mapping.md patterns)</item>
+          <item id="MT-04">`messenger:consume` command works — consumer starts and exits cleanly with --limit=1 --time-limit=5</item>
+          <item id="MT-05">Routing maps async messages to correct transport — Published Language events from src/Share/Event/ routed to async transport</item>
+        </criteria>
+        <rule>All 5 criteria must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+      </substep>
+
+      <substep n="3.24.4" title="Compose context with deliverables and Investigation Config">
+        <action>Build CONTEXT string with these sections:</action>
+
+        <section name="purpose">
+Messenger transport configuration for async message handling.
+Transport type decision from docs/architecture/cross-cutting.md (doctrine://default vs AMQP).
+Routing patterns from .tmux-cli/templates/php-symfony/context-mapping.md (Messenger Transport Configuration section).
+Connection details from docs/architecture/test-environment.md — never hardcode DSN values.
+        </section>
+
+        <section name="deliverables">
+          <file>config/packages/messenger.yaml — transport, routing, retry strategy, failed transport</file>
+          <file>docs/architecture/cross-cutting.md — updated with transport config decisions (if needed)</file>
+        </section>
+
+        <section name="investigation-config">
+          <action>Build exactly 2 investigators (GM-08 minimum):</action>
+
+          <investigator n="1" name="Config check">
+            <type>implementation-check</type>
+            <files>config/packages/messenger.yaml</files>
+            <commands>bin/console debug:messenger</commands>
+            <pass>Transport registered, routing configured, retry strategy present, failed transport defined</pass>
+            <fail>Missing config, invalid routing, or unregistered transport</fail>
+          </investigator>
+
+          <investigator n="2" name="Consumer test">
+            <type>test-execution</type>
+            <commands>bin/console messenger:consume async --limit=1 --time-limit=5</commands>
+            <pass>Consumer starts and exits cleanly (exit 0)</pass>
+            <fail>Consumer error, transport misconfigured, or non-zero exit</fail>
+          </investigator>
+
+          <rule>2 investigators — minimum required by GM-08. Each has type, files/commands, and pass/fail criteria (GM-09).</rule>
+        </section>
+
+        <section name="not-in-scope">
+Event handler implementations, domain event definitions, ACL adapters, infrastructure dispatch logic, production AMQP broker setup — all handled by domain, infrastructure, or event listener goals.
+        </section>
+      </substep>
+
+      <substep n="3.24.5" title="Call goal-create MCP and record ID">
+        <action>Call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Messenger: configure async transport, retry strategy, and consumer worker</param>
+          <param name="acceptance">ACCEPTANCE array from substep 3.24.3 (exactly 5 items, MT-01..MT-05)</param>
+          <param name="validate">["bin/console messenger:consume async --limit=1 --time-limit=5", "bin/console debug:messenger"]</param>
+          <param name="context">CONTEXT string from substep 3.24.4 (purpose + deliverables + not-in-scope)</param>
+          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.24.4's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
+          <param name="not_in_scope">Event handler implementations, domain event definitions, ACL adapters, infrastructure dispatch logic, production AMQP broker setup</param>
+          <param name="depends_on">MESSENGER_DEPENDS_ON — ALL event listener goal IDs from substep 3.24.2</param>
+          <param name="max_retries">3</param>
+          <param name="phase">messenger</param>
+        </params>
+        <rule>Description is 66 characters — well within the 120-char limit (MaxGoalDescriptionLength).</rule>
+        <rule>max_retries=3 — single cross-cutting goal with focused scope (G-11).</rule>
+        <rule>validate uses --limit=1 --time-limit=5 to ensure consumer exits cleanly in CI rather than blocking indefinitely.</rule>
+
+        <action>After successful goal-create, store returned goal ID as MESSENGER_GOAL_ID.</action>
+        <action>Print summary: "Messenger transport goal created: 1 goal (phase=messenger, depends_on=[EVENT_LISTENER_GOAL_IDS]), ID: MESSENGER_GOAL_ID"</action>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+      </substep>
+    </step>

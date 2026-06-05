@@ -192,6 +192,19 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 		log.Printf("[repair] %s: re-asserted Investigation Config (was missing/<2)", goal.ID)
 	}
 
+	// H3: spec-drift gate — detect and repair goal.md Validation Rules drift
+	// from goals.yaml BEFORE writeDispatchMd reads goal.md.
+	if drifted, err := goalMDDrift(goalDir, goal); err != nil {
+		return fmt.Errorf("spec-drift check: %w", err)
+	} else if len(drifted) > 0 {
+		log.Printf("[spec-drift] %s: goal.md diverges from goals.yaml on %d commands — repairing", goal.ID, len(drifted))
+		if err := repairValidationRules(goalDir, goal); err != nil {
+			return fmt.Errorf("spec-drift repair: %w", err)
+		}
+		d.specRepairs++
+		log.Printf("[spec-drift] %s: goal.md repaired from goals.yaml", goal.ID)
+	}
+
 	if err := d.writeDispatchMd(goal); err != nil {
 		return fmt.Errorf("write dispatch.md: %w", err)
 	}
@@ -359,6 +372,19 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	if err := d.injectCorrections(goal); err != nil {
 		log.Printf("dispatchRetry: injectCorrections failed, falling back to full dispatch: %v", err)
 		return d.dispatch(goal, goals)
+	}
+
+	// H3: spec-drift gate — same as dispatch(), repair goal.md from goals.yaml.
+	retryGoalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+	if drifted, err := goalMDDrift(retryGoalDir, goal); err != nil {
+		return fmt.Errorf("spec-drift check: %w", err)
+	} else if len(drifted) > 0 {
+		log.Printf("[spec-drift] %s: goal.md diverges from goals.yaml on %d commands — repairing (retry)", goal.ID, len(drifted))
+		if err := repairValidationRules(retryGoalDir, goal); err != nil {
+			return fmt.Errorf("spec-drift repair: %w", err)
+		}
+		d.specRepairs++
+		log.Printf("[spec-drift] %s: goal.md repaired from goals.yaml (retry)", goal.ID)
 	}
 
 	if err := d.writeDispatchMd(goal); err != nil {
