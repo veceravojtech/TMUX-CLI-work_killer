@@ -178,6 +178,57 @@ func TestDefaultSettings_MaxGoals(t *testing.T) {
 	assert.Equal(t, 1, s.Supervisor.MaxGoals, "default max_goals should be 1 (single-goal, bare window names)")
 }
 
+func TestDefaultSettings_ProgressTimeoutSec(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 300, s.Taskvisor.ProgressTimeoutSec,
+		"default progress_timeout_sec should be 300 (5m) — the P2 heartbeat threshold")
+}
+
+func TestDefaultSettings_MaxWallClockSec(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 14400, s.Taskvisor.MaxWallClockSec,
+		"default max_wall_clock_sec should be 14400 (4h) — the P3 wall-clock cost ceiling")
+}
+
+func TestSaveSettings_MaxWallClockSecRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	original := DefaultSettings()
+	original.Taskvisor.MaxWallClockSec = 7200
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, 7200, loaded.Taskvisor.MaxWallClockSec, "max_wall_clock_sec survives a save/load round-trip")
+}
+
+func TestDefaultSettings_IntegrationCmdEmpty(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, "", s.Taskvisor.IntegrationCmd,
+		"default integration_cmd should be empty — the P4 post-merge gate is opt-in")
+}
+
+func TestLoadSettings_RoundTripsIntegrationCmd(t *testing.T) {
+	root := t.TempDir()
+	original := DefaultSettings()
+	original.Taskvisor.IntegrationCmd = "make test"
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, "make test", loaded.Taskvisor.IntegrationCmd, "integration_cmd survives a save/load round-trip")
+}
+
+func TestSaveSettings_ProgressTimeoutRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	original := DefaultSettings()
+	original.Taskvisor.ProgressTimeoutSec = 120
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, 120, loaded.Taskvisor.ProgressTimeoutSec, "progress_timeout_sec survives a save/load round-trip")
+}
+
 func TestSaveSettings_MaxGoalsRoundTrip(t *testing.T) {
 	root := t.TempDir()
 
@@ -377,6 +428,51 @@ func TestLoadSettings_TransientRetryRoundTrip(t *testing.T) {
 		assert.Equal(t, 3, s.Taskvisor.TransientRetryMaxAttempts)
 		assert.Equal(t, 500, s.Taskvisor.TransientRetryBackoffMs)
 	})
+}
+
+// TestLoadSettings_LegacyMissingMaxWallClock documents the ROOT CAUSE of the P3
+// legacy-backfill gap: a setting.yaml predating the max_wall_clock_sec key
+// unmarshals onto a zero Settings{} and LoadSettings backfills ONLY the
+// transient-retry knobs, so the wall-clock key loads as 0 (and progress_timeout
+// likewise). The 4h ceiling default is therefore NOT supplied by the config layer
+// under Option C — it is seeded by the daemon's New(). This is a regression guard:
+// if a future change relocates the default into LoadSettings, update it deliberately.
+func TestLoadSettings_LegacyMissingMaxWallClock(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	// Pre-P3 shape: dispatch/validate/poll present, but no max_wall_clock_sec,
+	// progress_timeout_sec, or integration_cmd.
+	yaml := `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 0
+  max_workers: 4
+taskvisor:
+  dispatch_timeout: 3600
+  validate_timeout: 300
+  poll_interval: 5
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, s.Taskvisor.MaxWallClockSec,
+		"LoadSettings does NOT backfill max_wall_clock_sec; the 4h default comes from daemon New() (Option C)")
+	assert.Equal(t, 0, s.Taskvisor.ProgressTimeoutSec,
+		"progress_timeout_sec stays 0 at the config layer (daemon New() seeds the 5m heartbeat)")
+	assert.Equal(t, "", s.Taskvisor.IntegrationCmd,
+		"integration_cmd stays empty at the config layer (P4 gate is opt-in)")
+	// The transient-retry knobs ARE backfilled — existing behavior, unchanged.
+	assert.Equal(t, 3, s.Taskvisor.TransientRetryMaxAttempts,
+		"transient_retry_max_attempts is still backfilled to 3")
+	assert.Equal(t, 500, s.Taskvisor.TransientRetryBackoffMs,
+		"transient_retry_backoff_ms is still backfilled to 500")
 }
 
 func TestDeriveValidateTimeout_SingleWorker(t *testing.T) {

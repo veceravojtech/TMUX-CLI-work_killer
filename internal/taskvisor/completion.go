@@ -122,8 +122,8 @@ func (d *Daemon) deactivateOnCompletion(goals *GoalsFile) error {
 	// Tear down EVERY goal namespace (head + all goals) so no sibling goal's
 	// windows are orphaned at MaxGoals>1 (a goal that completed earlier in the run
 	// already had its windows killed in checkProgress, so the extra kills are
-	// no-ops). At MaxGoals<=1 sweepGoalIDs collapses to [head] and the helpers
-	// return bare names — byte-identical to the prior single-goal teardown.
+	// no-ops). At MaxGoals<=1 sweepGoalIDs collapses to [head]; the per-goal
+	// namespaced names mean the human's window-0 "supervisor" is never swept.
 	curGoal := goals.CurrentGoal
 	if err := d.teardownGoalWindows(d.sweepGoalIDs(curGoal, allGoalIDs(goals))); err != nil {
 		return err

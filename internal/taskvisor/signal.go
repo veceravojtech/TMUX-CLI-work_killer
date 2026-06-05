@@ -159,6 +159,42 @@ func ClassifyVerdict(findings []ValidationFinding) (verdict, owner string) {
 	}
 }
 
+// PassGate carries the deterministic-backing inputs GateTerminalPass needs to
+// decide whether a terminal LLM `pass` is permitted.
+//   - RequireValidate: the goal DECLARES validate steps (len(goal.Validate) > 0),
+//     so a deterministic `validate.sh` is expected to be the independent anchor.
+//   - ScriptPassed: the deterministic `validate.sh` exited 0 (runValidateScript's
+//     `passed` contract). In the validating phase this is provably false (the
+//     supervising phase short-circuits to a terminal pass at statemachine.go:264
+//     when the script passed, so control only reaches the gated seams when it did
+//     not) — the field is accepted honestly so GateTerminalPass is correct in
+//     isolation and future-proof if a deterministic re-check is ever added.
+type PassGate struct {
+	RequireValidate bool
+	ScriptPassed    bool
+}
+
+// GateTerminalPass is the deterministic terminal-pass gate (P7). A terminal LLM
+// `pass` rests on judgment alone — the validator (a Claude window) grades against
+// acceptance criteria the planner LLM authored, so the two share blind spots; the
+// deterministic `validate.sh` is the only independent anchor. When a goal DECLARES
+// validate steps but that script did not pass, an LLM `pass` has zero deterministic
+// backing — a missing anchor is indistinguishable from "unverified" — so the pass
+// is downgraded to (error, ops): re-validate (charging ValidationRetries via the
+// existing rerunValidationOnly route) and, on exhaustion, an ops hold.
+//
+// It is intentionally SEPARATE from ClassifyVerdict (left 100% untouched) so the
+// proven cross-finding roll-up and its test suites stay byte-identical: this gate
+// composes AFTER classification at each seam that finalizes a validating-phase
+// verdict. Non-pass verdicts and goals with no validate steps pass through
+// unchanged. Pure, no I/O — fully unit-testable.
+func GateTerminalPass(verdict, owner string, gate PassGate) (string, string) {
+	if verdict == VerdictPass && gate.RequireValidate && !gate.ScriptPassed {
+		return VerdictError, "ops"
+	}
+	return verdict, owner
+}
+
 // contentlessDetail is the taskvisor-local MIRROR of mcp.contentlessCorrections
 // (internal/mcp/tools_taskvisor.go:220-229). taskvisor cannot import internal/mcp
 // (that would create an import cycle: mcp already imports taskvisor), so the

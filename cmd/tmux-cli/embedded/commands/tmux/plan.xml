@@ -252,9 +252,10 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
     </step>
 
     <step n="2" title="Identify PLAN_WID">
-      <action>From windows-list, pick the entry with active: true if present.</action>
-      <fallback>If the tmux-cli implementation does not expose active:true (e.g. returns only {"name":...}), and exactly one window exists, treat its NAME as PLAN_WID. If multiple windows exist and none is marked active: if a window named "supervisor" exists in windows-list, that is your PLAN_WID — use it without asking.</fallback>
-      <action>Store PLAN_WID (name form, e.g. "supervisor") for the whole session.</action>
+      <action>When GOAL_ID is known (GOAL_MODE, resolved in step 0b): read .tmux-cli/goals/{GOAL_ID}/supervisor-window and use its content VERBATIM (trim only the trailing newline/whitespace) as PLAN_WID. The daemon wrote this per-goal marker byte-exact before the plan command was sent, so it names the real plan/supervisor window — ALWAYS the namespaced supervisor-{ns} (at every MaxGoals, including 1); bare `supervisor` is window-0/standalone only, never a goal window. Do NOT probe the tmux window name and do NOT re-derive it.</action>
+      <fallback>If GOAL_MODE but the .tmux-cli/goals/{GOAL_ID}/supervisor-window marker is absent: derive {ns} from GOAL_ID (strip the `goal-` prefix, e.g. goal-002 → 002) and PREFER a window named supervisor-{ns} in windows-list over the bare `supervisor`; if neither namespaced nor bare match exists, fall back to bare `supervisor` last.</fallback>
+      <fallback>In STANDALONE mode (no GOAL_ID): from windows-list, pick the entry with active: true if present. If the tmux-cli implementation does not expose active:true (e.g. returns only {"name":...}), and exactly one window exists, treat its NAME as PLAN_WID. If multiple windows exist and none is marked active: if a window named "supervisor" exists in windows-list, that is your PLAN_WID — use it without asking.</fallback>
+      <action>Store PLAN_WID (name form, e.g. "supervisor" or "supervisor-002") for the whole session.</action>
     </step>
 
     <step n="3" title="Analyze plan file → decompose into modules">

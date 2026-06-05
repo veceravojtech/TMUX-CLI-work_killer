@@ -3,6 +3,7 @@ package taskvisor
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"path/filepath"
@@ -93,6 +94,19 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 
 	// (3) Free dispatch budget for this tick.
 	free := d.maxGoals() - len(runningAtStart)
+
+	// (3b) Wall-clock cost ceiling (P3). Checked ONCE per tick at the dispatch
+	// boundary, immediately BEFORE the free-slot gate so a fully-saturated daemon
+	// (free==0, every slot busy) still halts rather than waiting for a free slot.
+	// In-flight goals were already polled this tick by checkProgress above, so the
+	// halt never interrupts a running goal's already-observed signal. The math
+	// routes through the P2 clock seam (d.now()) so it is injectable in tests;
+	// time.Now() here would defeat that. Zero maxWallClock ⇒ disabled (no-op).
+	if d.maxWallClock > 0 {
+		if elapsed := d.now().Sub(d.activatedAt); elapsed >= d.maxWallClock {
+			return d.haltWallClock(goals, elapsed)
+		}
+	}
 
 	// (4) Fill free slots from the SCOPE-GATED ready set, in goal-file order.
 	// DisjointReadySet composes on top of RunnableCandidates: it returns the same
@@ -197,10 +211,21 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	}
 
 	if sig == nil {
-		if !rt.dispatchTime.IsZero() && time.Since(rt.dispatchTime) >= d.dispatchTimeout {
+		// Ordering is load-bearing (P2): heartbeat → hard-timeout → crash-detect.
+		// The heartbeat fires BEFORE the 1h hard timeout so a wedged-but-booted
+		// supervisor is recovered in minutes, not after the full dispatchTimeout.
+		// A heartbeat-internal error (e.g. a transient CaptureWindowOutput failure)
+		// is logged and swallowed so the hard-timeout/crash branches still run — the
+		// heartbeat is purely additive and never blocks the existing safety nets.
+		if stuck, herr := d.checkProgressHeartbeat(rt, supervisorWindow(goal.ID, mg)); herr != nil {
+			log.Printf("%s: supervisor heartbeat check error: %v", goal.ID, herr)
+		} else if stuck {
+			return d.handleStuckSupervisor(goal, goals)
+		}
+		if !rt.dispatchTime.IsZero() && d.now().Sub(rt.dispatchTime) >= d.dispatchTimeout {
 			return d.handleFailedCycle(goal, goals, "Cycle timed out — no completion signal received.", "code-defect")
 		}
-		if !rt.bootConfirmedAt.IsZero() && time.Since(rt.bootConfirmedAt) > 5*time.Second {
+		if !rt.bootConfirmedAt.IsZero() && d.now().Sub(rt.bootConfirmedAt) > 5*time.Second {
 			windows, err := d.listWindows()
 			if err != nil {
 				return err
@@ -261,7 +286,7 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 
 	log.Printf("%s: phase supervising -> validating", goal.ID)
 	rt.phase = phaseValidating
-	rt.validateTime = time.Now()
+	rt.validateTime = d.now()
 	return nil
 }
 
@@ -274,7 +299,17 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 	}
 
 	if sig == nil {
-		if !rt.validateTime.IsZero() && time.Since(rt.validateTime) >= d.validateTimeout {
+		// Ordering is load-bearing (P2): heartbeat → hard-timeout → crash-detect.
+		// The validating phase is the highest-risk wait (multi-finding synthesis
+		// hangs), so the heartbeat fires BEFORE the validate hard-timeout to recover
+		// a wedged validator in minutes. A heartbeat-internal error is logged and
+		// swallowed so the existing timeout/crash branches still run unchanged.
+		if stuck, herr := d.checkProgressHeartbeat(rt, validatorWindow(goal.ID, mg)); herr != nil {
+			log.Printf("%s: validator heartbeat check error: %v", goal.ID, herr)
+		} else if stuck {
+			return d.handleStuckValidator(goal, goals)
+		}
+		if !rt.validateTime.IsZero() && d.now().Sub(rt.validateTime) >= d.validateTimeout {
 			// The validator never reported before the deadline. This is a
 			// validator error (verdict=error / owner=ops), NOT a code defect —
 			// synthesize it and re-run validation only. Do not route through
@@ -282,7 +317,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 			log.Printf("%s: validation timed out — no verdict; synthesizing error/ops, re-running validation only", goal.ID)
 			return d.rerunValidationOnly(goal, goals, nil)
 		}
-		if !rt.bootConfirmedAt.IsZero() && time.Since(rt.bootConfirmedAt) > 5*time.Second {
+		if !rt.bootConfirmedAt.IsZero() && d.now().Sub(rt.bootConfirmedAt) > 5*time.Second {
 			windows, err := d.listWindows()
 			if err != nil {
 				return err
@@ -323,6 +358,16 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 			owner = valSig.Owner
 		}
 	}
+
+	// P7 deterministic terminal-pass gate: a goal that DECLARES validate steps
+	// cannot terminally pass on the LLM validator's judgment alone — the only
+	// independent anchor is validate.sh, which is provably NOT passed here (the
+	// supervising phase short-circuits to a terminal pass at :264 when the script
+	// passes, so control reaches this seam only when it did not). A `pass` is
+	// downgraded to error/ops and reuses the existing error switch arm
+	// (rerunValidationOnly, charges ValidationRetries). No-validate goals and all
+	// non-pass verdicts pass through unchanged.
+	verdict, owner = GateTerminalPass(verdict, owner, PassGate{RequireValidate: len(goal.Validate) > 0, ScriptPassed: false})
 
 	// An unsubstantiated spec-defect (blocked/planner with no concretely-cited
 	// contradiction) is a validator failure, not a planner failure — re-validate
@@ -389,6 +434,116 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 	}
 }
 
+// hashPane returns the FNV-1a hex digest of a captured pane string — the cheap,
+// allocation-light per-tick progress fingerprint the heartbeat compares across
+// ticks (it stores the digest, never the full pane text).
+func hashPane(s string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(s))
+	return fmt.Sprintf("%016x", h.Sum64())
+}
+
+// checkProgressHeartbeat reports whether the goal's supervisor/validator window
+// (windowName) has emitted NO new pane output for at least d.progressTimeout while
+// the window is still running the agent — the signal that an LLM has wedged but
+// not crashed. It is the parallel mechanism to diagnostics.go's stall watchdog,
+// which self-disables while a worker runs (AnyRunning early-return), leaving the
+// running worker invisible until the 1h hard timeout.
+//
+// Returns (false, nil) — never fires — in every guard case:
+//   - d.progressTimeout <= 0: the heartbeat is DISABLED (literal-Daemon legacy
+//     harness). NO CaptureWindowOutput / findWindowByName call is made, so the
+//     pre-P2 tick is byte-identical.
+//   - the window is gone (findWindowByName miss): lookup err swallowed; the hard
+//     timeout still applies.
+//   - CurrentCommand is "zsh" or "" (back at the shell): the existing crash-detect
+//     branch owns this, not the heartbeat.
+//
+// On a live agent window it captures the pane and hashes it: a changed digest
+// refreshes lastProgressHash + lastProgressAt (progress, no fire); an unchanged
+// digest whose lastProgressAt is older than d.progressTimeout fires (stuck). The
+// first observation always seeds (IsZero) and never fires the same tick. A capture
+// error is returned to the caller, which logs it and falls through to the hard
+// timeout (the heartbeat never blocks the existing safety nets).
+func (d *Daemon) checkProgressHeartbeat(rt *goalRuntime, windowName string) (bool, error) {
+	if d.progressTimeout <= 0 {
+		return false, nil
+	}
+	win, err := d.findWindowByName(windowName)
+	if err != nil {
+		return false, nil // window absent — swallow; hard-timeout still applies
+	}
+	if win.CurrentCommand == "zsh" || win.CurrentCommand == "" {
+		return false, nil // back at the shell — crash-detect owns this, not us
+	}
+	output, err := d.executor.CaptureWindowOutput(d.session, win.TmuxWindowID)
+	if err != nil {
+		return false, err
+	}
+	h := hashPane(output)
+	if h != rt.lastProgressHash {
+		rt.lastProgressHash = h
+		rt.lastProgressAt = d.now()
+		return false, nil
+	}
+	if rt.lastProgressAt.IsZero() {
+		rt.lastProgressAt = d.now()
+		return false, nil
+	}
+	if d.now().Sub(rt.lastProgressAt) >= d.progressTimeout {
+		return true, nil
+	}
+	return false, nil
+}
+
+// handleStuckSupervisor recovers a supervisor window the heartbeat found wedged.
+// It tears down the goal's implementer pool + supervisor window, charges the
+// error/ops budget (ValidationRetries — NOT CodeRetries/SpecRetries, since the
+// code/spec is not at fault), and either re-dispatches (budget remaining) or
+// hard-halts cascading failure to dependents (exhausted), mirroring
+// rerunValidationOnly's exhaustion arm. Charging ValidationRetries bounds an
+// otherwise-infinite re-dispatch loop of a perpetually-wedged supervisor:
+// dispatchRetry resets dispatchTime, so the 1h hard timeout alone cannot bound it.
+func (d *Daemon) handleStuckSupervisor(goal *Goal, goals *GoalsFile) error {
+	mg := d.maxGoals()
+	log.Printf("%s: STUCK — supervisor made no pane progress for %v while still running; recovering (no code/spec budget charged)", goal.ID, d.progressTimeout)
+	if err := d.killWindowsByPrefix(executePrefix(goal.ID, mg)); err != nil {
+		return err
+	}
+	if err := d.killWindowByName(supervisorWindow(goal.ID, mg)); err != nil {
+		return err
+	}
+	goal.ValidationRetries--
+	if goal.ValidationRetries <= 0 {
+		// Exhausted error/ops budget is a hard halt: dependents are blocked (class
+		// "fail"), exactly as the validation-timeout exhaustion route.
+		goals.CascadeFailure(goal.ID, "fail")
+		goal.Status = GoalFailed
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		log.Printf("%s: stuck-supervisor budget exhausted (error/ops) — cascading failure to dependents", goal.ID)
+		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals, goal.ID, false)
+	}
+	log.Printf("%s: stuck supervisor — re-dispatching (validation budget left %d)", goal.ID, goal.ValidationRetries)
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+	return d.dispatchRetry(goal, goals)
+}
+
+// handleStuckValidator recovers a validator window the heartbeat found wedged. It
+// routes through the existing rerunValidationOnly (valSig == nil — there is no
+// verdict), which tears down the wedged validator, re-creates it, and charges
+// ValidationRetries — exactly the validate-timeout route, just triggered minutes
+// earlier by the heartbeat instead of at the full validate hard timeout.
+func (d *Daemon) handleStuckValidator(goal *Goal, goals *GoalsFile) error {
+	log.Printf("%s: STUCK — validator made no pane progress for %v while still running; re-running validation only (no code/spec budget charged)", goal.ID, d.progressTimeout)
+	return d.rerunValidationOnly(goal, goals, nil)
+}
+
 // salvageLateVerdicts: for every GoalFailed goal marked FailedBy ==
 // "validation-timeout", poll signal.json. A late ValidatorSignal that classifies
 // PASS flips the goal failed→done (the daemon stopped listening before the
@@ -428,6 +583,12 @@ func (d *Daemon) salvageLateVerdicts(goals *GoalsFile) error {
 		if verdict == VerdictPass && valSig.Verdict != "" && valSig.Verdict != VerdictPass {
 			verdict = valSig.Verdict
 		}
+		// P7 deterministic terminal-pass gate (same rule as checkValidatingPhase):
+		// a late LLM pass on a goal that DECLARES validate steps has no deterministic
+		// backing (validate.sh is provably not-passed on this path) — gate it so the
+		// late-salvage bypass cannot flip a declared-validate goal to done on judgment
+		// alone. Owner is unused on this path (failure stands); discard it.
+		verdict, _ = GateTerminalPass(verdict, "", PassGate{RequireValidate: len(g.Validate) > 0, ScriptPassed: false})
 		if verdict == VerdictPass {
 			g.Status = GoalDone
 			g.FinishedAt = time.Now().UTC().Format(time.RFC3339)
@@ -518,7 +679,7 @@ func (d *Daemon) rerunValidationOnly(goal *Goal, goals *GoalsFile, valSig *Valid
 	}
 	rt := d.runtime(goal.ID)
 	rt.phase = phaseValidating
-	rt.validateTime = time.Now()
+	rt.validateTime = d.now()
 	return nil
 }
 
@@ -888,6 +1049,22 @@ func (d *Daemon) haltRetryCeiling(goal *Goal, goals *GoalsFile) error {
 		return err
 	}
 	return d.advanceToNextGoal(goals, goal.ID, false)
+}
+
+// haltWallClock halts the daemon when the P3 wall-clock cost ceiling is reached.
+// Unlike haltRetryCeiling this is a DAEMON-level budget exhaustion, NOT a goal
+// defect: it deliberately does NOT touch any goal status (no fail, no cascade, no
+// FinishedAt), so a human can raise the budget and resume the untouched goals.
+// haltReason is set BEFORE deactivate() — deactivate()'s tail renderDashboard
+// surfaces the loud banner with no extra render call. The goals argument mirrors
+// haltRetryCeiling's signature (and documents that goal state is intentionally
+// left alone); it is not mutated here.
+func (d *Daemon) haltWallClock(goals *GoalsFile, elapsed time.Duration) error {
+	log.Printf("ALARM: wall-clock budget exhausted (%s elapsed >= %s budget) — halting daemon",
+		elapsed.Round(time.Second), d.maxWallClock)
+	d.haltReason = fmt.Sprintf("HALTED: wall-clock budget %s exhausted (%s elapsed)",
+		d.maxWallClock, elapsed.Round(time.Second))
+	return d.deactivate()
 }
 
 // advanceToNextGoal is called when the goal named by completedID leaves the

@@ -8,9 +8,37 @@ import (
 	"testing"
 
 	"github.com/console/tmux-cli/internal/taskvisor"
+	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestRunTaskvisorGoalSkip_SweepsNamespaced pins the goal-skip sweep membership:
+// only goal-007's namespaced windows are killed; the human's window-0 bare
+// "supervisor" and a sibling goal's windows survive.
+func TestRunTaskvisorGoalSkip_SweepsNamespaced(t *testing.T) {
+	windows := []tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},     // window-0 (human) — survives
+		{TmuxWindowID: "@1", Name: "supervisor-007"}, // goal-007 supervisor — killed
+		{TmuxWindowID: "@2", Name: "validator-007"},  // goal-007 validator — killed
+		{TmuxWindowID: "@3", Name: "execute-007-1"},  // goal-007 worker — killed
+		{TmuxWindowID: "@4", Name: "inv-007-1"},      // goal-007 investigator — killed
+		{TmuxWindowID: "@5", Name: "execute-009-1"},  // sibling goal — survives
+		{TmuxWindowID: "@6", Name: "taskvisor"},      // daemon anchor — survives
+	}
+
+	var killed []string
+	for _, w := range goalSkipWindowsToKill(windows, "goal-007") {
+		killed = append(killed, w.Name)
+	}
+
+	assert.ElementsMatch(t,
+		[]string{"supervisor-007", "validator-007", "execute-007-1", "inv-007-1"},
+		killed,
+		"only goal-007's namespaced windows are swept")
+	assert.NotContains(t, killed, "supervisor", "window-0 bare supervisor must be spared")
+	assert.NotContains(t, killed, "execute-009-1", "sibling goal windows must survive")
+}
 
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()

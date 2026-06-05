@@ -32,6 +32,13 @@ type GoalSpec struct {
 // AGENTS.md invariant — detail belongs in Acceptance/Validate) and at least
 // one validation rule is required (an empty Validate is RC-A's trigger for
 // the blind investigator pad).
+//
+// P7: validate steps are now LOAD-BEARING for a terminal pass. A goal that
+// declares validate steps cannot terminally `pass` on the LLM validator's
+// judgment alone — GateTerminalPass (signal.go) downgrades such a pass to
+// error/ops unless the deterministic validate.sh exits 0. A declared-validate
+// goal therefore needs a working, executable validate.sh, or every cycle
+// re-validates until the validation budget is exhausted.
 func validateGoalSpec(spec GoalSpec) error {
 	if spec.Description == "" {
 		return fmt.Errorf("description cannot be empty")
@@ -58,6 +65,10 @@ func validateGoalSpec(spec GoalSpec) error {
 //
 // MaxRetries 0 coerces to the default 5 (LoadGoals migrates it into the
 // per-class budgets Code 5 / Spec 3 / Val 2 / Block 0).
+//
+// Authoring guidance: the spec's validate steps gate the terminal pass (P7) — a
+// declared-validate goal needs a working validate.sh that exits 0, or the LLM
+// validator's pass is downgraded to error/ops and re-validated.
 func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 	if err := validateGoalSpec(spec); err != nil {
 		return "", false, err

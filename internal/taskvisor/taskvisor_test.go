@@ -31,6 +31,16 @@ func setupDaemon(t *testing.T) (*Daemon, *testutil.MockTmuxExecutor, string) {
 	d.pollInterval = 50 * time.Millisecond
 	d.promptSettleDelay = 0
 	d.promptPollInterval = 0
+	// Disable the P2 progress heartbeat by default so existing tests stay focused
+	// on the timeout/crash/verdict paths and remain byte-identical (no extra
+	// ListWindows/CaptureWindowOutput per sig==nil tick). Heartbeat tests opt in by
+	// setting d.progressTimeout (and an injectable d.clock) explicitly.
+	d.progressTimeout = 0
+	// Disable the P3 wall-clock ceiling by default for the same reason: New() now
+	// seeds it to 4h, but most tests use a zero activatedAt with the real clock
+	// (elapsed ≈ now-year-1 ≫ 4h), which would spuriously halt every modeActive
+	// tick. Wall-clock tests opt in by setting d.maxWallClock (and d.clock) explicitly.
+	d.maxWallClock = 0
 	return d, exec, dir
 }
 
@@ -86,21 +96,31 @@ func mockCreateWindowFn(tmuxWindowID string) WindowCreateFunc {
 	}
 }
 
+// setupDeactivateMocks programs the ListWindows sequence one deactivate() makes:
+// teardownGoalWindows kills this goal's NAMESPACED windows (supervisor-<ns> /
+// execute-<ns>- / validator-<ns> / inv-<ns>-) — 4 kill lookups + collectManagedNames
+// + waitWindowsGone (all empty) — then ensureWindow0Supervisor lists windows once
+// to confirm the human's bare window-0 "supervisor" is live (found here → no-op,
+// no create). The final unbounded return supplies that bare "supervisor".
 func setupDeactivateMocks(exec *testutil.MockTmuxExecutor, session, newWindowID string) {
-	// 4 calls for kill lookups: killWindowByName("supervisor"), killWindowsByPrefix("execute-"), killWindowByName("validator"), killWindowsByPrefix("inv-")
-	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Times(4)
-	// 1 call for collectManagedNames
-	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Once()
-	// 1 call for waitWindowsGone (immediate success)
-	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Once()
-	// 1 call for waitClaudeBoot
+	// 4 kill lookups + 1 collectManagedNames + 1 waitWindowsGone (immediate success)
+	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Times(6)
+	// ensureWindow0Supervisor existence check (and any later list): window-0 present.
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{
 		{TmuxWindowID: newWindowID, Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
 }
 
-func setupDispatchMocks(exec *testutil.MockTmuxExecutor, session, newWindowID string) {
-	// 4 calls for kill lookups (execute-*, supervisor, validator, inv-*)
+// setupDispatchMocks programs the ListWindows sequence one dispatch() makes. The
+// goal supervisor window is ALWAYS namespaced now; supName (default "supervisor-001",
+// the dominant test goal) names the window waitClaudeBoot/waitForPrompt resolve —
+// pass it explicitly for any non-goal-001 dispatch.
+func setupDispatchMocks(exec *testutil.MockTmuxExecutor, session, newWindowID string, supName ...string) {
+	name := "supervisor-001"
+	if len(supName) > 0 {
+		name = supName[0]
+	}
+	// 4 calls for kill lookups (execute-<ns>-, supervisor-<ns>, validator-<ns>, inv-<ns>-)
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Times(4)
 	// 1 call for collectManagedNames
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Once()
@@ -108,7 +128,7 @@ func setupDispatchMocks(exec *testutil.MockTmuxExecutor, session, newWindowID st
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Once()
 	// 1 call for waitClaudeBoot
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{
-		{TmuxWindowID: newWindowID, Name: "supervisor", CurrentCommand: "claude"},
+		{TmuxWindowID: newWindowID, Name: name, CurrentCommand: "claude"},
 	}, nil)
 	// 1 call for waitForPrompt (prompt detected immediately)
 	exec.On("CaptureWindowOutput", session, newWindowID).Return("some output ❯ ", nil)
@@ -244,13 +264,16 @@ func TestActivate_KillsExistingWindows(t *testing.T) {
 	writeGoals(t, dir, gf)
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	// The startup sweep kills only goal-001's NAMESPACED leftover windows; the
+	// human's window-0 bare "supervisor" (@0) must never be swept.
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@1", Name: "execute-1"},
-		{TmuxWindowID: "@3", Name: "execute-3"},
-		{TmuxWindowID: "@4", Name: "validator"},
+		{TmuxWindowID: "@s", Name: "supervisor-001"},
+		{TmuxWindowID: "@1", Name: "execute-001-1"},
+		{TmuxWindowID: "@3", Name: "execute-001-3"},
+		{TmuxWindowID: "@4", Name: "validator-001"},
 	}, nil)
-	exec.On("KillWindow", testSession, "@0").Return(nil)
+	exec.On("KillWindow", testSession, "@s").Return(nil)
 	exec.On("KillWindow", testSession, "@1").Return(nil)
 	exec.On("KillWindow", testSession, "@3").Return(nil)
 	exec.On("KillWindow", testSession, "@4").Return(nil)
@@ -258,10 +281,11 @@ func TestActivate_KillsExistingWindows(t *testing.T) {
 	err := d.activate(gf)
 	require.NoError(t, err)
 
-	exec.AssertCalled(t, "KillWindow", testSession, "@0")
+	exec.AssertCalled(t, "KillWindow", testSession, "@s")
 	exec.AssertCalled(t, "KillWindow", testSession, "@1")
 	exec.AssertCalled(t, "KillWindow", testSession, "@3")
 	exec.AssertCalled(t, "KillWindow", testSession, "@4")
+	exec.AssertNotCalled(t, "KillWindow", testSession, "@0")
 }
 
 func TestActivate_NoWindowsToKill(t *testing.T) {
@@ -285,25 +309,26 @@ func TestDeactivate_KillsAllManagedWindows(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.mode = modeActive
 	d.session = testSession
+	d.currentGoal = "goal-001"
 	writeSettings(t, dir, true, true)
 	writeGuardFile(t, dir)
 
-	// Calls 1-3: kill lookups find managed windows
+	// Kill lookups find goal-001's NAMESPACED windows; the human's window-0 bare
+	// "supervisor" (@0) is present but must never be killed.
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@2", Name: "execute-2"},
-		{TmuxWindowID: "@3", Name: "validator"},
-	}, nil).Times(3)
-	exec.On("KillWindow", testSession, "@0").Return(nil)
+		{TmuxWindowID: "@s", Name: "supervisor-001"},
+		{TmuxWindowID: "@2", Name: "execute-001-2"},
+		{TmuxWindowID: "@3", Name: "validator-001"},
+	}, nil).Times(4)
+	exec.On("KillWindow", testSession, "@s").Return(nil)
 	exec.On("KillWindow", testSession, "@2").Return(nil)
 	exec.On("KillWindow", testSession, "@3").Return(nil)
-	// Call 4: collectManagedNames — windows gone after kills
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// Call 5: waitWindowsGone — immediate success
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// Call 6+: waitClaudeBoot — supervisor booted
+	// collectManagedNames + waitWindowsGone — namespaced windows gone after kills
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
+	// ensureWindow0Supervisor existence check: window-0 "supervisor" still live → no-op
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "supervisor", CurrentCommand: "claude"},
+		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
 
 	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
@@ -311,34 +336,36 @@ func TestDeactivate_KillsAllManagedWindows(t *testing.T) {
 	err := d.deactivate()
 	require.NoError(t, err)
 
-	exec.AssertCalled(t, "KillWindow", testSession, "@0")
+	exec.AssertCalled(t, "KillWindow", testSession, "@s")
 	exec.AssertCalled(t, "KillWindow", testSession, "@2")
 	exec.AssertCalled(t, "KillWindow", testSession, "@3")
+	exec.AssertNotCalled(t, "KillWindow", testSession, "@0")
 }
 
 func TestDeactivate_WaitsForWindowsGone(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.mode = modeActive
 	d.session = testSession
+	d.currentGoal = "goal-001"
 	writeSettings(t, dir, true, true)
 	writeGuardFile(t, dir)
 
-	// Calls 1-3: kill lookups find supervisor
+	// Kill lookups find the goal's namespaced supervisor-001
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
-	}, nil).Times(3)
-	exec.On("KillWindow", testSession, "@0").Return(nil)
-	// Call 4: collectManagedNames
+		{TmuxWindowID: "@s", Name: "supervisor-001"},
+	}, nil).Times(4)
+	exec.On("KillWindow", testSession, "@s").Return(nil)
+	// collectManagedNames
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// Call 5: waitWindowsGone — first poll still has supervisor
+	// waitWindowsGone — first poll still has the namespaced supervisor
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@s", Name: "supervisor-001"},
 	}, nil).Once()
-	// Call 6: waitWindowsGone — gone
+	// waitWindowsGone — gone
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// Call 7+: waitClaudeBoot
+	// ensureWindow0Supervisor existence check: window-0 present → no-op
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@1", Name: "supervisor", CurrentCommand: "claude"},
+		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
 
 	d.SetWindowCreateFunc(mockCreateWindowFn("@1"))
@@ -354,7 +381,12 @@ func TestDeactivate_CreatesFreshSupervisor(t *testing.T) {
 	writeSettings(t, dir, true, true)
 	writeGuardFile(t, dir)
 
-	setupDeactivateMocks(exec, testSession, "@0")
+	// No window-0 "supervisor" is live (teardown + existence check all empty), so
+	// ensureWindow0Supervisor creates a BARE "supervisor" — never a namespaced one.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(7)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
+	}, nil)
 
 	var createdName string
 	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
@@ -367,6 +399,62 @@ func TestDeactivate_CreatesFreshSupervisor(t *testing.T) {
 	assert.Equal(t, "supervisor", createdName)
 }
 
+// TestDeactivate_PreservesWindow0Supervisor pins the P1 invariant: deactivate()
+// NEVER kills or recreates a live window-0 "supervisor", and never spawns a
+// namespaced supervisor-<ns>. When window-0 is live it is a pure no-op (no
+// createWindow); when absent it creates a BARE "supervisor".
+func TestDeactivate_PreservesWindow0Supervisor(t *testing.T) {
+	t.Run("live window-0 supervisor is left untouched (no create)", func(t *testing.T) {
+		d, exec, dir := setupDaemon(t)
+		d.mode = modeActive
+		d.session = testSession
+		d.currentGoal = "goal-001"
+		writeSettings(t, dir, true, true)
+		writeGuardFile(t, dir)
+
+		// Teardown lookups empty; existence check + everything after sees a live
+		// bare window-0 "supervisor".
+		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(6)
+		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+			{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
+		}, nil)
+
+		var created []string
+		d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
+			created = append(created, name)
+			return &CreatedWindow{TmuxWindowID: "@x", Name: name}, nil
+		})
+
+		require.NoError(t, d.deactivate())
+		assert.Empty(t, created, "a live window-0 supervisor must be a no-op — never recreated")
+		exec.AssertNotCalled(t, "KillWindow", testSession, "@0")
+	})
+
+	t.Run("absent window-0 supervisor is created bare, never namespaced", func(t *testing.T) {
+		d, exec, dir := setupDaemon(t)
+		d.mode = modeActive
+		d.session = testSession
+		d.currentGoal = "goal-001"
+		writeSettings(t, dir, true, true)
+		writeGuardFile(t, dir)
+
+		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(7)
+		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+			{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
+		}, nil)
+
+		var created []string
+		d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
+			created = append(created, name)
+			return &CreatedWindow{TmuxWindowID: "@0", Name: name}, nil
+		})
+
+		require.NoError(t, d.deactivate())
+		assert.Equal(t, []string{"supervisor"}, created,
+			"absent window-0 ⇒ create exactly one BARE supervisor (never supervisor-<ns>)")
+	})
+}
+
 func TestDeactivate_WaitsForClaudeBoot(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.mode = modeActive
@@ -374,17 +462,14 @@ func TestDeactivate_WaitsForClaudeBoot(t *testing.T) {
 	writeSettings(t, dir, true, true)
 	writeGuardFile(t, dir)
 
-	// Calls 1-3: kill lookups
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(3)
-	// Call 4: collectManagedNames
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// Call 5: waitWindowsGone
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// Call 6: waitClaudeBoot — first poll zsh
+	// Teardown (4 kills + collectManagedNames + waitWindowsGone) + existence check
+	// all empty → window-0 absent → ensureWindow0Supervisor creates + boots it.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(7)
+	// waitClaudeBoot — first poll zsh
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "zsh"},
 	}, nil).Once()
-	// Call 7+: waitClaudeBoot — claude
+	// waitClaudeBoot — claude
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
@@ -499,7 +584,7 @@ func TestDispatch_KillWaitCreateBootSend(t *testing.T) {
 
 	// Call 1: killWindowByName("supervisor") — finds supervisor
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@0", Name: "supervisor-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@0").Return(nil).Run(func(args mock.Arguments) {
 		callOrder = append(callOrder, "kill")
@@ -510,17 +595,17 @@ func TestDispatch_KillWaitCreateBootSend(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	// Call 5: waitWindowsGone — still has supervisor
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
+		{TmuxWindowID: "@0", Name: "supervisor-001"},
 	}, nil).Once()
 	// Call 6: waitWindowsGone — gone
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	// Call 7: waitClaudeBoot — zsh
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@1", Name: "supervisor", CurrentCommand: "zsh"},
+		{TmuxWindowID: "@1", Name: "supervisor-001", CurrentCommand: "zsh"},
 	}, nil).Once()
 	// Call 8+: waitClaudeBoot — claude
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@1", Name: "supervisor", CurrentCommand: "claude"},
+		{TmuxWindowID: "@1", Name: "supervisor-001", CurrentCommand: "claude"},
 	}, nil)
 	// waitForPrompt — prompt detected
 	exec.On("CaptureWindowOutput", testSession, "@1").Return("❯ ", nil)
@@ -897,9 +982,13 @@ func TestWriteDispatchMd_WithCorrections(t *testing.T) {
 	assert.NotContains(t, content, "None (first attempt)")
 }
 
-func setupValidatorMocks(exec *testutil.MockTmuxExecutor, session, validatorWindowID string) {
+func setupValidatorMocks(exec *testutil.MockTmuxExecutor, session, validatorWindowID string, valName ...string) {
+	name := "validator-001"
+	if len(valName) > 0 {
+		name = valName[0]
+	}
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{
-		{TmuxWindowID: validatorWindowID, Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: validatorWindowID, Name: name, CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", session, validatorWindowID).Return("❯ ", nil)
 	exec.On("SendMessage", session, validatorWindowID, mock.MatchedBy(func(cmd string) bool {
@@ -1058,7 +1147,7 @@ func TestCheckProgress_Supervising_CrashDetected(t *testing.T) {
 	require.NoError(t, err)
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "zsh"},
+		{TmuxWindowID: "@0", Name: "supervisor-001", CurrentCommand: "zsh"},
 	}, nil)
 
 	goal := &gf.Goals[0]
@@ -1091,7 +1180,7 @@ func TestCheckProgress_ValidatorPass_GoalDone(t *testing.T) {
 	}))
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -1131,7 +1220,7 @@ func TestCheckProgress_ValidatorFail_CorrectionDone(t *testing.T) {
 	}))
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -1171,7 +1260,7 @@ func TestCheckProgress_ValidatorFail_CorrectionStopped(t *testing.T) {
 	}))
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -1212,7 +1301,7 @@ func TestCheckProgress_ValidatorFail_RetriesExhausted(t *testing.T) {
 	}))
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -1246,7 +1335,7 @@ func TestCheckProgress_Validating_TimeoutExceeded(t *testing.T) {
 
 	// A validation timeout is a validator error: re-run validation only.
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("ready ❯ ", nil)
@@ -1287,7 +1376,7 @@ func TestCheckProgress_Validating_CrashDetected(t *testing.T) {
 	require.NoError(t, err)
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "zsh"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "zsh"},
 	}, nil)
 
 	goal := &gf.Goals[0]
@@ -2497,7 +2586,7 @@ func TestCheckValidatingPhase_Pass_LogsGoalDone(t *testing.T) {
 	}))
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -2594,7 +2683,7 @@ func TestErrorVerdict_ReRunsValidationOnly(t *testing.T) {
 
 	// Re-spawn path: validator window present, killed, then a fresh one created.
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("ready ❯ ", nil)
@@ -3122,24 +3211,25 @@ func TestDeactivateOnCompletion_KillsWindowsNoSupervisor(t *testing.T) {
 	writeGuardFile(t, dir)
 
 	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
 		Goals: []Goal{
 			{ID: "goal-001", Description: "done", Status: GoalDone},
 		},
 	}
 	writeGoals(t, dir, gf)
 
-	// killWindowByName("supervisor") — finds supervisor
+	// killWindowByName("supervisor-001") — finds the goal's namespaced supervisor
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@1", Name: "execute-1"},
+		{TmuxWindowID: "@0", Name: "supervisor-001"},
+		{TmuxWindowID: "@1", Name: "execute-001-1"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@0").Return(nil)
-	// killWindowsByPrefix("execute-") — finds execute-1
+	// killWindowsByPrefix("execute-001-") — finds execute-001-1
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@1", Name: "execute-1"},
+		{TmuxWindowID: "@1", Name: "execute-001-1"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@1").Return(nil)
-	// killWindowByName("validator") — none
+	// killWindowByName("validator-001") — none
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	// killWindowsByPrefix("inv-") — none
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
@@ -3376,7 +3466,7 @@ func TestTick_DoneAdvancesToDependentGoal(t *testing.T) {
 	_, err := EnsureGoalDir(dir, "goal-B")
 	require.NoError(t, err)
 
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-B")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	err = d.tick(context.Background(), gf)
@@ -3403,7 +3493,7 @@ func TestTick_ChainedDeps_SkipsUnsatisfied(t *testing.T) {
 	_, err := EnsureGoalDir(dir, "goal-B")
 	require.NoError(t, err)
 
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-B")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	err = d.tick(context.Background(), gf)
@@ -3436,18 +3526,22 @@ func TestTick_DiamondDeps_PicksEligible(t *testing.T) {
 	_, err = EnsureGoalDir(dir, "goal-D")
 	require.NoError(t, err)
 
-	claudeWindows := []tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"}}
 	emptyWindows := []tmux.WindowInfo{}
+	// Goal windows are namespaced per goal, so each dispatch boots a distinct
+	// supervisor-<ns> window.
+	claudeB := []tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor-B", CurrentCommand: "claude"}}
+	claudeC := []tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor-C", CurrentCommand: "claude"}}
+	claudeD := []tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor-D", CurrentCommand: "claude"}}
 
 	// Dispatch 1 (goal-B): 6 empty (kills+collect+waitGone) + 2 claude (waitClaudeBoot+waitForPrompt)
 	exec.On("ListWindows", testSession).Return(emptyWindows, nil).Times(6)
-	exec.On("ListWindows", testSession).Return(claudeWindows, nil).Times(2)
+	exec.On("ListWindows", testSession).Return(claudeB, nil).Times(2)
 	// Dispatch 2 (goal-C): same pattern
 	exec.On("ListWindows", testSession).Return(emptyWindows, nil).Times(6)
-	exec.On("ListWindows", testSession).Return(claudeWindows, nil).Times(2)
+	exec.On("ListWindows", testSession).Return(claudeC, nil).Times(2)
 	// Dispatch 3 (goal-D): 6 empty + unlimited claude
 	exec.On("ListWindows", testSession).Return(emptyWindows, nil).Times(6)
-	exec.On("ListWindows", testSession).Return(claudeWindows, nil)
+	exec.On("ListWindows", testSession).Return(claudeD, nil)
 
 	exec.On("CaptureWindowOutput", testSession, "@0").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
@@ -3502,7 +3596,7 @@ func TestTick_BlockedGoalSkipped_NextPendingPicked(t *testing.T) {
 	_, err := EnsureGoalDir(dir, "goal-C")
 	require.NoError(t, err)
 
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-C")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	err = d.tick(context.Background(), gf)
@@ -3556,7 +3650,7 @@ func TestTick_AdvancesPastPreconditionParkedCurrentGoal_HaltBlockedEnv(t *testin
 	_, err := EnsureGoalDir(dir, "goal-13")
 	require.NoError(t, err)
 
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-13")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	err = d.tick(context.Background(), gf)
@@ -3585,7 +3679,7 @@ func TestTick_AdvancesPastPreflightParkedCurrentGoal_EmptyBlockedBy(t *testing.T
 	_, err := EnsureGoalDir(dir, "goal-13")
 	require.NoError(t, err)
 
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-13")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	err = d.tick(context.Background(), gf)
@@ -3636,7 +3730,7 @@ func TestTick_DoesNotDeactivateWhilePreconditionParkOutstanding(t *testing.T) {
 	_, err := EnsureGoalDir(dir, "goal-13")
 	require.NoError(t, err)
 
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-13")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	// Tick 1: current done, only remaining goal is a resumable park -> NextPendingGoal
@@ -3754,7 +3848,7 @@ func TestInvestigationLifecycle_ValidatorSpawnsSendsInvestigateCommand(t *testin
 
 	var capturedCmd string
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -3793,7 +3887,7 @@ func TestInvestigationLifecycle_FailedValidation_WritesCorrectionAndRetries(t *t
 	}))
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -3984,17 +4078,17 @@ tasks:
 
 	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
 		switch name {
-		case "validator":
+		case "validator-001":
 			return &CreatedWindow{TmuxWindowID: "@5", Name: name}, nil
-		case "supervisor":
+		case "supervisor-001":
 			return &CreatedWindow{TmuxWindowID: "@9", Name: name}, nil
 		}
 		return nil, fmt.Errorf("unexpected window: %s", name)
 	})
 
-	validatorClaude := []tmux.WindowInfo{{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"}}
-	validatorPlain := []tmux.WindowInfo{{TmuxWindowID: "@5", Name: "validator"}}
-	supervisorClaude := []tmux.WindowInfo{{TmuxWindowID: "@9", Name: "supervisor", CurrentCommand: "claude"}}
+	validatorClaude := []tmux.WindowInfo{{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"}}
+	validatorPlain := []tmux.WindowInfo{{TmuxWindowID: "@5", Name: "validator-001"}}
+	supervisorClaude := []tmux.WindowInfo{{TmuxWindowID: "@9", Name: "supervisor-001", CurrentCommand: "claude"}}
 	empty := []tmux.WindowInfo{}
 
 	// Stage 1: checkSupervisingPhase — supervisor done, create validator
@@ -4191,7 +4285,9 @@ func TestDispatch_PlanCommandSendsCorrectPath(t *testing.T) {
 	require.NoError(t, err)
 
 	expectedPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "dispatch.md")
-	expectedCmd := "/tmux:plan " + expectedPath
+	// dispatch() ships goal.ID as a trailing token so plan.xml gets an explicit
+	// goal binding (see TestDispatch_PlanCommandCarriesGoalID).
+	expectedCmd := "/tmux:plan " + expectedPath + " goal-001"
 	exec.AssertCalled(t, "SendMessage", testSession, "@0", expectedCmd)
 }
 
@@ -4872,7 +4968,7 @@ func rerunValidationMocks(d *Daemon, exec *testutil.MockTmuxExecutor) *[]string 
 	d.validatorSendDelay = 0
 	d.createWindowFn = mockCreateWindowFn("@5")
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("ready ❯ ", nil)

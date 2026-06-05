@@ -61,7 +61,7 @@ func TestCrashRecovery_GuardWithValidatorWindow(t *testing.T) {
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "validator"},
+		{TmuxWindowID: "@0", Name: "validator-001"},
 	}, nil)
 
 	before := time.Now()
@@ -271,7 +271,7 @@ func TestCrashRecovery_GuardWithInvestigatorWindow(t *testing.T) {
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "inv-goal-001"},
+		{TmuxWindowID: "@0", Name: "inv-001-1"},
 	}, nil)
 
 	before := time.Now()
@@ -295,8 +295,8 @@ func TestCrashRecovery_GuardWithMultipleInvWindows(t *testing.T) {
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "inv-goal-001"},
-		{TmuxWindowID: "@1", Name: "inv-goal-002"},
+		{TmuxWindowID: "@0", Name: "inv-001-1"},
+		{TmuxWindowID: "@1", Name: "inv-001-2"},
 	}, nil)
 
 	before := time.Now()
@@ -320,8 +320,8 @@ func TestCrashRecovery_GuardWithValidatorAndInvWindows(t *testing.T) {
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "validator"},
-		{TmuxWindowID: "@1", Name: "inv-goal-001"},
+		{TmuxWindowID: "@0", Name: "validator-001"},
+		{TmuxWindowID: "@1", Name: "inv-001-1"},
 	}, nil)
 
 	before := time.Now()
@@ -346,7 +346,7 @@ func TestCrashRecovery_GuardWithSupervisorAndInvWindows(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@1", Name: "inv-goal-001"},
+		{TmuxWindowID: "@1", Name: "inv-001-1"},
 	}, nil)
 
 	before := time.Now()

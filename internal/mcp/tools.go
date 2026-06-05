@@ -691,8 +691,11 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	// workers never consume this goal's budget. "supervisor-<ns>" → "<base>-<ns>-"
 	// (e.g. execute-<ns>- / inv-<ns>-), which also matches the daemon's per-goal
 	// teardown (killWindowsByPrefix executePrefix/invPrefix), so workers are no
-	// longer orphaned at goal completion. The bare "supervisor" (MaxGoals=1) leaves
-	// the prefix unchanged — byte-identical to before.
+	// longer orphaned at goal completion. Post-P1 a goal supervisor is ALWAYS
+	// "supervisor-<ns>" (even at MaxGoals=1), so this derivation fires for every
+	// goal. The bare "supervisor" now denotes ONLY window-0 / a standalone
+	// interactive supervisor, which never spawns goal workers, so the prefix is
+	// left unchanged for it.
 	if ns := strings.TrimPrefix(supervisorWid, "supervisor-"); ns != "" && ns != supervisorWid {
 		prefix = strings.TrimSuffix(prefix, "-") + "-" + ns + "-"
 	}

@@ -12,6 +12,7 @@ import (
 
 var managedEntries = []string{
 	"/.tmux-cli/",
+	"/.tmux-cli-worktrees/",
 	"/.claude/settings.json",
 	"/.claude/commands/tmux/",
 }

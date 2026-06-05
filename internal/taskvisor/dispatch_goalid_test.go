@@ -45,7 +45,7 @@ tasks:
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@99", Name: "supervisor", CurrentCommand: "claude"},
+		{TmuxWindowID: "@99", Name: "supervisor-007", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@99").Return("some output ❯ ", nil)
 

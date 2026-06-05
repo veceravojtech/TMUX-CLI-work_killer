@@ -11,9 +11,10 @@ import (
 type settingItem struct {
 	key    string
 	label  string
-	kind   string // "bool" or "int"
+	kind   string // "bool", "int", or "string"
 	value  bool
 	intVal int
+	strVal string
 }
 
 type Model struct {
@@ -46,6 +47,9 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.transient_retry_max_attempts", label: "Taskvisor Transient Retry Max Attempts", kind: "int", intVal: settings.Taskvisor.TransientRetryMaxAttempts},
 			{key: "taskvisor.transient_retry_backoff_ms", label: "Taskvisor Transient Retry Backoff (ms)", kind: "int", intVal: settings.Taskvisor.TransientRetryBackoffMs},
 			{key: "supervisor.max_goals", label: "Max Goals (concurrent)", kind: "int", intVal: settings.Supervisor.MaxGoals},
+			{key: "taskvisor.progress_timeout_sec", label: "Taskvisor Progress Timeout (s)", kind: "int", intVal: settings.Taskvisor.ProgressTimeoutSec},
+			{key: "taskvisor.max_wall_clock_sec", label: "Taskvisor Max Wall Clock (sec)", kind: "int", intVal: settings.Taskvisor.MaxWallClockSec},
+			{key: "taskvisor.integration_cmd", label: "Taskvisor Integration Cmd", kind: "string", strVal: settings.Taskvisor.IntegrationCmd},
 		},
 	}
 }
@@ -57,6 +61,35 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		cur := &m.items[m.cursor]
+
+		// String items capture printable runes / space / backspace as literal text
+		// input — only Esc and the arrow keys escape the field. (Letters like "q" are
+		// literal characters here, NOT a quit; bool/int items keep the q/esc quit.)
+		if cur.kind == "string" {
+			switch msg.Type {
+			case tea.KeyEsc:
+				return m, tea.Quit
+			case tea.KeyUp:
+				if m.cursor > 0 {
+					m.cursor--
+				}
+			case tea.KeyDown:
+				if m.cursor < len(m.items)-1 {
+					m.cursor++
+				}
+			case tea.KeyBackspace, tea.KeyDelete:
+				if r := []rune(cur.strVal); len(r) > 0 {
+					cur.strVal = string(r[:len(r)-1])
+				}
+			case tea.KeyRunes, tea.KeySpace:
+				// KeySpace carries Runes==[' '] in bubbletea, so appending msg.Runes
+				// types a literal space rather than toggling.
+				cur.strVal += string(msg.Runes)
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "esc":
 			return m, tea.Quit
@@ -69,16 +102,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 		case " ", "enter":
-			if m.items[m.cursor].kind == "bool" {
-				m.items[m.cursor].value = !m.items[m.cursor].value
+			if cur.kind == "bool" {
+				cur.value = !cur.value
 			}
 		case "right", "l":
-			if m.items[m.cursor].kind == "int" {
-				m.items[m.cursor].intVal++
+			if cur.kind == "int" {
+				cur.intVal++
 			}
 		case "left", "h":
-			if m.items[m.cursor].kind == "int" && m.items[m.cursor].intVal > 0 {
-				m.items[m.cursor].intVal--
+			if cur.kind == "int" && cur.intVal > 0 {
+				cur.intVal--
 			}
 		}
 	}
@@ -105,6 +138,12 @@ func (m Model) View() string {
 			} else {
 				indicator = checkStyle.Render("[" + val + "]")
 			}
+		} else if item.kind == "string" {
+			if item.strVal == "" {
+				indicator = uncheckStyle.Render("[ ]")
+			} else {
+				indicator = checkStyle.Render("[" + item.strVal + "]")
+			}
 		} else {
 			if item.value {
 				indicator = checkStyle.Render("[x]")
@@ -118,6 +157,8 @@ func (m Model) View() string {
 			hint := item.key
 			if item.kind == "int" {
 				hint += "  ←/→ adjust"
+			} else if item.kind == "string" {
+				hint += "  type to edit • ⌫ delete"
 			}
 			line = selectedStyle.Render("> "+line) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(hint)
 		} else {
@@ -171,10 +212,16 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Taskvisor.CircuitBreakerK = item.intVal
 		case "taskvisor.auto_resume_interval_sec":
 			s.Taskvisor.AutoResumeIntervalSec = item.intVal
+		case "taskvisor.progress_timeout_sec":
+			s.Taskvisor.ProgressTimeoutSec = item.intVal
+		case "taskvisor.max_wall_clock_sec":
+			s.Taskvisor.MaxWallClockSec = item.intVal
 		case "taskvisor.transient_retry_max_attempts":
 			s.Taskvisor.TransientRetryMaxAttempts = item.intVal
 		case "taskvisor.transient_retry_backoff_ms":
 			s.Taskvisor.TransientRetryBackoffMs = item.intVal
+		case "taskvisor.integration_cmd":
+			s.Taskvisor.IntegrationCmd = item.strVal
 		}
 	}
 	return &s

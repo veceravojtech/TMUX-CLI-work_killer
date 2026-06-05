@@ -25,13 +25,15 @@ import (
 
 // markerCaptureMocks mirrors setupDispatchMocks but captures every command
 // sent to the new supervisor window so tests can assert which dispatch path
-// (/tmux:plan = full dispatch vs /tmux:supervisor = retry) was chosen.
-func markerCaptureMocks(exec *testutil.MockTmuxExecutor, newWindowID string) *[]string {
+// (/tmux:plan = full dispatch vs /tmux:supervisor = retry) was chosen. The
+// goal supervisor window is ALWAYS namespaced (supervisor-<ns>); supName names
+// the window waitClaudeBoot/waitForPrompt must resolve for this goal.
+func markerCaptureMocks(exec *testutil.MockTmuxExecutor, newWindowID, supName string) *[]string {
 	// 4 kill lookups + 1 collectManagedNames + 1 waitWindowsGone
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(6)
 	// waitClaudeBoot: supervisor window up and running claude
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: newWindowID, Name: "supervisor", CurrentCommand: "claude"},
+		{TmuxWindowID: newWindowID, Name: supName, CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, newWindowID).Return("some output ❯ ", nil)
 
@@ -79,7 +81,7 @@ func TestDispatchCandidate_SpecBounceForcesFullDispatch(t *testing.T) {
 	require.NoError(t, err)
 	writeGoalTasksYaml(t, dir, "goal-064", markerTasksYaml)
 
-	sent := markerCaptureMocks(exec, "@99")
+	sent := markerCaptureMocks(exec, "@99", "supervisor-064")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
 
 	require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
@@ -112,7 +114,7 @@ func TestDispatchCandidate_ImplementerMarkerUsesRetry(t *testing.T) {
 	writeGoalTasksYaml(t, dir, "goal-064", markerTasksYaml)
 	writeTaskContext(t, dir, ".tmux-cli/research/ctx-marker.md", "# Task ctx")
 
-	sent := markerCaptureMocks(exec, "@99")
+	sent := markerCaptureMocks(exec, "@99", "supervisor-064")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
 
 	require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
@@ -142,7 +144,7 @@ func TestDispatchCandidate_EmptyMarkerLegacyHeuristic(t *testing.T) {
 		writeGoalTasksYaml(t, dir, "goal-064", markerTasksYaml)
 		writeTaskContext(t, dir, ".tmux-cli/research/ctx-marker.md", "# Task ctx")
 
-		sent := markerCaptureMocks(exec, "@99")
+		sent := markerCaptureMocks(exec, "@99", "supervisor-064")
 		d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
 
 		require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
@@ -167,7 +169,7 @@ func TestDispatchCandidate_EmptyMarkerLegacyHeuristic(t *testing.T) {
 		// tasks.yaml present, so ONLY the untouched budget keeps this on the full path.
 		writeGoalTasksYaml(t, dir, "goal-064", markerTasksYaml)
 
-		sent := markerCaptureMocks(exec, "@99")
+		sent := markerCaptureMocks(exec, "@99", "supervisor-064")
 		d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
 
 		require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
@@ -196,7 +198,7 @@ func TestDispatchMarker_ClearedOnDispatch(t *testing.T) {
 		_, err := EnsureGoalDir(dir, "goal-064")
 		require.NoError(t, err)
 
-		_ = markerCaptureMocks(exec, "@99")
+		_ = markerCaptureMocks(exec, "@99", "supervisor-064")
 		d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
 
 		require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
@@ -229,7 +231,7 @@ func TestDispatchMarker_ClearedOnDispatch(t *testing.T) {
 		writeGoalTasksYaml(t, dir, "goal-064", markerTasksYaml)
 		writeTaskContext(t, dir, ".tmux-cli/research/ctx-marker.md", "# Task ctx")
 
-		_ = markerCaptureMocks(exec, "@99")
+		_ = markerCaptureMocks(exec, "@99", "supervisor-064")
 		d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
 
 		require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))

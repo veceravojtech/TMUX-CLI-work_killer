@@ -6,11 +6,15 @@ Go daemon that sits above supervisor and drives autonomous goal completion throu
 
 ```
 tmux session
-├── supervisor (window 0) — Claude LLM (interactive) or goal execution (autonomous)
-├── taskvisor  (window 1) — Go daemon (permanent anchor, kill-protected)
-├── validator  (ephemeral) — Claude LLM, created/killed by daemon after supervisor
-├── execute-N  (ephemeral) — created by supervisor's Claude, killed by supervisor
+├── supervisor       (window 0)  — Claude LLM, human interactive / standalone. NEVER killed or reused for goal execution.
+├── taskvisor        (window 1)  — Go daemon (permanent anchor, kill-protected)
+├── supervisor-<ns>  (ephemeral) — per-goal goal-execution supervisor, spawned/killed by daemon (always namespaced, even at max_goals=1)
+├── validator-<ns>   (ephemeral) — per-goal Claude LLM, created/killed by daemon after the goal supervisor
+├── execute-<ns>-N   (ephemeral) — created by the goal supervisor's Claude, killed by supervisor/daemon
+└── inv-<ns>-N       (ephemeral) — per-goal read-only investigator workers, spawned by the validator
 ```
+
+Goal windows are ALWAYS namespaced by the goal's `<ns>` (the goal id with the `goal-` prefix stripped, e.g. `goal-008` → `008`), regardless of `max_goals`. Window-0 `supervisor` is the human's interactive/standalone window: the daemon never kills or recreates it for goal execution ([[never-kill-tmux-server-pid]]).
 
 Both windows are created by `tmux-cli start-attach`:
 1. Window 0 = "supervisor" with Claude Code (existing behavior)
@@ -24,16 +28,16 @@ Triggered explicitly by `tmux-cli taskvisor start` (CLI) or `taskvisor-start` MC
 
 On activation:
 1. Write `.tmux-cli/taskvisor-active` guard file (suppresses hooks)
-2. Kill supervisor window 0, recreate it fresh for goal execution
-3. Begin dispatch-validate-retry loop
+2. Sweep any leftover per-goal windows (`supervisor-<ns>` etc.) from a prior run; window-0 `supervisor` is left untouched
+3. Begin dispatch-validate-retry loop — each dispatch spawns a fresh per-goal `supervisor-<ns>` window for goal execution
 
-Taskvisor is the **sole authority** over supervisor lifecycle while ACTIVE. Only the daemon can kill/restart the supervisor window.
+Taskvisor is the **sole authority** over the per-goal `supervisor-<ns>` lifecycle while ACTIVE. It never touches window-0 `supervisor`.
 
 ### Mode switch: ACTIVE → IDLE
 
 When all goals are done/failed:
-1. Kill supervisor window 0 (goal execution Claude)
-2. Recreate supervisor window 0 with fresh Claude Code (interactive mode)
+1. Tear down the in-flight goal's `supervisor-<ns>` / `validator-<ns>` / `execute-<ns>-` / `inv-<ns>-` windows
+2. Ensure window-0 `supervisor` exists (create a bare `supervisor` ONLY if none is live — never kill/recreate the existing one)
 3. Remove `.tmux-cli/taskvisor-active` guard file (hooks resume)
 4. Return to IDLE, watching for new goals
 
@@ -179,30 +183,27 @@ The `--run` flag is internal — it starts the daemon loop directly. The daemon 
 1. Write `.tmux-cli/taskvisor-active` guard file (suppresses hooks)
 2. Verify `plan.auto_approve` and `plan.auto_execute` are true in setting.yaml — if not, set them (required for autonomous operation)
 3. Set `current_goal` to first pending goal in goals.yaml
-4. Kill supervisor window 0 (via raw executor — name-to-ID resolution via ListWindows, then KillWindow)
-5. Kill any lingering execute-N and validator windows
-6. Begin dispatch loop
+4. Sweep leftover per-goal windows (`supervisor-<ns>` / `execute-<ns>-` / `validator-<ns>` / `inv-<ns>-`) from a prior run — window-0 `supervisor` is NOT in the sweep set
+5. Begin dispatch loop
 
 ### deactivate() — when all goals done/failed
 
-1. Kill supervisor window 0 (goal execution Claude)
-2. Kill any lingering execute-N and validator windows
-3. Wait for killed windows to disappear (same poll-until-gone pattern as dispatch step 5)
-4. Create fresh "supervisor" window via `mcp.NewServer(workDir).WindowsCreate("supervisor", "")` — user gets Claude Code back
-5. Wait for Claude boot (same poll pattern)
-6. Remove `.tmux-cli/taskvisor-active` guard file (hooks resume)
-7. Return to IDLE mode
+1. Tear down the in-flight goal's per-goal windows (`supervisor-<ns>` / `validator-<ns>` / `execute-<ns>-` / `inv-<ns>-`)
+2. Wait for killed windows to disappear (same poll-until-gone pattern as dispatch)
+3. Ensure window-0 `supervisor` exists: list windows; if NONE is named `supervisor`, create a bare `supervisor` (`WindowsCreate("supervisor", "")`) + wait for Claude boot; otherwise no-op. NEVER kill/recreate an existing window-0 `supervisor` ([[never-kill-tmux-server-pid]]).
+4. Remove `.tmux-cli/taskvisor-active` guard file (hooks resume)
+5. Return to IDLE mode
 
 ### dispatch(goal)
 
 1. Write `.tmux-cli/goals/<id>/dispatch.md` using the dispatch template (see below)
 2. Write `.tmux-cli/taskvisor-current-goal` with goal ID (supervisor reads this in step 9b to know where to write signal)
-3. Kill existing "supervisor" window if present (via raw executor)
-4. Kill any lingering execute-N and validator windows (list, filter by prefix/name, kill via raw executor)
-5. **Wait for killed windows to disappear**: poll `ListWindows()` until no window named "supervisor" exists (5s timeout, check every 500ms). `WindowsCreate` enforces name uniqueness — creating before the old window is fully gone will fail with `ErrWindowCreateFailed`.
-6. Create fresh "supervisor" window via `mcp.NewServer(workDir).WindowsCreate("supervisor", "")` — gets UUID + env + post-command setup
-7. Wait for Claude to boot: poll `ListWindows()` until supervisor's `CurrentCommand != "zsh"` (30s timeout, check every 2s)
-8. Send `/tmux:plan .tmux-cli/goals/<id>/dispatch.md` via tmux executor SendMessage
+3. Compute the per-goal `supervisor-<ns>` name and write it byte-exact to `.tmux-cli/goals/<id>/supervisor-window` (the marker the supervisor/plan agent reads to self-identify)
+4. Kill any leftover windows under THIS goal's namespace (`supervisor-<ns>` / `execute-<ns>-` / `validator-<ns>` / `inv-<ns>-`) — sibling goals and window-0 `supervisor` are untouched
+5. **Wait for killed windows to disappear**: poll `ListWindows()` until this goal's namespaced windows are gone (5s timeout). `WindowsCreate` enforces name uniqueness.
+6. Create the per-goal `supervisor-<ns>` window via `WindowsCreate("supervisor-<ns>", cwd)` (cwd = the goal's git worktree at max_goals>1) — gets UUID + env + post-command setup
+7. Wait for Claude to boot: poll `ListWindows()` until the goal supervisor's `CurrentCommand != "zsh"` (30s timeout, check every 2s)
+8. Send `/tmux:plan .tmux-cli/goals/<id>/dispatch.md <id>` via tmux executor SendMessage
 9. Set goal status=running, save goals.yaml
 10. Record dispatch timestamp for timeout tracking
 

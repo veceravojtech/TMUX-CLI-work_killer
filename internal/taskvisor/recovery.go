@@ -69,7 +69,7 @@ func (d *Daemon) crashRecovery() error {
 			case *ValidatorSignal:
 				rt.phase = phaseValidating
 			}
-			rt.phaseStartedAt = time.Now()
+			rt.phaseStartedAt = d.now()
 			continue
 		}
 		needWindowCheck = append(needWindowCheck, g)
@@ -94,7 +94,7 @@ func (d *Daemon) crashRecovery() error {
 		for _, w := range windows {
 			if w.Name == validatorWindow(g.ID, mg) || strings.HasPrefix(w.Name, invPrefix(g.ID, mg)) {
 				rt.phase = phaseValidating
-				rt.phaseStartedAt = time.Now()
+				rt.phaseStartedAt = d.now()
 				log.Printf("crash recovery: %s validator/investigator window found, resuming validating phase", g.ID)
 				resumedValidating = true
 				break

@@ -291,7 +291,7 @@ func TestTick_SelfRecoversStuckSubtreeOnLoad(t *testing.T) {
 	_, err := EnsureGoalDir(dir, "goal-004")
 	require.NoError(t, err)
 
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-004")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	err = d.tick(context.Background(), gf)

@@ -181,7 +181,7 @@ func TestCheckStall_ResetOnDispatch(t *testing.T) {
 	writeGoals(t, dir, gf)
 	_, err := EnsureGoalDir(dir, "goal-A")
 	require.NoError(t, err)
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-A")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	require.NoError(t, d.dispatch(&gf.Goals[0], gf))

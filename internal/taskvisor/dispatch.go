@@ -136,6 +136,47 @@ func (d *Daemon) writeCycleMarker(goal *Goal, mg int) error {
 	return nil
 }
 
+// writeSupervisorWindowMarker publishes the EXACT supervisor window name the
+// daemon computed for this goal to .tmux-cli/goals/<id>/supervisor-window, so a
+// supervisor/plan agent booting in a goal-namespaced (never tmux-active) window
+// can self-identify its window authoritatively instead of guessing via
+// `tmux display-message -p #W` (which returns the session-active window — wrong
+// at MaxGoals>1). It takes the already-computed `name` (NOT (goalID, mg)) so the
+// persisted marker is provably identical to the createWindow(supWin,...) argument
+// — no recompute-drift. Byte-exact: the name is written with NO trailing newline.
+// MkdirAll is defensive/idempotent (the goal dir is created earlier in both
+// dispatch paths). Mirrors the writeCycleMarker/writeWorktreeMarker idiom.
+func (d *Daemon) writeSupervisorWindowMarker(goalID, name string) error {
+	dir := filepath.Join(d.workDir, ".tmux-cli", "goals", goalID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir supervisor-window marker dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "supervisor-window"), []byte(name), 0o644); err != nil {
+		return fmt.Errorf("write supervisor-window marker: %w", err)
+	}
+	return nil
+}
+
+// writeValidatorWindowMarker publishes the EXACT validator window name the daemon
+// computed for this goal to .tmux-cli/goals/<id>/validator-window, mirroring
+// writeSupervisorWindowMarker. Now that validator windows are ALWAYS namespaced
+// (validator-<ns>), investigate.xml can no longer hardcode bare "validator" as
+// VALIDATOR_WID; it reads this marker verbatim instead — authoritative, and immune
+// to the unreliable `tmux display-message -p #W` probe ([[plan-wid-is-goal-namespaced]]).
+// Takes the already-computed `name` (NOT (goalID, mg)) so the persisted marker is
+// provably identical to the createWindow(valWin,...) argument — no recompute-drift.
+// Byte-exact: the name is written with NO trailing newline.
+func (d *Daemon) writeValidatorWindowMarker(goalID, name string) error {
+	dir := filepath.Join(d.workDir, ".tmux-cli", "goals", goalID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir validator-window marker dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "validator-window"), []byte(name), 0o644); err != nil {
+		return fmt.Errorf("write validator-window marker: %w", err)
+	}
+	return nil
+}
+
 func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	// B4: repair-at-dispatch. A planner re-write of goal.md can strip the
 	// `## Investigation Config` section post-creation; re-assert it (>=2
@@ -231,7 +272,7 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 
 	// Per-goal worktree isolation (E1-1a), gated on MaxGoals>1. At MaxGoals=1 this
 	// returns d.workDir with NO git call; at MaxGoals>1 it materializes (or reuses)
-	// .tmux-cli/worktrees/<id> and returns its path so the supervisor — and the
+	// .tmux-cli-worktrees/<id> and returns its path so the supervisor — and the
 	// workers it spawns — edit tracked source inside the isolated checkout.
 	cwd, err := d.ensureWorktree(goal, mg > 1)
 	if err != nil {
@@ -239,6 +280,9 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	}
 
 	supWin := supervisorWindow(goal.ID, mg)
+	if err := d.writeSupervisorWindowMarker(goal.ID, supWin); err != nil {
+		return fmt.Errorf("write supervisor-window marker: %w", err)
+	}
 	winInfo, err := d.createWindow(supWin, "", cwd)
 	if err != nil {
 		return fmt.Errorf("create supervisor: %w", err)
@@ -249,20 +293,20 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	}
 
 	log.Printf("dispatch: waitClaudeBoot done, waiting for prompt...")
-	if err := d.waitForPrompt(supWin, 30*time.Second); err != nil {
-		log.Printf("warning: waitForPrompt: %v (proceeding anyway)", err)
+	if err := d.waitForPromptOrFail(supWin, 30*time.Second); err != nil {
+		return fmt.Errorf("dispatch: wait for supervisor prompt: %w", err)
 	}
 	log.Printf("dispatch: prompt detected, sending command")
 
 	d.currentGoal = goal.ID
 	rt := d.runtime(goal.ID)
-	rt.bootConfirmedAt = time.Now()
+	rt.bootConfirmedAt = d.now()
 	oldPhase := rt.phase
 	rt.phase = phaseSupervising
 	log.Printf("%s: phase %s -> supervising", goal.ID, phaseName(oldPhase))
 
 	dispatchPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "dispatch.md")
-	planCmd := fmt.Sprintf("/tmux:plan %s", dispatchPath)
+	planCmd := fmt.Sprintf("/tmux:plan %s %s", dispatchPath, goal.ID)
 	log.Printf("dispatch: sending to session=%s window=%s cmd=%s", d.session, winInfo.TmuxWindowID, planCmd)
 	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, planCmd); err != nil {
 		return fmt.Errorf("send plan command: %w", err)
@@ -293,7 +337,7 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	// Successful dispatch ends the stall episode (watchdog reset).
 	d.idleTicks = 0
 	d.stallReported = false
-	rt.dispatchTime = time.Now()
+	rt.dispatchTime = d.now()
 	rt.lastSupervisorStatus = "dispatched"
 	return nil
 }
@@ -313,7 +357,8 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	}
 
 	if err := d.injectCorrections(goal); err != nil {
-		log.Printf("dispatchRetry: injectCorrections failed: %v", err)
+		log.Printf("dispatchRetry: injectCorrections failed, falling back to full dispatch: %v", err)
+		return d.dispatch(goal, goals)
 	}
 
 	if err := d.writeDispatchMd(goal); err != nil {
@@ -360,6 +405,9 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	}
 
 	supWin := supervisorWindow(goal.ID, mg)
+	if err := d.writeSupervisorWindowMarker(goal.ID, supWin); err != nil {
+		return fmt.Errorf("write supervisor-window marker: %w", err)
+	}
 	winInfo, err := d.createWindow(supWin, "", cwd)
 	if err != nil {
 		return fmt.Errorf("create supervisor: %w", err)
@@ -370,14 +418,14 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	}
 
 	log.Printf("dispatchRetry: waitClaudeBoot done, waiting for prompt...")
-	if err := d.waitForPrompt(supWin, 30*time.Second); err != nil {
-		log.Printf("warning: waitForPrompt: %v (proceeding anyway)", err)
+	if err := d.waitForPromptOrFail(supWin, 30*time.Second); err != nil {
+		return fmt.Errorf("dispatchRetry: wait for supervisor prompt: %w", err)
 	}
 	log.Printf("dispatchRetry: prompt detected, sending /tmux:supervisor (skip planning)")
 
 	d.currentGoal = goal.ID
 	rt := d.runtime(goal.ID)
-	rt.bootConfirmedAt = time.Now()
+	rt.bootConfirmedAt = d.now()
 	oldPhase := rt.phase
 	rt.phase = phaseSupervising
 	log.Printf("%s: phase %s -> supervising (retry, skip plan)", goal.ID, phaseName(oldPhase))
@@ -414,7 +462,7 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	// Successful re-dispatch ends the stall episode (watchdog reset).
 	d.idleTicks = 0
 	d.stallReported = false
-	rt.dispatchTime = time.Now()
+	rt.dispatchTime = d.now()
 	rt.lastSupervisorStatus = "dispatched"
 	return nil
 }
@@ -632,6 +680,14 @@ func (d *Daemon) writeWorktreeMarker(cwd string) {
 
 func (d *Daemon) createValidatorAndSendPayload(goal *Goal) error {
 	valWin := validatorWindow(goal.ID, d.maxGoals())
+	// Publish the resolved validator window name so investigate.xml can self-identify
+	// VALIDATOR_WID by reading the marker verbatim (never the bare-name guess). Log,
+	// don't fail dispatch — a missing marker degrades investigator reply routing but
+	// must not block validation. Written BEFORE createWindow so it is on disk by the
+	// time the validator agent boots and reads it.
+	if err := d.writeValidatorWindowMarker(goal.ID, valWin); err != nil {
+		log.Printf("warning: write validator-window marker: %v", err)
+	}
 	// Route the validator window into the goal's worktree (E1-1c) so the
 	// orchestrator and its inv-* investigators run quality/test commands against
 	// ONLY this goal's (uncommitted) edits. goalWorkDir is the single chokepoint;
@@ -647,11 +703,11 @@ func (d *Daemon) createValidatorAndSendPayload(goal *Goal) error {
 		return fmt.Errorf("waitClaudeBoot validator: %w", err)
 	}
 
-	if err := d.waitForPrompt(valWin, 30*time.Second); err != nil {
-		log.Printf("warning: waitForPrompt validator: %v (proceeding anyway)", err)
+	if err := d.waitForPromptOrFail(valWin, 30*time.Second); err != nil {
+		return fmt.Errorf("create validator: wait for prompt: %w", err)
 	}
 
-	d.runtime(goal.ID).bootConfirmedAt = time.Now()
+	d.runtime(goal.ID).bootConfirmedAt = d.now()
 
 	goalMdPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "goal.md")
 	investigateCmd := fmt.Sprintf("/tmux:investigate %s", goalMdPath)

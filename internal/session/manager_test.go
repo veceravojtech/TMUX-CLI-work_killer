@@ -144,6 +144,35 @@ func TestSessionManager_CreateSession_Success(t *testing.T) {
 	mockExec.AssertCalled(t, "SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp")
 }
 
+// TestCreateSession_Window0StaysSupervisor pins the load-bearing window-0
+// guarantee (manager.go:85): the first window MUST be named "supervisor" for the
+// UUID stamp to fire. P1 namespaces goal windows but never renames window-0, so
+// this guard must keep holding — the daemon's deactivate ensure-exists and the
+// goal-skip sweep both depend on window-0 staying bare "supervisor".
+func TestCreateSession_Window0StaysSupervisor(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
+	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	mockExec.On("SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return len(s) > 0
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-id", "@0", mock.Anything).Return("", nil)
+
+	manager := NewSessionManager(mockExec)
+	require.NoError(t, manager.CreateSession("test-id", "/tmp"))
+
+	// The UUID stamp fires ONLY when window-0 is named "supervisor"; asserting the
+	// SetWindowOption call confirms window-0 kept the bare name.
+	mockExec.AssertCalled(t, "SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string"))
+}
+
 // TestSessionManager_CreateSession_PathNotExist tests error when path doesn't exist
 func TestSessionManager_CreateSession_PathNotExist(t *testing.T) {
 	mockExec := new(MockTmuxExecutor)

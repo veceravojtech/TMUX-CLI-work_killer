@@ -24,6 +24,14 @@ func setupIntegrationDaemon(t *testing.T) (*Daemon, *testutil.MockTmuxExecutor, 
 	d.validatorSendDelay = 0
 	d.promptSettleDelay = 0
 	d.promptPollInterval = 0
+	// Disable the P2 progress heartbeat in the integration harness for the same
+	// reason as setupDaemon — keep full-cycle tests byte-identical; heartbeat
+	// coverage lives in the dedicated unit tests.
+	d.progressTimeout = 0
+	// Likewise disable the P3 wall-clock ceiling: New() seeds it to 4h, but these
+	// full-cycle tests run with a zero activatedAt and the real clock, which would
+	// spuriously halt; wall-clock coverage lives in wallclock_budget_test.go.
+	d.maxWallClock = 0
 	d.session = testSession
 	d.mode = modeActive
 	writeSettings(t, dir, true, true)
@@ -83,7 +91,7 @@ func TestIntegration_FullCyclePass(t *testing.T) {
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -100,7 +108,7 @@ func TestIntegration_FullCyclePass(t *testing.T) {
 	exec.Calls = nil
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	setupDeactivateMocks(exec, testSession, "@10")
@@ -146,7 +154,7 @@ func TestIntegration_FullCycleFailRetry(t *testing.T) {
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -164,7 +172,7 @@ func TestIntegration_FullCycleFailRetry(t *testing.T) {
 	exec.Calls = nil
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -210,7 +218,7 @@ func TestIntegration_StoppedRetry(t *testing.T) {
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -227,7 +235,7 @@ func TestIntegration_StoppedRetry(t *testing.T) {
 	exec.Calls = nil
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -271,7 +279,7 @@ func TestIntegration_MaxRetriesExhausted(t *testing.T) {
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -284,7 +292,7 @@ func TestIntegration_MaxRetriesExhausted(t *testing.T) {
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -319,10 +327,14 @@ func TestIntegration_MultiGoalSequential(t *testing.T) {
 	ctx := context.Background()
 
 	passGoal := func(goalID string) {
+		// Goal windows are always namespaced — derive this goal's supervisor /
+		// validator window names so waitClaudeBoot resolves the right one.
+		supName := "supervisor-" + strings.TrimPrefix(goalID, "goal-")
+		valName := "validator-" + strings.TrimPrefix(goalID, "goal-")
 		// dispatch
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
-		setupDispatchMocks(exec, testSession, "@0")
+		setupDispatchMocks(exec, testSession, "@0", supName)
 		d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 		require.NoError(t, d.tick(ctx, gf))
 
@@ -337,7 +349,7 @@ func TestIntegration_MultiGoalSequential(t *testing.T) {
 		exec.Calls = nil
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-			{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+			{TmuxWindowID: "@5", Name: valName, CurrentCommand: "claude"},
 		}, nil)
 		exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 		exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -351,7 +363,7 @@ func TestIntegration_MultiGoalSequential(t *testing.T) {
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-			{TmuxWindowID: "@5", Name: "validator"},
+			{TmuxWindowID: "@5", Name: valName},
 		}, nil).Once()
 		exec.On("KillWindow", testSession, "@5").Return(nil)
 	}
@@ -405,7 +417,7 @@ func TestIntegration_CrashRecoveryMidValidation(t *testing.T) {
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
@@ -421,7 +433,7 @@ func TestIntegration_CrashRecoveryMidValidation(t *testing.T) {
 	exec.Calls = nil
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	setupDeactivateMocks(exec, testSession, "@10")
@@ -555,7 +567,7 @@ func TestIntegration_RetryExhaustion_CascadeAndDeactivate(t *testing.T) {
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -570,7 +582,7 @@ func TestIntegration_RetryExhaustion_CascadeAndDeactivate(t *testing.T) {
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	setupDeactivateOnCompletionMocks(exec, testSession)
@@ -637,7 +649,7 @@ func TestIntegration_RetryExhaustion_DiamondDeps_TerminalState(t *testing.T) {
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -651,7 +663,7 @@ func TestIntegration_RetryExhaustion_DiamondDeps_TerminalState(t *testing.T) {
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	setupDeactivateOnCompletionMocks(exec, testSession)
@@ -708,7 +720,7 @@ func TestIntegration_RetryExhaustion_PartialProgress_TerminalState(t *testing.T)
 	ctx := context.Background()
 
 	// --- Tick 1: dispatch goal-002 (goal-001 already done) ---
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-002")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 	require.NoError(t, d.tick(ctx, gf))
 	assert.Equal(t, GoalRunning, gf.Goals[1].Status)
@@ -719,7 +731,7 @@ func TestIntegration_RetryExhaustion_PartialProgress_TerminalState(t *testing.T)
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-002", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -733,7 +745,7 @@ func TestIntegration_RetryExhaustion_PartialProgress_TerminalState(t *testing.T)
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-002"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	setupDeactivateOnCompletionMocks(exec, testSession)
@@ -870,7 +882,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -885,7 +897,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -907,7 +919,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	*gf = *loaded
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
-	setupDispatchMocks(exec, testSession, "@10")
+	setupDispatchMocks(exec, testSession, "@10", "supervisor-003")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@10"))
 	require.NoError(t, d.tick(ctx, gf))
 
@@ -923,7 +935,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@15", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@15", Name: "validator-003", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@15").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@15", mock.MatchedBy(func(cmd string) bool {
@@ -938,7 +950,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@15", Name: "validator"},
+		{TmuxWindowID: "@15", Name: "validator-003"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@15").Return(nil)
 	setupDeactivateOnCompletionMocks(exec, testSession)
@@ -1091,9 +1103,11 @@ func TestIntegration_DependencyOrdering_FullGraph(t *testing.T) {
 	ctx := context.Background()
 
 	passGoal := func(goalID string) {
+		supName := "supervisor-" + strings.TrimPrefix(goalID, "goal-")
+		valName := "validator-" + strings.TrimPrefix(goalID, "goal-")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
-		setupDispatchMocks(exec, testSession, "@0")
+		setupDispatchMocks(exec, testSession, "@0", supName)
 		d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 		require.NoError(t, d.tick(ctx, gf))
 		loaded, err := LoadGoals(dir)
@@ -1105,7 +1119,7 @@ func TestIntegration_DependencyOrdering_FullGraph(t *testing.T) {
 		exec.Calls = nil
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-			{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+			{TmuxWindowID: "@5", Name: valName, CurrentCommand: "claude"},
 		}, nil)
 		exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 		exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -1118,7 +1132,7 @@ func TestIntegration_DependencyOrdering_FullGraph(t *testing.T) {
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-			{TmuxWindowID: "@5", Name: "validator"},
+			{TmuxWindowID: "@5", Name: valName},
 		}, nil).Once()
 		exec.On("KillWindow", testSession, "@5").Return(nil)
 	}
@@ -1191,7 +1205,7 @@ func TestIntegration_DependencyOrdering_FailedDepBlocksDownstream(t *testing.T) 
 	ctx := context.Background()
 
 	// Tick 1: dispatch goal-002
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-002")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 	require.NoError(t, d.tick(ctx, gf))
 	assert.Equal(t, GoalRunning, gf.Goals[1].Status)
@@ -1202,7 +1216,7 @@ func TestIntegration_DependencyOrdering_FailedDepBlocksDownstream(t *testing.T) 
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-002", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -1216,7 +1230,7 @@ func TestIntegration_DependencyOrdering_FailedDepBlocksDownstream(t *testing.T) 
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-002"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	setupDeactivateOnCompletionMocks(exec, testSession)
@@ -1269,7 +1283,7 @@ func TestIntegration_DependencyOrdering_IndependentBranchesNotBlocked(t *testing
 	ctx := context.Background()
 
 	// Tick 1: dispatch goal-002 (BC-A-domain) — first eligible by list position
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-002")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 	require.NoError(t, d.tick(ctx, gf))
 	assert.Equal(t, GoalRunning, gf.Goals[1].Status)
@@ -1280,7 +1294,7 @@ func TestIntegration_DependencyOrdering_IndependentBranchesNotBlocked(t *testing
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-002", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -1294,7 +1308,7 @@ func TestIntegration_DependencyOrdering_IndependentBranchesNotBlocked(t *testing
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-002"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -1319,7 +1333,7 @@ func TestIntegration_DependencyOrdering_IndependentBranchesNotBlocked(t *testing
 	// Tick 4: dispatch goal-003 (BC-B-domain) — independent branch continues
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
-	setupDispatchMocks(exec, testSession, "@10")
+	setupDispatchMocks(exec, testSession, "@10", "supervisor-003")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@10"))
 	require.NoError(t, d.tick(ctx, gf))
 
@@ -1376,13 +1390,13 @@ func TestIntegration_DispatchTimeout_FullLifecycle(t *testing.T) {
 
 	// Kill phase: killWindowByName("supervisor") finds old supervisor
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},
-		{TmuxWindowID: "@1", Name: "execute-1"},
+		{TmuxWindowID: "@0", Name: "supervisor-001"},
+		{TmuxWindowID: "@1", Name: "execute-001-1"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@0").Return(nil)
 	// killWindowsByPrefix("execute-") finds execute-1
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@1", Name: "execute-1"},
+		{TmuxWindowID: "@1", Name: "execute-001-1"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@1").Return(nil)
 	// killWindowByName("validator") — empty
@@ -1395,7 +1409,7 @@ func TestIntegration_DispatchTimeout_FullLifecycle(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	// waitClaudeBoot — booted
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@10", Name: "supervisor", CurrentCommand: "claude"},
+		{TmuxWindowID: "@10", Name: "supervisor-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@10").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@10", mock.Anything).Return(nil)
@@ -1458,7 +1472,7 @@ func TestIntegration_GoalsSequentialTasksParallel(t *testing.T) {
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -1473,7 +1487,7 @@ func TestIntegration_GoalsSequentialTasksParallel(t *testing.T) {
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	require.NoError(t, d.tick(ctx, gf))
@@ -1490,7 +1504,7 @@ func TestIntegration_GoalsSequentialTasksParallel(t *testing.T) {
 	// --- Tick: goal-002 dispatches now that goal-001 is done ---
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
-	setupDispatchMocks(exec, testSession, "@10")
+	setupDispatchMocks(exec, testSession, "@10", "supervisor-002")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@10"))
 	require.NoError(t, d.tick(ctx, gf))
 
@@ -1521,9 +1535,11 @@ func TestIntegration_GoalBlockedUntilPriorComplete(t *testing.T) {
 	ctx := context.Background()
 
 	passGoal := func(goalID string) {
+		supName := "supervisor-" + strings.TrimPrefix(goalID, "goal-")
+		valName := "validator-" + strings.TrimPrefix(goalID, "goal-")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
-		setupDispatchMocks(exec, testSession, "@0")
+		setupDispatchMocks(exec, testSession, "@0", supName)
 		d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 		require.NoError(t, d.tick(ctx, gf))
 		loaded, err := LoadGoals(dir)
@@ -1535,7 +1551,7 @@ func TestIntegration_GoalBlockedUntilPriorComplete(t *testing.T) {
 		exec.Calls = nil
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-			{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+			{TmuxWindowID: "@5", Name: valName, CurrentCommand: "claude"},
 		}, nil)
 		exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 		exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -1548,7 +1564,7 @@ func TestIntegration_GoalBlockedUntilPriorComplete(t *testing.T) {
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-			{TmuxWindowID: "@5", Name: "validator"},
+			{TmuxWindowID: "@5", Name: valName},
 		}, nil).Once()
 		exec.On("KillWindow", testSession, "@5").Return(nil)
 	}

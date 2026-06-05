@@ -45,6 +45,18 @@ type goalRuntime struct {
 	validateTime         time.Time
 	lastSupervisorStatus string
 
+	// lastProgressHash/lastProgressAt back the per-tick pane-output progress
+	// heartbeat (P2). lastProgressHash is the FNV-1a digest of the supervisor/
+	// validator pane at the last observation; lastProgressAt is the clock stamp
+	// (via d.now()) of the last time the digest CHANGED. checkProgressHeartbeat
+	// refreshes both on change and fires a stuck-recovery when the digest is
+	// static for >= d.progressTimeout while the window is still the agent. The
+	// zero value (empty hash, zero time) is "never observed" — the heartbeat
+	// seeds it on first observation and never fires the same tick. clearRuntime's
+	// map delete zeros these on goal exit; there is no in-place reset path.
+	lastProgressHash string
+	lastProgressAt   time.Time
+
 	// WorktreeDir/Branch hold the per-goal git-worktree isolation state (E1-1a).
 	// Set by ensureWorktree when MaxGoals>1 on a git repo; read by
 	// mergeWorktreeBack/discardWorktree and by execute-35 (validate isolation).
@@ -56,14 +68,28 @@ type goalRuntime struct {
 }
 
 type Daemon struct {
-	workDir            string
-	executor           tmux.TmuxExecutor
-	createWindowFn     WindowCreateFunc
-	mode               mode
-	session            string
-	pollInterval       time.Duration
-	dispatchTimeout    time.Duration
-	validateTimeout    time.Duration
+	workDir         string
+	executor        tmux.TmuxExecutor
+	createWindowFn  WindowCreateFunc
+	mode            mode
+	session         string
+	pollInterval    time.Duration
+	dispatchTimeout time.Duration
+	validateTimeout time.Duration
+	// progressTimeout bounds how long a dispatched supervisor/validator window may
+	// emit NO new pane output before the per-tick heartbeat (checkProgressHeartbeat)
+	// declares it wedged and recovers early — closing the silent-timeout hole where
+	// a stuck LLM was invisible until the 1h hard dispatch/validate timeout. Seeded
+	// to 5m by New() and overridable via taskvisor.progress_timeout_sec. A value
+	// <=0 DISABLES the heartbeat entirely (the literal-Daemon legacy test harness is
+	// then byte-identical to the pre-P2 build — no CaptureWindowOutput call).
+	progressTimeout time.Duration
+	// clock is the injectable time source for all deadline/interval MATH (the now()
+	// accessor). Seeded to time.Now by New(); tests inject a controllable clock to
+	// advance past progressTimeout deterministically. Nil ⇒ time.Now via now(), so
+	// a literal Daemon never panics. Timestamp FORMATTING (.UTC().Format) stays on
+	// time.Now() — only deadline math routes through the clock. P5/P3 reuse this seam.
+	clock              func() time.Time
 	validatorSendDelay time.Duration
 	promptSettleDelay  time.Duration
 	promptPollInterval time.Duration
@@ -105,6 +131,24 @@ type Daemon struct {
 	// appears, or the blocker leaves GoalFailed after `taskvisor goal reset`) the
 	// flag resets — so it needs no entry at the dispatch/deactivate reset sites.
 	finalGateStuckReported bool
+
+	// activatedAt stamps when the daemon last entered modeActive (set in activate()
+	// through the P2 clock seam d.now()). It is the epoch for the P3 wall-clock cost
+	// ceiling: tick() halts when d.now().Sub(activatedAt) >= maxWallClock. Re-stamped
+	// on every activate(), so a (re)start always resets the budget window.
+	activatedAt time.Time
+	// maxWallClock is the daemon's wall-clock cost ceiling (P3). New() seeds it to
+	// 4h (the DefaultSettings() value) so the ceiling is active even when a legacy
+	// setting.yaml omits max_wall_clock_sec; a positive taskvisor.max_wall_clock_sec
+	// overrides it in Run(). Zero ⇒ DISABLED (no halt ever fires): set explicitly in
+	// tests, or by an operator writing max_wall_clock_sec: 0. Wall-clock is the chosen
+	// proxy because token/$ spend is not observable by the daemon.
+	maxWallClock time.Duration
+	// haltReason, when non-empty, is the loud dashboard banner explaining a
+	// daemon-level halt (currently only the wall-clock ceiling). Set BEFORE
+	// deactivate() (whose tail render surfaces it) and cleared in activate() so a
+	// (re)start shows a clean IDLE/ACTIVE surface.
+	haltReason string
 }
 
 func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
@@ -114,6 +158,18 @@ func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
 		mode:            modeIdle,
 		pollInterval:    10 * time.Second,
 		dispatchTimeout: time.Hour,
+		// clock/progressTimeout seed the P2 heartbeat. clock defaults to the real
+		// wall clock; progressTimeout to 5m — 12× faster than the 1h hard timeout,
+		// the smallest window that won't false-positive on a normal `go test` run.
+		clock:           time.Now,
+		progressTimeout: 5 * time.Minute,
+		// maxWallClock seeds the P3 cost ceiling to 4h (mirroring progressTimeout's
+		// 5m seed). Seeding here — not relying on Run()'s settings-load — is what
+		// makes the ceiling reach a legacy setting.yaml that omits max_wall_clock_sec:
+		// such a file loads MaxWallClockSec==0, so Run()'s `if >0` override is skipped
+		// and this 4h seed stands. An explicit positive setting still overrides it in
+		// Run(); tests that need it DISABLED set d.maxWallClock=0 after New().
+		maxWallClock: 4 * time.Hour,
 		// validateTimeout is intentionally left zero-valued here. It is the
 		// single authoritative finalization point clampValidateTimeout() in
 		// Run() that sets the effective deadline (derived from the worker
@@ -164,6 +220,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 		if settings.Taskvisor.AutoResumeIntervalSec > 0 {
 			d.autoResumeInterval = time.Duration(settings.Taskvisor.AutoResumeIntervalSec) * time.Second
+		}
+		if settings.Taskvisor.ProgressTimeoutSec > 0 {
+			d.progressTimeout = time.Duration(settings.Taskvisor.ProgressTimeoutSec) * time.Second
+		}
+		// P3 wall-clock cost ceiling. Left zero (disabled) by New(); a positive
+		// setting enables it. A <=0 value keeps it disabled (byte-identical no-op).
+		if settings.Taskvisor.MaxWallClockSec > 0 {
+			d.maxWallClock = time.Duration(settings.Taskvisor.MaxWallClockSec) * time.Second
 		}
 	}
 
@@ -223,6 +287,18 @@ func (d *Daemon) clampValidateTimeout(maxWorkers int) {
 	}
 }
 
+// now is the single chokepoint for deadline/interval MATH. It returns d.clock()
+// when a clock is injected (tests advance it deterministically) and falls back to
+// time.Now() when nil, so a literal Daemon (the legacy test harness) never panics.
+// Timestamp FORMATTING (.UTC().Format) deliberately stays on time.Now() — only
+// deadline arithmetic routes through here.
+func (d *Daemon) now() time.Time {
+	if d.clock != nil {
+		return d.clock()
+	}
+	return time.Now()
+}
+
 func (d *Daemon) withGoalsLock(fn func() error) error {
 	return WithGoalsLock(d.workDir, fn)
 }
@@ -254,7 +330,10 @@ func (d *Daemon) runtime(goalID string) *goalRuntime {
 
 // clearRuntime drops the per-goal runtime for goalID. Called when a goal leaves
 // the in-flight set (advanceToNextGoal/deactivate) to bound map growth; with
-// MaxGoals=1 this is cosmetic but keeps the map honest for execute-31.
+// MaxGoals=1 this is cosmetic but keeps the map honest for execute-31. The map
+// delete zeros ALL per-goal fields including the P2 progress-heartbeat state
+// (lastProgressHash/lastProgressAt) — there is no in-place reset path, so a
+// re-dispatched goal always re-seeds its heartbeat from scratch.
 func (d *Daemon) clearRuntime(goalID string) {
 	delete(d.runtimes, goalID)
 }
@@ -344,7 +423,7 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	}
 
 	// Prune worktrees orphaned by a crashed run BEFORE selecting/dispatching the
-	// next goal: `git worktree prune` + remove .tmux-cli/worktrees/<id> dirs whose
+	// next goal: `git worktree prune` + remove .tmux-cli-worktrees/<id> dirs whose
 	// goal is not GoalRunning. No-op with zero git when the worktrees dir is absent
 	// (the MaxGoals=1 / never-parallel case), so activation stays byte-identical.
 	d.pruneOrphanWorktrees(goals)
@@ -373,15 +452,20 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	d.session = sessionID
 
 	// Startup cleanup of any leftover windows from a prior run. CurrentGoal names
-	// the goal about to be dispatched; at MaxGoals<=1 sweepGoalIDs returns [head]
-	// and the helpers return bare names (byte-identical to the pre-namespacing
-	// sweep). At MaxGoals>1 we sweep EVERY goal namespace so leftovers from any
-	// goal that was in flight in a prior run are cleared, not just the head's.
+	// the goal about to be dispatched; sweepGoalIDs returns [head] at MaxGoals<=1
+	// and every in-flight goal namespace at MaxGoals>1. killGoalWindows targets the
+	// per-goal namespaced names (supervisor-<ns> / execute-<ns>- / validator-<ns> /
+	// inv-<ns>-), so the human's window-0 bare "supervisor" is NEVER swept.
 	curGoal := goals.CurrentGoal
 	if err := d.killGoalWindows(d.sweepGoalIDs(curGoal, allGoalIDs(goals))); err != nil {
 		return err
 	}
 
+	// Stamp the wall-clock budget epoch (P3) via the P2 clock seam and clear any
+	// prior halt reason so a (re)start shows a clean surface. Both must precede the
+	// dashboard render below.
+	d.activatedAt = d.now()
+	d.haltReason = ""
 	d.mode = modeActive
 	if err := d.renderDashboard(os.Stdout); err != nil {
 		log.Printf("dashboard render error: %v", err)
@@ -393,10 +477,9 @@ func (d *Daemon) deactivate() error {
 	// currentGoal names the in-flight head (set on dispatch/crashRecovery; may be
 	// empty on an idle-path deactivate). Tear down EVERY in-flight goal namespace
 	// (the head plus every goal with a live runtime) so a sibling goal's windows
-	// are never orphaned at MaxGoals>1. At MaxGoals<=1 sweepGoalIDs collapses to
-	// [head] and the helpers return bare names, so this is byte-identical to the
-	// pre-namespacing teardown + the idle supervisor window supervisor.xml expects.
-	mg := d.maxGoals()
+	// are never orphaned at MaxGoals>1. teardownGoalWindows targets only the
+	// per-goal namespaced names, so the human's window-0 "supervisor" is never
+	// touched by the sweep.
 	curGoal := d.currentGoal
 	var inflight []string
 	for id := range d.runtimes {
@@ -406,13 +489,13 @@ func (d *Daemon) deactivate() error {
 		return err
 	}
 
-	supWin := supervisorWindow(curGoal, mg)
-	if _, err := d.createWindow(supWin, "", ""); err != nil {
-		return fmt.Errorf("create supervisor: %w", err)
-	}
-
-	if err := d.waitClaudeBoot(supWin, 30*time.Second); err != nil {
-		log.Printf("warning: waitClaudeBoot: %v", err)
+	// Ensure the human's window-0 bare "supervisor" exists once the daemon goes
+	// idle (supervisor.xml/standalone interaction lives here). We NEVER recreate a
+	// namespaced supervisor-<ns> here — those are per-goal, spawned only by
+	// dispatch — and we NEVER kill/recreate window-0 ([[never-kill-tmux-server-pid]]):
+	// create bare "supervisor" only when no window by that name is live, else no-op.
+	if err := d.ensureWindow0Supervisor(); err != nil {
+		return err
 	}
 
 	guardPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-active")
@@ -426,6 +509,32 @@ func (d *Daemon) deactivate() error {
 	d.mode = modeIdle
 	if err := d.renderDashboard(os.Stdout); err != nil {
 		log.Printf("dashboard render error: %v", err)
+	}
+	return nil
+}
+
+// ensureWindow0Supervisor guarantees the human's bare "supervisor" window is live
+// after the daemon goes idle, WITHOUT ever killing or recreating an existing one.
+// In normal operation window-0 "supervisor" (the session's first window, UUID-
+// stamped by session.Manager) is always present, so this is a no-op; it only
+// creates a bare "supervisor" when none is live (e.g. a session started without
+// it). It NEVER spawns a namespaced supervisor-<ns> — those are per-goal windows
+// owned by dispatch. See [[never-kill-tmux-server-pid]].
+func (d *Daemon) ensureWindow0Supervisor() error {
+	windows, err := d.listWindows()
+	if err != nil {
+		return fmt.Errorf("list windows: %w", err)
+	}
+	for _, w := range windows {
+		if w.Name == "supervisor" {
+			return nil // window-0 already live — leave it untouched
+		}
+	}
+	if _, err := d.createWindow("supervisor", "", ""); err != nil {
+		return fmt.Errorf("create supervisor: %w", err)
+	}
+	if err := d.waitClaudeBoot("supervisor", 30*time.Second); err != nil {
+		log.Printf("warning: waitClaudeBoot: %v", err)
 	}
 	return nil
 }

@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 18)
+	assert.Len(t, m.items, 21)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -50,6 +50,7 @@ commands:
 	assert.Equal(t, "taskvisor.transient_retry_max_attempts", m.items[15].key)
 	assert.Equal(t, "taskvisor.transient_retry_backoff_ms", m.items[16].key)
 	assert.Equal(t, "supervisor.max_goals", m.items[17].key)
+	assert.Equal(t, "taskvisor.progress_timeout_sec", m.items[18].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -144,17 +145,29 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 17, m.cursor)
 
-	// Can't go past last item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 17, m.cursor)
+	assert.Equal(t, 18, m.cursor)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 19, m.cursor)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 20, m.cursor)
+
+	// Can't go past last item (21 items → max index 20)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 20, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 16, m.cursor)
+	assert.Equal(t, 19, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 17; i++ {
+	for i := 0; i < 20; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -667,6 +680,50 @@ supervisor:
 	assert.Equal(t, 5, result.Supervisor.MaxCycles)
 }
 
+// TestSettingsTUI_MaxWallClockSec_RoundTrip proves the P3 wall-clock ceiling is
+// TUI-editable: NewModel surfaces the taskvisor.max_wall_clock_sec item, an edit
+// overlays onto Settings via ToSettings(), and sibling/undisplayed base fields are
+// preserved (AGENTS.md TUI overlay invariant).
+func TestSettingsTUI_MaxWallClockSec_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 7
+  max_goals: 1
+taskvisor:
+  dispatch_timeout: 1234
+  validate_timeout: 5678
+  circuit_breaker_k: 4
+  max_wall_clock_sec: 14400
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	var found bool
+	for i, item := range m.items {
+		if item.key == "taskvisor.max_wall_clock_sec" {
+			found = true
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 14400, item.intVal, "item should seed from loaded settings")
+			m.items[i].intVal = 7200
+		}
+	}
+	assert.True(t, found, "taskvisor.max_wall_clock_sec must be in TUI items")
+
+	result := m.ToSettings()
+	assert.Equal(t, 7200, result.Taskvisor.MaxWallClockSec, "edited max_wall_clock_sec must overlay into ToSettings")
+	// Sibling/undisplayed fields preserved (overlay onto base, not DefaultSettings).
+	assert.Equal(t, 1234, result.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 5678, result.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 4, result.Taskvisor.CircuitBreakerK)
+	assert.Equal(t, 7, result.Supervisor.MaxCycles)
+}
+
 func TestModel_ToSettings_PreservesMaxWorkers(t *testing.T) {
 	dir := t.TempDir()
 	writeSettingsYAML(t, dir, `hooks:
@@ -767,7 +824,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 18)
+	assert.Len(t, m.items, 21)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -816,7 +873,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 18)
+	assert.Len(t, m.items, 21)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -893,6 +950,60 @@ func TestToSettings_TransientRetryBackoffMs(t *testing.T) {
 
 	result := m.ToSettings()
 	assert.Equal(t, 750, result.Taskvisor.TransientRetryBackoffMs)
+}
+
+// TestSettings_ProgressTimeoutSec_TUIEditable proves the P2 progress_timeout_sec
+// setting surfaces in the items list and that an edited value overlays onto
+// Taskvisor.ProgressTimeoutSec while sibling/undisplayed Settings fields survive
+// (AGENTS.md TUI INVARIANT — overlay onto loaded settings, not DefaultSettings).
+func TestSettings_ProgressTimeoutSec_TUIEditable(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 7
+taskvisor:
+  dispatch_timeout: 1234
+  validate_timeout: 5678
+  poll_interval: 3
+  circuit_breaker_k: 4
+  auto_resume_interval_sec: 30
+  progress_timeout_sec: 300
+  transient_retry_max_attempts: 3
+  transient_retry_backoff_ms: 500
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	// The item is present, int-kind, seeded from loaded settings.
+	var found bool
+	for _, item := range m.items {
+		if item.key == "taskvisor.progress_timeout_sec" {
+			found = true
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 300, item.intVal, "seeded from loaded settings")
+		}
+	}
+	require.True(t, found, "taskvisor.progress_timeout_sec must be TUI-editable")
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.progress_timeout_sec" {
+			m.items[i].intVal = 120
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 120, result.Taskvisor.ProgressTimeoutSec, "edited value overlays onto loaded settings")
+	// Sibling/undisplayed taskvisor + supervisor fields preserved through the overlay.
+	assert.Equal(t, 1234, result.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 5678, result.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 4, result.Taskvisor.CircuitBreakerK)
+	assert.Equal(t, 500, result.Taskvisor.TransientRetryBackoffMs)
+	assert.Equal(t, 7, result.Supervisor.MaxCycles)
 }
 
 // TestToSettings_AutoResumeInterval proves an edited auto_resume_interval_sec
@@ -1039,6 +1150,139 @@ taskvisor:
 	assert.Equal(t, 1800, result.Taskvisor.DispatchTimeout, "dispatch_timeout must be preserved from base")
 	assert.Equal(t, 120, result.Taskvisor.ValidateTimeout, "validate_timeout must be preserved from base")
 	assert.Equal(t, 3, result.Taskvisor.PollInterval, "poll_interval must be preserved from base")
+}
+
+// integrationCmdIdx finds the taskvisor.integration_cmd item index (fails the
+// test if absent).
+func integrationCmdIdx(t *testing.T, m Model) int {
+	t.Helper()
+	for i, item := range m.items {
+		if item.key == "taskvisor.integration_cmd" {
+			return i
+		}
+	}
+	t.Fatal("taskvisor.integration_cmd must be in TUI items")
+	return -1
+}
+
+// TestNewModel_IncludesIntegrationCmdItem proves the P4 integration-gate command
+// surfaces in the TUI items list as a "string" kind seeded from loaded settings.
+func TestNewModel_IncludesIntegrationCmdItem(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	settings.Taskvisor.IntegrationCmd = "make test"
+	m := NewModel(dir, settings)
+
+	idx := integrationCmdIdx(t, m)
+	assert.Equal(t, "string", m.items[idx].kind, "integration_cmd must be a string-kind item")
+	assert.Equal(t, "make test", m.items[idx].strVal, "strVal must seed from loaded settings")
+}
+
+// TestModel_StringItem_TypingAppendsRunes proves printable runes append to a
+// focused string item's strVal.
+func TestModel_StringItem_TypingAppendsRunes(t *testing.T) {
+	dir := t.TempDir()
+	m := NewModel(dir, setup.DefaultSettings())
+	m.cursor = integrationCmdIdx(t, m)
+
+	for _, r := range []rune{'m', 'a', 'k', 'e'} {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+
+	assert.Equal(t, "make", m.items[m.cursor].strVal)
+}
+
+// TestModel_StringItem_Backspace proves backspace removes the last rune and is
+// safe on an empty string.
+func TestModel_StringItem_Backspace(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	settings.Taskvisor.IntegrationCmd = "ab"
+	m := NewModel(dir, settings)
+	m.cursor = integrationCmdIdx(t, m)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = updated.(Model)
+	assert.Equal(t, "a", m.items[m.cursor].strVal)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = updated.(Model)
+	assert.Equal(t, "", m.items[m.cursor].strVal)
+
+	// Backspace on empty is a no-op (must not panic / underflow).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = updated.(Model)
+	assert.Equal(t, "", m.items[m.cursor].strVal)
+}
+
+// TestModel_StringItem_SpaceTypesSpace proves space is a literal char on a string
+// item (does NOT toggle, since the focused item is a string).
+func TestModel_StringItem_SpaceTypesSpace(t *testing.T) {
+	dir := t.TempDir()
+	m := NewModel(dir, setup.DefaultSettings())
+	m.cursor = integrationCmdIdx(t, m)
+
+	for _, r := range []rune{'g', 'o'} {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	// bubbletea delivers a lone space as KeySpace with Runes==[' '].
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = updated.(Model)
+
+	assert.Equal(t, "go t", m.items[m.cursor].strVal, "space must type a literal space")
+}
+
+// TestModel_ToSettings_IntegrationCmd proves an edited strVal maps to
+// Taskvisor.IntegrationCmd.
+func TestModel_ToSettings_IntegrationCmd(t *testing.T) {
+	dir := t.TempDir()
+	m := NewModel(dir, setup.DefaultSettings())
+	idx := integrationCmdIdx(t, m)
+	m.items[idx].strVal = "make integration"
+
+	result := m.ToSettings()
+	assert.Equal(t, "make integration", result.Taskvisor.IntegrationCmd)
+}
+
+// TestModel_ToSettings_OverlaysNotReset_WithStringItem proves an edited string
+// item overlays onto Taskvisor.IntegrationCmd while sibling/undisplayed Settings
+// fields survive (AGENTS.md TUI overlay-not-reset invariant).
+func TestModel_ToSettings_OverlaysNotReset_WithStringItem(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 7
+  max_goals: 2
+taskvisor:
+  dispatch_timeout: 1234
+  validate_timeout: 5678
+  circuit_breaker_k: 4
+  integration_cmd: make test
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	idx := integrationCmdIdx(t, m)
+	assert.Equal(t, "make test", m.items[idx].strVal, "item seeded from base setting.yaml")
+	m.items[idx].strVal = "go test ./..."
+
+	result := m.ToSettings()
+	assert.Equal(t, "go test ./...", result.Taskvisor.IntegrationCmd, "edited integration_cmd overlays into ToSettings")
+	// Sibling/undisplayed fields preserved through the overlay.
+	assert.Equal(t, 1234, result.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 5678, result.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 4, result.Taskvisor.CircuitBreakerK)
+	assert.Equal(t, 7, result.Supervisor.MaxCycles)
+	assert.Equal(t, 2, result.Supervisor.MaxGoals)
 }
 
 func TestModel_VimKeys(t *testing.T) {

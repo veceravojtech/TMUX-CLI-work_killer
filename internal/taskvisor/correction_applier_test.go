@@ -35,9 +35,13 @@ func writeGoalMd(t *testing.T, dir, goalID, body string) string {
 // permissiveValidatorMocks wires a fully-permissive validator window so the
 // re-validation re-spawn (kill stale + create + boot + prompt + send) succeeds
 // regardless of call count. Mirrors setupValidatorMocks but also allows the kill.
-func permissiveValidatorMocks(exec *testutil.MockTmuxExecutor, session, winID string) {
+func permissiveValidatorMocks(exec *testutil.MockTmuxExecutor, session, winID string, valName ...string) {
+	name := "validator-001"
+	if len(valName) > 0 {
+		name = valName[0]
+	}
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{
-		{TmuxWindowID: winID, Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: winID, Name: name, CurrentCommand: "claude"},
 	}, nil)
 	exec.On("KillWindow", session, winID).Return(nil)
 	exec.On("CaptureWindowOutput", session, winID).Return("ready ❯ ", nil)
@@ -228,7 +232,7 @@ func TestApplyStructuredCorrections_Goal025Replay(t *testing.T) {
 		Timestamp: "2026-06-01T12:00:00Z",
 	}))
 
-	permissiveValidatorMocks(exec, testSession, "@7")
+	permissiveValidatorMocks(exec, testSession, "@7", "validator-025")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@7"))
 
 	require.NoError(t, d.checkValidatingPhase(g, gf))

@@ -195,7 +195,7 @@ func TestTick_Goal061Topology_GraceDefersThenSalvages(t *testing.T) {
 	// Salvage's killWindowByName(validator) consumes one ListWindows before the
 	// dispatch mock sequence.
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	setupDispatchMocks(exec, testSession, "@0")
+	setupDispatchMocks(exec, testSession, "@0", "supervisor-002")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	require.NoError(t, d.tick(context.Background(), gf))

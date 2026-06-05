@@ -25,7 +25,7 @@ The taskvisor daemon creates a "validator" window and invokes `/tmux:investigate
 
 | Term | Meaning |
 |------|---------|
-| VALIDATOR_WID | This orchestrator's window name — always "validator" |
+| VALIDATOR_WID | This orchestrator's window name — always namespaced `validator-{ns}`; read VERBATIM from `GOAL_DIR/validator-window` (never the bare name "validator", never a window probe) |
 | INV_WID | Worker window name (e.g. "inv-1", "inv-2") — assigned by windows-spawn-worker |
 | GOAL_ID | Extracted from path: `.tmux-cli/goals/<goal-id>/goal.md` |
 | GOAL_DIR | Directory containing the goal (e.g. `.tmux-cli/goals/goal-008/`) |

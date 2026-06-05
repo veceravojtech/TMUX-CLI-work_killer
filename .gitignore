@@ -66,8 +66,8 @@ _bmad-output/implementation-artifacts/*
 .tmux-session
 /tmux-cli
 
-# tmux-cli runtime logs
-.tmux-cli/logs/*
+# tmux-cli runtime control plane (goals, worktrees, logs, signals) — never commit
+.tmux-cli/
 /_bmad/
 /_bmad/*
 /_bmad-output/

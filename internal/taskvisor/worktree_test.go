@@ -1,9 +1,12 @@
 package taskvisor
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -370,7 +373,7 @@ func TestDiscardWorktree_MaxGoals1_NoGit(t *testing.T) {
 func TestPruneOrphanWorktrees_OnActivate_RemovesStale(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	mkGitRepo(t, dir)
-	base := filepath.Join(dir, ".tmux-cli", "worktrees")
+	base := filepath.Join(dir, worktreesDirName)
 	require.NoError(t, os.MkdirAll(filepath.Join(base, "goal-001"), 0o755)) // running — keep
 	require.NoError(t, os.MkdirAll(filepath.Join(base, "goal-002"), 0o755)) // orphan — remove
 
@@ -392,10 +395,153 @@ func TestPruneOrphanWorktrees_OnActivate_RemovesStale(t *testing.T) {
 
 func TestPruneOrphanWorktrees_NoDir_ZeroGit(t *testing.T) {
 	d, _, dir := setupDaemon(t)
-	mkGitRepo(t, dir) // git repo, but no .tmux-cli/worktrees dir
+	mkGitRepo(t, dir) // git repo, but no .tmux-cli-worktrees dir
 	fake := &fakeGitRunner{}
 	d.SetGitRunnerFunc(fake.run)
 
 	d.pruneOrphanWorktrees(&GoalsFile{})
 	assert.Equal(t, 0, len(fake.calls), "absent worktrees dir ⇒ zero git (MaxGoals=1 byte-identical)")
+}
+
+// TestPruneOrphanWorktrees_NewBaseDir pins the relocated prune base: orphans under
+// the <base>/.tmux-cli-worktrees sibling are removed while an in-flight goal's
+// worktree is preserved.
+func TestPruneOrphanWorktrees_NewBaseDir(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	base := filepath.Join(dir, worktreesDirName)
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "goal-001"), 0o755)) // running — keep
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "goal-002"), 0o755)) // orphan — remove
+
+	fake := &fakeGitRunner{}
+	d.SetGitRunnerFunc(fake.run)
+
+	goals := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalRunning},
+		{ID: "goal-002", Status: GoalDone},
+	}}
+
+	d.pruneOrphanWorktrees(goals)
+
+	assert.Equal(t, 1, fake.count("worktree", "prune"))
+	assert.Equal(t, 1, fake.count("worktree", "remove", "--force", filepath.Join(base, "goal-002")), "orphan removed")
+	assert.Equal(t, 0, fake.count("worktree", "remove", "--force", filepath.Join(base, "goal-001")), "running goal's worktree kept")
+}
+
+// --- worktreePath relocation ----------------------------------------------
+
+// TestWorktreePath_UsesSibling asserts the per-goal worktree lives in the in-repo
+// sibling <base>/.tmux-cli-worktrees/<id>, NOT nested inside the control plane.
+func TestWorktreePath_UsesSibling(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	got := d.worktreePath("goal-001")
+
+	assert.Equal(t, filepath.Join(dir, ".tmux-cli-worktrees", "goal-001"), got)
+	ctl := filepath.Join(dir, ".tmux-cli") + string(os.PathSeparator)
+	assert.False(t, strings.HasPrefix(got, ctl),
+		"worktree must not be nested under the control plane (.tmux-cli)")
+}
+
+// TestEnsureWorktree_NoSelfReference materializes a worktree (with its
+// control-plane back-symlink) and asserts that walking <base>/.tmux-cli never
+// re-enters a worktree — i.e. the control plane no longer contains itself, which
+// is the ELOOP self-reference this relocation kills.
+func TestEnsureWorktree_NoSelfReference(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+
+	fake := &fakeGitRunner{sideEffect: func(args []string) {
+		if argsContain(args, "worktree", "add") {
+			_ = os.MkdirAll(wtPath, 0o755)
+		}
+	}}
+	d.SetGitRunnerFunc(fake.run)
+
+	_, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err)
+
+	// The worktree (and its <wt>/.tmux-cli back-symlink) must NOT be reachable by
+	// walking the control plane: walk is Lstat-based, so it cannot follow the
+	// symlink, and the worktree is a SIBLING of .tmux-cli, never a descendant.
+	ctlDir := filepath.Join(dir, ".tmux-cli")
+	walkErr := filepath.Walk(ctlDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		assert.NotContains(t, path, worktreesDirName,
+			"walking the control plane must never reach a worktree (%s)", path)
+		return nil
+	})
+	require.NoError(t, walkErr)
+
+	wtCtl := filepath.Join(wtPath, ".tmux-cli")
+	assert.False(t, strings.HasPrefix(wtCtl, ctlDir+string(os.PathSeparator)),
+		"the worktree's control-plane symlink must live outside .tmux-cli")
+}
+
+// --- safeToRemoveWorktree --------------------------------------------------
+
+func TestSafeToRemoveWorktree_Table(t *testing.T) {
+	base := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(base, ".tmux-cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(base, worktreesDirName), 0o755))
+
+	// A symlink under the sibling that resolves back into the control plane must
+	// be refused even though its literal path passes the positive allowlist.
+	evil := filepath.Join(base, worktreesDirName, "evil")
+	require.NoError(t, os.Symlink(filepath.Join(base, ".tmux-cli"), evil))
+
+	cases := []struct {
+		name  string
+		path  string
+		allow bool
+	}{
+		{"legit worktree", filepath.Join(base, worktreesDirName, "g1"), true},
+		{"base itself", base, false},
+		{"control plane", filepath.Join(base, ".tmux-cli"), false},
+		{"ancestor of base", filepath.Dir(base), false},
+		{"empty path", "", false},
+		{"outside worktree root", filepath.Join(base, "src"), false},
+		{"symlink into control plane", evil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := safeToRemoveWorktree(base, tc.path)
+			if tc.allow {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+}
+
+// TestDiscardWorktree_GuardBlocksControlPlane points a goal's WorktreeDir at the
+// control plane (a corruption that must never delete it): discardWorktree must
+// refuse the worktree remove (no argv recorded), log loudly, yet still attempt
+// the branch delete.
+func TestDiscardWorktree_GuardBlocksControlPlane(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	rt := d.runtime("goal-001")
+	rt.WorktreeDir = filepath.Join(dir, ".tmux-cli")
+	rt.Branch = worktreeBranch("goal-001")
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	fake := &fakeGitRunner{}
+	d.SetGitRunnerFunc(fake.run)
+
+	require.NoError(t, d.discardWorktree(&Goal{ID: "goal-001"}))
+
+	assert.Equal(t, 0, fake.count("worktree", "remove", "--force"),
+		"guard must refuse removing the control plane")
+	assert.Equal(t, 1, fake.count("branch", "-D", worktreeBranch("goal-001")),
+		"branch delete is still attempted after a refused worktree remove")
+	assert.Contains(t, logBuf.String(), "refusing unsafe worktree remove",
+		"a refused remove must be logged loudly")
 }

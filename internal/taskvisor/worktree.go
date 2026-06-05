@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/console/tmux-cli/internal/setup"
 )
 
 // worktree.go — per-goal git-worktree isolation (E1-1a).
@@ -20,7 +22,8 @@ import (
 // DisjointReadySet gate). The scope gate is the first-line safety; a dedicated
 // git worktree per goal is the PHYSICAL enforcement: each goal's supervisor (and
 // the workers it spawns) edit tracked source files inside an isolated checkout at
-// .tmux-cli/worktrees/<id>, branched from the current base HEAD. On GoalDone the
+// .tmux-cli-worktrees/<id> (a SIBLING of the control plane), branched from the
+// current base HEAD. On GoalDone the
 // worktree's commits are merged back into base under a serialization lock
 // (rebase-then-ff-only); on conflict the goal fails cleanly with the conflicting
 // paths surfaced and base left untouched; on hard-halt the worktree is discarded.
@@ -93,14 +96,103 @@ func (e errMergeConflict) Error() string {
 	return "worktree merge-back conflict on: " + strings.Join(e.paths, ", ")
 }
 
+// errIntegrationFailed signals that the configured post-merge integration command
+// exited non-zero against the freshly-merged base. The FF has already advanced
+// base (we deliberately do NOT revert); finalizeWorktreeOnDone turns this into a
+// loud fail-signal + cascade so the broken line halts. It is a VALUE type (not a
+// pointer) to match the errors.As(&x) value pattern used for errMergeConflict.
+type errIntegrationFailed struct {
+	stderr string
+	exit   int
+}
+
+func (e errIntegrationFailed) Error() string {
+	msg := fmt.Sprintf("post-merge integration command failed (exit %d)", e.exit)
+	if s := strings.TrimSpace(e.stderr); s != "" {
+		msg += ": " + s
+	}
+	return msg
+}
+
 // worktreeBranch is the deterministic branch name for a goal's worktree, so
 // `worktree add -b`, `merge --ff-only`, and `branch -D` are all idempotent.
 func worktreeBranch(goalID string) string { return "taskvisor/" + goalID }
 
-// worktreePath is the absolute checkout path for a goal's worktree under the
-// (git-excluded) control-plane dir.
+// worktreesDirName is the in-repo sibling directory that holds every per-goal
+// git worktree. It is a SIBLING of the control plane (.tmux-cli), never nested
+// inside it: a worktree carries a <wt>/.tmux-cli back-symlink, so nesting it
+// under .tmux-cli would make the control plane contain itself (the reproduced
+// ELOOP for symlink-following walkers + broken MCP discovery). Keeping worktrees
+// out of .tmux-cli is what kills that self-reference. The single source of the
+// name; used by worktreePath, pruneOrphanWorktrees, and the removal guard.
+const worktreesDirName = ".tmux-cli-worktrees"
+
+// worktreePath is the absolute checkout path for a goal's worktree, under the
+// in-repo (git-excluded) sibling worktrees dir — never inside the control plane.
 func (d *Daemon) worktreePath(goalID string) string {
-	return filepath.Join(d.workDir, ".tmux-cli", "worktrees", goalID)
+	return filepath.Join(d.workDir, worktreesDirName, goalID)
+}
+
+// safeToRemoveWorktree is a defense-in-depth guard consulted before every
+// worktree removal (git worktree remove --force / os.RemoveAll). It returns a
+// loud error if removing path could damage the control plane or base project,
+// and nil only when path is provably a per-goal worktree.
+//
+// This is NOT a live data-loss fix (git 2.43.0 does not follow the back-symlink
+// on remove); it is a guard against a FUTURE symlink-following remover. The
+// load-bearing clause is the positive allowlist: path MUST live under
+// <base>/.tmux-cli-worktrees/. The denylist clauses (base / control-plane /
+// ancestor / symlink-resolving-into-base) are redundant belt-and-braces.
+func safeToRemoveWorktree(workDir, path string) error {
+	if path == "" {
+		return fmt.Errorf("empty worktree path")
+	}
+	base := filepath.Clean(workDir)
+	p := filepath.Clean(path)
+	ctl := filepath.Join(base, ".tmux-cli")
+
+	// Denylist: never the base project, never the control plane, never an
+	// ancestor of the control plane.
+	if p == base {
+		return fmt.Errorf("path %q is the base project dir", p)
+	}
+	if p == ctl {
+		return fmt.Errorf("path %q is the control plane", p)
+	}
+	if pathWithin(ctl, p) {
+		return fmt.Errorf("path %q is an ancestor of the control plane %q", p, ctl)
+	}
+
+	// If the path is a symlink (or has symlinked components), refuse when it
+	// resolves to the base, the control plane, or an ancestor of the control
+	// plane — a symlink-following remover would then escape into base.
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		rc := filepath.Clean(resolved)
+		if rc == base || rc == ctl || pathWithin(ctl, rc) {
+			return fmt.Errorf("path %q resolves to %q (base/control-plane/ancestor)", p, rc)
+		}
+	}
+
+	// Positive allowlist (load-bearing): the path must be the sibling worktrees
+	// root or live under it. Anything else is refused.
+	wtRoot := filepath.Join(base, worktreesDirName)
+	if p != wtRoot && !pathWithin(p, wtRoot) {
+		return fmt.Errorf("path %q is not under the worktree root %q", p, wtRoot)
+	}
+	return nil
+}
+
+// pathWithin reports whether child is equal to or nested under parent (both
+// assumed already cleaned/absolute by the caller).
+func pathWithin(child, parent string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 // isGitRepo reports whether the base workdir is a git repository (.git is a dir
@@ -117,7 +209,7 @@ func (d *Daemon) isGitRepo() bool {
 //     the goalRuntime's WorktreeDir empty — byte-identical to the pre-worktree
 //     build.
 //   - non-git repo: returns d.workDir + warns; never errors (degrade to base).
-//   - otherwise: idempotently materializes .tmux-cli/worktrees/<id> branched from
+//   - otherwise: idempotently materializes .tmux-cli-worktrees/<id> branched from
 //     HEAD (stat-first so a retry of the SAME goal reuses its worktree), symlinks
 //     the control plane in, records WorktreeDir/Branch on the goalRuntime, and
 //     returns the worktree path.
@@ -174,13 +266,76 @@ func (d *Daemon) symlinkControlPlane(wtPath string) error {
 		}
 		// A real dir/file is shadowing the control plane (should not happen since
 		// .tmux-cli is git-excluded and absent from the checkout) — clear it so the
-		// single shared control plane is never duplicated per worktree.
+		// single shared control plane is never duplicated per worktree. Guard the
+		// removal (defense-in-depth): wtCtl is under the sibling worktrees root and
+		// resolves into the worktree, so a legitimate shadow clears; only a path
+		// resolving back into base is refused.
+		if err := safeToRemoveWorktree(d.workDir, wtCtl); err != nil {
+			log.Printf("warning: refusing unsafe worktree remove: %v", err)
+			return fmt.Errorf("refusing to clear worktree control plane %s: %w", wtCtl, err)
+		}
 		if err := os.RemoveAll(wtCtl); err != nil {
 			return fmt.Errorf("clear worktree control plane %s: %w", wtCtl, err)
 		}
 	}
 	if err := os.Symlink(baseCtl, wtCtl); err != nil {
 		return fmt.Errorf("symlink control plane into worktree: %w", err)
+	}
+	return nil
+}
+
+// integrationCmd reads Taskvisor.IntegrationCmd from setting.yaml, returning ""
+// when unset or unreadable. Mirrors maxGoals(): a single impurity resolved per
+// merge so the merge logic stays pure. An empty result disables the gate.
+func (d *Daemon) integrationCmd() string {
+	s, err := setup.LoadSettings(d.workDir)
+	if err != nil || s == nil {
+		return ""
+	}
+	return s.Taskvisor.IntegrationCmd
+}
+
+// runIntegrationGate materializes IntegrationCmd into a temp `#!/bin/sh` script
+// (0o755, removed via defer) and runs it against the merged base (d.workDir) via
+// the shared scriptRunnerFn seam under d.scriptTimeout — the same injected seam
+// validate.sh uses, so no signature change. GOAL_ID is exported mirroring
+// runValidateScript. A non-zero exit (or an exec error) returns errIntegrationFailed;
+// an unset command is a no-op (nil). Callers invoke this INSIDE WithMergeLock.
+func (d *Daemon) runIntegrationGate(goal *Goal) error {
+	cmd := d.integrationCmd()
+	if cmd == "" {
+		return nil
+	}
+
+	f, err := os.CreateTemp("", "integration-*.sh")
+	if err != nil {
+		return fmt.Errorf("create integration script: %w", err)
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	if _, err := f.WriteString("#!/bin/sh\nset -e\n" + cmd + "\n"); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write integration script: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close integration script: %w", err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		return fmt.Errorf("chmod integration script: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), d.scriptTimeout)
+	defer cancel()
+	env := append(os.Environ(), "GOAL_ID="+goal.ID)
+	_, stderr, code, runErr := d.scriptRunnerFn(ctx, path, d.workDir, env)
+	if runErr != nil {
+		if strings.TrimSpace(stderr) == "" {
+			stderr = runErr.Error()
+		}
+		return errIntegrationFailed{stderr: stderr, exit: code}
+	}
+	if code != 0 {
+		return errIntegrationFailed{stderr: stderr, exit: code}
 	}
 	return nil
 }
@@ -248,6 +403,19 @@ func (d *Daemon) mergeWorktreeBack(goal *Goal) error {
 			return fmt.Errorf("git -C %s merge --ff-only %s: %w", d.workDir, branch, err)
 		} else if code != 0 {
 			return fmt.Errorf("git merge --ff-only %s failed (exit %d): %s", branch, code, strings.TrimSpace(se))
+		}
+
+		// Post-merge integration gate (E1 P4): the FF just advanced base, so run the
+		// combined suite against the merged base while STILL holding the merge lock.
+		// A red suite means two scope-disjoint goals merged into a semantically-broken
+		// base (the gap a path-prefix scope check cannot catch) — fail the goal loudly.
+		// The no-worktree and ahead==0 guards above already exclude MaxGoals=1 and the
+		// no-merge case, so reaching here implies a real merge under MaxGoals>1; no
+		// extra maxGoals() check is needed at this insert point.
+		if ic := d.integrationCmd(); ic != "" {
+			if e := d.runIntegrationGate(goal); e != nil {
+				return e
+			}
 		}
 		return nil
 	})
@@ -323,8 +491,13 @@ func (d *Daemon) discardWorktree(goal *Goal) error {
 	defer cancel()
 	run := d.gitRunner()
 	// Both calls are best-effort/idempotent: a missing worktree or branch is not
-	// an error (e.g. already pruned, or merge-back removed nothing).
-	if _, _, _, err := run(ctx, "-C", d.workDir, "worktree", "remove", "--force", wt); err != nil {
+	// an error (e.g. already pruned, or merge-back removed nothing). The remove is
+	// guarded (defense-in-depth): if WorktreeDir was somehow corrupted to point at
+	// the control plane or base, refuse it loudly and skip — but still attempt the
+	// branch delete below.
+	if err := safeToRemoveWorktree(d.workDir, wt); err != nil {
+		log.Printf("warning: refusing unsafe worktree remove: %v", err)
+	} else if _, _, _, err := run(ctx, "-C", d.workDir, "worktree", "remove", "--force", wt); err != nil {
 		log.Printf("warning: %s: worktree remove: %v", goal.ID, err)
 	}
 	if _, _, _, err := run(ctx, "-C", d.workDir, "branch", "-D", branch); err != nil {
@@ -337,12 +510,12 @@ func (d *Daemon) discardWorktree(goal *Goal) error {
 }
 
 // pruneOrphanWorktrees clears worktrees left by a crashed run on (re)activation:
-// `git worktree prune` plus removal of any .tmux-cli/worktrees/<id> whose goal is
+// `git worktree prune` plus removal of any .tmux-cli-worktrees/<id> whose goal is
 // not currently GoalRunning. It short-circuits with NO git when the worktrees dir
 // does not exist, so a project that never ran parallel goals (MaxGoals=1) makes
 // zero git calls on activate — preserving the byte-identical guarantee.
 func (d *Daemon) pruneOrphanWorktrees(goals *GoalsFile) {
-	base := filepath.Join(d.workDir, ".tmux-cli", "worktrees")
+	base := filepath.Join(d.workDir, worktreesDirName)
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		return // no worktrees dir ⇒ nothing to prune, zero git
@@ -365,7 +538,11 @@ func (d *Daemon) pruneOrphanWorktrees(goals *GoalsFile) {
 			continue // keep an in-flight goal's worktree (e.g. crash re-dispatch reuses it)
 		}
 		wt := filepath.Join(base, id)
-		_, _, _, _ = run(ctx, "-C", d.workDir, "worktree", "remove", "--force", wt)
+		if err := safeToRemoveWorktree(d.workDir, wt); err != nil {
+			log.Printf("warning: refusing unsafe worktree remove: %v", err)
+		} else {
+			_, _, _, _ = run(ctx, "-C", d.workDir, "worktree", "remove", "--force", wt)
+		}
 		_, _, _, _ = run(ctx, "-C", d.workDir, "branch", "-D", worktreeBranch(id))
 	}
 }
@@ -382,6 +559,41 @@ func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bo
 	if mergeErr == nil {
 		_ = d.discardWorktree(goal)
 		return false, nil
+	}
+
+	// Post-merge integration failure: the FF already advanced base (we deliberately
+	// do NOT revert — out of scope and risky). Mirror the merge-conflict path: write
+	// a VerdictFail/owner=human signal, flip done→failed, cascade-block dependents,
+	// discard the worktree, and report failed=true so the caller suppresses the
+	// downstream resume. Checked BEFORE the errMergeConflict guard below so its
+	// non-conflict early-return cannot swallow this error.
+	var ifail errIntegrationFailed
+	if errors.As(mergeErr, &ifail) {
+		log.Printf("%s: post-merge integration gate failed (exit %d) — failing goal; base already advanced (not reverted)", goal.ID, ifail.exit)
+		nextAction := fmt.Sprintf("Post-merge integration command failed (exit %d)", ifail.exit)
+		if s := strings.TrimSpace(ifail.stderr); s != "" {
+			if len(s) > 500 {
+				s = s[:500]
+			}
+			nextAction += ": " + s
+		}
+		nextAction += ". The merged base fails the combined integration suite; fix and re-run."
+		if sigErr := SaveValidatorSignal(d.workDir, goal.ID, &ValidatorSignal{
+			Verdict:    VerdictFail,
+			Owner:      "human",
+			NextAction: nextAction,
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		}); sigErr != nil {
+			return false, sigErr
+		}
+		goal.Status = GoalFailed
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		goals.CascadeFailure(goal.ID, "fail")
+		if saveErr := SaveGoals(d.workDir, goals); saveErr != nil {
+			return false, saveErr
+		}
+		_ = d.discardWorktree(goal)
+		return true, nil
 	}
 
 	var mc errMergeConflict

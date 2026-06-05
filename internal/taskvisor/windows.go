@@ -11,13 +11,13 @@ import (
 )
 
 // sweepGoalIDs returns the goal-id set a window teardown must cover. At
-// MaxGoals<=1 it is ALWAYS just [head]: the naming helpers ignore the id and
-// return bare names, so the teardown does exactly one bare-name sweep —
-// byte-identical to the pre-namespacing single-goal teardown regardless of how
-// many goals exist. At MaxGoals>1 it is head followed by every distinct id in
-// extra (sorted for determinism), so no sibling goal's namespaced windows are
-// orphaned. extra is the caller's candidate in-flight set (the runtime keys for
-// an idle deactivate, or all goal ids for a startup/completion sweep).
+// MaxGoals<=1 it is ALWAYS just [head]: a single goal is ever in flight, so the
+// teardown sweeps that one goal's namespaced windows. At MaxGoals>1 it is head
+// followed by every distinct id in extra (sorted for determinism), so no sibling
+// goal's namespaced windows are orphaned. extra is the caller's candidate
+// in-flight set (the runtime keys for an idle deactivate, or all goal ids for a
+// startup/completion sweep). The window-0 bare "supervisor" is never part of any
+// goal namespace, so it is never in the returned set.
 func (d *Daemon) sweepGoalIDs(head string, extra []string) []string {
 	if d.maxGoals() <= 1 {
 		return []string{head}
@@ -36,8 +36,8 @@ func (d *Daemon) sweepGoalIDs(head string, extra []string) []string {
 
 // killGoalWindows kills the supervisor/validator windows and the execute-/inv-
 // worker pools for every goal id in ids, with NO await. Used by activate's
-// startup sweep. At MaxGoals<=1 ids is [head] and the names are bare, so the
-// four-kill order matches the pre-namespacing sweep exactly.
+// startup sweep. The names are always the goal's namespaced forms (supervisor-<ns>
+// etc.), so window-0 bare "supervisor" is never matched and never killed.
 func (d *Daemon) killGoalWindows(ids []string) error {
 	mg := d.maxGoals()
 	for _, id := range ids {
@@ -157,7 +157,7 @@ func (d *Daemon) killWindowsByPrefix(prefix string) error {
 }
 
 func (d *Daemon) waitWindowsGone(names []string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := d.now().Add(timeout)
 	nameSet := make(map[string]bool, len(names))
 	for _, n := range names {
 		nameSet[n] = true
@@ -178,7 +178,7 @@ func (d *Daemon) waitWindowsGone(names []string, timeout time.Duration) error {
 		if !found {
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if d.now().After(deadline) {
 			return fmt.Errorf("timeout waiting for windows to disappear: %v", names)
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -186,7 +186,7 @@ func (d *Daemon) waitWindowsGone(names []string, timeout time.Duration) error {
 }
 
 func (d *Daemon) waitForPrompt(windowName string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := d.now().Add(timeout)
 	winInfo, err := d.findWindowByName(windowName)
 	if err != nil {
 		return nil
@@ -200,11 +200,34 @@ func (d *Daemon) waitForPrompt(windowName string, timeout time.Duration) error {
 			time.Sleep(d.promptSettleDelay)
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if d.now().After(deadline) {
 			return fmt.Errorf("timeout waiting for prompt in %q", windowName)
 		}
 		time.Sleep(d.promptPollInterval)
 	}
+}
+
+// waitForPromptOrFail is the loud, bounded-retry sibling of waitForPrompt: it
+// re-polls for the prompt up to promptRetryAttempts times and, unlike the old
+// log-and-swallow call sites, RETURNS the exhaustion error so a never-ready
+// window surfaces immediately through tick() instead of idle-hanging to
+// dispatchTimeout. This mirrors waitClaudeBoot, which already returns.
+//
+// The N attempts DIVIDE the caller's timeout (split, not multiplied): with N=3
+// and a 30s budget each inner waitForPrompt gets ~10s, so the total wall-bound
+// is unchanged vs the single 30s wait it replaces. waitForPrompt's success path
+// (glyph found → promptSettleDelay → nil) is left byte-identical.
+func (d *Daemon) waitForPromptOrFail(windowName string, timeout time.Duration) error {
+	const promptRetryAttempts = 3
+	per := timeout / promptRetryAttempts
+	var err error
+	for i := 0; i < promptRetryAttempts; i++ {
+		if err = d.waitForPrompt(windowName, per); err == nil {
+			return nil
+		}
+		log.Printf("waitForPrompt %q attempt %d/%d failed: %v", windowName, i+1, promptRetryAttempts, err)
+	}
+	return fmt.Errorf("prompt never arrived in %q after %d attempts: %w", windowName, promptRetryAttempts, err)
 }
 
 func (d *Daemon) findWindowByName(name string) (*tmux.WindowInfo, error) {
@@ -221,7 +244,7 @@ func (d *Daemon) findWindowByName(name string) (*tmux.WindowInfo, error) {
 }
 
 func (d *Daemon) waitClaudeBoot(windowName string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := d.now().Add(timeout)
 	for {
 		windows, err := d.listWindows()
 		if err != nil {
@@ -240,7 +263,7 @@ func (d *Daemon) waitClaudeBoot(windowName string, timeout time.Duration) error 
 		if !found {
 			return fmt.Errorf("window %q not found", windowName)
 		}
-		if time.Now().After(deadline) {
+		if d.now().After(deadline) {
 			return fmt.Errorf("timeout waiting for Claude boot in %q", windowName)
 		}
 		time.Sleep(100 * time.Millisecond)

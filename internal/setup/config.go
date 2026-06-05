@@ -59,6 +59,12 @@ type TaskvisorSettings struct {
 	// AutoResumeIntervalSec is the cadence (seconds) of the §5 auto-resume loop
 	// that re-evaluates precondition-blocked goals. Values <1 fall back to 30s.
 	AutoResumeIntervalSec int `yaml:"auto_resume_interval_sec"`
+	// ProgressTimeoutSec bounds how long a dispatched supervisor/validator window
+	// may emit NO new pane output before the daemon's per-tick progress heartbeat
+	// (P2) declares it wedged and recovers early — closing the silent-timeout hole
+	// where a stuck LLM was invisible until the 1h hard timeout. Default 300 (5m);
+	// a value <=0 disables the heartbeat. Values >0 override the daemon default.
+	ProgressTimeoutSec int `yaml:"progress_timeout_sec"`
 	// TransientRetryMaxAttempts bounds the C4-cont transient-failure retry loop in
 	// investigate.xml: a preflight/probe failing for a transient infra reason
 	// (service not ready, timeout, DNS hiccup) is retried up to this many TOTAL
@@ -69,6 +75,21 @@ type TaskvisorSettings struct {
 	// transient-failure attempts (N attempts ⇒ N-1 sleeps). Backfilled to 500 when
 	// absent from a legacy setting.yaml.
 	TransientRetryBackoffMs int `yaml:"transient_retry_backoff_ms"`
+	// MaxWallClockSec is the daemon's wall-clock cost ceiling (P3): once the daemon
+	// has been continuously active for this many seconds, tick() halts loudly and
+	// deactivates, leaving goal statuses UNTOUCHED so a human can raise the budget
+	// and resume. Wall-clock is the chosen proxy because token/$ spend is not
+	// observable by the daemon. Default 14400 (4h); a value <=0 DISABLES the ceiling
+	// (no halt ever fires — byte-identical to the pre-P3 build).
+	MaxWallClockSec int `yaml:"max_wall_clock_sec"`
+	// IntegrationCmd is an optional shell command run against the merged base
+	// INSIDE the worktree-merge lock immediately after a goal's worktree
+	// fast-forwards base (MaxGoals>1 only). It catches a semantically-broken
+	// merge that scope-disjointness alone misses: two goals editing different
+	// files in the same package can each pass in isolation yet break the combined
+	// suite. A non-zero exit fails the goal and cascades to its dependents. Empty
+	// (the default) disables the gate — byte-identical to the pre-gate build.
+	IntegrationCmd string `yaml:"integration_cmd"`
 }
 
 // WorkerBudgetSec is the per-worker time budget in seconds, mirroring the
@@ -162,8 +183,10 @@ func DefaultSettings() *Settings {
 			PollInterval:              5,
 			CircuitBreakerK:           2,
 			AutoResumeIntervalSec:     30,
+			ProgressTimeoutSec:        300,
 			TransientRetryMaxAttempts: 3,
 			TransientRetryBackoffMs:   500,
+			MaxWallClockSec:           14400,
 		},
 	}
 }

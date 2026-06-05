@@ -75,5 +75,5 @@ func TestMergeWorktreeBack_Conflict(t *testing.T) {
 	// Cleanup leaves no worktree or branch behind.
 	require.NoError(t, d.discardWorktree(goal))
 	wl := runGit(t, dir, "worktree", "list")
-	assert.NotContains(t, wl, filepath.Join(".tmux-cli", "worktrees", "goal-001"))
+	assert.NotContains(t, wl, filepath.Join(worktreesDirName, "goal-001"))
 }

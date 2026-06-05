@@ -82,6 +82,13 @@ func (d *Daemon) renderDashboard(w io.Writer) error {
 			ansiBold, ansiCyan, ansiReset, ansiDim, ansiReset); err != nil {
 			return err
 		}
+		// A daemon-level halt (P3 wall-clock ceiling) surfaces its reason as a loud
+		// bold-red banner so a halted run is unmistakable on the idle surface.
+		if d.haltReason != "" {
+			if _, err := fmt.Fprintf(w, "%s%s%s%s\n", ansiBold, ansiRed, d.haltReason, ansiReset); err != nil {
+				return err
+			}
+		}
 		if _, err := fmt.Fprintf(w, "Poll interval: %s\n", d.pollInterval); err != nil {
 			return err
 		}

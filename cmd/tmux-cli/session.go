@@ -475,7 +475,14 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath string) (string
 }
 
 func cleanProjectDir(projectPath string) error {
-	return os.RemoveAll(filepath.Join(projectPath, ".tmux-cli"))
+	if err := os.RemoveAll(filepath.Join(projectPath, ".tmux-cli")); err != nil {
+		return err
+	}
+	// Per-goal worktrees now live in the in-repo sibling .tmux-cli-worktrees/
+	// (no longer nested under .tmux-cli), so a clean must remove it too. Git's
+	// .git/worktrees/<id> admin stubs left behind are healed by the next
+	// pruneOrphanWorktrees `git worktree prune`.
+	return os.RemoveAll(filepath.Join(projectPath, ".tmux-cli-worktrees"))
 }
 
 func runSessionStart(cmd *cobra.Command, args []string) error {
@@ -1499,6 +1506,39 @@ func runTaskvisorGoalReset(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// goalSkipWindowsToKill selects, from a session's window list, ONLY the windows
+// belonging to goalID's namespace — its supervisor-<ns>, validator-<ns> (plus the
+// bare one-release fallback "validator"), and every execute-<ns>-/inv-<ns>- worker
+// — using the real taskvisor naming helpers so the set can never drift from what
+// the daemon spawns. The human's window-0 bare "supervisor" is EXPLICITLY spared:
+// skipping a goal must never kill the interactive window ([[never-kill-tmux-server-pid]]).
+// Sibling goals' namespaced windows don't match this goal's names, so they survive.
+func goalSkipWindowsToKill(windows []tmux.WindowInfo, goalID string) []tmux.WindowInfo {
+	sup := taskvisor.SupervisorWindowForGoal(goalID)
+	vals := taskvisor.ValidatorWindowNames(goalID)
+	ep := taskvisor.ExecutePrefixForGoal(goalID)
+	ip := taskvisor.InvPrefixForGoal(goalID)
+	var kill []tmux.WindowInfo
+	for _, w := range windows {
+		if w.Name == "supervisor" {
+			continue // window-0 (human interactive) — never kill
+		}
+		match := w.Name == sup ||
+			strings.HasPrefix(w.Name, ep) ||
+			strings.HasPrefix(w.Name, ip)
+		for _, v := range vals {
+			if w.Name == v {
+				match = true
+				break
+			}
+		}
+		if match {
+			kill = append(kill, w)
+		}
+	}
+	return kill
+}
+
 func runTaskvisorGoalSkip(cmd *cobra.Command, args []string) error {
 	cwd, err := taskvisorProjectRoot()
 	if err != nil {
@@ -1535,10 +1575,8 @@ func runTaskvisorGoalSkip(cmd *cobra.Command, args []string) error {
 	if err == nil && sessionID != "" {
 		windows, err := executor.ListWindows(sessionID)
 		if err == nil {
-			for _, w := range windows {
-				if w.Name == "supervisor" || w.Name == "validator" || strings.HasPrefix(w.Name, "execute-") {
-					_ = executor.KillWindow(sessionID, w.TmuxWindowID)
-				}
+			for _, w := range goalSkipWindowsToKill(windows, goalID) {
+				_ = executor.KillWindow(sessionID, w.TmuxWindowID)
 			}
 		}
 	}

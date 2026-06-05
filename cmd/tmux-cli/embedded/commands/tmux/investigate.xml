@@ -16,7 +16,7 @@
   </requirements>
 
   <glossary>
-    <term name="VALIDATOR_WID">Name of this orchestrator's tmux window (always "validator"). Created by the taskvisor daemon with UUID authorization for goal-validation-done.</term>
+    <term name="VALIDATOR_WID">Name of this orchestrator's tmux window — ALWAYS the goal-namespaced "validator-{ns}" (e.g. validator-008). Created by the taskvisor daemon with UUID authorization for goal-validation-done. Resolved by reading GOAL_DIR/validator-window VERBATIM (the daemon wrote that marker byte-exact at dispatch), NOT by guessing the bare name "validator" and NOT by probing the active tmux window.</term>
     <term name="INV_WID">Name of an investigation worker window (e.g. "inv-1", "inv-2"). Each worker gets a unique N via windows-spawn-worker with prefix: "inv-".</term>
     <term name="GOAL_ID">Goal identifier extracted from the goal.md file path (e.g. "goal-008" from .tmux-cli/goals/goal-008/goal.md).</term>
     <term name="GOAL_DIR">Directory containing the goal (e.g. .tmux-cli/goals/goal-008/). Derived from the goal.md path.</term>
@@ -58,7 +58,7 @@
       <action>Check if AGENTS.md exists in the project root. If it does, Read it and internalize project conventions.</action>
       <action>If AGENTS.md does not exist, check for CLAUDE.md instead. Read whichever is found first.</action>
       <action>If neither exists, proceed without project context.</action>
-      <action>From windows-list, identify VALIDATOR_WID. If a window named "validator" exists, that is your VALIDATOR_WID. Otherwise, use the active window.</action>
+      <action>Resolve VALIDATOR_WID self-identification (step 0b): extract GOAL_ID/GOAL_DIR from the $ARGUMENTS goal.md path (.tmux-cli/goals/&lt;goal-id&gt;/goal.md → GOAL_ID=&lt;goal-id&gt;, GOAL_DIR=.tmux-cli/goals/&lt;goal-id&gt;/), then read GOAL_DIR/validator-window and use its content VERBATIM (trim only trailing newline/whitespace) as VALIDATOR_WID. The daemon wrote this marker byte-exact (validatorWindow(goal.ID, MaxGoals)) BEFORE booting this window, so it is the goal-namespaced "validator-{ns}" — reading it verbatim binds VALIDATOR_WID to the exact spawned window without probing. Do NOT synthesize the name from the goal id and do NOT use the bare name "validator". FALLBACK ONLY if the marker is absent/unreadable: if a window named "validator" exists in windows-list use it, else use the active window.</action>
     </step>
 
     <step n="2" title="Parse Investigation Config from goal.md">

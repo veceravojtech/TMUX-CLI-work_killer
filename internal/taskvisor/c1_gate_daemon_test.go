@@ -46,7 +46,7 @@ func TestM01_UnsetSecret(t *testing.T) {
 	}))
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 
@@ -104,7 +104,7 @@ func TestValidateTimeout_SynthesizesError(t *testing.T) {
 	require.NoError(t, err)
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@7", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@7", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("KillWindow", testSession, "@7").Return(nil)
 	exec.On("CaptureWindowOutput", testSession, "@7").Return("ready ❯ ", nil)

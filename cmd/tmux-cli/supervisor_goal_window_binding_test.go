@@ -28,20 +28,28 @@ func TestSupervisorXml_Step0bDerivesGoalIDFromWindowName(t *testing.T) {
 	require.Less(t, step0b, step1, "step 0b must precede step 1")
 	body := content[step0b:step1]
 
+	// The display-message self-identification probe is REMOVED: it returned the
+	// session's active window, not this agent's pane, so it misresolved
+	// supervisor-{ns} at MaxGoals>1. SUPERVISOR_WID now comes from the daemon's
+	// per-goal supervisor-window marker, read verbatim.
+	assert.NotContains(t, body, "tmux display-message -p '#W'",
+		"supervisor.xml step 0b must NOT self-identify via the unreliable display-message active-window probe")
+	assert.Contains(t, body, "supervisor-window",
+		"supervisor.xml step 0b must read SUPERVISOR_WID from the per-goal supervisor-window marker")
+
 	for _, marker := range []string{
-		// How the supervisor learns its own window name before any MCP call.
-		"tmux display-message -p '#W'",
-		// Namespaced window form and the goal id it derives to.
+		// Namespaced window form and the goal id it maps back to — retained as
+		// rationale for why the marker content is byte-correct in both modes.
 		"supervisor-{ns}",
 		"goal-{ns}",
-		// The derivation must be pinned to the Go-side binding scheme so MCP
+		// The marker content is pinned to the Go-side binding scheme so MCP
 		// routing (resolveResearchRoot) and the supervisor GOAL_ID agree.
 		"parseGoalBinding",
 		// Rationale marker: why the global marker is unsafe at MaxGoals>1.
 		"last-writer-wins",
 	} {
 		assert.Contains(t, body, marker,
-			"supervisor.xml step 0b must carry window-name GOAL_ID derivation marker %q", marker)
+			"supervisor.xml step 0b must retain GOAL_ID/window binding rationale marker %q", marker)
 	}
 
 	// The bare-`supervisor` (MaxGoals=1) fallback must keep the legacy

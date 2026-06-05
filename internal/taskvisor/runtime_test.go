@@ -251,7 +251,7 @@ func TestSingleGoal_FullCycle_ByteIdenticalTransitions(t *testing.T) {
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator", CurrentCommand: "claude"},
+		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 	exec.On("SendMessage", testSession, "@5", mock.MatchedBy(func(cmd string) bool {
@@ -267,7 +267,7 @@ func TestSingleGoal_FullCycle_ByteIdenticalTransitions(t *testing.T) {
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator"},
+		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
 	setupDeactivateMocks(exec, testSession, "@10")

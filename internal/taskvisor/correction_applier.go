@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/console/tmux-cli/internal/tasks"
 	"gopkg.in/yaml.v3"
@@ -277,7 +276,7 @@ func (d *Daemon) revalidateAfterCorrection(goal *Goal, goals *GoalsFile) error {
 	}
 	rt := d.runtime(goal.ID)
 	rt.phase = phaseValidating
-	rt.validateTime = time.Now()
+	rt.validateTime = d.now()
 	log.Printf("%s: applied structured correction(s) — re-validating (no budget charged)", goal.ID)
 	return SaveGoals(d.workDir, goals)
 }
