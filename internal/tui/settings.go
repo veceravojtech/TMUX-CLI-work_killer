@@ -47,6 +47,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.transient_retry_max_attempts", label: "Taskvisor Transient Retry Max Attempts", kind: "int", intVal: settings.Taskvisor.TransientRetryMaxAttempts},
 			{key: "taskvisor.transient_retry_backoff_ms", label: "Taskvisor Transient Retry Backoff (ms)", kind: "int", intVal: settings.Taskvisor.TransientRetryBackoffMs},
 			{key: "supervisor.max_goals", label: "Max Goals (concurrent)", kind: "int", intVal: settings.Supervisor.MaxGoals},
+			{key: "supervisor.max_stuck_retries", label: "Max Stuck Retries", kind: "int", intVal: settings.Supervisor.MaxStuckRetries},
 			{key: "taskvisor.progress_timeout_sec", label: "Taskvisor Progress Timeout (s)", kind: "int", intVal: settings.Taskvisor.ProgressTimeoutSec},
 			{key: "taskvisor.max_wall_clock_sec", label: "Taskvisor Max Wall Clock (sec)", kind: "int", intVal: settings.Taskvisor.MaxWallClockSec},
 			{key: "taskvisor.integration_cmd", label: "Taskvisor Integration Cmd", kind: "string", strVal: settings.Taskvisor.IntegrationCmd},
@@ -192,6 +193,8 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Supervisor.MaxWorkers = item.intVal
 		case "supervisor.max_goals":
 			s.Supervisor.MaxGoals = item.intVal
+		case "supervisor.max_stuck_retries":
+			s.Supervisor.MaxStuckRetries = item.intVal
 		case "supervisor.cycle_delay":
 			s.Supervisor.CycleDelay = item.intVal
 		case "supervisor.max_cycles":

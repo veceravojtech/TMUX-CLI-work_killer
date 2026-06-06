@@ -19,6 +19,7 @@ func setupIntegrationDaemon(t *testing.T) (*Daemon, *testutil.MockTmuxExecutor, 
 	t.Helper()
 	dir := t.TempDir()
 	exec := new(testutil.MockTmuxExecutor)
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	d := New(dir, exec)
 	d.pollInterval = 50 * time.Millisecond
 	d.validatorSendDelay = 0
@@ -88,6 +89,7 @@ func TestIntegration_FullCyclePass(t *testing.T) {
 	writeSupervisorSignal(t, dir, "goal-001", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
@@ -106,6 +108,7 @@ func TestIntegration_FullCyclePass(t *testing.T) {
 	writeValidatorSignal(t, dir, "goal-001", "pass", "")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
@@ -151,6 +154,7 @@ func TestIntegration_FullCycleFailRetry(t *testing.T) {
 	writeSupervisorSignal(t, dir, "goal-001", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
@@ -170,6 +174,7 @@ func TestIntegration_FullCycleFailRetry(t *testing.T) {
 	writeValidatorSignal(t, dir, "goal-001", "fail", "fix the price calc")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
@@ -215,6 +220,7 @@ func TestIntegration_StoppedRetry(t *testing.T) {
 	writeSupervisorSignal(t, dir, "goal-001", "stopped")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
@@ -233,6 +239,7 @@ func TestIntegration_StoppedRetry(t *testing.T) {
 	writeValidatorSignal(t, dir, "goal-001", "fail", "finish the booking page")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
@@ -277,6 +284,7 @@ func TestIntegration_MaxRetriesExhausted(t *testing.T) {
 	writeSupervisorSignal(t, dir, "goal-001", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
@@ -291,6 +299,7 @@ func TestIntegration_MaxRetriesExhausted(t *testing.T) {
 	writeValidatorSignal(t, dir, "goal-001", "fail", "first failure")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
@@ -334,6 +343,7 @@ func TestIntegration_MultiGoalSequential(t *testing.T) {
 		// dispatch
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
+		exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 		setupDispatchMocks(exec, testSession, "@0", supName)
 		d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 		require.NoError(t, d.tick(ctx, gf))
@@ -347,6 +357,7 @@ func TestIntegration_MultiGoalSequential(t *testing.T) {
 		writeSupervisorSignal(t, dir, goalID, "done")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
+		exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 			{TmuxWindowID: "@5", Name: valName, CurrentCommand: "claude"},
@@ -362,6 +373,7 @@ func TestIntegration_MultiGoalSequential(t *testing.T) {
 		writeValidatorSignal(t, dir, goalID, "pass", "")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
+		exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 			{TmuxWindowID: "@5", Name: valName},
 		}, nil).Once()
@@ -431,6 +443,7 @@ func TestIntegration_CrashRecoveryMidValidation(t *testing.T) {
 	writeValidatorSignal(t, dir, "goal-001", "pass", "")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
@@ -505,6 +518,7 @@ func TestIntegration_GuardFileLifecycle(t *testing.T) {
 	// deactivate → guard file removed
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	setupDeactivateMocks(exec, testSession, "@0")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
@@ -565,6 +579,7 @@ func TestIntegration_RetryExhaustion_CascadeAndDeactivate(t *testing.T) {
 	writeSupervisorSignal(t, dir, "goal-001", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
@@ -581,11 +596,13 @@ func TestIntegration_RetryExhaustion_CascadeAndDeactivate(t *testing.T) {
 	writeValidatorSignal(t, dir, "goal-001", "fail", "root task failed")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
-	setupDeactivateOnCompletionMocks(exec, testSession)
+	// notifySupervisor calls (GOAL-FAILED + ALL-COMPLETE) + teardown ListWindows
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
 	require.NoError(t, d.tick(ctx, gf))
 
@@ -647,6 +664,7 @@ func TestIntegration_RetryExhaustion_DiamondDeps_TerminalState(t *testing.T) {
 	writeSupervisorSignal(t, dir, "goal-001", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
@@ -662,11 +680,13 @@ func TestIntegration_RetryExhaustion_DiamondDeps_TerminalState(t *testing.T) {
 	writeValidatorSignal(t, dir, "goal-001", "fail", "diamond root failed")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
-	setupDeactivateOnCompletionMocks(exec, testSession)
+	// notifySupervisor calls (GOAL-FAILED + ALL-COMPLETE) + teardown ListWindows
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
 	require.NoError(t, d.tick(ctx, gf))
 
@@ -729,6 +749,7 @@ func TestIntegration_RetryExhaustion_PartialProgress_TerminalState(t *testing.T)
 	writeSupervisorSignal(t, dir, "goal-002", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-002", CurrentCommand: "claude"},
@@ -744,6 +765,7 @@ func TestIntegration_RetryExhaustion_PartialProgress_TerminalState(t *testing.T)
 	writeValidatorSignal(t, dir, "goal-002", "fail", "goal-002 failed")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-002"},
 	}, nil).Once()
@@ -806,6 +828,8 @@ func TestIntegration_GlobalRetryCeiling_MultiGoalHaltWithReport(t *testing.T) {
 
 	// --- Tick 1: goal-001 pending, ceiling reached → haltRetryCeiling ---
 	// goal-001 → Failed + cascade (goal-002 → Blocked), advance to goal-003
+	// notifySupervisor from GOAL-FAILED notification needs ListWindows
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 	require.NoError(t, d.tick(ctx, gf))
 
 	loaded, err := LoadGoals(dir)
@@ -823,6 +847,7 @@ func TestIntegration_GlobalRetryCeiling_MultiGoalHaltWithReport(t *testing.T) {
 	*gf = *loaded
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	setupDeactivateOnCompletionMocks(exec, testSession)
 
 	require.NoError(t, d.tick(ctx, gf))
@@ -880,6 +905,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	writeSupervisorSignal(t, dir, "goal-001", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
@@ -896,10 +922,12 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	writeValidatorSignal(t, dir, "goal-001", "fail", "BC-A root failed")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
 	require.NoError(t, d.tick(ctx, gf))
 
@@ -919,6 +947,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	*gf = *loaded
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	setupDispatchMocks(exec, testSession, "@10", "supervisor-003")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@10"))
 	require.NoError(t, d.tick(ctx, gf))
@@ -933,6 +962,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	writeSupervisorSignal(t, dir, "goal-003", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@15", Name: "validator-003", CurrentCommand: "claude"},
@@ -949,6 +979,7 @@ func TestIntegration_CrossBCIndependence_FailedGoalDoesNotBlockOtherBC(t *testin
 	writeValidatorSignal(t, dir, "goal-003", "pass", "")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@15", Name: "validator-003"},
 	}, nil).Once()
@@ -1009,6 +1040,7 @@ func TestIntegration_CompletionReport_AllCategories(t *testing.T) {
 
 	// --- Tick 1: goal-002 pending, ceiling reached (consumed code 3 >= 3) → haltRetryCeiling ---
 	// goal-002 → Failed, goal-003 → Blocked, advance to goal-004
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 	require.NoError(t, d.tick(ctx, gf))
 
 	loaded, err := LoadGoals(dir)
@@ -1025,6 +1057,7 @@ func TestIntegration_CompletionReport_AllCategories(t *testing.T) {
 	*gf = *loaded
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	setupDeactivateOnCompletionMocks(exec, testSession)
 
 	require.NoError(t, d.tick(ctx, gf))
@@ -1107,6 +1140,7 @@ func TestIntegration_DependencyOrdering_FullGraph(t *testing.T) {
 		valName := "validator-" + strings.TrimPrefix(goalID, "goal-")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
+		exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 		setupDispatchMocks(exec, testSession, "@0", supName)
 		d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 		require.NoError(t, d.tick(ctx, gf))
@@ -1117,6 +1151,7 @@ func TestIntegration_DependencyOrdering_FullGraph(t *testing.T) {
 		writeSupervisorSignal(t, dir, goalID, "done")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
+		exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 			{TmuxWindowID: "@5", Name: valName, CurrentCommand: "claude"},
@@ -1131,6 +1166,7 @@ func TestIntegration_DependencyOrdering_FullGraph(t *testing.T) {
 		writeValidatorSignal(t, dir, goalID, "pass", "")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
+		exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 			{TmuxWindowID: "@5", Name: valName},
 		}, nil).Once()
@@ -1214,6 +1250,7 @@ func TestIntegration_DependencyOrdering_FailedDepBlocksDownstream(t *testing.T) 
 	writeSupervisorSignal(t, dir, "goal-002", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-002", CurrentCommand: "claude"},
@@ -1229,6 +1266,7 @@ func TestIntegration_DependencyOrdering_FailedDepBlocksDownstream(t *testing.T) 
 	writeValidatorSignal(t, dir, "goal-002", "fail", "error-handling broken")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-002"},
 	}, nil).Once()
@@ -1292,6 +1330,7 @@ func TestIntegration_DependencyOrdering_IndependentBranchesNotBlocked(t *testing
 	writeSupervisorSignal(t, dir, "goal-002", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-002", CurrentCommand: "claude"},
@@ -1307,10 +1346,12 @@ func TestIntegration_DependencyOrdering_IndependentBranchesNotBlocked(t *testing
 	writeValidatorSignal(t, dir, "goal-002", "fail", "BC-A-domain failed")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-002"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
 	require.NoError(t, d.tick(ctx, gf))
 
@@ -1333,6 +1374,7 @@ func TestIntegration_DependencyOrdering_IndependentBranchesNotBlocked(t *testing
 	// Tick 4: dispatch goal-003 (BC-B-domain) — independent branch continues
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	setupDispatchMocks(exec, testSession, "@10", "supervisor-003")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@10"))
 	require.NoError(t, d.tick(ctx, gf))
@@ -1387,6 +1429,7 @@ func TestIntegration_DispatchTimeout_FullLifecycle(t *testing.T) {
 	// Tick 3: re-dispatch — old windows killed, fresh supervisor
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	// Kill phase: killWindowByName("supervisor") finds old supervisor
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
@@ -1470,6 +1513,7 @@ func TestIntegration_GoalsSequentialTasksParallel(t *testing.T) {
 	writeSupervisorSignal(t, dir, "goal-001", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
@@ -1486,6 +1530,7 @@ func TestIntegration_GoalsSequentialTasksParallel(t *testing.T) {
 	writeValidatorSignal(t, dir, "goal-001", "pass", "")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
@@ -1504,6 +1549,7 @@ func TestIntegration_GoalsSequentialTasksParallel(t *testing.T) {
 	// --- Tick: goal-002 dispatches now that goal-001 is done ---
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	setupDispatchMocks(exec, testSession, "@10", "supervisor-002")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@10"))
 	require.NoError(t, d.tick(ctx, gf))
@@ -1539,6 +1585,7 @@ func TestIntegration_GoalBlockedUntilPriorComplete(t *testing.T) {
 		valName := "validator-" + strings.TrimPrefix(goalID, "goal-")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
+		exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 		setupDispatchMocks(exec, testSession, "@0", supName)
 		d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 		require.NoError(t, d.tick(ctx, gf))
@@ -1549,6 +1596,7 @@ func TestIntegration_GoalBlockedUntilPriorComplete(t *testing.T) {
 		writeSupervisorSignal(t, dir, goalID, "done")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
+		exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 			{TmuxWindowID: "@5", Name: valName, CurrentCommand: "claude"},
@@ -1563,6 +1611,7 @@ func TestIntegration_GoalBlockedUntilPriorComplete(t *testing.T) {
 		writeValidatorSignal(t, dir, goalID, "pass", "")
 		exec.ExpectedCalls = nil
 		exec.Calls = nil
+		exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 			{TmuxWindowID: "@5", Name: valName},
 		}, nil).Once()

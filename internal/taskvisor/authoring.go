@@ -14,17 +14,18 @@ import "fmt"
 // GoalSpec is the structured input of CreateGoal. Context and NotInScope have
 // no structured Goal fields — they are goal.md prose only, same as before.
 type GoalSpec struct {
-	Description   string
-	Acceptance    []string
-	Validate      []string
-	Context       string
-	NotInScope    string
-	Phase         string
-	MaxRetries    int
-	DependsOn     []string
-	Preconditions []Precondition
-	Investigators []Investigator
-	Scope         []string
+	Description     string
+	Acceptance      []string
+	Validate        []string
+	Context         string
+	NotInScope      string
+	Phase           string
+	MaxRetries      int
+	MaxStuckRetries int
+	DependsOn       []string
+	Preconditions   []Precondition
+	Investigators   []Investigator
+	Scope           []string
 }
 
 // validateGoalSpec enforces the core-owned authoring rules shared by every
@@ -79,6 +80,11 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 		maxRetries = 5
 	}
 
+	maxStuckRetries := spec.MaxStuckRetries
+	if maxStuckRetries == 0 {
+		maxStuckRetries = 3
+	}
+
 	scope := spec.Scope
 	derivedScope := false
 	if len(scope) == 0 {
@@ -117,16 +123,18 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 
 		id = NextGoalID(gf.Goals)
 		gf.Goals = append(gf.Goals, Goal{
-			ID:            id,
-			Description:   spec.Description,
-			Acceptance:    spec.Acceptance,
-			Validate:      spec.Validate,
-			Preconditions: spec.Preconditions,
-			Status:        GoalPending,
-			MaxRetries:    maxRetries,
-			Phase:         spec.Phase,
-			DependsOn:     spec.DependsOn,
-			Scope:         scope,
+			ID:              id,
+			Description:     spec.Description,
+			Acceptance:      spec.Acceptance,
+			Validate:        spec.Validate,
+			Preconditions:   spec.Preconditions,
+			Status:          GoalPending,
+			MaxRetries:      maxRetries,
+			MaxStuckRetries: maxStuckRetries,
+			StuckRetries:    maxStuckRetries,
+			Phase:           spec.Phase,
+			DependsOn:       spec.DependsOn,
+			Scope:           scope,
 		})
 
 		return SaveGoals(workDir, gf)

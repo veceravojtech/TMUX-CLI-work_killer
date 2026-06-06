@@ -135,6 +135,9 @@ func (d *Daemon) killWindowByName(name string) error {
 	}
 	for _, w := range windows {
 		if w.Name == name {
+			if err := d.executor.ClosePipePane(d.session, w.TmuxWindowID); err != nil {
+				log.Printf("warning: ClosePipePane %q: %v", name, err)
+			}
 			return d.executor.KillWindow(d.session, w.TmuxWindowID)
 		}
 	}
@@ -148,6 +151,9 @@ func (d *Daemon) killWindowsByPrefix(prefix string) error {
 	}
 	for _, w := range windows {
 		if strings.HasPrefix(w.Name, prefix) {
+			if err := d.executor.ClosePipePane(d.session, w.TmuxWindowID); err != nil {
+				log.Printf("warning: ClosePipePane %q: %v", w.Name, err)
+			}
 			if err := d.executor.KillWindow(d.session, w.TmuxWindowID); err != nil {
 				return err
 			}

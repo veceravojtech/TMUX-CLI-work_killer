@@ -589,6 +589,8 @@ func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bo
 		goal.Status = GoalFailed
 		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 		goals.CascadeFailure(goal.ID, "fail")
+		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=integration-gate-failed cascade=%d]",
+			goal.ID, goal.Description, countCascaded(goals, goal.ID)))
 		if saveErr := SaveGoals(d.workDir, goals); saveErr != nil {
 			return false, saveErr
 		}
@@ -619,6 +621,8 @@ func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bo
 	goal.Status = GoalFailed
 	goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	goals.CascadeFailure(goal.ID, "fail")
+	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=merge-conflict cascade=%d]",
+		goal.ID, goal.Description, countCascaded(goals, goal.ID)))
 	if saveErr := SaveGoals(d.workDir, goals); saveErr != nil {
 		return false, saveErr
 	}

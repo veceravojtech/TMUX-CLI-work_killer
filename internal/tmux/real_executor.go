@@ -491,6 +491,41 @@ func (e *RealTmuxExecutor) FindSessionByEnvironment(key, value string) (string, 
 	return "", nil
 }
 
+// PipePane starts streaming pane output to a log file in append mode.
+// Command: tmux pipe-pane -o -t <session>:<window> 'cat >> <logPath>'
+func (e *RealTmuxExecutor) PipePane(sessionID, windowID, logPath string) error {
+	target := sessionID + ":" + windowID
+	cmd := exec.Command("tmux", "pipe-pane", "-o", "-t", target, "cat >> "+logPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if cmd.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux pipe-pane failed (target: %s): %w: %s",
+			target, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// ClosePipePane closes any active pipe-pane on the window (idempotent).
+// Command: tmux pipe-pane -t <session>:<window>  (no command = close)
+func (e *RealTmuxExecutor) ClosePipePane(sessionID, windowID string) error {
+	target := sessionID + ":" + windowID
+	cmd := exec.Command("tmux", "pipe-pane", "-t", target)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if cmd.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return fmt.Errorf("tmux pipe-pane close failed (target: %s): %w: %s",
+			target, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 // AttachSession attaches the current terminal to an existing tmux session
 // Command: tmux attach-session -t <id>
 // This method blocks until the user detaches from the tmux session.

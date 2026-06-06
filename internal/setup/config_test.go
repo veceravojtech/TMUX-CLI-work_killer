@@ -475,6 +475,12 @@ taskvisor:
 		"transient_retry_backoff_ms is still backfilled to 500")
 }
 
+func TestDefaultSettings_MaxStuckRetries(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 3, s.Supervisor.MaxStuckRetries,
+		"default max_stuck_retries should be 3")
+}
+
 func TestDefaultSettings_RequirePlanApproval_False(t *testing.T) {
 	s := DefaultSettings()
 	assert.False(t, s.Taskvisor.RequirePlanApproval,

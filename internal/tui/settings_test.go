@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 23)
+	assert.Len(t, m.items, 24)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -50,7 +50,8 @@ commands:
 	assert.Equal(t, "taskvisor.transient_retry_max_attempts", m.items[15].key)
 	assert.Equal(t, "taskvisor.transient_retry_backoff_ms", m.items[16].key)
 	assert.Equal(t, "supervisor.max_goals", m.items[17].key)
-	assert.Equal(t, "taskvisor.progress_timeout_sec", m.items[18].key)
+	assert.Equal(t, "supervisor.max_stuck_retries", m.items[18].key)
+	assert.Equal(t, "taskvisor.progress_timeout_sec", m.items[19].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -167,17 +168,22 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 22, m.cursor)
 
-	// Can't go past last item (23 items → max index 22)
+	// One more down to reach the 24th item
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 22, m.cursor)
+	assert.Equal(t, 23, m.cursor)
+
+	// Can't go past last item (24 items → max index 23)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	assert.Equal(t, 23, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 21, m.cursor)
+	assert.Equal(t, 22, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 22; i++ {
+	for i := 0; i < 23; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -834,7 +840,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 23)
+	assert.Len(t, m.items, 24)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -884,7 +890,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 23)
+	assert.Len(t, m.items, 24)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -1294,6 +1300,37 @@ taskvisor:
 	assert.Equal(t, 4, result.Taskvisor.CircuitBreakerK)
 	assert.Equal(t, 7, result.Supervisor.MaxCycles)
 	assert.Equal(t, 2, result.Supervisor.MaxGoals)
+}
+
+func TestNewModel_IncludesMaxStuckRetriesItem(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	var found bool
+	for _, item := range m.items {
+		if item.key == "supervisor.max_stuck_retries" {
+			found = true
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 3, item.intVal, "default max_stuck_retries should be 3")
+		}
+	}
+	assert.True(t, found, "supervisor.max_stuck_retries must be in TUI items")
+}
+
+func TestToSettings_OverlaysMaxStuckRetries(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "supervisor.max_stuck_retries" {
+			m.items[i].intVal = 5
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, 5, result.Supervisor.MaxStuckRetries, "edited max_stuck_retries must overlay into ToSettings")
 }
 
 func TestToSettings_RequirePlanApproval(t *testing.T) {

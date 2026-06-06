@@ -596,6 +596,52 @@ func (d *Daemon) listWindows() ([]tmux.WindowInfo, error) {
 	return d.executor.ListWindows(d.session)
 }
 
+func (d *Daemon) notifySupervisor(msg string) {
+	win, err := d.findWindowByName("supervisor")
+	if err != nil {
+		log.Printf("notify: supervisor window not found, skipping: %v", err)
+		return
+	}
+	if err := d.executor.SendMessage(d.session, win.TmuxWindowID, msg); err != nil {
+		log.Printf("notify: failed to send to supervisor: %v", err)
+	}
+}
+
+func (d *Daemon) notifyCompletion(goals *GoalsFile) {
+	win, err := d.findWindowByName("supervisor")
+	if err != nil {
+		log.Printf("notify: supervisor window not found, skipping completion notifications: %v", err)
+		return
+	}
+	for _, g := range goals.Goals {
+		if g.Status == GoalDone {
+			dur := goalDuration(&g)
+			if dur == "" {
+				dur = "unknown"
+			}
+			if err := d.executor.SendMessage(d.session, win.TmuxWindowID, fmt.Sprintf("[TASKVISOR:GOAL-DONE id=%s desc=%q duration=%s]", g.ID, g.Description, dur)); err != nil {
+				log.Printf("notify: failed to send GOAL-DONE for %s: %v", g.ID, err)
+			}
+		}
+	}
+	var doneN, failedN, blockedN int
+	for _, g := range goals.Goals {
+		switch g.Status {
+		case GoalDone:
+			doneN++
+		case GoalFailed:
+			failedN++
+		case GoalBlocked:
+			blockedN++
+		}
+	}
+	wall := d.now().Sub(d.activatedAt).Round(time.Second)
+	if err := d.executor.SendMessage(d.session, win.TmuxWindowID, fmt.Sprintf("[TASKVISOR:ALL-COMPLETE done=%d failed=%d blocked=%d wall=%s]",
+		doneN, failedN, blockedN, wall)); err != nil {
+		log.Printf("notify: failed to send ALL-COMPLETE: %v", err)
+	}
+}
+
 func (d *Daemon) setupSignalHandler(parentCtx context.Context) {
 	d.ctx, d.cancel = context.WithCancel(parentCtx)
 	d.signalCh = make(chan os.Signal, 1)

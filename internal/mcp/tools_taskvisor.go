@@ -37,6 +37,7 @@ type tvGoal struct {
 	SpecRetries       int `yaml:"spec_retries,omitempty"`
 	ValidationRetries int `yaml:"validation_retries,omitempty"`
 	BlockRetries      int `yaml:"block_retries,omitempty"`
+	StuckRetries      int `yaml:"stuck_retries,omitempty"`
 
 	// Per-class retry BUDGETS mirroring taskvisor.Goal.Max…Retries (same yaml
 	// keys). DUAL-STRUCT (critical): erasing a budget to 0 corrupts the
@@ -47,6 +48,7 @@ type tvGoal struct {
 	MaxSpecRetries       int `yaml:"max_spec_retries,omitempty"`
 	MaxValidationRetries int `yaml:"max_validation_retries,omitempty"`
 	MaxBlockRetries      int `yaml:"max_block_retries,omitempty"`
+	MaxStuckRetries      int `yaml:"max_stuck_retries,omitempty"`
 
 	// Durable C6 code-route convergence circuit-breaker state mirroring
 	// taskvisor.Goal.ConvergenceSignatures/ConvergenceStreak (same yaml keys).

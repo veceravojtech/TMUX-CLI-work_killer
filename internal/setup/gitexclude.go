@@ -9,6 +9,7 @@ import (
 var gitExcludeEntries = []string{
 	"/.tmux-cli/",
 	"/.tmux-cli-worktrees/",
+	"/.tmux-cli/logs/",
 	"/.claude/settings.json",
 	"/.claude/commands/tmux/",
 }

@@ -183,6 +183,8 @@ func TestSaveGoals_Roundtrip(t *testing.T) {
 				MaxCodeRetries:       3,
 				MaxSpecRetries:       1,
 				MaxValidationRetries: 1,
+				StuckRetries:         3,
+				MaxStuckRetries:      3,
 			},
 			{
 				ID:                   "goal-002",
@@ -198,6 +200,8 @@ func TestSaveGoals_Roundtrip(t *testing.T) {
 				MaxCodeRetries:       5,
 				MaxSpecRetries:       2,
 				MaxValidationRetries: 1,
+				StuckRetries:         3,
+				MaxStuckRetries:      3,
 			},
 		},
 	}
@@ -1218,6 +1222,119 @@ func TestGoal_FailedBySurvivesSaveGoalsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, reloaded.Goals, 1)
 	assert.Equal(t, "validation-timeout", reloaded.Goals[0].FailedBy, "failed_by must survive SaveGoals round-trip")
+}
+
+// --- StuckRetries dedicated budget -------------------------------------------
+
+func TestLoadGoals_BackfillsMaxStuckRetries(t *testing.T) {
+	root := t.TempDir()
+	p := GoalsFilePath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	content := `goals:
+  - id: "goal-001"
+    description: "Legacy goal without stuck fields"
+    status: pending
+    max_retries: 5
+    code_retries: 5
+    max_code_retries: 5
+    spec_retries: 3
+    max_spec_retries: 3
+    validation_retries: 2
+    max_validation_retries: 2
+`
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+
+	gf, err := LoadGoals(root)
+	require.NoError(t, err)
+	require.Len(t, gf.Goals, 1)
+	assert.Equal(t, 3, gf.Goals[0].MaxStuckRetries, "MaxStuckRetries must be backfilled to 3")
+}
+
+func TestLoadGoals_ReseedsStuckRetries(t *testing.T) {
+	root := t.TempDir()
+	gf := &GoalsFile{Goals: []Goal{{
+		ID: "goal-001", Description: "test", Status: GoalRunning,
+		MaxRetries:  5,
+		CodeRetries: 3, MaxCodeRetries: 5,
+		SpecRetries: 2, MaxSpecRetries: 3,
+		ValidationRetries: 1, MaxValidationRetries: 2,
+		StuckRetries: 0, MaxStuckRetries: 3,
+	}}}
+	require.NoError(t, SaveGoals(root, gf))
+
+	loaded, err := LoadGoals(root)
+	require.NoError(t, err)
+	assert.Equal(t, 3, loaded.Goals[0].StuckRetries,
+		"StuckRetries==0 with MaxStuckRetries>0 and non-terminal must re-seed")
+}
+
+func TestLoadGoals_SkipsStuckReseedForTerminal(t *testing.T) {
+	root := t.TempDir()
+	gf := &GoalsFile{Goals: []Goal{{
+		ID: "goal-001", Description: "test", Status: GoalFailed,
+		MaxRetries:  5,
+		CodeRetries: 0, MaxCodeRetries: 5,
+		SpecRetries: 0, MaxSpecRetries: 3,
+		ValidationRetries: 0, MaxValidationRetries: 2,
+		StuckRetries: 0, MaxStuckRetries: 3,
+	}}}
+	require.NoError(t, SaveGoals(root, gf))
+
+	loaded, err := LoadGoals(root)
+	require.NoError(t, err)
+	assert.Equal(t, 0, loaded.Goals[0].StuckRetries,
+		"terminal goals must NOT re-seed StuckRetries")
+}
+
+func TestResetGoal_ZeroesStuckRetries(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{{
+		ID: "goal-001", Description: "test", Status: GoalFailed,
+		StuckRetries: 2, MaxStuckRetries: 3,
+	}}}
+
+	ok := gf.ResetGoal("goal-001")
+	require.True(t, ok)
+	assert.Equal(t, 0, gf.Goals[0].StuckRetries, "ResetGoal must zero StuckRetries")
+}
+
+func TestResetGoal_PreservesMaxStuckRetries(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{{
+		ID: "goal-001", Description: "test", Status: GoalFailed,
+		StuckRetries: 1, MaxStuckRetries: 3,
+	}}}
+
+	ok := gf.ResetGoal("goal-001")
+	require.True(t, ok)
+	assert.Equal(t, 3, gf.Goals[0].MaxStuckRetries, "ResetGoal must preserve MaxStuckRetries")
+}
+
+func TestLoadGoals_AfterReset_ReseedsStuckRetries(t *testing.T) {
+	root := t.TempDir()
+	gf := &GoalsFile{Goals: []Goal{{
+		ID: "goal-001", Description: "test", Status: GoalPending,
+		MaxRetries:  5,
+		CodeRetries: 5, MaxCodeRetries: 5,
+		SpecRetries: 3, MaxSpecRetries: 3,
+		ValidationRetries: 2, MaxValidationRetries: 2,
+		StuckRetries: 0, MaxStuckRetries: 3,
+	}}}
+	require.NoError(t, SaveGoals(root, gf))
+
+	loaded, err := LoadGoals(root)
+	require.NoError(t, err)
+	assert.Equal(t, 3, loaded.Goals[0].StuckRetries,
+		"after reset (StuckRetries=0, pending), LoadGoals must re-seed to MaxStuckRetries")
+}
+
+func TestConsumedRetries_ExcludesStuckRetries(t *testing.T) {
+	g := &Goal{
+		MaxCodeRetries: 5, CodeRetries: 5,
+		MaxSpecRetries: 3, SpecRetries: 3,
+		MaxValidationRetries: 2, ValidationRetries: 2,
+		MaxStuckRetries: 3, StuckRetries: 1,
+	}
+	assert.Equal(t, 0, consumedRetries(g),
+		"consumedRetries must NOT count consumed StuckRetries")
 }
 
 // --- B4: repair-at-dispatch Investigation Config guard ---------------------

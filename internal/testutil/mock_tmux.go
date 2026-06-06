@@ -136,3 +136,15 @@ func (m *MockTmuxExecutor) AttachSession(id string) error {
 	args := m.Called(id)
 	return args.Error(0)
 }
+
+// PipePane mocks starting pipe-pane output streaming
+func (m *MockTmuxExecutor) PipePane(sessionID, windowID, logPath string) error {
+	args := m.Called(sessionID, windowID, logPath)
+	return args.Error(0)
+}
+
+// ClosePipePane mocks closing an active pipe-pane
+func (m *MockTmuxExecutor) ClosePipePane(sessionID, windowID string) error {
+	args := m.Called(sessionID, windowID)
+	return args.Error(0)
+}

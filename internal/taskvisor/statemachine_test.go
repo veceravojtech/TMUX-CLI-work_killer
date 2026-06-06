@@ -352,7 +352,8 @@ tasks:
 
 	g := &gf.Goals[0]
 	assert.Equal(t, GoalRunning, g.Status, "stuck supervisor is re-dispatched")
-	assert.Equal(t, 1, g.ValidationRetries, "error/ops budget charged 2->1")
+	assert.Equal(t, 2, g.StuckRetries, "stuck budget charged 3->2")
+	assert.Equal(t, 2, g.ValidationRetries, "validation budget untouched (stuck charges stuck budget)")
 	assert.Equal(t, 2, g.CodeRetries, "code budget untouched")
 	assert.Equal(t, 2, g.SpecRetries, "spec budget untouched")
 	assert.Contains(t, out, "STUCK", "loud STUCK line logged")
@@ -399,8 +400,9 @@ func TestSupervisingHeartbeat_ResetsOnProgress(t *testing.T) {
 }
 
 // TestSupervisingHeartbeat_ExhaustionCascades — when the wedged supervisor's
-// ValidationRetries hits zero, the goal hard-fails and its dependents cascade
-// blocked; an independent goal stays pending and Code/Spec budgets are untouched.
+// StuckRetries hits zero, the goal hard-fails and its dependents cascade
+// blocked; an independent goal stays pending and Code/Spec/Validation budgets
+// are untouched.
 func TestSupervisingHeartbeat_ExhaustionCascades(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
@@ -410,7 +412,9 @@ func TestSupervisingHeartbeat_ExhaustionCascades(t *testing.T) {
 	d.progressTimeout = 5 * time.Minute
 	d.dispatchTimeout = time.Hour
 
-	blocker := routeGoal("goal-001", 2, 2, 1, 0) // val == 1: next charge exhausts
+	blocker := routeGoal("goal-001", 2, 2, 1, 0)
+	blocker.StuckRetries = 1 // next charge exhausts
+	blocker.MaxStuckRetries = 3
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{
 		blocker,
 		{ID: "goal-002", Description: "independent", Status: GoalPending},
@@ -437,8 +441,9 @@ func TestSupervisingHeartbeat_ExhaustionCascades(t *testing.T) {
 	})
 
 	g, _ := gf.GoalByID("goal-001")
-	assert.Equal(t, GoalFailed, g.Status, "exhausted error/ops budget hard-fails the goal")
-	assert.Equal(t, 0, g.ValidationRetries, "budget charged 1->0")
+	assert.Equal(t, GoalFailed, g.Status, "exhausted stuck budget hard-fails the goal")
+	assert.Equal(t, 0, g.StuckRetries, "stuck budget charged 1->0")
+	assert.Equal(t, 1, g.ValidationRetries, "validation budget untouched")
 	assert.Equal(t, 2, g.CodeRetries, "code budget untouched on exhaustion")
 	dep, _ := gf.GoalByID("goal-003")
 	assert.Equal(t, GoalBlocked, dep.Status, "dependent cascaded blocked")
@@ -488,7 +493,8 @@ func TestValidatingHeartbeat_WedgedRoutesRerunValidationOnly(t *testing.T) {
 
 	g := &gf.Goals[0]
 	assert.Equal(t, GoalRunning, g.Status, "validator re-created, goal stays running")
-	assert.Equal(t, 1, g.ValidationRetries, "validation budget charged 2->1")
+	assert.Equal(t, 2, g.StuckRetries, "stuck budget charged 3->2")
+	assert.Equal(t, 2, g.ValidationRetries, "validation budget untouched (stuck charges stuck budget)")
 	assert.Equal(t, 3, g.CodeRetries, "code budget untouched")
 	assert.Equal(t, 2, g.SpecRetries, "spec budget untouched")
 	assert.Equal(t, phaseValidating, rt.phase, "remains in validating after re-create")
@@ -618,4 +624,136 @@ func writeSettingsWithProgressTimeout(t *testing.T, dir string, sec int) {
 	s := setup.DefaultSettings()
 	s.Taskvisor.ProgressTimeoutSec = sec
 	require.NoError(t, setup.SaveSettings(dir, s))
+}
+
+// --- StuckRetries dedicated budget in handleStuck* --------------------------
+
+func TestHandleStuckSupervisor_DecrementsStuckRetries(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.SetWindowCreateFunc(mockCreateWindowFn("@1"))
+
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{{
+		ID: "goal-001", Description: "test", Status: GoalRunning,
+		StartedAt:  "2026-06-06T10:00:00Z",
+		MaxRetries: 5, CodeRetries: 5, MaxCodeRetries: 5,
+		SpecRetries: 3, MaxSpecRetries: 3,
+		ValidationRetries: 2, MaxValidationRetries: 2,
+		StuckRetries: 3, MaxStuckRetries: 3,
+	}}}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	// handleStuckSupervisor: 2 kill lookups (execute-*, supervisor-001)
+	// dispatchRetry -> dispatch: 4 kill lookups + 1 collectManagedNames + 1 waitWindowsGone
+	// Then waitClaudeBoot returns supervisor-001
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(8)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@1", Name: "supervisor-001", CurrentCommand: "claude"},
+	}, nil)
+	exec.On("CaptureWindowOutput", testSession, "@1").Return("ready ❯ ", nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+
+	goal := &gf.Goals[0]
+	require.NoError(t, d.handleStuckSupervisor(goal, gf))
+
+	assert.Equal(t, 2, goal.StuckRetries, "StuckRetries must decrement by 1")
+	assert.Equal(t, 2, goal.ValidationRetries, "ValidationRetries must be unchanged")
+	assert.Equal(t, GoalRunning, goal.Status, "goal must stay running (re-dispatched)")
+}
+
+func TestHandleStuckSupervisor_ExhaustedStuckBudget(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{
+		{
+			ID: "goal-001", Description: "test", Status: GoalRunning,
+			StartedAt:  "2026-06-06T10:00:00Z",
+			MaxRetries: 5, CodeRetries: 5, MaxCodeRetries: 5,
+			SpecRetries: 3, MaxSpecRetries: 3,
+			ValidationRetries: 2, MaxValidationRetries: 2,
+			StuckRetries: 1, MaxStuckRetries: 3,
+		},
+		{ID: "goal-002", Description: "dependent", Status: GoalPending, DependsOn: []string{"goal-001"}},
+	}}
+	writeGoals(t, dir, gf)
+	noWindows(exec)
+
+	goal := &gf.Goals[0]
+	require.NoError(t, d.handleStuckSupervisor(goal, gf))
+
+	assert.Equal(t, 0, goal.StuckRetries, "StuckRetries must be 0")
+	assert.Equal(t, GoalFailed, goal.Status, "goal must be GoalFailed")
+	assert.Equal(t, GoalBlocked, gf.Goals[1].Status, "dependent must be cascaded to blocked")
+}
+
+func TestHandleStuckValidator_DecrementsStuckRetries(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseValidating
+	d.SetWindowCreateFunc(mockCreateWindowFn("@1"))
+
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{{
+		ID: "goal-001", Description: "test", Status: GoalRunning,
+		StartedAt:  "2026-06-06T10:00:00Z",
+		Validate:   []string{"go test ./..."},
+		MaxRetries: 5, CodeRetries: 5, MaxCodeRetries: 5,
+		SpecRetries: 3, MaxSpecRetries: 3,
+		ValidationRetries: 2, MaxValidationRetries: 2,
+		StuckRetries: 3, MaxStuckRetries: 3,
+	}}}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	// kill old validator (empty list = no-op), then waitClaudeBoot for new validator
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(1)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@1", Name: "validator-001", CurrentCommand: "claude"},
+	}, nil)
+	exec.On("CaptureWindowOutput", testSession, "@1").Return("ready ❯ ", nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+
+	goal := &gf.Goals[0]
+	require.NoError(t, d.handleStuckValidator(goal, gf))
+
+	assert.Equal(t, 2, goal.StuckRetries, "StuckRetries must decrement by 1")
+	assert.Equal(t, 2, goal.ValidationRetries, "ValidationRetries must be unchanged")
+	assert.Equal(t, GoalRunning, goal.Status, "goal must stay running (validator re-created)")
+}
+
+func TestHandleStuckValidator_ExhaustedStuckBudget(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseValidating
+
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{
+		{
+			ID: "goal-001", Description: "test", Status: GoalRunning,
+			StartedAt:  "2026-06-06T10:00:00Z",
+			Validate:   []string{"go test ./..."},
+			MaxRetries: 5, CodeRetries: 5, MaxCodeRetries: 5,
+			SpecRetries: 3, MaxSpecRetries: 3,
+			ValidationRetries: 2, MaxValidationRetries: 2,
+			StuckRetries: 1, MaxStuckRetries: 3,
+		},
+		{ID: "goal-002", Description: "dependent", Status: GoalPending, DependsOn: []string{"goal-001"}},
+	}}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+	noWindows(exec)
+
+	goal := &gf.Goals[0]
+	require.NoError(t, d.handleStuckValidator(goal, gf))
+
+	assert.Equal(t, 0, goal.StuckRetries, "StuckRetries must be 0")
+	assert.Equal(t, GoalFailed, goal.Status, "goal must be GoalFailed")
+	assert.Equal(t, GoalBlocked, gf.Goals[1].Status, "dependent must be cascaded to blocked")
 }

@@ -88,6 +88,14 @@ func (m *mockExecutor) AttachSession(id string) error {
 	return nil
 }
 
+func (m *mockExecutor) PipePane(sessionID, windowID, logPath string) error {
+	return nil
+}
+
+func (m *mockExecutor) ClosePipePane(sessionID, windowID string) error {
+	return nil
+}
+
 func TestTmuxExecutor_Interface_HasSendMessage(t *testing.T) {
 	// This test verifies that SendMessage is part of the TmuxExecutor interface
 	// It will fail until SendMessage is added to the interface definition

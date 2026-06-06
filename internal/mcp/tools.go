@@ -729,8 +729,16 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 		return nil, "", "", fmt.Errorf("failed to create worker window %s: %w", workerName, err)
 	}
 
+	logDir := filepath.Join(s.workingDir, ".tmux-cli", "logs", "panes")
+	_ = os.MkdirAll(logDir, 0o755)
+	logPath := filepath.Join(logDir, workerName+".log")
+	if ppErr := s.executor.PipePane(sessionID, window.TmuxWindowID, logPath); ppErr != nil {
+		log.Printf("WARNING: pipe-pane for %s failed (best-effort): %v", workerName, ppErr)
+	}
+
 	err = s.executor.SendMessage(sessionID, window.TmuxWindowID, "/tmux:execute")
 	if err != nil {
+		_ = s.executor.ClosePipePane(sessionID, window.TmuxWindowID)
 		_ = s.executor.KillWindow(sessionID, window.TmuxWindowID)
 		return nil, "", "", fmt.Errorf("%w: failed to send /tmux:execute to %s: %w",
 			ErrTmuxCommandFailed, workerName, err)
@@ -744,6 +752,7 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 
 	err = s.executor.SendMessageWithDelay(sessionID, window.TmuxWindowID, taskMessage)
 	if err != nil {
+		_ = s.executor.ClosePipePane(sessionID, window.TmuxWindowID)
 		_ = s.executor.KillWindow(sessionID, window.TmuxWindowID)
 		return nil, "", "", fmt.Errorf("%w: failed to send task message to %s: %w",
 			ErrTmuxCommandFailed, workerName, err)

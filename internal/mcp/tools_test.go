@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1143,6 +1144,7 @@ func TestServer_WindowsRecoverWorkers_NonNumericExecuteSuffix(t *testing.T) {
 }
 
 func TestServer_WindowsSpawnWorker_Success(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	mockExec := new(testutil.MockTmuxExecutor)
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
@@ -1154,6 +1156,7 @@ func TestServer_WindowsSpawnWorker_Success(t *testing.T) {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.Contains(s, "SUPERVISOR_WID=supervisor") &&
@@ -1206,6 +1209,7 @@ func TestWindowsSpawnWorker_SelfIdentifiesSupervisorFromUUID(t *testing.T) {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@2", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@2", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@2", "/tmux:execute").Return(nil)
 	mockExec.On("SendMessageWithDelay", "test-session", "@2", mock.Anything).Return(nil)
 
@@ -1255,6 +1259,7 @@ func TestWindowsSpawnWorker_MaxWorkersIsPerSupervisor(t *testing.T) {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@9", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@9", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@9", "/tmux:execute").Return(nil)
 	mockExec.On("SendMessageWithDelay", "test-session", "@9", mock.Anything).Return(nil)
 
@@ -1270,6 +1275,7 @@ func TestWindowsSpawnWorker_MaxWorkersIsPerSupervisor(t *testing.T) {
 // cwd-aware factory (CreateWindowInDir) so the worker's shell starts in the goal's
 // worktree.
 func TestWindowsSpawnWorker_WorkingDirectory_ThreadsToCreateWindow(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	const wt = "/repo/.tmux-cli/worktrees/goal-001"
 	mockExec := new(testutil.MockTmuxExecutor)
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
@@ -1283,6 +1289,7 @@ func TestWindowsSpawnWorker_WorkingDirectory_ThreadsToCreateWindow(t *testing.T)
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
 
@@ -1300,6 +1307,7 @@ func TestWindowsSpawnWorker_WorkingDirectory_ThreadsToCreateWindow(t *testing.T)
 // session-default CreateWindow path — byte-identical to today, never touching the
 // cwd-aware factory.
 func TestWindowsSpawnWorker_EmptyWorkingDirectory_UsesSessionDefault(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	mockExec := new(testutil.MockTmuxExecutor)
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
@@ -1311,6 +1319,7 @@ func TestWindowsSpawnWorker_EmptyWorkingDirectory_UsesSessionDefault(t *testing.
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
 
@@ -1352,6 +1361,7 @@ func TestServer_WindowsSpawnWorker_EmptyScope(t *testing.T) {
 }
 
 func TestServer_WindowsSpawnWorker_WithCustomDeliverable(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	mockExec := new(testutil.MockTmuxExecutor)
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
@@ -1363,6 +1373,7 @@ func TestServer_WindowsSpawnWorker_WithCustomDeliverable(t *testing.T) {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
 
 	customDeliverable := "- SPEC: structured specification\n- DESIGN: architecture decisions"
@@ -1385,6 +1396,7 @@ func TestServer_WindowsSpawnWorker_WithCustomDeliverable(t *testing.T) {
 }
 
 func TestServer_WindowsSpawnWorker_WithoutDeliverable(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	mockExec := new(testutil.MockTmuxExecutor)
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
@@ -1396,6 +1408,7 @@ func TestServer_WindowsSpawnWorker_WithoutDeliverable(t *testing.T) {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.Contains(s, "FINDINGS") &&
@@ -1419,6 +1432,7 @@ func TestServer_WindowsSpawnWorker_WithoutDeliverable(t *testing.T) {
 }
 
 func TestServer_WindowsSpawnWorker_ExecuteSendFails_CleansUp(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	mockExec := new(testutil.MockTmuxExecutor)
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
@@ -1430,7 +1444,9 @@ func TestServer_WindowsSpawnWorker_ExecuteSendFails_CleansUp(t *testing.T) {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(errors.New("send failed"))
+	mockExec.On("ClosePipePane", "test-session", "@1").Return(nil)
 	mockExec.On("KillWindow", "test-session", "@1").Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
@@ -1438,10 +1454,12 @@ func TestServer_WindowsSpawnWorker_ExecuteSendFails_CleansUp(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
+	mockExec.AssertCalled(t, "ClosePipePane", "test-session", "@1")
 	mockExec.AssertCalled(t, "KillWindow", "test-session", "@1")
 }
 
 func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	mockExec := new(testutil.MockTmuxExecutor)
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
 	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
@@ -1453,8 +1471,10 @@ func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(errors.New("delay send failed"))
+	mockExec.On("ClosePipePane", "test-session", "@1").Return(nil)
 	mockExec.On("KillWindow", "test-session", "@1").Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
@@ -1462,10 +1482,12 @@ func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
+	mockExec.AssertCalled(t, "ClosePipePane", "test-session", "@1")
 	mockExec.AssertCalled(t, "KillWindow", "test-session", "@1")
 }
 
 func TestServer_WindowsSpawnWorker_MaxWorkersExceeded(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	root := t.TempDir()
 	settingsDir := root + "/.tmux-cli"
 	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
@@ -1490,6 +1512,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersExceeded(t *testing.T) {
 }
 
 func TestServer_WindowsSpawnWorker_MaxWorkersNotExceeded(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	root := t.TempDir()
 	settingsDir := root + "/.tmux-cli"
 	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
@@ -1509,6 +1532,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersNotExceeded(t *testing.T) {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@2", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@2", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@2", "/tmux:execute").Return(nil)
 	mockExec.On("SendMessageWithDelay", "test-session", "@2", mock.Anything).Return(nil)
 
@@ -1521,6 +1545,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersNotExceeded(t *testing.T) {
 }
 
 func TestServer_WindowsSpawnWorker_MaxWorkersZeroUnlimited(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
 	root := t.TempDir()
 	settingsDir := root + "/.tmux-cli"
 	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
@@ -1542,6 +1567,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersZeroUnlimited(t *testing.T) {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@4", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@4", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@4", "/tmux:execute").Return(nil)
 	mockExec.On("SendMessageWithDelay", "test-session", "@4", mock.Anything).Return(nil)
 
@@ -1550,6 +1576,111 @@ func TestServer_WindowsSpawnWorker_MaxWorkersZeroUnlimited(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-4", name)
+}
+
+func TestWindowsSpawnWorker_PipePaneCalledAfterCreate(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "").Return("@1", nil)
+	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", "/test/dir/.tmux-cli/logs/panes/execute-1.log").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
+	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+
+	require.NoError(t, err)
+	mockExec.AssertCalled(t, "PipePane", "test-session", "@1", "/test/dir/.tmux-cli/logs/panes/execute-1.log")
+	mockExec.AssertExpectations(t)
+}
+
+func TestWindowsSpawnWorker_PipePaneError_DoesNotFailSpawn(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "").Return("@1", nil)
+	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(fmt.Errorf("pipe-pane failed"))
+	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
+	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	_, workerName, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+
+	require.NoError(t, err, "pipe-pane error must not fail spawn")
+	assert.Equal(t, "execute-1", workerName)
+}
+
+func TestWindowsSpawnWorker_PipePaneLogPath_MatchesWorkerName(t *testing.T) {
+	os.Setenv("TMUX_WINDOW_UUID", "sup-045-uuid")
+	defer os.Unsetenv("TMUX_WINDOW_UUID")
+
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor-045"},
+	}, nil)
+	mockExec.On("GetWindowOption", "test-session", "@0", "window-uuid").Return("sup-045-uuid", nil)
+	mockExec.On("CreateWindow", "test-session", "execute-045-1", "").Return("@1", nil)
+	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", "/test/dir/.tmux-cli/logs/panes/execute-045-1.log").Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
+	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	_, workerName, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "execute-045-1", workerName)
+	mockExec.AssertCalled(t, "PipePane", "test-session", "@1", "/test/dir/.tmux-cli/logs/panes/execute-045-1.log")
+}
+
+func TestWindowsSpawnWorker_PipePaneLogDir_Created(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
+	root := t.TempDir()
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", root).Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	mockExec.On("CreateWindow", "test-session", "execute-1", "").Return("@1", nil)
+	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
+	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
+
+	server := newTestServer(mockExec, root)
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+
+	require.NoError(t, err)
+	logDir := filepath.Join(root, ".tmux-cli", "logs", "panes")
+	info, statErr := os.Stat(logDir)
+	require.NoError(t, statErr, ".tmux-cli/logs/panes/ directory must be created")
+	assert.True(t, info.IsDir())
 }
 
 func TestServer_TasksValidate_Clean(t *testing.T) {

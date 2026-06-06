@@ -118,6 +118,8 @@ func (d *Daemon) deactivateOnCompletion(goals *GoalsFile) error {
 		log.Printf("warning: completion report: %v", err)
 	}
 
+	d.notifyCompletion(goals)
+
 	// All goals are resolved here; CurrentGoal names the goal that just finished.
 	// Tear down EVERY goal namespace (head + all goals) so no sibling goal's
 	// windows are orphaned at MaxGoals>1 (a goal that completed earlier in the run

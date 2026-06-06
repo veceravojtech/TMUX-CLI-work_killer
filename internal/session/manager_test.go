@@ -112,6 +112,16 @@ func (m *MockTmuxExecutor) AttachSession(id string) error {
 	return args.Error(0)
 }
 
+func (m *MockTmuxExecutor) PipePane(sessionID, windowID, logPath string) error {
+	args := m.Called(sessionID, windowID, logPath)
+	return args.Error(0)
+}
+
+func (m *MockTmuxExecutor) ClosePipePane(sessionID, windowID string) error {
+	args := m.Called(sessionID, windowID)
+	return args.Error(0)
+}
+
 // TestNewSessionManager_ReturnsInstance verifies constructor works
 func TestNewSessionManager_ReturnsInstance(t *testing.T) {
 	mockExec := new(MockTmuxExecutor)

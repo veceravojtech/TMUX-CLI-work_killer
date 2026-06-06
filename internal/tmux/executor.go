@@ -73,6 +73,12 @@ type TmuxExecutor interface {
 
 	// AttachSession attaches the current terminal to an existing tmux session
 	AttachSession(id string) error
+
+	// PipePane starts streaming pane output to a log file in append mode
+	PipePane(sessionID, windowID, logPath string) error
+
+	// ClosePipePane closes any active pipe-pane on the window (idempotent)
+	ClosePipePane(sessionID, windowID string) error
 }
 
 // WindowInfo contains metadata about a tmux window

@@ -291,6 +291,41 @@ func TestCreateGoal_DependsOnExistingPersisted(t *testing.T) {
 	assert.Equal(t, []string{"goal-001"}, gf.Goals[1].DependsOn)
 }
 
+// --- StuckRetries in CreateGoal -------------------------------------------
+
+func TestCreateGoal_SetsMaxStuckRetries(t *testing.T) {
+	dir := t.TempDir()
+
+	_, _, err := CreateGoal(dir, GoalSpec{
+		Description:     "Goal with stuck budget",
+		Validate:        []string{"go test ./..."},
+		MaxStuckRetries: 3,
+	})
+	require.NoError(t, err)
+
+	gf, err := LoadGoals(dir)
+	require.NoError(t, err)
+	require.Len(t, gf.Goals, 1)
+	assert.Equal(t, 3, gf.Goals[0].MaxStuckRetries, "MaxStuckRetries must be set from GoalSpec")
+	assert.Equal(t, 3, gf.Goals[0].StuckRetries, "StuckRetries must be seeded to MaxStuckRetries")
+}
+
+func TestCreateGoal_DefaultsMaxStuckRetries(t *testing.T) {
+	dir := t.TempDir()
+
+	_, _, err := CreateGoal(dir, GoalSpec{
+		Description: "Goal without stuck budget",
+		Validate:    []string{"go test ./..."},
+	})
+	require.NoError(t, err)
+
+	gf, err := LoadGoals(dir)
+	require.NoError(t, err)
+	require.Len(t, gf.Goals, 1)
+	assert.Equal(t, 3, gf.Goals[0].MaxStuckRetries, "MaxStuckRetries must default to 3")
+	assert.Equal(t, 3, gf.Goals[0].StuckRetries, "StuckRetries must be seeded to default MaxStuckRetries")
+}
+
 func TestCreateGoal_PreconditionsPersisted(t *testing.T) {
 	dir := t.TempDir()
 

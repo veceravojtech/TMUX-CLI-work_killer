@@ -13,6 +13,7 @@ import (
 var managedEntries = []string{
 	"/.tmux-cli/",
 	"/.tmux-cli-worktrees/",
+	"/.tmux-cli/logs/",
 	"/.claude/settings.json",
 	"/.claude/commands/tmux/",
 }
@@ -92,10 +93,19 @@ func TestEnsureGitExclude_PartialEntries(t *testing.T) {
 	require.NoError(t, EnsureGitExclude(root))
 
 	content := readExclude(t, root)
-	assert.Equal(t, 1, strings.Count(content, "/.tmux-cli/"),
+	assert.Equal(t, 1, strings.Count(content, "/.tmux-cli/\n"),
 		"should not duplicate existing entry")
 	assert.Contains(t, content, "/.claude/settings.json")
 	assert.Contains(t, content, "/.claude/commands/tmux/")
+}
+
+func TestEnsureGitExclude_IncludesLogsDir(t *testing.T) {
+	root := setupGitInfo(t)
+
+	require.NoError(t, EnsureGitExclude(root))
+
+	content := readExclude(t, root)
+	assert.Contains(t, content, "/.tmux-cli/logs/")
 }
 
 func TestEnsureGitExclude_CreatesExcludeFile(t *testing.T) {

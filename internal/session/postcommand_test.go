@@ -105,6 +105,14 @@ func (m *MockExecutorWithFeedback) AttachSession(id string) error {
 	return nil
 }
 
+func (m *MockExecutorWithFeedback) PipePane(sessionID, windowID, logPath string) error {
+	return nil
+}
+
+func (m *MockExecutorWithFeedback) ClosePipePane(sessionID, windowID string) error {
+	return nil
+}
+
 // setupTestLogDir creates a temporary test directory and changes to it
 // Returns cleanup function
 func setupTestLogDir(t *testing.T) func() {

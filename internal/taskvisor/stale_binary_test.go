@@ -53,6 +53,7 @@ goals:
 
 	executor := new(testutil.MockTmuxExecutor)
 	executor.On("FindSessionByEnvironment", mock.Anything, mock.Anything).Return("test-session", nil).Maybe()
+	executor.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	executor.On("ListWindows", mock.Anything).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil).Maybe()

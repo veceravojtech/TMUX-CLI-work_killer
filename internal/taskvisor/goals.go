@@ -68,11 +68,13 @@ type Goal struct {
 	SpecRetries       int `yaml:"spec_retries,omitempty"`
 	ValidationRetries int `yaml:"validation_retries,omitempty"`
 	BlockRetries      int `yaml:"block_retries,omitempty"`
+	StuckRetries      int `yaml:"stuck_retries,omitempty"`
 
 	MaxCodeRetries       int `yaml:"max_code_retries,omitempty"`
 	MaxSpecRetries       int `yaml:"max_spec_retries,omitempty"`
 	MaxValidationRetries int `yaml:"max_validation_retries,omitempty"`
 	MaxBlockRetries      int `yaml:"max_block_retries,omitempty"`
+	MaxStuckRetries      int `yaml:"max_stuck_retries,omitempty"`
 
 	// Durable C6 convergence circuit-breaker state (daemon-owned, survives
 	// cycles in goals.yaml). ConvergenceSignatures is the prior failed cycle's
@@ -266,6 +268,13 @@ func LoadGoals(projectRoot string) (*GoalsFile, error) {
 			g.Status != GoalFailed && g.Status != GoalDone {
 			g.CodeRetries, g.SpecRetries, g.ValidationRetries, g.BlockRetries =
 				g.MaxCodeRetries, g.MaxSpecRetries, g.MaxValidationRetries, g.MaxBlockRetries
+		}
+
+		if g.MaxStuckRetries == 0 && g.Status != GoalFailed && g.Status != GoalDone {
+			g.MaxStuckRetries = 3
+		}
+		if g.StuckRetries == 0 && g.MaxStuckRetries > 0 && g.Status != GoalFailed && g.Status != GoalDone {
+			g.StuckRetries = g.MaxStuckRetries
 		}
 	}
 
@@ -583,6 +592,7 @@ func (gf *GoalsFile) ResetGoal(id string) bool {
 	g.SpecRetries = 0
 	g.ValidationRetries = 0
 	g.BlockRetries = 0
+	g.StuckRetries = 0
 	// A reset goal starts fresh: clear the explicit next-dispatch routing
 	// marker too (RC-D). With no marker and zeroed counters, the next dispatch
 	// takes the fresh-goal path (full planner dispatch) via the legacy

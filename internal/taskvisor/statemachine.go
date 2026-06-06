@@ -539,12 +539,12 @@ func (d *Daemon) checkProgressHeartbeat(rt *goalRuntime, windowName string) (boo
 
 // handleStuckSupervisor recovers a supervisor window the heartbeat found wedged.
 // It tears down the goal's implementer pool + supervisor window, charges the
-// error/ops budget (ValidationRetries — NOT CodeRetries/SpecRetries, since the
-// code/spec is not at fault), and either re-dispatches (budget remaining) or
-// hard-halts cascading failure to dependents (exhausted), mirroring
-// rerunValidationOnly's exhaustion arm. Charging ValidationRetries bounds an
-// otherwise-infinite re-dispatch loop of a perpetually-wedged supervisor:
-// dispatchRetry resets dispatchTime, so the 1h hard timeout alone cannot bound it.
+// stuck budget (StuckRetries — NOT ValidationRetries/CodeRetries/SpecRetries,
+// since the code/spec/validation is not at fault — this is an operational hang),
+// and either re-dispatches (budget remaining) or hard-halts cascading failure to
+// dependents (exhausted). Charging StuckRetries bounds an otherwise-infinite
+// re-dispatch loop of a perpetually-wedged supervisor: dispatchRetry resets
+// dispatchTime, so the 1h hard timeout alone cannot bound it.
 func (d *Daemon) handleStuckSupervisor(goal *Goal, goals *GoalsFile) error {
 	mg := d.maxGoals()
 	log.Printf("%s: STUCK — supervisor made no pane progress for %v while still running; recovering (no code/spec budget charged)", goal.ID, d.progressTimeout)
@@ -554,35 +554,64 @@ func (d *Daemon) handleStuckSupervisor(goal *Goal, goals *GoalsFile) error {
 	if err := d.killWindowByName(supervisorWindow(goal.ID, mg)); err != nil {
 		return err
 	}
-	goal.ValidationRetries--
-	if goal.ValidationRetries <= 0 {
-		// Exhausted error/ops budget is a hard halt: dependents are blocked (class
-		// "fail"), exactly as the validation-timeout exhaustion route.
+	goal.StuckRetries--
+	if goal.StuckRetries <= 0 {
 		goals.CascadeFailure(goal.ID, "fail")
 		goal.Status = GoalFailed
 		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-		log.Printf("%s: stuck-supervisor budget exhausted (error/ops) — cascading failure to dependents", goal.ID)
+		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=stuck-supervisor cascade=%d]",
+			goal.ID, goal.Description, countCascaded(goals, goal.ID)))
+		log.Printf("%s: stuck budget exhausted — cascading failure to dependents", goal.ID)
 		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
 		return d.advanceToNextGoal(goals, goal.ID, false)
 	}
-	log.Printf("%s: stuck supervisor — re-dispatching (validation budget left %d)", goal.ID, goal.ValidationRetries)
+	log.Printf("%s: stuck supervisor — re-dispatching (stuck budget left %d)", goal.ID, goal.StuckRetries)
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
 	}
 	return d.dispatchRetry(goal, goals)
 }
 
-// handleStuckValidator recovers a validator window the heartbeat found wedged. It
-// routes through the existing rerunValidationOnly (valSig == nil — there is no
-// verdict), which tears down the wedged validator, re-creates it, and charges
-// ValidationRetries — exactly the validate-timeout route, just triggered minutes
-// earlier by the heartbeat instead of at the full validate hard timeout.
+// handleStuckValidator recovers a validator window the heartbeat found wedged.
+// It charges StuckRetries (NOT ValidationRetries — stuck is an operational hang,
+// not a validation defect), tears down the wedged validator, and either re-creates
+// it (budget remaining) or hard-halts cascading failure to dependents (exhausted).
+// Inlined rather than delegating to rerunValidationOnly because that function
+// charges ValidationRetries, sets FailedBy="validation-timeout", and calls
+// applyStructuredCorrections — none of which apply to a stuck recovery.
 func (d *Daemon) handleStuckValidator(goal *Goal, goals *GoalsFile) error {
-	log.Printf("%s: STUCK — validator made no pane progress for %v while still running; re-running validation only (no code/spec budget charged)", goal.ID, d.progressTimeout)
-	return d.rerunValidationOnly(goal, goals, nil)
+	log.Printf("%s: STUCK — validator made no pane progress for %v while still running; recovering (no code/spec budget charged)", goal.ID, d.progressTimeout)
+	goal.StuckRetries--
+	if goal.StuckRetries <= 0 {
+		goals.CascadeFailure(goal.ID, "fail")
+		goal.Status = GoalFailed
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=stuck-validator cascade=%d]",
+			goal.ID, goal.Description, countCascaded(goals, goal.ID)))
+		log.Printf("%s: stuck budget exhausted — cascading failure to dependents", goal.ID)
+		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+		return d.advanceToNextGoal(goals, goal.ID, false)
+	}
+	log.Printf("%s: stuck validator — re-creating (stuck budget left %d)", goal.ID, goal.StuckRetries)
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+	if err := d.killWindowByName(validatorWindow(goal.ID, d.maxGoals())); err != nil {
+		return err
+	}
+	if err := d.createValidatorAndSendPayload(goal); err != nil {
+		return err
+	}
+	rt := d.runtime(goal.ID)
+	rt.phase = phaseValidating
+	rt.validateTime = d.now()
+	return nil
 }
 
 // salvageLateVerdicts: for every GoalFailed goal marked FailedBy ==
@@ -699,6 +728,8 @@ func (d *Daemon) rerunValidationOnly(goal *Goal, goals *GoalsFile, valSig *Valid
 		goals.CascadeFailure(goal.ID, "fail")
 		goal.Status = GoalFailed
 		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=validation-exhausted cascade=%d]",
+			goal.ID, goal.Description, countCascaded(goals, goal.ID)))
 		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
@@ -869,9 +900,11 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdict
 		// threads it from ClassifyVerdict) and is a hard class ("fail"/"code-defect"),
 		// so dependents are blocked.
 		goals.CascadeFailure(goal.ID, verdictClass)
-		log.Printf("%s: code budget exhausted (%s) — cascading failure to dependents", goal.ID, verdictClass)
 		goal.Status = GoalFailed
 		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=code-exhausted cascade=%d]",
+			goal.ID, goal.Description, countCascaded(goals, goal.ID)))
+		log.Printf("%s: code budget exhausted (%s) — cascading failure to dependents", goal.ID, verdictClass)
 		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
@@ -989,9 +1022,11 @@ func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *Valida
 		// Spec budget exhausted — hard halt. An unrepairable spec leaves dependents
 		// genuinely blocked, so cascade with the hard class "fail".
 		goals.CascadeFailure(goal.ID, "fail")
-		log.Printf("%s: spec budget exhausted (spec-defect) — cascading failure to dependents", goal.ID)
 		goal.Status = GoalFailed
 		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=spec-exhausted cascade=%d]",
+			goal.ID, goal.Description, countCascaded(goals, goal.ID)))
+		log.Printf("%s: spec budget exhausted (spec-defect) — cascading failure to dependents", goal.ID)
 		log.Printf("%s: running -> failed (%s)", goal.ID, goalDuration(goal))
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
@@ -1086,6 +1121,8 @@ func (d *Daemon) haltRetryCeiling(goal *Goal, goals *GoalsFile) error {
 	goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	// Ceiling = exhausted retries → hard fail; downstream genuinely blocked.
 	goals.CascadeFailure(goal.ID, "fail")
+	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=retry-ceiling cascade=%d]",
+		goal.ID, goal.Description, countCascaded(goals, goal.ID)))
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
 	}
@@ -1197,6 +1234,16 @@ func (d *Daemon) advanceToNextGoal(goals *GoalsFile, completedID string, resume 
 		}
 	}
 	return SaveGoals(d.workDir, goals)
+}
+
+func countCascaded(goals *GoalsFile, failedGoalID string) int {
+	n := 0
+	for _, g := range goals.Goals {
+		if g.BlockedBy == failedGoalID && g.ID != failedGoalID {
+			n++
+		}
+	}
+	return n
 }
 
 // persistAfterAdvance moves the scalar CurrentGoal head off a just-completed goal

@@ -249,6 +249,7 @@ func TestSingleGoal_FullCycle_ByteIdenticalTransitions(t *testing.T) {
 	writeSupervisorSignal(t, dir, "goal-001", "done")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001", CurrentCommand: "claude"},
@@ -266,6 +267,7 @@ func TestSingleGoal_FullCycle_ByteIdenticalTransitions(t *testing.T) {
 	writeValidatorSignal(t, dir, "goal-001", "pass", "")
 	exec.ExpectedCalls = nil
 	exec.Calls = nil
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()

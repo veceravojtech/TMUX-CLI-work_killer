@@ -27,6 +27,7 @@ func setupDaemon(t *testing.T) (*Daemon, *testutil.MockTmuxExecutor, string) {
 	t.Helper()
 	dir := t.TempDir()
 	exec := new(testutil.MockTmuxExecutor)
+	exec.On("ClosePipePane", mock.Anything, mock.Anything).Return(nil).Maybe()
 	d := New(dir, exec)
 	d.pollInterval = 50 * time.Millisecond
 	d.promptSettleDelay = 0
@@ -96,19 +97,15 @@ func mockCreateWindowFn(tmuxWindowID string) WindowCreateFunc {
 	}
 }
 
-// setupDeactivateMocks programs the ListWindows sequence one deactivate() makes:
-// teardownGoalWindows kills this goal's NAMESPACED windows (supervisor-<ns> /
-// execute-<ns>- / validator-<ns> / inv-<ns>-) — 4 kill lookups + collectManagedNames
-// + waitWindowsGone (all empty) — then ensureWindow0Supervisor lists windows once
-// to confirm the human's bare window-0 "supervisor" is live (found here → no-op,
-// no create). The final unbounded return supplies that bare "supervisor".
+// setupDeactivateMocks programs the ListWindows sequence for deactivate() and
+// deactivateOnCompletion(). Covers: notifyCompletion (1 ListWindows + SendMessage
+// calls), teardownGoalWindows (4 kill lookups + collectManagedNames +
+// waitWindowsGone), and ensureWindow0Supervisor (deactivate() only).
 func setupDeactivateMocks(exec *testutil.MockTmuxExecutor, session, newWindowID string) {
-	// 4 kill lookups + 1 collectManagedNames + 1 waitWindowsGone (immediate success)
-	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Times(6)
-	// ensureWindow0Supervisor existence check (and any later list): window-0 present.
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{
 		{TmuxWindowID: newWindowID, Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
+	exec.On("SendMessage", session, newWindowID, mock.Anything).Return(nil).Maybe()
 }
 
 // setupDispatchMocks programs the ListWindows sequence one dispatch() makes. The
@@ -1304,6 +1301,7 @@ func TestCheckProgress_ValidatorFail_RetriesExhausted(t *testing.T) {
 		{TmuxWindowID: "@5", Name: "validator-001"},
 	}, nil).Once()
 	exec.On("KillWindow", testSession, "@5").Return(nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
 	goal := &gf.Goals[0]
 	err = d.checkProgress(goal, gf)
@@ -2612,6 +2610,7 @@ func routeGoal(id string, code, spec, val, block int) Goal {
 		SpecRetries: spec, MaxSpecRetries: spec,
 		ValidationRetries: val, MaxValidationRetries: val,
 		BlockRetries: block, MaxBlockRetries: block,
+		StuckRetries: 3, MaxStuckRetries: 3,
 	}
 }
 
@@ -3196,12 +3195,10 @@ tasks:
 }
 
 func setupDeactivateOnCompletionMocks(exec *testutil.MockTmuxExecutor, session string) {
-	// 4 calls for kill lookups: killWindowByName("supervisor"), killWindowsByPrefix("execute-"), killWindowByName("validator"), killWindowsByPrefix("inv-")
-	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Times(4)
-	// 1 call for collectManagedNames
-	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Once()
-	// 1 call for waitWindowsGone (immediate success)
-	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Once()
+	// notifySupervisor calls (GOAL-DONE per done goal + ALL-COMPLETE) + teardown
+	// (4 kill lookups + collectManagedNames + waitWindowsGone). Count varies by
+	// goal mix so use an unbounded return for all empty-list ListWindows calls.
+	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil)
 }
 
 func TestDeactivateOnCompletion_KillsWindowsNoSupervisor(t *testing.T) {
@@ -3218,6 +3215,15 @@ func TestDeactivateOnCompletion_KillsWindowsNoSupervisor(t *testing.T) {
 	}
 	writeGoals(t, dir, gf)
 
+	// notifyCompletion (1 ListWindows for supervisor lookup)
+	// + killWindowByName("supervisor-001"), killWindowsByPrefix("execute-001-"),
+	// killWindowByName("validator-001"), killWindowsByPrefix("inv-001-"),
+	// collectManagedNames, waitWindowsGone — all need ListWindows.
+	// First: notifyCompletion finds no bare "supervisor" → logs and skips.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor-001"},
+		{TmuxWindowID: "@1", Name: "execute-001-1"},
+	}, nil).Once()
 	// killWindowByName("supervisor-001") — finds the goal's namespaced supervisor
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor-001"},
@@ -3344,6 +3350,7 @@ func TestTick_RetryCeilingReached_HaltsGoal(t *testing.T) {
 
 	// After halting goal-001 and cascading, advanceToNextGoal finds goal-002
 	// No dispatch mocks needed since ceiling prevents dispatch
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
 	err := d.tick(context.Background(), gf)
 	require.NoError(t, err)
@@ -3351,7 +3358,6 @@ func TestTick_RetryCeilingReached_HaltsGoal(t *testing.T) {
 	assert.Equal(t, GoalFailed, gf.Goals[0].Status, "goal at ceiling should be failed")
 	assert.NotEmpty(t, gf.Goals[0].FinishedAt)
 	assert.Equal(t, "goal-002", gf.CurrentGoal, "should advance to next goal")
-	exec.AssertNotCalled(t, "SendMessage", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestTick_AllBlockedCascade_DeactivatesWithReport(t *testing.T) {
@@ -4108,8 +4114,10 @@ tasks:
 	exec.On("ListWindows", testSession).Return(validatorClaude, nil).Once()
 	exec.On("ListWindows", testSession).Return(validatorClaude, nil).Once()
 	// Stage 5: checkValidatingPhase pass + deactivateOnCompletion
+	// 1 for killWindowByName("validator"), 1 for notifyCompletion,
+	// 4 for teardown kill lookups, 1 for collectManagedNames, 1 for waitWindowsGone
 	exec.On("ListWindows", testSession).Return(validatorPlain, nil).Once()
-	exec.On("ListWindows", testSession).Return(empty, nil).Times(6)
+	exec.On("ListWindows", testSession).Return(empty, nil).Times(7)
 
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("", fmt.Errorf("no prompt")).Times(2)
 	exec.On("CaptureWindowOutput", testSession, "@9").Return("", fmt.Errorf("no prompt")).Once()
@@ -4846,7 +4854,7 @@ func TestM07_BlockedUpstreamAutoResume(t *testing.T) {
 // TestHaltRetryCeiling_BlocksDependents — the retry-ceiling halt (no valSig in
 // scope) cascades with the literal hard class "fail", blocking dependents.
 func TestHaltRetryCeiling_BlocksDependents(t *testing.T) {
-	d, _, dir := setupDaemon(t)
+	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
 
@@ -4856,6 +4864,7 @@ func TestHaltRetryCeiling_BlocksDependents(t *testing.T) {
 		{ID: "goal-003", Description: "dependent", Status: GoalPending, DependsOn: []string{"goal-001"}},
 	}}
 	writeGoals(t, dir, gf)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
 	require.NoError(t, d.haltRetryCeiling(&gf.Goals[0], gf))
 
