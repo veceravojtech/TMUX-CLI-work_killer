@@ -1,6 +1,11 @@
 package taskvisor
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
 
 // Shared goal-authoring core (F5). Both creation surfaces — the `taskvisor
 // goal add` CLI command and the MCP goal-create tool — converge here instead
@@ -149,6 +154,27 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 	if err := WriteGoalMD(goalDir, spec.Description, spec.Phase, spec.Acceptance, spec.Validate, spec.Preconditions, spec.Context, spec.NotInScope, spec.Investigators); err != nil {
 		return "", false, fmt.Errorf("write goal.md: %w", err)
 	}
+	if err := WriteValidateScript(goalDir, spec.Validate); err != nil {
+		return "", false, fmt.Errorf("write validate.sh: %w", err)
+	}
 
 	return id, derivedScope, nil
+}
+
+// WriteValidateScript generates an executable validate.sh in goalDir from the
+// goal's validate rules. Each rule becomes a line in a set -e script so any
+// failing command fails the whole validation. P7's GateTerminalPass requires
+// this script to exit 0 for a terminal pass — without it, every LLM-validator
+// pass is downgraded to error/ops and burns ValidationRetries.
+func WriteValidateScript(goalDir string, rules []string) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\nset -e\n")
+	for _, r := range rules {
+		b.WriteString(r)
+		b.WriteByte('\n')
+	}
+	return os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte(b.String()), 0o755)
 }

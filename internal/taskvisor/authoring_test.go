@@ -345,3 +345,57 @@ func TestCreateGoal_PreconditionsPersisted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(md), "- [env] DB_DSN — export DB_DSN")
 }
+
+// --- validate.sh generation (P7) -------------------------------------------
+
+func TestWriteValidateScript_CreatesExecutableScript(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteValidateScript(dir, []string{"go test ./...", "go vet ./..."})
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(dir, "validate.sh")
+	info, err := os.Stat(scriptPath)
+	require.NoError(t, err)
+	assert.True(t, info.Mode().Perm()&0o111 != 0, "validate.sh must be executable")
+
+	content, err := os.ReadFile(scriptPath)
+	require.NoError(t, err)
+	s := string(content)
+	assert.True(t, strings.HasPrefix(s, "#!/bin/sh\n"), "must start with shebang")
+	assert.Contains(t, s, "set -e")
+	assert.Contains(t, s, "go test ./...")
+	assert.Contains(t, s, "go vet ./...")
+}
+
+func TestWriteValidateScript_EmptyRulesNoFile(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteValidateScript(dir, nil)
+	require.NoError(t, err)
+
+	_, statErr := os.Stat(filepath.Join(dir, "validate.sh"))
+	assert.True(t, os.IsNotExist(statErr), "no validate.sh for empty rules")
+}
+
+func TestCreateGoal_GeneratesValidateScript(t *testing.T) {
+	dir := t.TempDir()
+
+	id, _, err := CreateGoal(dir, GoalSpec{
+		Description: "Goal with validate script",
+		Validate:    []string{"test -f output.txt", "grep OK output.txt"},
+	})
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(dir, ".tmux-cli", "goals", id, "validate.sh")
+	content, err := os.ReadFile(scriptPath)
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "set -e")
+	assert.Contains(t, s, "test -f output.txt")
+	assert.Contains(t, s, "grep OK output.txt")
+
+	info, err := os.Stat(scriptPath)
+	require.NoError(t, err)
+	assert.True(t, info.Mode().Perm()&0o111 != 0, "validate.sh must be executable")
+}
