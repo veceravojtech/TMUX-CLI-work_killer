@@ -189,7 +189,7 @@ func TestTaskReport_HappyPath_Httptest(t *testing.T) {
 	assert.Equal(t, "task-1", out.ID)
 	assert.Equal(t, "queued", out.Status)
 
-	// The optional payload must be forwarded on the wire, and system_info must be
+	// The optional payload must be forwarded on the wire, and systemInfo must be
 	// collected server-side (present in the request body though absent from the
 	// input struct).
 	var sent map[string]any
@@ -197,8 +197,8 @@ func TestTaskReport_HappyPath_Httptest(t *testing.T) {
 	payload, ok := sent["payload"].(map[string]any)
 	require.True(t, ok, "payload must be forwarded")
 	assert.Equal(t, "goal-003", payload["goal"])
-	_, hasSysInfo := sent["system_info"]
-	assert.True(t, hasSysInfo, "system_info must be collected server-side")
+	_, hasSysInfo := sent["systemInfo"]
+	assert.True(t, hasSysInfo, "systemInfo must be collected server-side")
 }
 
 // TestValidEnums_SingleSource guards the single source of truth: the producer

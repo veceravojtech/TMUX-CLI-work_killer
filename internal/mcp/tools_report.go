@@ -12,14 +12,6 @@ import (
 	"github.com/console/tmux-cli/internal/producer"
 )
 
-// taskReportCLIVersion is the cliVersion handed to identity.CollectSystemInfo
-// from the task-report tool. It is intentionally "" : the real version constant
-// lives in package main (cmd/tmux-cli) which internal/mcp cannot import (the
-// illegal internal->cmd edge), and Server carries no version field. CollectSystemInfo
-// tolerates an empty cliVersion, so an empty string is the correct, in-scope
-// choice rather than plumbing a new version dependency into Server.
-const taskReportCLIVersion = ""
-
 // newProducerClient is the construction seam the task-report tool uses to build
 // a producer client. It defaults to producer.New and is overridden by tests.
 // CRITICAL: it returns the concrete *producer.Client (never an interface) so the
@@ -93,7 +85,7 @@ func (s *Server) TaskReport(ctx context.Context, in TaskReportInput) (*TaskRepor
 		Description:        in.Description,
 		ProposedFix:        in.ProposedFix,
 		ExpectedGreenState: in.ExpectedGreenState,
-		SystemInfo:         identity.CollectSystemInfo(taskReportCLIVersion),
+		SystemInfo:         identity.CollectSystemInfo(s.version),
 		Payload:            in.Payload,
 	}
 

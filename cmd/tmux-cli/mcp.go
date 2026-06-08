@@ -41,8 +41,10 @@ func runMCPServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	// Initialize MCP server (never fails — graceful degradation)
-	mcpServer := mcp.NewServer(workingDir)
+	// Initialize MCP server (never fails — graceful degradation). The build version
+	// is injected so task-report can send a non-blank SystemInfo.cliVersion (the
+	// backend NotBlank-validates it).
+	mcpServer := mcp.NewServerWithVersion(workingDir, versionString())
 
 	// Configure MCP SDK server
 	impl := &sdkmcp.Implementation{

@@ -10,15 +10,21 @@ import (
 
 // SystemInfo is a graceful snapshot of the host environment. Any field whose
 // source is unavailable is left as an empty string rather than causing an error.
+//
+// The json tags are camelCase to match the backend's CreateTaskRequest/SystemInfo
+// DTOs (Symfony #[MapRequestPayload] with no name converter maps keys verbatim to
+// the PHP property names). In particular OS marshals as "osInfo" — its backend
+// column. Without these tags Go would emit PascalCase keys the backend cannot map,
+// leaving every system_info field NULL (and now, post release 8, 422-rejected).
 type SystemInfo struct {
-	Fingerprint string
-	Hostname    string
-	OS          string
-	TmuxVersion string
-	CLIVersion  string
-	GoVersion   string
-	Shell       string
-	Username    string
+	Fingerprint string `json:"fingerprint"`
+	Hostname    string `json:"hostname"`
+	OS          string `json:"osInfo"`
+	TmuxVersion string `json:"tmuxVersion"`
+	CLIVersion  string `json:"cliVersion"`
+	GoVersion   string `json:"goVersion"`
+	Shell       string `json:"shell"`
+	Username    string `json:"username"`
 }
 
 // CollectSystemInfo gathers the host environment snapshot. cliVersion is passed

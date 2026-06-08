@@ -30,14 +30,25 @@ import (
 type Server struct {
 	executor   tmux.TmuxExecutor
 	workingDir string // Absolute path where MCP server started
+	version    string // CLI build version, sent as SystemInfo.cliVersion (NotBlank on the backend)
 }
 
 // NewServer creates a new MCP server. Never fails — graceful degradation.
 // If no matching session is found, tools return ErrSessionNotFound with helpful message.
 func NewServer(workingDir string) *Server {
+	return NewServerWithVersion(workingDir, "")
+}
+
+// NewServerWithVersion is NewServer with an explicit CLI build version. The version
+// constant lives in package main (cmd/tmux-cli), which internal/mcp cannot import, so
+// the binary injects it here; it becomes SystemInfo.cliVersion on task-report, which the
+// backend rejects (422) when blank. Tests use NewServer (version "") since they mock the
+// producer and never hit the live validator.
+func NewServerWithVersion(workingDir, version string) *Server {
 	return &Server{
 		executor:   tmux.NewTmuxExecutor(),
 		workingDir: normalizeProjectDir(workingDir),
+		version:    version,
 	}
 }
 
