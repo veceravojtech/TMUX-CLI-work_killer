@@ -692,3 +692,40 @@ func TestSignalHandler_CancelsContext(t *testing.T) {
 
 	<-exitCh
 }
+
+func TestRecoverAfterCrash_RetriesExhausted_SetsFinishedAt(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+
+	writeGuardFile(t, dir)
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{
+				ID:          "goal-001",
+				Description: "Crash test goal",
+				Status:      GoalRunning,
+				StartedAt:   time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339),
+				Retries:     3,
+				MaxRetries:  3,
+			},
+		},
+	}
+	writeGoals(t, dir, gf)
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+
+	err := d.crashRecovery()
+	require.NoError(t, err)
+
+	reloaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+
+	g := reloaded.Goals[0]
+	assert.Equal(t, GoalFailed, g.Status)
+	assert.NotEmpty(t, g.FinishedAt, "FinishedAt must be set for crash-failed goals")
+
+	_, parseErr := time.Parse(time.RFC3339, g.FinishedAt)
+	assert.NoError(t, parseErr, "FinishedAt must be valid RFC3339")
+}
