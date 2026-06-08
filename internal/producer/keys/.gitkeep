@@ -1,0 +1,2 @@
+# Tracked placeholder so `//go:embed all:keys` always has a non-empty directory.
+# The real keys/private.pem is gitignored (see ../.gitignore) and read at runtime.
