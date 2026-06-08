@@ -144,9 +144,27 @@ func (d *Daemon) renderDashboard(w io.Writer) error {
 		return nil
 	}
 
-	if _, err := fmt.Fprintf(w, "%s%-4s  %-12s  %-30s  %-10s  %-8s  %s%s\n",
-		ansiDim, "#", "ID", "Description", "Status", "Retries", "Elapsed", ansiReset); err != nil {
-		return err
+	// Single-pass scan: the Prio column is shown only when some goal carries a
+	// non-default priority. All-zero (the common case) renders byte-identically
+	// to the pre-Prio dashboard.
+	anyPriority := false
+	for _, g := range goals.Goals {
+		if g.Priority != 0 {
+			anyPriority = true
+			break
+		}
+	}
+
+	if anyPriority {
+		if _, err := fmt.Fprintf(w, "%s%-4s  %-12s  %-30s  %-4s  %-10s  %-8s  %s%s\n",
+			ansiDim, "#", "ID", "Description", "Prio", "Status", "Retries", "Elapsed", ansiReset); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintf(w, "%s%-4s  %-12s  %-30s  %-10s  %-8s  %s%s\n",
+			ansiDim, "#", "ID", "Description", "Status", "Retries", "Elapsed", ansiReset); err != nil {
+			return err
+		}
 	}
 
 	for i, g := range goals.Goals {
@@ -163,9 +181,16 @@ func (d *Daemon) renderDashboard(w io.Writer) error {
 			current = ">"
 		}
 
-		if _, err := fmt.Fprintf(w, "%s%s%-3d  %-12s  %-30s  %-10s  %d/%-6d  %s%s\n",
-			color, current, i+1, g.ID, desc, g.Status, g.Retries, g.MaxRetries, elapsed, ansiReset); err != nil {
-			return err
+		if anyPriority {
+			if _, err := fmt.Fprintf(w, "%s%s%-3d  %-12s  %-30s  %-4d  %-10s  %d/%-6d  %s%s\n",
+				color, current, i+1, g.ID, desc, g.Priority, g.Status, g.Retries, g.MaxRetries, elapsed, ansiReset); err != nil {
+				return err
+			}
+		} else {
+			if _, err := fmt.Fprintf(w, "%s%s%-3d  %-12s  %-30s  %-10s  %d/%-6d  %s%s\n",
+				color, current, i+1, g.ID, desc, g.Status, g.Retries, g.MaxRetries, elapsed, ansiReset); err != nil {
+				return err
+			}
 		}
 	}
 

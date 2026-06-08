@@ -91,21 +91,23 @@ func TestDispatch_KillWaitCreateBootSend(t *testing.T) {
 	exec.On("KillWindow", testSession, "@0").Return(nil).Run(func(args mock.Arguments) {
 		callOrder = append(callOrder, "kill")
 	})
-	// Calls 2-3: killWindowsByPrefix("execute-") and killWindowByName("validator") — empty
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
-	// Call 4: collectManagedNames — empty
+	// Calls 2-5: killWindowsByPrefix("execute-"), killWindowByName("validator"),
+	// killWindowsByPrefix("inv-"), killWindowByName("plan-audit") — empty
+	// (killGoalWindows runs all 5 kills, including plan-audit).
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(4)
+	// Call 6: collectManagedNames — empty
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// Call 5: waitWindowsGone — still has supervisor
+	// Call 7: waitWindowsGone — still has supervisor
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor-001"},
 	}, nil).Once()
-	// Call 6: waitWindowsGone — gone
+	// Call 8: waitWindowsGone — gone
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// Call 7: waitClaudeBoot — zsh
+	// Call 9: waitClaudeBoot — zsh
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@1", Name: "supervisor-001", CurrentCommand: "zsh"},
 	}, nil).Once()
-	// Call 8+: waitClaudeBoot — claude
+	// Call 10+: waitClaudeBoot — claude
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@1", Name: "supervisor-001", CurrentCommand: "claude"},
 	}, nil)

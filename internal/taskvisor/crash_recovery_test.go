@@ -37,6 +37,7 @@ func TestCrashRecovery_GuardWithSupervisorWindow(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	before := time.Now()
 	err := d.crashRecovery()
@@ -88,6 +89,11 @@ func TestCrashRecovery_GuardWithSignalFile(t *testing.T) {
 	}))
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	// The CRASH-RECOVERY notifySupervisor lookup lists windows exactly once
+	// (no bare "supervisor" present → silently skipped). The pass-1 signal-resume
+	// path adds no further listing — asserted below via call count.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	before := time.Now()
 	err := d.crashRecovery()
@@ -98,7 +104,8 @@ func TestCrashRecovery_GuardWithSignalFile(t *testing.T) {
 	assert.Equal(t, "goal-001", d.currentGoal)
 	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
 	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
-	exec.AssertNotCalled(t, "ListWindows", mock.Anything)
+	// Only the notify lookup lists windows; pass-1 signal-resume never lists again.
+	exec.AssertNumberOfCalls(t, "ListWindows", 1)
 }
 
 func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
@@ -113,6 +120,11 @@ func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
 	}))
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	// The CRASH-RECOVERY notifySupervisor lookup lists windows exactly once
+	// (no bare "supervisor" present → silently skipped). The pass-1 signal-resume
+	// path adds no further listing — asserted below via call count.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	before := time.Now()
 	err := d.crashRecovery()
@@ -123,7 +135,8 @@ func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
 	assert.Equal(t, "goal-001", d.currentGoal)
 	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
 	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
-	exec.AssertNotCalled(t, "ListWindows", mock.Anything)
+	// Only the notify lookup lists windows; pass-1 signal-resume never lists again.
+	exec.AssertNumberOfCalls(t, "ListWindows", 1)
 }
 
 func TestCrashRecovery_GuardNoWindowsRetriesLeft(t *testing.T) {
@@ -349,6 +362,7 @@ func TestCrashRecovery_GuardWithSupervisorAndInvWindows(t *testing.T) {
 		{TmuxWindowID: "@0", Name: "supervisor"},
 		{TmuxWindowID: "@1", Name: "investigator-001-1"},
 	}, nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	before := time.Now()
 	err := d.crashRecovery()
@@ -512,7 +526,9 @@ func TestCrashRecovery_AllDone_ValidatePasses_SpawnSucceeds(t *testing.T) {
 	})
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	// First ListWindows is consumed by the CRASH-RECOVERY notifySupervisor lookup
+	// (no bare "supervisor" present → silently skipped); second by pass-2 window check.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Twice()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@1", Name: "validator-001", CurrentCommand: "claude"},
 	}, nil)

@@ -114,8 +114,8 @@ func setupDispatchMocks(exec *testutil.MockTmuxExecutor, session, newWindowID st
 	if len(supName) > 0 {
 		name = supName[0]
 	}
-	// 4 calls for kill lookups (execute-<ns>-, supervisor-<ns>, validator-<ns>, inv-<ns>-)
-	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Times(4)
+	// 5 calls for kill lookups (execute-<ns>-, supervisor-<ns>, validator-<ns>, inv-<ns>-, plan-audit-<ns>)
+	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Times(5)
 	// 1 call for collectManagedNames
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{}, nil).Once()
 	// 1 call for waitWindowsGone
@@ -293,11 +293,17 @@ taskvisor:
 
 // setupNamespacedDispatchMocks programs the exact ListWindows sequence one
 // dispatch consumes for a per-goal namespaced supervisor window at MaxGoals>1:
-// 6 empty (4 kill lookups + collectManagedNames + waitWindowsGone) then 2 returning
+// 7 empty (5 kill lookups + collectManagedNames + waitWindowsGone) then 2 returning
 // the booted supervisor window (waitClaudeBoot + waitForPrompt's findWindowByName).
 func setupNamespacedDispatchMocks(exec *testutil.MockTmuxExecutor, session, supName, winID string) {
 	empty := []tmux.WindowInfo{}
 	claude := []tmux.WindowInfo{{TmuxWindowID: winID, Name: supName, CurrentCommand: "claude"}}
-	exec.On("ListWindows", session).Return(empty, nil).Times(6)
-	exec.On("ListWindows", session).Return(claude, nil).Times(2)
+	exec.On("ListWindows", session).Return(empty, nil).Times(7)
+	// 2 boot lookups (waitClaudeBoot + waitForPrompt) + 1 for the trailing
+	// notifySupervisor lookup in dispatch/dispatchRetry ([TASKVISOR:GOAL-DISPATCHED]).
+	// The namespaced window name never matches the bare "supervisor", so the
+	// notification silently skips (no SendMessage). Kept BOUNDED (not unbounded) so
+	// back-to-back setupNamespacedDispatchMocks calls hand off correctly when two
+	// goals dispatch in one tick.
+	exec.On("ListWindows", session).Return(claude, nil).Times(3)
 }

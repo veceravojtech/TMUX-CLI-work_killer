@@ -60,7 +60,7 @@ func TestDispatch_PromptNeverArrives_ReturnsError(t *testing.T) {
 
 	empty := []tmux.WindowInfo{}
 	claude := []tmux.WindowInfo{{TmuxWindowID: "@99", Name: "supervisor-001", CurrentCommand: "claude"}}
-	exec.On("ListWindows", testSession).Return(empty, nil).Times(6) // 4 kills + collect + gone
+	exec.On("ListWindows", testSession).Return(empty, nil).Times(7) // 5 kills (killGoalWindows incl. plan-audit) + collect + gone
 	exec.On("ListWindows", testSession).Return(claude, nil)         // waitClaudeBoot + findWindowByName
 	exec.On("CaptureWindowOutput", testSession, "@99").Return("booting...", nil)
 	sent := captureSends(exec, "@99")
@@ -92,7 +92,7 @@ func TestDispatchRetry_PromptNeverArrives_ReturnsError(t *testing.T) {
 
 	empty := []tmux.WindowInfo{}
 	claude := []tmux.WindowInfo{{TmuxWindowID: "@99", Name: "supervisor-001", CurrentCommand: "claude"}}
-	exec.On("ListWindows", testSession).Return(empty, nil).Times(6)
+	exec.On("ListWindows", testSession).Return(empty, nil).Times(7) // 5 kills (killGoalWindows incl. plan-audit) + collect + gone
 	exec.On("ListWindows", testSession).Return(claude, nil)
 	exec.On("CaptureWindowOutput", testSession, "@99").Return("booting...", nil)
 	sent := captureSends(exec, "@99")

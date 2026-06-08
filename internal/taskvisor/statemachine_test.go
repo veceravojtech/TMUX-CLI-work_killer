@@ -333,8 +333,8 @@ tasks:
 	empty := []tmux.WindowInfo{}
 	// heartbeat find + stuck-kill prefix + stuck-kill byname (window present, killed)
 	exec.On("ListWindows", testSession).Return(sup, nil).Times(3)
-	// dispatchRetry's 4 kill lookups + collectManagedNames + waitWindowsGone (gone)
-	exec.On("ListWindows", testSession).Return(empty, nil).Times(6)
+	// dispatchRetry's 5 kill lookups (killGoalWindows incl. plan-audit) + collectManagedNames + waitWindowsGone (gone)
+	exec.On("ListWindows", testSession).Return(empty, nil).Times(7)
 	// waitClaudeBoot + waitForPrompt on the freshly re-created supervisor window
 	exec.On("ListWindows", testSession).Return(sup, nil)
 	exec.On("CaptureWindowOutput", testSession, heartbeatWindowID).Return("WEDGED", nil).Once()
@@ -647,9 +647,9 @@ func TestHandleStuckSupervisor_DecrementsStuckRetries(t *testing.T) {
 	require.NoError(t, err)
 
 	// handleStuckSupervisor: 2 kill lookups (execute-*, supervisor-001)
-	// dispatchRetry -> dispatch: 4 kill lookups + 1 collectManagedNames + 1 waitWindowsGone
+	// dispatchRetry -> dispatch: 5 kill lookups (killGoalWindows incl. plan-audit) + 1 collectManagedNames + 1 waitWindowsGone
 	// Then waitClaudeBoot returns supervisor-001
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(8)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(9)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@1", Name: "supervisor-001", CurrentCommand: "claude"},
 	}, nil)
@@ -756,4 +756,131 @@ func TestHandleStuckValidator_ExhaustedStuckBudget(t *testing.T) {
 	assert.Equal(t, 0, goal.StuckRetries, "StuckRetries must be 0")
 	assert.Equal(t, GoalFailed, goal.Status, "goal must be GoalFailed")
 	assert.Equal(t, GoalBlocked, gf.Goals[1].Status, "dependent must be cascaded to blocked")
+}
+
+// --- circuit-breaker trip reporting ------------------------------------------
+
+// TestBreakerTripTitleAndPayload_Assembly pins the pure title/payload contract
+// (the assertable seam given a nil producer). goal_yaml is marshalled AFTER the
+// trip sets BlockedBy, so it must carry the sentinel.
+func TestBreakerTripTitleAndPayload_Assembly(t *testing.T) {
+	goal := &Goal{ID: "goal-001", BlockedBy: "convergence-circuit-breaker"}
+	assert.Equal(t, "Circuit-breaker trip: goal-001 (streak=2/2, code)",
+		breakerTripTitle(goal.ID, "code", 2, 2))
+
+	p := breakerTripPayload(goal, "code", []string{"sig-a", "sig-b"}, 2, 2)
+	assert.Equal(t, "goal-001", p["goal_id"])
+	assert.Equal(t, "code", p["route"])
+	assert.Equal(t, []string{"sig-a", "sig-b"}, p["signatures"])
+	assert.Equal(t, 2, p["streak"])
+	assert.Equal(t, 2, p["k"])
+	gy, ok := p["goal_yaml"].(string)
+	require.True(t, ok, "goal_yaml must be a string")
+	assert.Contains(t, gy, "goal-001")
+	assert.Contains(t, gy, "convergence-circuit-breaker", "goal_yaml reflects the just-set BlockedBy")
+}
+
+// TestReportBreakerTrip_NilProducerNoOp: with reporting disabled the helper is a
+// silent no-op that never panics.
+func TestReportBreakerTrip_NilProducerNoOp(t *testing.T) {
+	d := &Daemon{} // producer == nil
+	require.NotPanics(t, func() {
+		d.reportBreakerTrip(&Goal{ID: "goal-001"}, "spec", []string{"sig"}, 2, 2)
+	})
+}
+
+// TestHandleFailedCycle_BreakerTripReports: drive identical signatures to K and
+// confirm the code-route trip edge is reached (BlockedBy sentinel set) with the
+// nil-producer report firing without panic. Submission observability is bounded
+// by the nil-producer seam; the pure payload test covers content.
+func TestHandleFailedCycle_BreakerTripReports(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	d.runtime("goal-001").lastSupervisorStatus = "done"
+	require.Nil(t, d.producer)
+
+	findings := []ValidationFinding{
+		{Rule: "build", Status: "fail", FailureClass: "code-defect", Detail: "compile error"},
+	}
+	cycle1Sigs := ComputeSignatures(findings)
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, MaxRetries: 5,
+				CodeRetries: 5, MaxCodeRetries: 5,
+				ConvergenceSignatures: cycle1Sigs, ConvergenceStreak: 1},
+			{ID: "goal-002", Description: "next", Status: GoalPending, MaxRetries: 5, CodeRetries: 5, MaxCodeRetries: 5},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: "fail", Findings: findings, NextAction: "fix build", Timestamp: "2026-06-01T15:00:00Z",
+	}))
+
+	goal := &gf.Goals[0]
+	require.NotPanics(t, func() {
+		require.NoError(t, d.handleFailedCycle(goal, gf, "fix build", "code-defect"))
+	})
+	assert.Equal(t, GoalBlocked, goal.Status, "K-recurrence trips the code-route breaker")
+	assert.Equal(t, "convergence-circuit-breaker", goal.BlockedBy, "report fires at the trip edge")
+}
+
+// TestHandleFailedCycle_NoTripNoBreakerReport: sub-K (changed signatures) follows
+// the normal re-dispatch route and never reaches the breaker trip edge.
+func TestHandleFailedCycle_NoTripNoBreakerReport(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	d.runtime("goal-001").lastSupervisorStatus = "done"
+
+	cycle1Sigs := ComputeSignatures([]ValidationFinding{{Rule: "build", Status: "fail", FailureClass: "code-defect", Detail: "a"}})
+	cycle2Findings := []ValidationFinding{{Rule: "test", Status: "fail", FailureClass: "code-defect", Detail: "b"}}
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, MaxRetries: 5,
+				CodeRetries: 5, MaxCodeRetries: 5,
+				ConvergenceSignatures: cycle1Sigs, ConvergenceStreak: 1},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: "fail", Findings: cycle2Findings, NextAction: "fix test", Timestamp: "2026-06-01T15:05:00Z",
+	}))
+
+	goal := &gf.Goals[0]
+	require.NoError(t, d.handleFailedCycle(goal, gf, "fix test", "code-defect"))
+	assert.NotEqual(t, "convergence-circuit-breaker", goal.BlockedBy, "sub-K must not trip the breaker")
+}
+
+// TestBounceToGeneration_BreakerTripReports: spec-route mirror — drive identical
+// signatures to K via SpecConvergence* fields and confirm the trip edge fires the
+// report without panic.
+func TestBounceToGeneration_BreakerTripReports(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	require.Nil(t, d.producer)
+
+	sig := &ValidatorSignal{Findings: []ValidationFinding{
+		{Rule: "spec", Status: "fail", FailureClass: "spec-defect", Detail: "contradiction"},
+	}}
+	sigs := ComputeSignatures(sig.Findings)
+	gf := &GoalsFile{
+		CurrentGoal: "goal-025",
+		Goals: []Goal{
+			{ID: "goal-025", Description: "non-converging spec", Status: GoalRunning,
+				SpecRetries: 5, MaxSpecRetries: 5,
+				SpecConvergenceSignatures: sigs, SpecConvergenceStreak: 1},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-025")
+	require.NoError(t, err)
+
+	goal := &gf.Goals[0]
+	require.NotPanics(t, func() {
+		require.NoError(t, d.bounceToGeneration(goal, gf, sig))
+	})
+	assert.Equal(t, GoalBlocked, goal.Status, "K-recurrence trips the spec-route breaker")
+	assert.Equal(t, "convergence-circuit-breaker", goal.BlockedBy, "report fires at the trip edge")
 }

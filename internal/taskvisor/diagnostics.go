@@ -5,6 +5,8 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // stallWatchdogTicks is the number of consecutive idle-but-runnable ticks the
@@ -69,6 +71,9 @@ func (d *Daemon) checkInvariant(goals *GoalsFile) {
 		}
 	}
 	if len(ids) == 0 {
+		// End of a violation episode (or none) — clear the guard so a later
+		// re-violation reports afresh. Mirrors stallReported's reset.
+		d.invariantReported = false
 		return
 	}
 	const maxShown = 10
@@ -81,6 +86,25 @@ func (d *Daemon) checkInvariant(goals *GoalsFile) {
 	}
 	log.Printf("INVARIANT VIOLATION: %d goal(s) blocked by a done goal post-reconcile: %s%s",
 		n, strings.Join(shown, ", "), suffix)
+	if !d.invariantReported {
+		desc := fmt.Sprintf("%d non-terminal goal(s) remain blocked by a done goal post-reconcile (ReconcileBlocks regression): %s%s",
+			n, strings.Join(shown, ", "), suffix)
+		d.reportFailure("general", "critical",
+			fmt.Sprintf("INVARIANT VIOLATION (Bug-A): %d blocked by done", n),
+			desc, invariantPayload(ids, goals.Goals))
+		d.invariantReported = true
+	}
+}
+
+// invariantPayload assembles the Bug-A report payload: the offending goal IDs
+// plus a full YAML dump of every goal for post-mortem. Pure (no daemon state, no
+// network); a marshal error degrades goals_dump to "" rather than failing.
+func invariantPayload(ids []string, goals []Goal) map[string]any {
+	dump, _ := yaml.Marshal(goals)
+	return map[string]any{
+		"offending_goals": ids,
+		"goals_dump":      string(dump),
+	}
 }
 
 // checkStall is the stall watchdog. It has two independent detection branches,
@@ -134,6 +158,22 @@ func (d *Daemon) checkStall(goals *GoalsFile) {
 		}
 		log.Printf("STUCK: daemon idle %d ticks with %d runnable goal(s): %s",
 			d.idleTicks, len(candidates), strings.Join(ids, ", "))
+		d.reportFailure("general", "warning",
+			fmt.Sprintf("Stall watchdog: daemon idle %d ticks", d.idleTicks),
+			fmt.Sprintf("Daemon idle %d ticks with %d runnable goal(s) but nothing dispatched: %s",
+				d.idleTicks, len(candidates), strings.Join(ids, ", ")),
+			stallPayload(ids, d.idleTicks, stallWatchdogTicks))
 		d.stallReported = true
+	}
+}
+
+// stallPayload assembles the stall-watchdog report payload: the runnable
+// candidate IDs plus the idle-tick and watchdog-threshold counts. Pure (no
+// daemon state, no network).
+func stallPayload(ids []string, idleTicks, watchdogTicks int) map[string]any {
+	return map[string]any{
+		"runnable_candidates":  ids,
+		"idle_ticks":           idleTicks,
+		"stall_watchdog_ticks": watchdogTicks,
 	}
 }

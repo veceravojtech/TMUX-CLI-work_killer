@@ -75,7 +75,7 @@ func TestSubmitTask_SignsAndPostsHappyPath(t *testing.T) {
 	resp, err := c.SubmitTask(context.Background(), sampleRequest())
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	assert.Equal(t, "task-123", resp.ID)
+	assert.Equal(t, "task-123", resp.ID.String())
 	assert.Equal(t, "queued", resp.Status)
 	assert.NotEmpty(t, gotBody, "server must have received a JSON body")
 }

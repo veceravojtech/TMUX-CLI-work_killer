@@ -31,6 +31,7 @@ type GoalSpec struct {
 	Preconditions   []Precondition
 	Investigators   []Investigator
 	Scope           []string
+	Priority        int
 }
 
 // validateGoalSpec enforces the core-owned authoring rules shared by every
@@ -149,6 +150,7 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 			Phase:                spec.Phase,
 			DependsOn:            spec.DependsOn,
 			Scope:                scope,
+			Priority:             spec.Priority,
 		})
 
 		return SaveGoals(workDir, gf)

@@ -29,8 +29,8 @@ import (
 // goal supervisor window is ALWAYS namespaced (supervisor-<ns>); supName names
 // the window waitClaudeBoot/waitForPrompt must resolve for this goal.
 func markerCaptureMocks(exec *testutil.MockTmuxExecutor, newWindowID, supName string) *[]string {
-	// 4 kill lookups + 1 collectManagedNames + 1 waitWindowsGone
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(6)
+	// 5 kill lookups (killGoalWindows incl. plan-audit) + 1 collectManagedNames + 1 waitWindowsGone
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(7)
 	// waitClaudeBoot: supervisor window up and running claude
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: newWindowID, Name: supName, CurrentCommand: "claude"},

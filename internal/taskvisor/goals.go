@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -109,6 +110,16 @@ type Goal struct {
 
 	Phase     string   `yaml:"phase,omitempty"`
 	DependsOn []string `yaml:"depends_on,omitempty"`
+
+	// Priority biases dispatch order: RunnableCandidates sorts its output by
+	// Priority DESCENDING with a stable file-order tiebreak, so a higher-priority
+	// pending goal is admitted ahead of a lower one without physically reordering
+	// goals.yaml. Default 0 (key absent via omitempty) preserves byte-identical
+	// file-order dispatch; negative priorities sort below the default. DUAL-STRUCT:
+	// mirrored field-for-field by mcp.tvGoal (TestGoalTvGoalYamlTagParity guards
+	// the mirror). Sorting reorders only the dispatch view (a slice of pointers
+	// into gf.Goals) — never the on-disk goals.yaml.
+	Priority int `yaml:"priority,omitempty"`
 
 	// EscalationCount is the durable count of escalation-driven prerequisites
 	// wired onto this goal via the goal-add-prerequisite MCP tool. It bounds
@@ -467,6 +478,12 @@ func (gf *GoalsFile) RunnableCandidates() []*Goal {
 		}
 		out = append(out, g)
 	}
+	// Dispatch-order bias: higher Priority first. SliceStable's stability IS the
+	// file-order tiebreak (equal priorities retain gf.Goals order), so an all-zero
+	// (default) candidate set is reordered as a no-op — preserving today's
+	// byte-identical file-order dispatch. Reorders the pointer slice only, never
+	// the backing gf.Goals.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Priority > out[j].Priority })
 	return out
 }
 

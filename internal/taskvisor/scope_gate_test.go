@@ -372,3 +372,94 @@ func TestDisjointReadySet_MigratesAndStackConsuming_MigratesWins(t *testing.T) {
 	got := gf.DisjointReadySet(2)
 	assert.Nil(t, got, "migration exclusion still prevents any co-scheduling")
 }
+
+// --- Priority dispatch ordering (goal-007 M1) -------------------------------
+
+// TestRunnableCandidates_DefaultPriority_PreservesFileOrder proves the all-zero
+// (default) case is a no-op over equal keys: SliceStable retains file order.
+func TestRunnableCandidates_DefaultPriority_PreservesFileOrder(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending},
+		{ID: "goal-002", Status: GoalPending},
+		{ID: "goal-003", Status: GoalPending},
+	}}
+	got := gf.RunnableCandidates()
+	require.Len(t, got, 3)
+	assert.Equal(t, []string{"goal-001", "goal-002", "goal-003"},
+		[]string{got[0].ID, got[1].ID, got[2].ID})
+}
+
+// TestRunnableCandidates_HigherPriorityFirst proves a higher-priority goal later
+// in the file is admitted ahead of a default-priority goal earlier in the file.
+func TestRunnableCandidates_HigherPriorityFirst(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Priority: 0},
+		{ID: "goal-002", Status: GoalPending, Priority: 5},
+	}}
+	got := gf.RunnableCandidates()
+	require.Len(t, got, 2)
+	assert.Equal(t, []string{"goal-002", "goal-001"}, []string{got[0].ID, got[1].ID})
+}
+
+// TestRunnableCandidates_EqualPriority_StableFileOrder proves equal non-zero
+// priorities retain goals.yaml file order (stability IS the tiebreak).
+func TestRunnableCandidates_EqualPriority_StableFileOrder(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Priority: 3},
+		{ID: "goal-002", Status: GoalPending, Priority: 3},
+	}}
+	got := gf.RunnableCandidates()
+	require.Len(t, got, 2)
+	assert.Equal(t, []string{"goal-001", "goal-002"}, []string{got[0].ID, got[1].ID})
+}
+
+// TestRunnableCandidates_NegativePrioritySortsLast proves negative priorities
+// sort below the default 0 with no clamping.
+func TestRunnableCandidates_NegativePrioritySortsLast(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Priority: 0},
+		{ID: "goal-002", Status: GoalPending, Priority: -1},
+	}}
+	got := gf.RunnableCandidates()
+	require.Len(t, got, 2)
+	assert.Equal(t, []string{"goal-001", "goal-002"}, []string{got[0].ID, got[1].ID})
+}
+
+// TestDisjointReadySet_PriorityOrders_MaxGoals1 proves DisjointReadySet inherits
+// the priority order: under budget 1 the highest-priority candidate is admitted,
+// even though it sits later in the file.
+func TestDisjointReadySet_PriorityOrders_MaxGoals1(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Priority: 0, Scope: []string{"internal/a/**"}},
+		{ID: "goal-002", Status: GoalPending, Priority: 9, Scope: []string{"internal/b/**"}},
+	}}
+	got := gf.DisjointReadySet(1)
+	require.Len(t, got, 1)
+	assert.Equal(t, "goal-002", got[0].ID, "highest priority admitted within budget 1")
+}
+
+// TestDisjointReadySet_PriorityWithScopeGate proves the overlap admission rule is
+// unchanged — only the order it evaluates candidates in changes. Two same-scope
+// goals: the higher-priority one is admitted, the overlapping lower one rejected.
+func TestDisjointReadySet_PriorityWithScopeGate(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Priority: 9, Scope: []string{"internal/a/**"}},
+		{ID: "goal-002", Status: GoalPending, Priority: 1, Scope: []string{"internal/a/**"}},
+	}}
+	got := gf.DisjointReadySet(2)
+	require.Len(t, got, 1)
+	assert.Equal(t, "goal-001", got[0].ID, "overlap rule intact; highest-first evaluation")
+}
+
+// TestDisjointReadySet_DefaultPriority_ByteIdentical is the regression guard: an
+// all-default-priority fixture must yield exactly the prior file-order result.
+func TestDisjointReadySet_DefaultPriority_ByteIdentical(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/a/**"}},
+		{ID: "goal-002", Status: GoalPending, Scope: []string{"internal/b/**"}},
+	}}
+	got := gf.DisjointReadySet(2)
+	require.Len(t, got, 2)
+	assert.Equal(t, "goal-001", got[0].ID)
+	assert.Equal(t, "goal-002", got[1].ID)
+}

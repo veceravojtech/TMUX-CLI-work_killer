@@ -271,6 +271,13 @@ var taskvisorGoalResetCmd = &cobra.Command{
 	RunE:  runTaskvisorGoalReset,
 }
 
+var taskvisorGoalPriorityCmd = &cobra.Command{
+	Use:   "priority <goal-id> <value>",
+	Short: "Set a goal's dispatch priority",
+	Args:  cobra.ExactArgs(2),
+	RunE:  runTaskvisorGoalPriority,
+}
+
 var taskvisorGoalStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Send stop signal to taskvisor daemon",
@@ -333,6 +340,7 @@ var (
 	goalPhase       string
 	goalMaxRetries  int
 	goalScope       []string
+	goalPriority    int
 
 	revalForceFull    bool
 	revalFinalCycle   bool
@@ -398,6 +406,7 @@ func init() {
 	taskvisorGoalAddCmd.Flags().StringVar(&goalPhase, "phase", "", "Development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final)")
 	taskvisorGoalAddCmd.Flags().IntVar(&goalMaxRetries, "max-retries", 5, "Max retry attempts")
 	taskvisorGoalAddCmd.Flags().StringArrayVar(&goalScope, "scope", nil, "Goal file/namespace footprint for co-scheduling, e.g. 'internal/x/**' (repeatable; empty = derived from --acceptance, else unknown ⇒ serialized)")
+	taskvisorGoalAddCmd.Flags().IntVar(&goalPriority, "priority", 0, "Dispatch priority (higher = first; default 0)")
 	taskvisorGoalAddCmd.MarkFlagRequired("description")
 
 	taskvisorCmd.AddCommand(taskvisorStartCmd)
@@ -406,6 +415,7 @@ func init() {
 	taskvisorGoalCmd.AddCommand(taskvisorGoalListCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalDeleteCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalResetCmd)
+	taskvisorGoalCmd.AddCommand(taskvisorGoalPriorityCmd)
 	taskvisorGoalSkipCmd.Flags().StringVar(&skipReason, "reason", "manually skipped", "Reason for skipping")
 	taskvisorGoalCmd.AddCommand(taskvisorGoalSkipCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalStopCmd)
@@ -1210,78 +1220,6 @@ func runTaskvisorStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runTaskvisorGoalAdd(cmd *cobra.Command, args []string) error {
-	cwd, err := taskvisorProjectRoot()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	// All validation, ID allocation, structured persistence (acceptance/
-	// validate/scope INTO goals.yaml — the RC-A fix), and goal.md writing live
-	// in the shared authoring core, converged with the MCP goal-create tool.
-	id, derivedScope, err := taskvisor.CreateGoal(cwd, taskvisor.GoalSpec{
-		Description: goalDescription,
-		Acceptance:  goalAcceptance,
-		Validate:    goalValidate,
-		Context:     goalContext,
-		NotInScope:  goalNotInScope,
-		Phase:       goalPhase,
-		MaxRetries:  goalMaxRetries,
-		Scope:       goalScope,
-	})
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Goal created: %s\n", id)
-	switch {
-	case len(goalScope) > 0:
-		fmt.Printf("scope: [%s]\n", strings.Join(goalScope, ", "))
-	case derivedScope:
-		// Re-derive for display only — pure function over the same input, so
-		// it always matches what CreateGoal persisted.
-		fmt.Printf("scope: [%s] (derived from acceptance)\n", strings.Join(taskvisor.DeriveScopeFromDeliverables(goalAcceptance), ", "))
-	default:
-		fmt.Println("⚠ scope: unknown — goal will serialize against all concurrent goals")
-		if len(goalScope) == 0 {
-			// Re-derive (pure) to surface a discarded incomplete derivation:
-			// name the acceptance lines that contributed no path so the author
-			// can declare --scope and regain parallelism.
-			if _, incomplete, uncovered := taskvisor.DeriveScopeWithCompleteness(goalAcceptance); incomplete && len(uncovered) > 0 {
-				fmt.Fprintf(os.Stderr, "⚠ discarded incomplete derived scope: these acceptance criteria named no file path:\n")
-				for _, c := range uncovered {
-					fmt.Fprintf(os.Stderr, "    - %s\n", c)
-				}
-				fmt.Fprintf(os.Stderr, "  pass --scope to declare the footprint and regain parallelism\n")
-			}
-		}
-	}
-	return nil
-}
-
-func runTaskvisorGoalList(cmd *cobra.Command, args []string) error {
-	cwd, err := taskvisorProjectRoot()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	gf, err := taskvisor.LoadGoals(cwd)
-	if err != nil {
-		return fmt.Errorf("load goals: %w", err)
-	}
-	if gf == nil || len(gf.Goals) == 0 {
-		fmt.Println("No goals")
-		return nil
-	}
-
-	fmt.Printf("%-10s %-10s %-10s %s\n", "ID", "Status", "Retries", "Description")
-	fmt.Printf("%-10s %-10s %-10s %s\n", "---", "---", "---", "---")
-	for _, g := range gf.Goals {
-		fmt.Printf("%-10s %-10s %d/%-8d %s\n", g.ID, g.Status, g.Retries, g.MaxRetries, g.Description)
-	}
-	return nil
-}
-
 // runTaskvisorRevalidationPlan is the read-only read-side seam of C10
 // incremental re-validation. It loads the orchestrator-owned results.json
 // ledger, derives the current cycle's findings (rule + scope + preconditions)
@@ -1552,168 +1490,6 @@ func gitChangedFiles(root string) []string {
 	return files
 }
 
-func runTaskvisorGoalDelete(cmd *cobra.Command, args []string) error {
-	cwd, err := taskvisorProjectRoot()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	goalID := args[0]
-	if err := taskvisor.WithGoalsLock(cwd, func() error {
-		gf, err := taskvisor.LoadGoals(cwd)
-		if err != nil {
-			return fmt.Errorf("load goals: %w", err)
-		}
-		if gf == nil {
-			return fmt.Errorf("goal not found: %s", goalID)
-		}
-
-		g, ok := gf.GoalByID(goalID)
-		if !ok {
-			return fmt.Errorf("goal not found: %s", goalID)
-		}
-		if g.Status == taskvisor.GoalRunning {
-			return fmt.Errorf("goal is currently running, stop the daemon first")
-		}
-
-		gf.DeleteGoal(goalID)
-
-		return taskvisor.SaveGoals(cwd, gf)
-	}); err != nil {
-		return err
-	}
-
-	goalDir := filepath.Join(cwd, ".tmux-cli", "goals", goalID)
-	if err := os.RemoveAll(goalDir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove goal directory: %w", err)
-	}
-
-	fmt.Printf("Goal deleted: %s\n", goalID)
-	return nil
-}
-
-func runTaskvisorGoalReset(cmd *cobra.Command, args []string) error {
-	cwd, err := taskvisorProjectRoot()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	goalID := args[0]
-	if err := taskvisor.WithGoalsLock(cwd, func() error {
-		gf, err := taskvisor.LoadGoals(cwd)
-		if err != nil {
-			return fmt.Errorf("load goals: %w", err)
-		}
-		if gf == nil {
-			return fmt.Errorf("goal not found: %s", goalID)
-		}
-
-		g, ok := gf.GoalByID(goalID)
-		if !ok {
-			return fmt.Errorf("goal not found: %s", goalID)
-		}
-		if g.Status != taskvisor.GoalFailed && g.Status != taskvisor.GoalDone {
-			return fmt.Errorf("goal is not in failed or done status (current: %s)", g.Status)
-		}
-
-		gf.ResetGoal(goalID)
-
-		return taskvisor.SaveGoals(cwd, gf)
-	}); err != nil {
-		return err
-	}
-
-	fmt.Printf("Goal reset to pending: %s\n", goalID)
-	return nil
-}
-
-// goalSkipWindowsToKill selects, from a session's window list, ONLY the windows
-// belonging to goalID's namespace — its supervisor-<ns>, validator-<ns> (plus the
-// bare one-release fallback "validator"), and every execute-<ns>-/inv-<ns>- worker
-// — using the real taskvisor naming helpers so the set can never drift from what
-// the daemon spawns. The human's window-0 bare "supervisor" is EXPLICITLY spared:
-// skipping a goal must never kill the interactive window ([[never-kill-tmux-server-pid]]).
-// Sibling goals' namespaced windows don't match this goal's names, so they survive.
-func goalSkipWindowsToKill(windows []tmux.WindowInfo, goalID string) []tmux.WindowInfo {
-	sup := taskvisor.SupervisorWindowForGoal(goalID)
-	vals := taskvisor.ValidatorWindowNames(goalID)
-	ep := taskvisor.ExecutePrefixForGoal(goalID)
-	ip := taskvisor.InvestigatorPrefixForGoal(goalID)
-	var kill []tmux.WindowInfo
-	for _, w := range windows {
-		if w.Name == "supervisor" {
-			continue // window-0 (human interactive) — never kill
-		}
-		match := w.Name == sup ||
-			strings.HasPrefix(w.Name, ep) ||
-			strings.HasPrefix(w.Name, ip)
-		for _, v := range vals {
-			if w.Name == v {
-				match = true
-				break
-			}
-		}
-		if match {
-			kill = append(kill, w)
-		}
-	}
-	return kill
-}
-
-func runTaskvisorGoalSkip(cmd *cobra.Command, args []string) error {
-	cwd, err := taskvisorProjectRoot()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	goalID := args[0]
-	if err := taskvisor.WithGoalsLock(cwd, func() error {
-		gf, err := taskvisor.LoadGoals(cwd)
-		if err != nil {
-			return fmt.Errorf("load goals: %w", err)
-		}
-		if gf == nil {
-			return fmt.Errorf("goal not found: %s", goalID)
-		}
-
-		g, ok := gf.GoalByID(goalID)
-		if !ok {
-			return fmt.Errorf("goal not found: %s", goalID)
-		}
-		if g.Status != taskvisor.GoalRunning {
-			return fmt.Errorf("goal is not running (current: %s)", g.Status)
-		}
-
-		gf.SkipGoal(goalID)
-
-		return taskvisor.SaveGoals(cwd, gf)
-	}); err != nil {
-		return err
-	}
-
-	executor := tmux.NewTmuxExecutor()
-	sessionID, err := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", cwd)
-	if err == nil && sessionID != "" {
-		windows, err := executor.ListWindows(sessionID)
-		if err == nil {
-			for _, w := range goalSkipWindowsToKill(windows, goalID) {
-				_ = executor.KillWindow(sessionID, w.TmuxWindowID)
-			}
-		}
-	}
-
-	if _, err := taskvisor.EnsureGoalDir(cwd, goalID); err != nil {
-		return fmt.Errorf("ensure goal dir: %w", err)
-	}
-	skippedPath := filepath.Join(cwd, ".tmux-cli", "goals", goalID, "corrections", "skipped.md")
-	if err := os.WriteFile(skippedPath, []byte(skipReason), 0o644); err != nil {
-		return fmt.Errorf("write skipped.md: %w", err)
-	}
-
-	fmt.Printf("Goal skipped: %s\n", goalID)
-	return nil
-}
-
 func stopDaemonProcess(cwd string) error {
 	pidPath := filepath.Join(cwd, ".tmux-cli", "taskvisor.pid")
 	data, err := os.ReadFile(pidPath)
@@ -1809,68 +1585,6 @@ func doTaskvisorRestart(cwd string, executor tmux.TmuxExecutor) error {
 	return nil
 }
 
-func runTaskvisorGoalStop(cmd *cobra.Command, args []string) error {
-	cwd, err := taskvisorProjectRoot()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	if err := stopDaemonProcess(cwd); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: stop daemon process: %v\n", err)
-	}
-
-	for _, name := range []string{"taskvisor-active", "taskvisor-start", "taskvisor-current-goal", "taskvisor-current-cycle", "taskvisor-current-worktree"} {
-		p := filepath.Join(cwd, ".tmux-cli", name)
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", name, err)
-		}
-	}
-
-	fmt.Println("Taskvisor stop signal sent")
-	return nil
-}
-
-func runTaskvisorGoalPrune(cmd *cobra.Command, args []string) error {
-	cwd, err := taskvisorProjectRoot()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	activePath := filepath.Join(cwd, ".tmux-cli", "taskvisor-active")
-	if _, err := os.Stat(activePath); err == nil {
-		return fmt.Errorf("taskvisor daemon is active — stop it first")
-	}
-
-	gf, err := taskvisor.LoadGoals(cwd)
-	if err != nil {
-		return fmt.Errorf("load goals: %w", err)
-	}
-	count := 0
-	if gf != nil {
-		count = len(gf.Goals)
-	}
-
-	goalsFile := taskvisor.GoalsFilePath(cwd)
-	if err := os.Remove(goalsFile); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove goals.yaml: %w", err)
-	}
-
-	goalsDir := filepath.Join(cwd, ".tmux-cli", "goals")
-	if err := os.RemoveAll(goalsDir); err != nil {
-		return fmt.Errorf("remove goals directory: %w", err)
-	}
-
-	for _, name := range []string{"taskvisor-current-goal", "taskvisor-start", "taskvisor-current-cycle", "taskvisor-current-worktree"} {
-		p := filepath.Join(cwd, ".tmux-cli", name)
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", name, err)
-		}
-	}
-
-	fmt.Printf("Pruned %d goal(s)\n", count)
-	return nil
-}
-
 func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
 	cwd, err := taskvisorProjectRoot()
 	if err != nil {
@@ -1879,6 +1593,11 @@ func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
 
 	executor := tmux.NewTmuxExecutor()
 	daemon := taskvisor.New(cwd, executor)
+	// On stale-binary detection, rewrite the installed command templates in place
+	// from the new binary's embedded FS (idempotent overwrite, no session restart).
+	daemon.SetCommandRefreshFn(func() error {
+		return setup.WriteCommands(cwd, buildCommandTemplates())
+	})
 
 	sessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", cwd)
 	if sessionID == "" {
@@ -1910,15 +1629,10 @@ func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
 	return daemon.Run(cmd.Context())
 }
 
-func runAutoSetup(projectPath string) error {
-	hookScripts := map[string]string{
-		"tmux-session-notify.sh":      hookSessionNotify,
-		"tmux-validate-session.sh":    hookValidateSession,
-		"no-interactive-questions.sh": hookNoInteractiveQuestions,
-		"tmux-supervisor-cycle.sh":    hookSupervisorCycle,
-		"tmux-unplanned-audit.sh":     hookUnplannedAudit,
-	}
-
+// buildCommandTemplates walks the embedded command FS into a relPath→content map.
+// Shared by runAutoSetup and the daemon's stale-binary command-refresh hook so the
+// installed .claude/commands/tmux/ tree matches what runAutoSetup writes.
+func buildCommandTemplates() map[string]string {
 	cmdTemplates := make(map[string]string)
 	fs.WalkDir(embeddedCommands, "embedded/commands/tmux", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -1932,6 +1646,19 @@ func runAutoSetup(projectPath string) error {
 		cmdTemplates[relPath] = string(content)
 		return nil
 	})
+	return cmdTemplates
+}
+
+func runAutoSetup(projectPath string) error {
+	hookScripts := map[string]string{
+		"tmux-session-notify.sh":      hookSessionNotify,
+		"tmux-validate-session.sh":    hookValidateSession,
+		"no-interactive-questions.sh": hookNoInteractiveQuestions,
+		"tmux-supervisor-cycle.sh":    hookSupervisorCycle,
+		"tmux-unplanned-audit.sh":     hookUnplannedAudit,
+	}
+
+	cmdTemplates := buildCommandTemplates()
 
 	tplMap := make(map[string]string)
 	fs.WalkDir(embeddedTemplates, "embedded/templates", func(path string, d fs.DirEntry, err error) error {

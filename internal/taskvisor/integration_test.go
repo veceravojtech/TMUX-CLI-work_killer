@@ -1446,6 +1446,8 @@ func TestIntegration_DispatchTimeout_FullLifecycle(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	// killWindowsByPrefix("investigator-") — empty
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	// killWindowByName("plan-audit") — empty (killGoalWindows' 5th kill)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	// collectManagedNames — empty
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	// waitWindowsGone — empty

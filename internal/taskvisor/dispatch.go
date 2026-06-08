@@ -223,16 +223,11 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 		return err
 	}
 
-	if err := d.killWindowByName(supervisorWindow(goal.ID, mg)); err != nil {
-		return err
-	}
-	if err := d.killWindowsByPrefix(executePrefix(goal.ID, mg)); err != nil {
-		return err
-	}
-	if err := d.killWindowByName(validatorWindow(goal.ID, mg)); err != nil {
-		return err
-	}
-	if err := d.killWindowsByPrefix(investigatorPrefix(goal.ID, mg)); err != nil {
+	// killGoalWindows is the canonical kill sequence; unlike the old inline 4-kill
+	// block it ALSO kills planAuditWindow (windows.go), so the kill-set ⊇ the
+	// wait-set built by collectManagedNames below — the daemon can no longer wedge
+	// in waitWindowsGone on a surviving plan-audit window. It computes its own mg.
+	if err := d.killGoalWindows([]string{goal.ID}); err != nil {
 		return err
 	}
 
@@ -327,6 +322,7 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	log.Printf("dispatch: SendMessage returned successfully")
 
 	goal.Status = GoalRunning
+	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-DISPATCHED id=%s desc=%q cycle=%d]", goal.ID, goal.Description, CurrentCycle(goal)))
 	// RC-D: the routing marker is consume-once — the dispatch decision it
 	// encoded has now been acted on (worker spawned), so clear it before the
 	// persist below or a stale marker would leak into the next cycle's
@@ -351,6 +347,13 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	d.idleTicks = 0
 	d.stallReported = false
 	rt.dispatchTime = d.now()
+	// P3 per-goal wall-clock budget epoch: stamp once per in-flight episode. The
+	// IsZero() guard makes redispatch within the same episode PRESERVE the epoch
+	// (the budget caps total in-flight wall time, not per-redispatch); clearRuntime
+	// zeros it on terminal exit so a re-pended goal gets a fresh budget.
+	if rt.activatedAt.IsZero() {
+		rt.activatedAt = d.now()
+	}
 	rt.lastSupervisorStatus = "dispatched"
 	return nil
 }
@@ -405,16 +408,11 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 		return err
 	}
 
-	if err := d.killWindowByName(supervisorWindow(goal.ID, mg)); err != nil {
-		return err
-	}
-	if err := d.killWindowsByPrefix(executePrefix(goal.ID, mg)); err != nil {
-		return err
-	}
-	if err := d.killWindowByName(validatorWindow(goal.ID, mg)); err != nil {
-		return err
-	}
-	if err := d.killWindowsByPrefix(investigatorPrefix(goal.ID, mg)); err != nil {
+	// killGoalWindows is the canonical kill sequence; unlike the old inline 4-kill
+	// block it ALSO kills planAuditWindow (windows.go), so the kill-set ⊇ the
+	// wait-set built by collectManagedNames below — the daemon can no longer wedge
+	// in waitWindowsGone on a surviving plan-audit window. It computes its own mg.
+	if err := d.killGoalWindows([]string{goal.ID}); err != nil {
 		return err
 	}
 
@@ -470,6 +468,7 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	log.Printf("dispatchRetry: SendMessage returned successfully")
 
 	goal.Status = GoalRunning
+	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-DISPATCHED id=%s desc=%q cycle=%d retry=true]", goal.ID, goal.Description, CurrentCycle(goal)))
 	// RC-D: consume the routing marker (see dispatch) — cleared only here on
 	// the success path, so a mid-dispatch error keeps the marker for the next
 	// tick's re-decision.
@@ -489,6 +488,13 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	d.idleTicks = 0
 	d.stallReported = false
 	rt.dispatchTime = d.now()
+	// P3 per-goal wall-clock budget epoch (see dispatch()). The IsZero() guard means
+	// a redispatch within the same episode PRESERVES the epoch set at first dispatch
+	// — the budget is NOT extended by retries. Missing this site would leave a goal
+	// first dispatched via the retry path with a permanently-zero epoch (never halts).
+	if rt.activatedAt.IsZero() {
+		rt.activatedAt = d.now()
+	}
 	rt.lastSupervisorStatus = "dispatched"
 	return nil
 }

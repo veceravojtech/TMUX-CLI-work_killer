@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 25)
+	assert.Len(t, m.items, 27)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -52,6 +52,8 @@ commands:
 	assert.Equal(t, "supervisor.max_goals", m.items[17].key)
 	assert.Equal(t, "supervisor.max_stuck_retries", m.items[18].key)
 	assert.Equal(t, "taskvisor.progress_timeout_sec", m.items[19].key)
+	assert.Equal(t, "api.enabled", m.items[25].key)
+	assert.Equal(t, "api.url", m.items[26].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -171,22 +173,24 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 23, m.cursor)
 
-	// One more down to reach the 25th item
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = updated.(Model)
-	assert.Equal(t, 24, m.cursor)
+	// Step down through the remaining items to the last one (27 items → max index 26)
+	for want := 24; want <= 26; want++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+		assert.Equal(t, want, m.cursor)
+	}
 
-	// Can't go past last item (25 items → max index 24)
+	// Can't go past last item (27 items → max index 26)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 24, m.cursor)
+	assert.Equal(t, 26, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 23, m.cursor)
+	assert.Equal(t, 25, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 24; i++ {
+	for i := 0; i < 26; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -328,6 +332,30 @@ func TestModel_ToSettings_UnplannedAuditToggle(t *testing.T) {
 
 	result := m.ToSettings()
 	assert.False(t, result.Supervisor.UnplannedAudit)
+}
+
+func TestModel_ToSettings_PreservesAPIBlock(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `commands:
+  enabled: true
+api:
+  enabled: true
+  url: https://example.test
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+
+	m := NewModel(dir, settings)
+	result := m.ToSettings()
+
+	assert.True(t, result.API.Enabled, "api.enabled must survive the TUI round-trip")
+	assert.Equal(t, "https://example.test", result.API.URL, "api.url must survive the TUI round-trip")
+}
+
+func TestDefaultSettings_EnablesAPIReporting(t *testing.T) {
+	s := setup.DefaultSettings()
+	assert.True(t, s.API.Enabled, "reporting is on by default for new projects")
+	assert.Equal(t, "https://tmux.vojta.ai", s.API.URL)
 }
 
 func TestNewModel_IncludesPlanItems(t *testing.T) {
@@ -843,7 +871,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 25)
+	assert.Len(t, m.items, 27)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -893,7 +921,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 25)
+	assert.Len(t, m.items, 27)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {

@@ -358,14 +358,16 @@ func TestTick_DiamondDeps_PicksEligible(t *testing.T) {
 	claudeC := []tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor-C", CurrentCommand: "claude"}}
 	claudeD := []tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor-D", CurrentCommand: "claude"}}
 
-	// Dispatch 1 (goal-B): 6 empty (kills+collect+waitGone) + 2 claude (waitClaudeBoot+waitForPrompt)
-	exec.On("ListWindows", testSession).Return(emptyWindows, nil).Times(6)
-	exec.On("ListWindows", testSession).Return(claudeB, nil).Times(2)
-	// Dispatch 2 (goal-C): same pattern
-	exec.On("ListWindows", testSession).Return(emptyWindows, nil).Times(6)
-	exec.On("ListWindows", testSession).Return(claudeC, nil).Times(2)
-	// Dispatch 3 (goal-D): 6 empty + unlimited claude
-	exec.On("ListWindows", testSession).Return(emptyWindows, nil).Times(6)
+	// Dispatch 1 (goal-B): 7 empty (5 kills incl. plan-audit + collect + waitGone) + 2 claude
+	// (waitClaudeBoot + waitForPrompt) + 1 claude for dispatch()'s trailing notifySupervisor
+	// lookup ([TASKVISOR:GOAL-DISPATCHED]; namespaced window ≠ "supervisor" so it skips).
+	exec.On("ListWindows", testSession).Return(emptyWindows, nil).Times(7)
+	exec.On("ListWindows", testSession).Return(claudeB, nil).Times(3)
+	// Dispatch 2 (goal-C): same pattern (+1 for the notify lookup)
+	exec.On("ListWindows", testSession).Return(emptyWindows, nil).Times(7)
+	exec.On("ListWindows", testSession).Return(claudeC, nil).Times(3)
+	// Dispatch 3 (goal-D): 7 empty + unlimited claude (absorbs the notify lookup too)
+	exec.On("ListWindows", testSession).Return(emptyWindows, nil).Times(7)
 	exec.On("ListWindows", testSession).Return(claudeD, nil)
 
 	exec.On("CaptureWindowOutput", testSession, "@0").Return("❯ ", nil)

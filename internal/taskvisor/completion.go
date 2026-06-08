@@ -115,6 +115,13 @@ func (d *Daemon) deactivateOnCompletion(goals *GoalsFile) error {
 			return err
 		}
 	}
+	// Report every terminally-failed goal to the backend exactly once. Placed
+	// here — AFTER the salvage-grace split above (an in-grace timeout goal returns
+	// before this line, so it is never prematurely reported; an expired-salvage
+	// goal had its FailedBy cleared but stays GoalFailed and IS reported) and
+	// before the local completion report — so a failure that web operators must
+	// see is surfaced over the network, not just to completion-report.md.
+	d.reportFailedGoals(goals)
 	if err := d.generateCompletionReport(goals); err != nil {
 		log.Printf("warning: completion report: %v", err)
 	}
@@ -232,4 +239,105 @@ func retriesLine(g *Goal) string {
 		return "none"
 	}
 	return strings.Join(parts, " · ")
+}
+
+// failedGoalReport is the fully assembled backend report for one terminally-
+// failed goal, built purely (no network, no Daemon mutation) from the goal and
+// its last validator signal so the payload/category/severity contract is
+// unit-testable independently of the fire-and-forget submission.
+type failedGoalReport struct {
+	category    string
+	severity    string
+	title       string
+	description string
+	payload     map[string]any
+	proposedFix string
+	expected    string
+}
+
+// buildFailedGoalReport assembles the report for a single GoalFailed goal,
+// composing execute-1's reporting.go helpers (inferCategory, goalToYAML,
+// proposedFixFromSignal, expectedGreenState) — it NEVER redefines them. sig may
+// be nil (no signal.json / unparseable): category then falls back to "execute",
+// verdict/findings/proposedFix are empty, and the goal YAML + FailedBy/cycle
+// still populate the payload. Severity is ALWAYS "critical" — by the time a goal
+// reaches here it is terminally failed (salvage grace, if any, already elapsed).
+func buildFailedGoalReport(g *Goal, sig *ValidatorSignal) failedGoalReport {
+	var verdict, findings string
+	if sig != nil {
+		verdict = sig.Verdict
+		findings = summarizeFindings(sig)
+	}
+	description := fmt.Sprintf("Goal %s failed after exhausting its retry budget", g.ID)
+	if g.FailedBy != "" {
+		description += fmt.Sprintf(" (failed_by: %s)", g.FailedBy)
+	}
+	payload := map[string]any{
+		"goal":      goalToYAML(*g),
+		"verdict":   verdict,
+		"findings":  findings,
+		"failed_by": g.FailedBy,
+		"cycle":     CurrentCycle(g),
+	}
+	return failedGoalReport{
+		category:    inferCategory(sig, *g),
+		severity:    "critical",
+		title:       fmt.Sprintf("Goal %s failed after retries", g.ID),
+		description: description,
+		payload:     payload,
+		proposedFix: proposedFixFromSignal(sig),
+		expected:    expectedGreenState(*g),
+	}
+}
+
+// summarizeFindings renders a validator signal's non-pass findings as a compact
+// "rule: detail" multiline block for the report payload. A nil/empty signal
+// yields "".
+func summarizeFindings(sig *ValidatorSignal) string {
+	if sig == nil {
+		return ""
+	}
+	var lines []string
+	for _, f := range sig.Findings {
+		if f.Status == VerdictPass {
+			continue
+		}
+		detail := strings.TrimSpace(f.Detail)
+		if f.Rule != "" {
+			lines = append(lines, fmt.Sprintf("%s: %s", f.Rule, detail))
+		} else if detail != "" {
+			lines = append(lines, detail)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// reportFailedGoals submits exactly one backend failure report per GoalFailed
+// goal, de-duplicated across repeated deactivateOnCompletion invocations via the
+// in-memory d.reportedFailures set. It NEVER reports GoalDone (success or
+// SkipGoal), GoalBlocked, GoalPending or GoalRunning. Detection/iteration is
+// cheap and synchronous; the network submit is goroutine-wrapped + nil-producer
+// no-op inside execute-1's d.reportFailure, so this is non-blocking and safe
+// when reporting is disabled. Best-effort: a missing/unparseable signal.json is
+// logged and the report is still submitted with an empty signal.
+func (d *Daemon) reportFailedGoals(goals *GoalsFile) {
+	if d.reportedFailures == nil {
+		d.reportedFailures = make(map[string]bool)
+	}
+	for i := range goals.Goals {
+		g := &goals.Goals[i]
+		if g.Status != GoalFailed || d.reportedFailures[g.ID] {
+			continue
+		}
+		var sig *ValidatorSignal
+		if loaded, err := LoadSignal(d.workDir, g.ID); err != nil {
+			log.Printf("reportFailedGoals: load signal for %s: %v", g.ID, err)
+		} else if s, ok := loaded.(*ValidatorSignal); ok {
+			sig = s
+		}
+		r := buildFailedGoalReport(g, sig)
+		d.reportFailure(r.category, r.severity, r.title, r.description, r.payload,
+			withProposedFix(r.proposedFix), withExpectedGreenState(r.expected))
+		d.reportedFailures[g.ID] = true
+	}
 }

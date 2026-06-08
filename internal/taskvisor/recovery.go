@@ -2,6 +2,7 @@ package taskvisor
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/console/tmux-cli/internal/tasks"
+	"github.com/console/tmux-cli/internal/tmux"
 )
 
 func (d *Daemon) crashRecovery() error {
@@ -47,6 +49,7 @@ func (d *Daemon) crashRecovery() error {
 	}
 
 	d.mode = modeActive
+	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:CRASH-RECOVERY goals=%d]", len(running)))
 	// CurrentGoal is the legacy scalar head-tracker; bind it to the first in-flight
 	// goal for compatibility. The per-goal runtime restored below is the
 	// authoritative state at MaxGoals>1.
@@ -140,15 +143,18 @@ func (d *Daemon) crashRecovery() error {
 		}
 
 		log.Printf("crash recovery: re-dispatching %s (no live window, tasks not all done)", g.ID)
+		action := "re-dispatch"
 		if g.Retries < g.MaxRetries {
 			g.Status = GoalPending
 			if _, serr := os.Stat(tasks.GoalTasksFilePath(d.workDir, g.ID)); serr == nil {
 				g.NextDispatch = dispatchImplementer
 			}
 		} else {
+			action = "fail"
 			g.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 			g.Status = GoalFailed
 		}
+		reportWorkerCrashFn(d, g, mg, action, allDone, windows)
 		changed = true
 	}
 
@@ -156,6 +162,75 @@ func (d *Daemon) crashRecovery() error {
 		return SaveGoals(d.workDir, goals)
 	}
 	return nil
+}
+
+// reportWorkerCrashFn is the indirection the genuine-crash branch invokes to emit
+// the recovered-worker-crash report. It defaults to (*Daemon).reportWorkerCrash
+// and is a package var ONLY so recovery_test.go can count and inspect crash
+// reports deterministically: producer.Client is a concrete type with an
+// unexported constructor and no daemon-level injection seam, so a swappable
+// function is the only way to observe a submission without a live backend.
+// Production never reassigns it.
+var reportWorkerCrashFn = (*Daemon).reportWorkerCrash
+
+// reportWorkerCrash assembles and submits ONE execute/warning report for a
+// recovered worker crash — a GoalRunning goal whose worker window vanished and is
+// being re-dispatched (action="re-dispatch") or failed (action="fail"). The
+// submission is delegated to reportFailure, a goroutine-wrapped no-op when
+// d.producer is nil, so recovery never blocks on the network and never panics
+// with reporting disabled. The only I/O here is the bounded log-tail read;
+// surviving windows and allDone are reused from the caller (no extra ListWindows
+// or tasks-file read).
+func (d *Daemon) reportWorkerCrash(g *Goal, mg int, action string, allDone bool, surviving []tmux.WindowInfo) {
+	logPath := filepath.Join(d.workDir, ".tmux-cli", "logs", "taskvisor.log")
+	payload := crashReportPayload(g, mg, action, allDone, surviving, readLogTail(logPath))
+	title := fmt.Sprintf("Worker crash recovered for %s", g.ID)
+	desc := fmt.Sprintf(
+		"GoalRunning goal %s lost its worker window (expected %s); recovery action: %s.",
+		g.ID, supervisorWindow(g.ID, mg), action,
+	)
+	d.reportFailure("execute", "warning", title, desc, payload)
+}
+
+// crashReportPayload builds the worker-crash report payload deterministically (no
+// I/O) so it is fully unit-testable. status_before is always GoalRunning (the
+// only status that reaches the crash branch); surviving_windows lists the live
+// window names from the slice the recovery loop already fetched; log_tail carries
+// the bounded tail of the SHARED daemon log (labelled via log_tail_source so a
+// consumer does not over-attribute it to this one goal).
+func crashReportPayload(g *Goal, mg int, action string, allDone bool, surviving []tmux.WindowInfo, logTail string) map[string]any {
+	names := make([]string, 0, len(surviving))
+	for _, w := range surviving {
+		names = append(names, w.Name)
+	}
+	return map[string]any{
+		"goal_id":           g.ID,
+		"status_before":     GoalRunning,
+		"recovery_action":   action,
+		"expected_window":   supervisorWindow(g.ID, mg),
+		"surviving_windows": names,
+		"tasks_all_done":    allDone,
+		"log_tail":          logTail,
+		"log_tail_source":   "shared daemon log (.tmux-cli/logs/taskvisor.log)",
+	}
+}
+
+// readLogTail returns a bounded tail of the file at path: at most the last 4096
+// bytes, then at most the last 50 lines of that slice. Any read error (missing
+// file, permission) yields "" — the report is still sent without a tail.
+func readLogTail(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(data) > 4096 {
+		data = data[len(data)-4096:]
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > 50 {
+		lines = lines[len(lines)-50:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // clearBlock lifts every hold flag from a goal: the BlockedBy upstream pointer

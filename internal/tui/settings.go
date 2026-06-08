@@ -54,6 +54,8 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.require_plan_approval", label: "Require Plan Approval", kind: "bool", value: settings.Taskvisor.RequirePlanApproval},
 			{key: "taskvisor.halt_on_stale_binary", label: "Halt On Stale Binary", kind: "bool", value: settings.Taskvisor.HaltOnStaleBinary},
 			{key: "taskvisor.restart_on_stale_binary", label: "Restart On Stale Binary", kind: "bool", value: settings.Taskvisor.RestartOnStaleBinary},
+			{key: "api.enabled", label: "API Reporting Enabled", kind: "bool", value: settings.API.Enabled},
+			{key: "api.url", label: "API URL", kind: "string", strVal: settings.API.URL},
 		},
 	}
 }
@@ -234,6 +236,10 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Taskvisor.HaltOnStaleBinary = item.value
 		case "taskvisor.restart_on_stale_binary":
 			s.Taskvisor.RestartOnStaleBinary = item.value
+		case "api.enabled":
+			s.API.Enabled = item.value
+		case "api.url":
+			s.API.URL = item.strVal
 		}
 	}
 	return &s

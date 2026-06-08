@@ -4,10 +4,11 @@
 // The server discovers sessions by matching project path stored in tmux session
 // environment variables. No session file is needed.
 //
-// The server provides fourteen tools: windows-list, windows-create,
+// The server provides seventeen tools: windows-list, windows-create,
 // windows-kill, windows-send, windows-message, windows-spawn-worker,
 // windows-recover-workers, tasks-validate, spec-validate, hooks-config,
-// sudo-execute, taskvisor-start, goal-create, and goal-validation-done.
+// sudo-execute, taskvisor-start, goal-create, goal-add-prerequisite,
+// goal-prune, goal-validation-done, and task-report.
 package mcp
 
 import (
@@ -305,6 +306,7 @@ type GoalCreateInput struct {
 	MaxRetries  int      `json:"max_retries,omitempty" jsonschema:"Maximum retry attempts before failing (default 5)"`
 	DependsOn   []string `json:"depends_on,omitempty" jsonschema:"IDs of goals this goal depends on (must exist in goals.yaml)"`
 	Scope       []string `json:"scope,omitempty" jsonschema:"Declared file/namespace footprint (globs like internal/x/** or namespace prefixes like App\\Billing). The disjoint-scope co-scheduling gate serializes goals with overlapping or unknown scope under MaxGoals>1; omit to derive from deliverables (treated as unknown = serialize)"`
+	Priority    int      `json:"priority,omitempty" jsonschema:"Dispatch priority (higher = dispatched first; default 0)"`
 
 	Preconditions []taskvisor.Precondition `json:"preconditions,omitempty" jsonschema:"Optional precondition gates ({kind:env|service, spec, remedy}); daemon parks the goal until each is met"`
 
@@ -353,7 +355,7 @@ func (s *Server) GoalCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequ
 		}
 	}
 
-	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.Phase, input.MaxRetries, input.DependsOn, input.Preconditions, investigators, input.Scope)
+	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.Phase, input.MaxRetries, input.DependsOn, input.Preconditions, investigators, input.Scope, input.Priority)
 	if err != nil {
 		return nil, GoalCreateOutput{}, err
 	}
@@ -494,6 +496,27 @@ func (s *Server) GoalValidationDoneHandler(ctx context.Context, req *sdkmcp.Call
 	}
 	result, out := prependStaleWarning(*output)
 	return result, out, nil
+}
+
+// TaskReportInput defines the input schema for the task-report tool. All six
+// human fields are REQUIRED and content-bearing; system_info is deliberately
+// ABSENT from the wire (collected server-side so an agent cannot spoof it).
+// jsonschema tags use bare description text only (no description= prefix — the
+// go-sdk panics on startup otherwise).
+type TaskReportInput struct {
+	Category           string         `json:"category" jsonschema:"Backend category; required; one of plan, supervisor, validator, execute, general"`
+	Severity           string         `json:"severity" jsonschema:"Backend severity; required; one of critical, warning, info"`
+	Title              string         `json:"title" jsonschema:"Short one-line summary of the issue; required"`
+	Description        string         `json:"description" jsonschema:"Full description of the issue and its context; required"`
+	ProposedFix        string         `json:"proposed_fix" jsonschema:"Concrete remediation; required and must be actionable (a contentless stub like TBD, none, n/a is rejected)"`
+	ExpectedGreenState string         `json:"expected_green_state" jsonschema:"What passing/fixed looks like; required"`
+	Payload            map[string]any `json:"payload,omitempty" jsonschema:"Optional structured payload forwarded verbatim to the backend"`
+}
+
+// TaskReportOutput defines the output schema for the task-report tool.
+type TaskReportOutput struct {
+	ID     string `json:"id" jsonschema:"Backend-assigned task ID"`
+	Status string `json:"status" jsonschema:"Backend-assigned task status (e.g. queued)"`
 }
 
 // HooksConfigHandler is the MCP tool handler for hooks-config operation.
@@ -777,6 +800,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.GoalValidationDoneHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-report",
+		Description: "File a structured task report to the tmux-cli backend synchronously and return its {id,status}. ALL SIX fields are required: category (one of plan|supervisor|validator|execute|general), severity (one of critical|warning|info), title, description, proposed_fix (must be actionable — a contentless stub is rejected), and expected_green_state. Invalid category/severity are rejected (no coercion). system_info is collected server-side. Returns an error when reporting is disabled in .tmux-cli/setting.yaml.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.TaskReportHandler)
 
 	return nil
 }

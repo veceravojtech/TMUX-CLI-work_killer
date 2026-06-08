@@ -61,6 +61,9 @@ goals:
 	executor.On("ListWindows", mock.Anything).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil).Maybe()
+	// deactivate() (stale-binary halt path) now emits a [TASKVISOR:STATE from=active
+	// to=idle] notification to the "supervisor" window (@0); tolerate the SendMessage.
+	executor.On("SendMessage", mock.Anything, "@0", mock.Anything).Return(nil).Maybe()
 
 	d := New(dir, executor)
 	d.mode = modeActive
@@ -298,4 +301,116 @@ func TestTick_StaleBinary_Restart_SignalHandlerStopped(t *testing.T) {
 	}
 
 	signal.Stop(d.signalCh)
+}
+
+func TestStaleBinary_RefreshesCommands_BannerOnly(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, true, false)
+
+	called := false
+	d.SetCommandRefreshFn(func() error {
+		called = true
+		return nil
+	})
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err)
+
+	assert.True(t, called, "commandRefreshFn must be invoked on the banner-only stale path")
+	assert.NotEmpty(t, d.staleBanner, "banner must still be set")
+	assert.Equal(t, modeActive, d.mode, "mode must stay active")
+}
+
+func TestStaleBinary_RefreshesCommands_BeforeRestart(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, true, false)
+	d.restartOnStaleBinary = true
+
+	var counter atomic.Int32
+	var refreshSeq, execSeq int32
+	d.SetCommandRefreshFn(func() error {
+		refreshSeq = counter.Add(1)
+		return nil
+	})
+	d.SetExecReplaceFnForTest(func(path string, args []string, env []string) error {
+		execSeq = counter.Add(1)
+		return nil
+	})
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err)
+
+	assert.NotZero(t, refreshSeq, "commandRefreshFn must be called")
+	assert.NotZero(t, execSeq, "execReplaceFn must be called")
+	assert.Less(t, refreshSeq, execSeq, "refresh must fire BEFORE exec-replace")
+}
+
+func TestStaleBinary_RefreshSkipped_WhenCommandsDisabled(t *testing.T) {
+	d, goals, dir := staleBinaryDaemon(t, true, false)
+
+	// Rewrite setting.yaml with commands disabled.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".tmux-cli", "setting.yaml"), []byte(`hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: false
+supervisor:
+  max_cycles: 0
+  max_workers: 4
+plan:
+  auto_approve: true
+  auto_execute: true
+`), 0o644))
+
+	called := false
+	d.SetCommandRefreshFn(func() error {
+		called = true
+		return nil
+	})
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err)
+
+	assert.False(t, called, "commandRefreshFn must NOT be called when Commands.Enabled=false")
+	assert.NotEmpty(t, d.staleBanner, "banner must still be set")
+}
+
+func TestStaleBinary_RefreshFailure_DoesNotAbort(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, true, true)
+
+	executor := d.executor.(*testutil.MockTmuxExecutor)
+	executor.On("KillWindow", mock.Anything, mock.Anything).Return(nil).Maybe()
+	executor.On("HasSession", mock.Anything).Return(true, nil).Maybe()
+
+	d.SetCommandRefreshFn(func() error {
+		return fmt.Errorf("boom")
+	})
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err, "checkStaleBinary must return nil even when refresh fails")
+	assert.NotEmpty(t, d.haltReason, "halt must still occur after a refresh failure")
+}
+
+func TestStaleBinary_NotStale_NoRefresh(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, false, false)
+
+	called := false
+	d.SetCommandRefreshFn(func() error {
+		called = true
+		return nil
+	})
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err)
+
+	assert.False(t, called, "commandRefreshFn must NOT be called when binary is not stale")
+}
+
+func TestStaleBinary_RefreshNilFn_NoPanic(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, true, false)
+
+	// No SetCommandRefreshFn — commandRefreshFn stays nil.
+	require.NotPanics(t, func() {
+		err := d.checkStaleBinary(goals)
+		require.NoError(t, err)
+	})
+	assert.NotEmpty(t, d.staleBanner, "banner must still be set with a nil refresh fn")
 }

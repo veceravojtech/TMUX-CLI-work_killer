@@ -17,15 +17,15 @@ func resetGoalAddFlags(t *testing.T) {
 	t.Helper()
 	oldDesc, oldAcc, oldVal := goalDescription, goalAcceptance, goalValidate
 	oldCtx, oldNIS, oldPhase := goalContext, goalNotInScope, goalPhase
-	oldRetries, oldScope := goalMaxRetries, goalScope
+	oldRetries, oldScope, oldPrio := goalMaxRetries, goalScope, goalPriority
 	t.Cleanup(func() {
 		goalDescription, goalAcceptance, goalValidate = oldDesc, oldAcc, oldVal
 		goalContext, goalNotInScope, goalPhase = oldCtx, oldNIS, oldPhase
-		goalMaxRetries, goalScope = oldRetries, oldScope
+		goalMaxRetries, goalScope, goalPriority = oldRetries, oldScope, oldPrio
 	})
 	goalDescription, goalAcceptance, goalValidate = "", nil, nil
 	goalContext, goalNotInScope, goalPhase = "", "", ""
-	goalMaxRetries, goalScope = 5, nil
+	goalMaxRetries, goalScope, goalPriority = 5, nil, 0
 }
 
 func TestGoalAddCmd_ScopeFlagRegistered(t *testing.T) {

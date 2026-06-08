@@ -120,6 +120,37 @@ commands:
 	assert.False(t, s.Commands.Enabled)
 }
 
+// TestLoadSettings_PreservesAPIBlock is the regression guard for the bug where
+// LoadSettings re-saved setting.yaml from a Settings struct that had no api
+// field, silently dropping the producer api: block on every round-trip (which
+// flipped task-report back to "disabled"). LoadSettings now re-saves; the block
+// must survive both the in-memory decode AND the on-disk re-marshal.
+func TestLoadSettings_PreservesAPIBlock(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `commands:
+  enabled: true
+api:
+  enabled: true
+  url: https://example.test
+`
+	path := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.True(t, s.API.Enabled)
+	assert.Equal(t, "https://example.test", s.API.URL)
+
+	// LoadSettings re-saves; the api block must still be on disk afterwards.
+	reread, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(reread), "api:")
+	assert.Contains(t, string(reread), "https://example.test")
+}
+
 func TestLoadSettings_InvalidYAML(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".tmux-cli")

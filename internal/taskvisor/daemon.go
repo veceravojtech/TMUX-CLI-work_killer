@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/console/tmux-cli/internal/producer"
 	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/tmux"
 )
@@ -71,17 +72,44 @@ type goalRuntime struct {
 	// zero git calls and is byte-identical to the pre-worktree build.
 	WorktreeDir string
 	Branch      string
+
+	// activatedAt is the PER-GOAL wall-clock budget epoch (P3). It is stamped once
+	// per in-flight episode at the goal's first dispatch (both dispatch sites, under
+	// an IsZero() guard so a redispatch within the same episode PRESERVES it and does
+	// NOT extend the budget), and the tick() gate halts the goal when
+	// d.now().Sub(activatedAt) >= d.maxWallClock. Each goal thus gets its own budget
+	// window from ITS dispatch — goals running sequentially no longer share one
+	// daemon timer. INVARIANT: the budget caps a goal's TOTAL in-flight wall time
+	// across redispatch retries; clearRuntime's map delete zeros it on terminal exit,
+	// so a fully re-pended goal correctly gets a fresh budget. ZERO VALUE = never
+	// dispatched = NEVER halts (the gate skips IsZero epochs). Distinct from
+	// dispatchTime (the dispatch-timeout epoch) so the two semantics can diverge.
+	activatedAt time.Time
 }
 
 type Daemon struct {
-	workDir         string
-	executor        tmux.TmuxExecutor
-	createWindowFn  WindowCreateFunc
-	mode            mode
-	session         string
-	pollInterval    time.Duration
-	dispatchTimeout time.Duration
-	validateTimeout time.Duration
+	workDir        string
+	executor       tmux.TmuxExecutor
+	createWindowFn WindowCreateFunc
+	// producer is the fire-and-forget backend reporter (goal-008). Nil = reporting
+	// disabled (no API config / no signing key), in which case reportFailure is a
+	// silent no-op. Initialized once in Run() after settings load via
+	// producer.New(producer.LoadConfig(d.workDir)); reused verbatim, never an
+	// interface. See reporting.go for the submission helpers.
+	producer *producer.Client
+	// reportedFailures is the in-memory dedup set for terminal goal-failure
+	// reports (completion.go: reportFailedGoals). A goal ID is added once its
+	// GoalFailed report is submitted so repeated deactivateOnCompletion passes
+	// never double-report. Lazily initialized on first use (nil-safe; no New()
+	// change). Intentionally NOT persisted to goals.yaml — it resets on process
+	// restart, where re-reporting from goals.yaml is acceptable and rare, and a
+	// schema change is avoided.
+	reportedFailures map[string]bool
+	mode             mode
+	session          string
+	pollInterval     time.Duration
+	dispatchTimeout  time.Duration
+	validateTimeout  time.Duration
 	// progressTimeout bounds how long a dispatched supervisor/validator window may
 	// emit NO new pane output before the per-tick heartbeat (checkProgressHeartbeat)
 	// declares it wedged and recovers early — closing the silent-timeout hole where
@@ -138,10 +166,20 @@ type Daemon struct {
 	// flag resets — so it needs no entry at the dispatch/deactivate reset sites.
 	finalGateStuckReported bool
 
+	// invariantReported mirrors stallReported for the Bug-A invariant check
+	// (checkInvariant): it gates the failure report to once per violation episode
+	// so an every-tick check can never flood the backend. Set true when a
+	// violation is reported; cleared in checkInvariant at the same len(ids)==0
+	// early return that ends an episode. Zero-valued by default (no New change).
+	invariantReported bool
+
 	// activatedAt stamps when the daemon last entered modeActive (set in activate()
-	// through the P2 clock seam d.now()). It is the epoch for the P3 wall-clock cost
-	// ceiling: tick() halts when d.now().Sub(activatedAt) >= maxWallClock. Re-stamped
-	// on every activate(), so a (re)start always resets the budget window.
+	// through the P2 clock seam d.now()). As of the per-goal-budget move (P3) it is
+	// NO LONGER the wall-clock budget epoch — that now lives per-goal on
+	// goalRuntime.activatedAt. This daemon-global field's SOLE remaining consumer is
+	// the ALL-COMPLETE `wall=` run-total diagnostic (deactivateOnCompletion computes
+	// d.now().Sub(d.activatedAt)); the notification tests assert that contract. Still
+	// re-stamped on every activate() so the diagnostic measures the current run.
 	activatedAt time.Time
 	// maxWallClock is the daemon's wall-clock cost ceiling (P3). New() seeds it to
 	// 4h (the DefaultSettings() value) so the ceiling is active even when a legacy
@@ -159,13 +197,18 @@ type Daemon struct {
 	restartOnStaleBinary bool
 	restartAttempted     bool
 	execReplaceFn        func(string, []string, []string) error
-	vcsRevision          string
-	lastStaleCheck       time.Time
-	staleBanner          string
-	specRepairs          int
-	depWarningCount      int
-	stackGateSkips       int
-	execReplaceRestart   bool
+	// commandRefreshFn rewrites the installed .claude/commands/tmux/ templates from
+	// the (new) binary's embedded FS when checkStaleBinary fires. Injected from
+	// cmd/tmux-cli (where the embedded FS lives) so internal/taskvisor need not
+	// import package main; nil ⇒ refreshCommands() is a no-op (literal-Daemon tests).
+	commandRefreshFn   func() error
+	vcsRevision        string
+	lastStaleCheck     time.Time
+	staleBanner        string
+	specRepairs        int
+	depWarningCount    int
+	stackGateSkips     int
+	execReplaceRestart bool
 }
 
 func readVCSRevision() string {
@@ -232,6 +275,10 @@ func (d *Daemon) SetExecReplaceFnForTest(fn func(string, []string, []string) err
 	d.execReplaceFn = fn
 }
 
+func (d *Daemon) SetCommandRefreshFn(fn func() error) {
+	d.commandRefreshFn = fn
+}
+
 func (d *Daemon) Run(ctx context.Context) error {
 	logDir := filepath.Join(d.workDir, ".tmux-cli", "logs")
 	_ = os.MkdirAll(logDir, 0o755)
@@ -275,6 +322,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.restartOnStaleBinary = settings.Taskvisor.RestartOnStaleBinary
 	}
 
+	// Backend failure reporting (goal-008/009). Config is read independently of
+	// setup.Settings; a missing/disabled config yields a nil *producer.Client and
+	// reportFailure degrades to a silent no-op. The goroutine in reportFailure reads
+	// d.ctx at run time, so initializing here (before setupSignalHandler wires the
+	// context) is safe — no submission can fire until the poll loop is live.
+	cfg, _ := producer.LoadConfig(d.workDir)
+	d.producer = producer.New(cfg)
+
 	// Single authoritative finalization of d.validateTimeout. Runs UNCONDITIONALLY
 	// (even when LoadSettings failed above, in which case d.validateTimeout is the
 	// zero value from New()) and only ever raises the value to the derived minimum.
@@ -296,6 +351,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		_ = os.Remove(restartMarker)
 		if d.mode == modeIdle {
 			log.Printf("exec-replace restart detected — auto-activating")
+			d.execReplaceRestart = true
 			startPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-start")
 			_ = os.WriteFile(startPath, nil, 0o644)
 		}
@@ -530,13 +586,26 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 		return err
 	}
 
-	// Stamp the wall-clock budget epoch (P3) via the P2 clock seam and clear any
-	// prior halt reason so a (re)start shows a clean surface. Both must precede the
-	// dashboard render below.
+	// Stamp the daemon run-start epoch (P3) via the P2 clock seam and clear any
+	// prior halt reason so a (re)start shows a clean surface. This stamp now feeds
+	// ONLY the ALL-COMPLETE `wall=` run-total diagnostic — the wall-clock BUDGET
+	// epoch moved per-goal onto goalRuntime.activatedAt (stamped at dispatch). Both
+	// must precede the dashboard render below.
 	d.activatedAt = d.now()
 	d.haltReason = ""
 	d.stackGateSkips = 0
 	d.mode = modeActive
+	if d.execReplaceRestart {
+		d.execReplaceRestart = false
+		d.notifySupervisor("[TASKVISOR:STATE exec-replace-restart]")
+	}
+	var pendingCount int
+	for _, g := range goals.Goals {
+		if g.Status == GoalPending {
+			pendingCount++
+		}
+	}
+	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:STATE from=idle to=active goals=%d]", pendingCount))
 	if err := d.renderDashboard(os.Stdout); err != nil {
 		log.Printf("dashboard render error: %v", err)
 	}
@@ -585,6 +654,7 @@ func (d *Daemon) deactivate() error {
 	d.stallReported = false
 	d.runtimes = nil
 	d.mode = modeIdle
+	d.notifySupervisor("[TASKVISOR:STATE from=active to=idle]")
 	if err := d.renderDashboard(os.Stdout); err != nil {
 		log.Printf("dashboard render error: %v", err)
 	}

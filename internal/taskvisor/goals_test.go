@@ -1261,6 +1261,49 @@ func TestGoal_FailedBySurvivesSaveGoalsRoundTrip(t *testing.T) {
 	assert.Equal(t, "validation-timeout", reloaded.Goals[0].FailedBy, "failed_by must survive SaveGoals round-trip")
 }
 
+// TestGoal_PriorityRoundTrip guards the persisted Priority field (goal-007 M1):
+// a goal saved with priority: 7 survives a LoadGoals/SaveGoals round-trip, and a
+// legacy goals.yaml WITHOUT a priority key loads as the default 0 (omitempty).
+func TestGoal_PriorityRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Description: "A", Status: GoalPending, Priority: 7},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	loaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+	require.Len(t, loaded.Goals, 1)
+	assert.Equal(t, 7, loaded.Goals[0].Priority)
+
+	// Re-save (the daemon round-trip) and confirm the value is not dropped.
+	require.NoError(t, SaveGoals(dir, loaded))
+	reloaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+	require.Len(t, reloaded.Goals, 1)
+	assert.Equal(t, 7, reloaded.Goals[0].Priority, "priority must survive SaveGoals round-trip")
+
+	// Legacy file with no priority key loads as the default 0 (omitempty).
+	legacy := t.TempDir()
+	p := GoalsFilePath(legacy)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	content := `current_goal: "goal-001"
+goals:
+  - id: "goal-001"
+    description: "Legacy goal, no priority key"
+    status: pending
+    retries: 0
+    max_retries: 3
+`
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+	lg, err := LoadGoals(legacy)
+	require.NoError(t, err)
+	require.Len(t, lg.Goals, 1)
+	assert.Equal(t, 0, lg.Goals[0].Priority, "absent priority key must default to 0")
+}
+
 // --- StuckRetries dedicated budget -------------------------------------------
 
 func TestLoadGoals_BackfillsMaxStuckRetries(t *testing.T) {

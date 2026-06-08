@@ -104,16 +104,27 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 	// (3) Free dispatch budget for this tick.
 	free := d.maxGoals() - len(runningAtStart)
 
-	// (3b) Wall-clock cost ceiling (P3). Checked ONCE per tick at the dispatch
-	// boundary, immediately BEFORE the free-slot gate so a fully-saturated daemon
-	// (free==0, every slot busy) still halts rather than waiting for a free slot.
-	// In-flight goals were already polled this tick by checkProgress above, so the
-	// halt never interrupts a running goal's already-observed signal. The math
-	// routes through the P2 clock seam (d.now()) so it is injectable in tests;
-	// time.Now() here would defeat that. Zero maxWallClock ⇒ disabled (no-op).
-	if d.maxWallClock > 0 && !d.activatedAt.IsZero() {
-		if elapsed := d.now().Sub(d.activatedAt); elapsed >= d.maxWallClock {
-			return d.haltWallClock(goals, elapsed)
+	// (3b) Per-goal wall-clock cost ceiling (P3). Evaluated ONCE per tick at the
+	// dispatch boundary, immediately BEFORE the free-slot gate so a fully-saturated
+	// daemon (free==0, every slot busy) still halts rather than waiting for a free
+	// slot. The budget epoch is now PER-GOAL (goalRuntime.activatedAt, stamped at
+	// dispatch), so each in-flight goal is measured against maxWallClock from ITS own
+	// dispatch — goals running sequentially no longer share one daemon timer. We
+	// iterate the running set fresh (post-checkProgress, so a goal that completed
+	// earlier this tick is not halted) and halt the FIRST offender; any further
+	// offenders are caught on subsequent ticks (keeps the tick simple, byte-identical
+	// at MaxGoals=1). The IsZero() guard skips a never-stamped epoch (never halts).
+	// Math routes through the P2 clock seam (d.now()) so it is injectable in tests.
+	// Zero maxWallClock ⇒ DISABLED (no-op).
+	if d.maxWallClock > 0 {
+		for _, id := range goals.RunningGoalIDs() {
+			rt := d.runtime(id)
+			if rt.activatedAt.IsZero() {
+				continue
+			}
+			if elapsed := d.now().Sub(rt.activatedAt); elapsed >= d.maxWallClock {
+				return d.haltGoalWallClock(goals, id, elapsed)
+			}
 		}
 	}
 
@@ -877,6 +888,7 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdict
 			return err
 		}
 		log.Printf("%s: running -> blocked (circuit-breaker, streak=%d/%d)", goal.ID, streak, k)
+		d.reportBreakerTrip(goal, "code", cur, streak, k)
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
@@ -979,6 +991,7 @@ func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *Valida
 			return err
 		}
 		log.Printf("%s: running -> blocked (spec circuit-breaker, streak=%d/%d)", goal.ID, streak, k)
+		d.reportBreakerTrip(goal, "spec", cur, streak, k)
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
@@ -1124,14 +1137,6 @@ func (d *Daemon) haltRetryCeiling(goal *Goal, goals *GoalsFile) error {
 	return d.advanceToNextGoal(goals, goal.ID, false)
 }
 
-// haltWallClock halts the daemon when the P3 wall-clock cost ceiling is reached.
-// Unlike haltRetryCeiling this is a DAEMON-level budget exhaustion, NOT a goal
-// defect: it deliberately does NOT touch any goal status (no fail, no cascade, no
-// FinishedAt), so a human can raise the budget and resume the untouched goals.
-// haltReason is set BEFORE deactivate() — deactivate()'s tail renderDashboard
-// surfaces the loud banner with no extra render call. The goals argument mirrors
-// haltRetryCeiling's signature (and documents that goal state is intentionally
-// left alone); it is not mutated here.
 func (d *Daemon) checkStaleBinary(goals *GoalsFile) error {
 	if d.now().Sub(d.lastStaleCheck) < time.Minute {
 		return nil
@@ -1145,6 +1150,10 @@ func (d *Daemon) checkStaleBinary(goals *GoalsFile) error {
 	}
 
 	d.staleBanner = fmt.Sprintf("BINARY STALE — restart taskvisor to apply (%s)", detail)
+	// Best-effort: rewrite installed command templates from the new binary's
+	// embedded FS before any exec-replace restart (and on the banner/halt paths).
+	// Sits past the throttle gate (≤1/min) and never alters the decision below.
+	d.refreshCommands()
 	if d.restartOnStaleBinary {
 		return d.restartStaleBinary(goals, detail)
 	}
@@ -1152,6 +1161,26 @@ func (d *Daemon) checkStaleBinary(goals *GoalsFile) error {
 		return d.haltStaleBinary(goals, detail)
 	}
 	return nil
+}
+
+// refreshCommands rewrites the installed .claude/commands/tmux/ templates from the
+// new binary's embedded FS via the injected commandRefreshFn. Best-effort and gated:
+// a nil fn or a disabled Commands setting is a silent no-op, and a write error is
+// logged and swallowed so the stale-binary restart/halt/banner decision is unaffected.
+func (d *Daemon) refreshCommands() {
+	if d.commandRefreshFn == nil {
+		return
+	}
+	// Gate on Commands.Enabled for parity with setup.Run — an operator who disabled
+	// command installation must not have files silently re-created. Fail-closed: if
+	// settings are unreadable, skip rather than assume enabled.
+	s, err := setup.LoadSettings(d.workDir)
+	if err != nil || !s.Commands.Enabled {
+		return
+	}
+	if err := d.commandRefreshFn(); err != nil {
+		log.Printf("stale-binary: command refresh failed: %v (continuing)", err)
+	}
 }
 
 func (d *Daemon) haltStaleBinary(goals *GoalsFile, detail string) error {
@@ -1214,12 +1243,34 @@ func (d *Daemon) restartStaleBinary(goals *GoalsFile, detail string) error {
 	return nil
 }
 
-func (d *Daemon) haltWallClock(goals *GoalsFile, elapsed time.Duration) error {
-	log.Printf("ALARM: wall-clock budget exhausted (%s elapsed >= %s budget) — halting daemon",
-		elapsed.Round(time.Second), d.maxWallClock)
-	d.haltReason = fmt.Sprintf("HALTED: wall-clock budget %s exhausted (%s elapsed)",
-		d.maxWallClock, elapsed.Round(time.Second))
-	return d.deactivate()
+// haltGoalWallClock fails the single goal named by goalID when its PER-GOAL P3
+// wall-clock budget (now()-goalRuntime.activatedAt) is exhausted. Unlike the old
+// daemon-deactivating haltWallClock, this is SCOPED to the offending goal: it
+// flips ONLY that goal to GoalFailed (reusing the established single-goal failure
+// finalization — FinishedAt + FailedBy + CascadeFailure for hard-blocked
+// dependents), then advanceToNextGoal(resume=false). At MaxGoals=1 with no next
+// pending, advanceToNextGoal reaches deactivateOnCompletion and the daemon ends
+// idle — operator-visible end-state stays effectively identical to the old halt;
+// at MaxGoals>1 under-budget siblings keep running and the daemon stays active.
+// It deliberately does NOT write d.haltReason (that daemon-level banner infra is
+// retained but no longer driven by the wall-clock path) nor deactivate the whole
+// daemon for one goal's breach.
+func (d *Daemon) haltGoalWallClock(goals *GoalsFile, goalID string, elapsed time.Duration) error {
+	log.Printf("ALARM: wall-clock budget exhausted (%s elapsed >= %s budget) — halting goal %s",
+		elapsed.Round(time.Second), d.maxWallClock, goalID)
+	if goal, ok := goals.GoalByID(goalID); ok {
+		goal.Status = GoalFailed
+		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		goal.FailedBy = "wall-clock-budget"
+		// Budget exhaustion is a hard fail — dependents are genuinely blocked.
+		goals.CascadeFailure(goalID, "fail")
+		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=wall-clock-budget cascade=%d]",
+			goalID, goal.Description, countCascaded(goals, goalID)))
+	}
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+	return d.advanceToNextGoal(goals, goalID, false)
 }
 
 // advanceToNextGoal is called when the goal named by completedID leaves the

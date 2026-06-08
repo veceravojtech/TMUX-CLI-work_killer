@@ -280,9 +280,13 @@ tasks:
 	exec.On("ListWindows", testSession).Return(validatorClaude, nil).Once()
 	// Stage 2: checkValidatingPhase — validator fail
 	exec.On("ListWindows", testSession).Return(validatorPlain, nil).Once()
-	// Stage 3: dispatchRetry — kill all, create supervisor
-	exec.On("ListWindows", testSession).Return(empty, nil).Times(6)
+	// Stage 3: dispatchRetry — kill all (5 kills incl. plan-audit) + collect + gone, create supervisor
+	exec.On("ListWindows", testSession).Return(empty, nil).Times(7)
 	exec.On("ListWindows", testSession).Return(supervisorClaude, nil).Once()
+	exec.On("ListWindows", testSession).Return(supervisorClaude, nil).Once()
+	// Stage 3b: dispatchRetry's notifySupervisor lookup for [TASKVISOR:GOAL-DISPATCHED
+	// ...retry=true] — the window is namespaced ("supervisor-001"), so findWindowByName
+	// ("supervisor") finds no match and the notification silently skips (no SendMessage).
 	exec.On("ListWindows", testSession).Return(supervisorClaude, nil).Once()
 	// Stage 4: checkSupervisingPhase — supervisor done again, create validator
 	exec.On("ListWindows", testSession).Return(empty, nil).Once()

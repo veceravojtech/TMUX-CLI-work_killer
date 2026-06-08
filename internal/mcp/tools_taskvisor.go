@@ -76,6 +76,13 @@ type tvGoal struct {
 
 	Phase     string   `yaml:"phase,omitempty"`
 	DependsOn []string `yaml:"depends_on,omitempty"`
+	// Priority mirrors taskvisor.Goal.Priority (same yaml key, same int type) — the
+	// dispatch-order bias RunnableCandidates sorts on (descending, stable file-order
+	// tiebreak). DUAL-STRUCT (critical): must stay in lock-step with taskvisor.Goal
+	// — without this mirror an MCP load-resave (GoalCreate, GoalAddPrerequisite)
+	// silently erases a non-default priority back to 0, and TestGoalTvGoalYamlTagParity
+	// fails the build the instant Goal gains the field with no twin here.
+	Priority int `yaml:"priority,omitempty"`
 	// EscalationCount mirrors taskvisor.Goal.EscalationCount (same yaml key). It is
 	// the durable escalation-prerequisite counter that GoalAddPrerequisite
 	// increments and caps. DUAL-STRUCT (critical): must stay in lock-step with
@@ -250,7 +257,7 @@ func validateInvestigators(invs []taskvisor.Investigator) error {
 // land in goals.yaml — F5/RC-A, with the derive-from-acceptance scope
 // fallback), and goal.md — is delegated to the shared authoring core
 // taskvisor.CreateGoal, converged with the `taskvisor goal add` CLI command.
-func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope, phase string, maxRetries int, dependsOn []string, preconditions []taskvisor.Precondition, investigators []taskvisor.Investigator, scope []string) (*GoalCreateOutput, error) {
+func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope, phase string, maxRetries int, dependsOn []string, preconditions []taskvisor.Precondition, investigators []taskvisor.Investigator, scope []string, priority int) (*GoalCreateOutput, error) {
 	if phase != "" && !allowedPhases[phase] {
 		names := make([]string, 0, len(allowedPhases))
 		for k := range allowedPhases {
@@ -280,6 +287,7 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, c
 		Preconditions: preconditions,
 		Investigators: investigators,
 		Scope:         scope,
+		Priority:      priority,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err)

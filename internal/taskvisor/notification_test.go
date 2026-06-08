@@ -610,6 +610,296 @@ func TestFinalizeWorktreeOnDone_IntegrationFailed_GoalFailedNotification(t *test
 	assert.True(t, foundNotif, "must send GOAL-FAILED with reason=integration-gate-failed and cascade=1")
 }
 
+// --- Lifecycle state-change notifications (goal-004) ---
+
+func TestActivate_NotifiesIdleToActive(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.mode = modeIdle
+	writeSettings(t, dir, true, true)
+
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Description: "first", Status: GoalPending},
+		{ID: "goal-002", Description: "second", Status: GoalPending},
+	}}
+	writeGoals(t, dir, gf)
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+
+	require.NoError(t, d.activate(gf))
+	assert.Equal(t, modeActive, d.mode)
+
+	var found bool
+	for _, call := range exec.Calls {
+		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+			if strings.Contains(call.Arguments.String(2), "[TASKVISOR:STATE from=idle to=active goals=2]") {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "must send STATE from=idle to=active goals=2")
+}
+
+func TestActivate_ExecReplaceRestart_NotifiesBeforeActivation(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.mode = modeIdle
+	d.execReplaceRestart = true
+	writeSettings(t, dir, true, true)
+
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Description: "only", Status: GoalPending},
+	}}
+	writeGoals(t, dir, gf)
+
+	var sent []string
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		sent = append(sent, args.String(2))
+	})
+
+	require.NoError(t, d.activate(gf))
+
+	idxRestart := -1
+	idxActive := -1
+	for i, msg := range sent {
+		if idxRestart == -1 && strings.Contains(msg, "[TASKVISOR:STATE exec-replace-restart]") {
+			idxRestart = i
+		}
+		if idxActive == -1 && strings.Contains(msg, "[TASKVISOR:STATE from=idle to=active goals=1]") {
+			idxActive = i
+		}
+	}
+	require.NotEqual(t, -1, idxRestart, "must send exec-replace-restart")
+	require.NotEqual(t, -1, idxActive, "must send from=idle to=active goals=1")
+	assert.Less(t, idxRestart, idxActive, "exec-replace-restart must precede idle->active")
+}
+
+func TestActivate_ExecReplaceRestart_FlagClearedAfterNotify(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.mode = modeIdle
+	d.execReplaceRestart = true
+	writeSettings(t, dir, true, true)
+
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Description: "only", Status: GoalPending},
+	}}
+	writeGoals(t, dir, gf)
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+
+	require.NoError(t, d.activate(gf))
+	assert.False(t, d.execReplaceRestart, "execReplaceRestart must be cleared after activate")
+}
+
+func TestDeactivate_NotifiesActiveToIdle(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.mode = modeActive
+	d.session = testSession
+	writeSettings(t, dir, true, true)
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+
+	require.NoError(t, d.deactivate())
+	assert.Equal(t, modeIdle, d.mode)
+
+	var found bool
+	for _, call := range exec.Calls {
+		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+			if strings.Contains(call.Arguments.String(2), "[TASKVISOR:STATE from=active to=idle]") {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "must send STATE from=active to=idle")
+}
+
+func TestDeactivate_NoSessionSkipsNotification(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.mode = modeActive
+	d.session = ""
+	writeSettings(t, dir, true, true)
+
+	// listWindows() short-circuits on empty session, so the executor is never
+	// touched. A create func keeps ensureWindow0Supervisor from erroring.
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+
+	require.NoError(t, d.deactivate())
+
+	exec.AssertNotCalled(t, "ListWindows", mock.Anything)
+	exec.AssertNotCalled(t, "SendMessage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestDispatch_NotifiesGoalDispatched(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Description: "build feature", Status: GoalPending},
+	}}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	// Isolated mock (NOT setupDispatchMocks): mirror its ListWindows phasing but
+	// add a bare "supervisor" window so notifySupervisor resolves it. The bare
+	// name is never a managed/awaited goal window, so kill/wait phases are unaffected.
+	sup := tmux.WindowInfo{TmuxWindowID: "@0", Name: "supervisor"}
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{sup}, nil).Times(5) // 5 kills (killGoalWindows incl. plan-audit)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{sup}, nil).Once()
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{sup}, nil).Once()
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		sup, {TmuxWindowID: "@1", Name: "supervisor-001", CurrentCommand: "claude"},
+	}, nil)
+	exec.On("CaptureWindowOutput", testSession, "@1").Return("ready ❯ ", nil)
+	exec.On("KillWindow", testSession, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	d.SetWindowCreateFunc(mockCreateWindowFn("@1"))
+
+	require.NoError(t, d.dispatch(&gf.Goals[0], gf))
+
+	var found bool
+	for _, call := range exec.Calls {
+		if call.Method == "SendMessage" {
+			msg := call.Arguments.String(2)
+			if strings.Contains(msg, "[TASKVISOR:GOAL-DISPATCHED") &&
+				strings.Contains(msg, "id=goal-001") &&
+				strings.Contains(msg, "desc=") &&
+				strings.Contains(msg, "cycle=1") {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "must send GOAL-DISPATCHED id=goal-001 desc=... cycle=1")
+}
+
+func TestDispatchRetry_NotifiesGoalDispatchedRetry(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{
+				ID: "goal-001", Description: "retry feature", Status: GoalPending,
+				MaxCodeRetries: 5, CodeRetries: 4, // one consumed -> cycle=2
+				MaxSpecRetries: 3, SpecRetries: 3,
+				MaxValidationRetries: 2, ValidationRetries: 2,
+			},
+		},
+	}
+	writeGoals(t, dir, gf)
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
+cycle: 1
+tasks:
+  - name: "task one"
+    wid: execute-1
+    status: done
+    context: .tmux-cli/research/ctx1.md
+`)
+	writeTaskContext(t, dir, ".tmux-cli/research/ctx1.md", "# Task 1")
+
+	sup := tmux.WindowInfo{TmuxWindowID: "@0", Name: "supervisor"}
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{sup}, nil).Times(5) // 5 kills (killGoalWindows incl. plan-audit)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{sup}, nil).Once()
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{sup}, nil).Once()
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		sup, {TmuxWindowID: "@1", Name: "supervisor-001", CurrentCommand: "claude"},
+	}, nil)
+	exec.On("CaptureWindowOutput", testSession, "@1").Return("ready ❯ ", nil)
+	exec.On("KillWindow", testSession, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	d.SetWindowCreateFunc(mockCreateWindowFn("@1"))
+
+	require.NoError(t, d.dispatchRetry(&gf.Goals[0], gf))
+
+	var found bool
+	for _, call := range exec.Calls {
+		if call.Method == "SendMessage" {
+			msg := call.Arguments.String(2)
+			if strings.Contains(msg, "[TASKVISOR:GOAL-DISPATCHED") &&
+				strings.Contains(msg, "id=goal-001") &&
+				strings.Contains(msg, "retry=true") &&
+				strings.Contains(msg, "cycle=2") {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "must send GOAL-DISPATCHED id=goal-001 retry=true cycle=2")
+}
+
+func TestCrashRecovery_NotifiesCrashRecovery(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "g1", Status: GoalRunning, MaxRetries: 3},
+			{ID: "goal-002", Description: "g2", Status: GoalRunning, MaxRetries: 3},
+		},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+
+	require.NoError(t, d.crashRecovery())
+
+	var found bool
+	for _, call := range exec.Calls {
+		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+			if strings.Contains(call.Arguments.String(2), "[TASKVISOR:CRASH-RECOVERY goals=2]") {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "must send CRASH-RECOVERY goals=2")
+}
+
+func TestCrashRecovery_NoRunningGoals_NoNotification(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "g1", Status: GoalDone},
+		},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+
+	require.NoError(t, d.crashRecovery())
+
+	for _, call := range exec.Calls {
+		if call.Method == "SendMessage" {
+			assert.NotContains(t, call.Arguments.String(2), "CRASH-RECOVERY",
+				"must not send CRASH-RECOVERY when no running goals")
+		}
+	}
+}
+
 func TestFinalizeWorktreeOnDone_MergeConflict_GoalFailedNotification(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession

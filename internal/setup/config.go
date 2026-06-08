@@ -26,6 +26,17 @@ type CommandsSettings struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+// APISettings configures the producer task-reporting side channel. It is read
+// here so the api: block PERSISTS across the lossy SaveSettings round-trip
+// (without a typed field, LoadSettings re-marshals and silently drops it). The
+// producer package reads the SAME api.{enabled,url} keys independently via its
+// own producer.LoadConfig (it never imports setup), so the two stay in sync by
+// the shared yaml shape, not a Go dependency.
+type APISettings struct {
+	Enabled bool   `yaml:"enabled"`
+	URL     string `yaml:"url"`
+}
+
 type SupervisorSettings struct {
 	MaxCycles  int `yaml:"max_cycles"`
 	MaxWorkers int `yaml:"max_workers"`
@@ -150,6 +161,7 @@ func DeriveValidateTimeout(workerBudgetSec, maxWorkers, workerCount int) int {
 type Settings struct {
 	Hooks      HooksSettings      `yaml:"hooks"`
 	Commands   CommandsSettings   `yaml:"commands"`
+	API        APISettings        `yaml:"api"`
 	Supervisor SupervisorSettings `yaml:"supervisor"`
 	Plan       PlanSettings       `yaml:"plan"`
 	Sudo       SudoSettings       `yaml:"sudo"`
@@ -164,6 +176,13 @@ func DefaultSettings() *Settings {
 		},
 		Commands: CommandsSettings{
 			Enabled: true,
+		},
+		// Reporting is on by default for new projects, pointing at the production
+		// backend. The URL mirrors producer.defaultAPIURL; producer.LoadConfig falls
+		// back to that same value when url is empty, so the two never drift.
+		API: APISettings{
+			Enabled: true,
+			URL:     "https://tmux.vojta.ai",
 		},
 		Supervisor: SupervisorSettings{
 			MaxCycles:       0,

@@ -41,7 +41,8 @@ tasks:
 
 	// Mirror setupDispatchMocks but capture every command sent to the new
 	// supervisor window so we can assert on the exact /tmux:supervisor payload.
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(4)
+	// 5 kill lookups (killGoalWindows incl. plan-audit).
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(5)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{

@@ -2,6 +2,7 @@ package taskvisor
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +145,97 @@ func TestDashboard_Render_GoalColors(t *testing.T) {
 	assert.Contains(t, out, "\033[33m", "running goal should use yellow")
 	assert.Contains(t, out, "\033[31m", "failed goal should use red")
 	assert.Contains(t, out, "\033[2m", "pending goal should use dim")
+}
+
+func TestDashboard_Render_PriorityColumnHidden(t *testing.T) {
+	d, dir := setupDashboardDaemon(t)
+	d.mode = modeActive
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "First", Status: GoalRunning, MaxRetries: 3},
+			{ID: "goal-002", Description: "Second", Status: GoalPending, MaxRetries: 3},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	var buf bytes.Buffer
+	err := d.renderDashboard(&buf)
+	require.NoError(t, err)
+
+	out := buf.String()
+	// No Prio column when every goal is at the default priority of 0.
+	assert.NotContains(t, out, "Prio", "Prio column must be hidden when all priorities are 0")
+	// Byte-identical default header (the off-branch format string verbatim).
+	expectedHeader := fmt.Sprintf("%s%-4s  %-12s  %-30s  %-10s  %-8s  %s%s",
+		ansiDim, "#", "ID", "Description", "Status", "Retries", "Elapsed", ansiReset)
+	assert.Contains(t, out, expectedHeader, "header must match the pre-Prio format byte-for-byte")
+}
+
+func TestDashboard_Render_PriorityColumnShown(t *testing.T) {
+	d, dir := setupDashboardDaemon(t)
+	d.mode = modeActive
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "First", Status: GoalRunning, Priority: 5, MaxRetries: 3},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	var buf bytes.Buffer
+	err := d.renderDashboard(&buf)
+	require.NoError(t, err)
+
+	out := buf.String()
+	assert.Contains(t, out, "Prio", "Prio column must be shown when a goal has non-zero priority")
+	assert.Contains(t, out, "5", "the goal's priority value must be rendered")
+	// Existing columns survive.
+	assert.Contains(t, out, "Status")
+	assert.Contains(t, out, "Retries")
+	assert.Contains(t, out, "Elapsed")
+	assert.Contains(t, out, GoalRunning)
+}
+
+func TestDashboard_Render_PriorityMixedZeros(t *testing.T) {
+	d, dir := setupDashboardDaemon(t)
+	d.mode = modeActive
+	d.currentGoal = "goal-001"
+	d.runtime("goal-001").phase = phaseSupervising
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "First", Status: GoalRunning, Priority: 2, MaxRetries: 3},
+			{ID: "goal-002", Description: "Second", Status: GoalPending, Priority: 0, MaxRetries: 3},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	var buf bytes.Buffer
+	err := d.renderDashboard(&buf)
+	require.NoError(t, err)
+
+	out := buf.String()
+	assert.Contains(t, out, "Prio", "Prio column must be shown when any goal has non-zero priority")
+	// The zero-priority row renders "0" in the Prio column, not a blank.
+	lines := strings.Split(out, "\n")
+	var row2 string
+	for _, line := range lines {
+		if strings.Contains(line, "goal-002") {
+			row2 = line
+			break
+		}
+	}
+	require.NotEmpty(t, row2, "expected a rendered row for goal-002")
+	// %-4d for priority 0 yields "0" followed by padding before the 2-space sep.
+	assert.Contains(t, row2, "0", "zero-priority row must render 0 in the Prio column")
 }
 
 func TestDashboard_Render_ElapsedRunning(t *testing.T) {
