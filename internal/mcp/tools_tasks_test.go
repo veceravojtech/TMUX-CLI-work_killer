@@ -1,0 +1,228 @@
+package mcp
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/console/tmux-cli/internal/producer"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// withTaskServer stands up an httptest backend that returns respBody for any
+// request, hooks newProducerClient to a signed test client pointed at it, and
+// returns a Server. The handler records the last request path+query+method.
+func withTaskServer(t *testing.T, status int, respBody string) (*Server, *http.Request) {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	last := &http.Request{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*last = *r
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, respBody)
+	}))
+	t.Cleanup(srv.Close)
+
+	withReportHook(t, func(producer.Config) *producer.Client {
+		return producer.NewClientForTest(srv.URL, priv, srv.Client())
+	})
+	return newReportServer(t), last
+}
+
+// --- task-list ---------------------------------------------------------------
+
+func TestTaskList_HappyPath(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{
+		"tasks":[{"id":42,"status":"claimed","title":"t","category":"execute"}],
+		"total":1,"limit":50,"offset":0}`)
+
+	out, err := s.TaskList(context.Background(), TaskListInput{
+		Fingerprint: "fp", Status: "claimed", Category: "execute", Limit: 10,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, 1, out.Total)
+	require.Len(t, out.Tasks, 1)
+	assert.Equal(t, "42", out.Tasks[0].ID)
+	assert.Equal(t, "claimed", out.Tasks[0].Status)
+
+	assert.Equal(t, http.MethodGet, last.Method)
+	assert.Equal(t, "/api/v1/tasks", last.URL.Path)
+	assert.Equal(t, "fp", last.URL.Query().Get("fingerprint"))
+	assert.Equal(t, "10", last.URL.Query().Get("limit"))
+}
+
+func TestTaskList_SummaryTruncatesAndOmitsBodies(t *testing.T) {
+	// A list row must be token-bounded: the (potentially huge) body fields are
+	// not returned in full — description is capped to a preview, and
+	// proposed_fix/expected_green_state are not part of the summary at all.
+	bigDesc := strings.Repeat("x", 5000)
+	s, _ := withTaskServer(t, http.StatusOK, `{
+		"tasks":[{"id":1,"status":"new","title":"t","description":"`+bigDesc+`",
+			"proposedFix":"`+bigDesc+`","expectedGreenState":"`+bigDesc+`"}],
+		"total":1,"limit":50,"offset":0}`)
+
+	out, err := s.TaskList(context.Background(), TaskListInput{})
+	require.NoError(t, err)
+	require.Len(t, out.Tasks, 1)
+	assert.Less(t, len(out.Tasks[0].DescriptionPreview), 5000, "description must be capped to a preview")
+	assert.True(t, strings.HasSuffix(out.Tasks[0].DescriptionPreview, "…"), "truncated preview must be marked")
+
+	// Marshalling the whole page must stay small regardless of body size.
+	blob, err := json.Marshal(out)
+	require.NoError(t, err)
+	assert.Less(t, len(blob), 2000, "a single-row page must be token-bounded")
+}
+
+func TestTaskList_InvalidFiltersRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		in   TaskListInput
+		want string
+	}{
+		{"status", TaskListInput{Status: "bogus"}, "status"},
+		{"category", TaskListInput{Category: "bogus"}, "category"},
+		{"severity", TaskListInput{Severity: "bogus"}, "severity"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withReportHook(t, failIfCalled(t)) // must reject before building a client
+			s := newReportServer(t)
+			out, err := s.TaskList(context.Background(), tc.in)
+			assert.Nil(t, out)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// --- task-get ----------------------------------------------------------------
+
+func TestTaskGet_MissingIDRejected(t *testing.T) {
+	withReportHook(t, failIfCalled(t))
+	s := newReportServer(t)
+	out, err := s.TaskGet(context.Background(), TaskGetInput{ID: "  "})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "id")
+}
+
+func TestTaskGet_HappyPath(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"claimed","title":"t",
+		"events":[{"id":1,"action":"created","actor":"fp","createdAt":"x"}]}`)
+
+	out, err := s.TaskGet(context.Background(), TaskGetInput{ID: "42"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "42", out.Task.ID)
+	require.Len(t, out.Events, 1)
+	assert.Equal(t, "created", out.Events[0].Action)
+	assert.Equal(t, "/api/v1/tasks/42", last.URL.Path)
+}
+
+func TestTaskGet_NotFound(t *testing.T) {
+	s, _ := withTaskServer(t, http.StatusNotFound, `{"error":"not_found"}`)
+	out, err := s.TaskGet(context.Background(), TaskGetInput{ID: "999"})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, producer.ErrTaskNotFound)
+}
+
+// --- task-claim --------------------------------------------------------------
+
+func TestTaskClaim_Claimed(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":7,"status":"claimed","category":"execute"}`)
+	out, err := s.TaskClaim(context.Background(), TaskClaimInput{Category: "execute"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.True(t, out.Claimed)
+	require.NotNil(t, out.Task)
+	assert.Equal(t, "7", out.Task.ID)
+	assert.Equal(t, "/api/v1/tasks/claim", last.URL.Path)
+	assert.Equal(t, "execute", last.URL.Query().Get("category"))
+}
+
+func TestTaskClaim_NothingClaimable(t *testing.T) {
+	s, _ := withTaskServer(t, http.StatusNoContent, ``)
+	out, err := s.TaskClaim(context.Background(), TaskClaimInput{})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.False(t, out.Claimed)
+	assert.Nil(t, out.Task)
+}
+
+func TestTaskClaim_InvalidFilterRejected(t *testing.T) {
+	withReportHook(t, failIfCalled(t))
+	s := newReportServer(t)
+	out, err := s.TaskClaim(context.Background(), TaskClaimInput{Severity: "nope"})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "severity")
+}
+
+// --- task-update-status ------------------------------------------------------
+
+func TestTaskUpdateStatus_HappyPath(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"resolved"}`)
+	out, err := s.TaskUpdateStatus(context.Background(), TaskUpdateStatusInput{
+		ID: "42", Status: "resolved", Resolution: map[string]any{"summary": "done"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "resolved", out.Task.Status)
+	assert.Equal(t, http.MethodPatch, last.Method)
+	assert.Equal(t, "/api/v1/tasks/42/status", last.URL.Path)
+}
+
+func TestTaskUpdateStatus_Rejections(t *testing.T) {
+	cases := []struct {
+		name string
+		in   TaskUpdateStatusInput
+		want string
+	}{
+		{"missing id", TaskUpdateStatusInput{Status: "resolved"}, "id"},
+		{"missing status", TaskUpdateStatusInput{ID: "42"}, "status"},
+		{"non-worker status", TaskUpdateStatusInput{ID: "42", Status: "claimed"}, "status"},
+		{"bogus status", TaskUpdateStatusInput{ID: "42", Status: "frobnicate"}, "status"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withReportHook(t, failIfCalled(t))
+			s := newReportServer(t)
+			out, err := s.TaskUpdateStatus(context.Background(), tc.in)
+			assert.Nil(t, out)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestTaskUpdateStatus_InvalidTransitionSurfaced(t *testing.T) {
+	s, _ := withTaskServer(t, http.StatusUnprocessableEntity, `{"error":"invalid_transition"}`)
+	out, err := s.TaskUpdateStatus(context.Background(), TaskUpdateStatusInput{ID: "42", Status: "resolved"})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, producer.ErrInvalidTransition)
+}
+
+// --- disabled reporting ------------------------------------------------------
+
+func TestTaskQuery_DisabledClient(t *testing.T) {
+	withReportHook(t, func(producer.Config) *producer.Client { return nil })
+	s := newReportServer(t)
+
+	_, err := s.TaskList(context.Background(), TaskListInput{})
+	assert.ErrorContains(t, err, "disabled")
+
+	_, err = s.TaskClaim(context.Background(), TaskClaimInput{})
+	assert.ErrorContains(t, err, "disabled")
+}

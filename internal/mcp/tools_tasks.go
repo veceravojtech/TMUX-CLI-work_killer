@@ -1,0 +1,394 @@
+package mcp
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/console/tmux-cli/internal/producer"
+)
+
+// This file adds the task *query* tools (task-list, task-get, task-claim,
+// task-update-status) that complement the write-only task-report tool. They let
+// an agent track tasks it reported, claim assigned work, and advance a claimed
+// task's lifecycle. All four build a producer client the same way task-report
+// does (LoadConfig + newProducerClient seam) and share taskClient below.
+
+// TaskView is the agent-facing projection of producer.Task. IDs are rendered as
+// strings (the backend emits numbers); empty fields are omitted.
+type TaskView struct {
+	ID                 string `json:"id" jsonschema:"Backend task id"`
+	Fingerprint        string `json:"fingerprint,omitempty" jsonschema:"Fingerprint of the machine that reported the task"`
+	InstanceID         string `json:"instance_id,omitempty"`
+	InstanceName       string `json:"instance_name,omitempty"`
+	Category           string `json:"category,omitempty"`
+	Severity           string `json:"severity,omitempty"`
+	Status             string `json:"status" jsonschema:"Lifecycle status (new, claimed, in_progress, resolved, failed, denied, archived)"`
+	Title              string `json:"title,omitempty"`
+	Description        string `json:"description,omitempty"`
+	ProposedFix        string `json:"proposed_fix,omitempty"`
+	ExpectedGreenState string `json:"expected_green_state,omitempty"`
+	ClaimedBy          string `json:"claimed_by,omitempty" jsonschema:"Fingerprint of the machine that claimed the task"`
+	ClaimedAt          string `json:"claimed_at,omitempty"`
+	CreatedAt          string `json:"created_at,omitempty"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
+}
+
+// descriptionPreviewLen caps the description excerpt returned in a list row so a
+// page stays token-bounded no matter how large the underlying task bodies are
+// (descriptions/fixes are TEXT and can be hundreds of KB). The full text is
+// always available via task-get.
+const descriptionPreviewLen = 280
+
+// preview returns s capped to descriptionPreviewLen runes, marking truncation
+// with an ellipsis. Rune-based so it never splits a multibyte character.
+func preview(s string) string {
+	r := []rune(s)
+	if len(r) <= descriptionPreviewLen {
+		return s
+	}
+	return string(r[:descriptionPreviewLen]) + "…"
+}
+
+// TaskSummary is the token-bounded list-row projection of a task: identity,
+// status, and a capped description preview — but NOT the full body fields
+// (description/proposed_fix/expected_green_state), which are returned in full
+// only by task-get. This keeps a list/search page small regardless of how large
+// individual task bodies are.
+type TaskSummary struct {
+	ID                 string `json:"id"`
+	Status             string `json:"status"`
+	Category           string `json:"category,omitempty"`
+	Severity           string `json:"severity,omitempty"`
+	Title              string `json:"title,omitempty"`
+	Fingerprint        string `json:"fingerprint,omitempty" jsonschema:"Fingerprint of the machine that reported the task"`
+	ClaimedBy          string `json:"claimed_by,omitempty" jsonschema:"Fingerprint of the machine that claimed the task"`
+	InstanceName       string `json:"instance_name,omitempty"`
+	CreatedAt          string `json:"created_at,omitempty"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
+	DescriptionPreview string `json:"description_preview,omitempty" jsonschema:"Capped excerpt of the description; fetch the full task with task-get"`
+}
+
+func toTaskSummary(t producer.Task) TaskSummary {
+	return TaskSummary{
+		ID:                 t.ID.String(),
+		Status:             t.Status,
+		Category:           t.Category,
+		Severity:           t.Severity,
+		Title:              t.Title,
+		Fingerprint:        t.Fingerprint,
+		ClaimedBy:          t.ClaimedBy,
+		InstanceName:       t.InstanceName,
+		CreatedAt:          t.CreatedAt,
+		UpdatedAt:          t.UpdatedAt,
+		DescriptionPreview: preview(t.Description),
+	}
+}
+
+func toTaskView(t producer.Task) TaskView {
+	return TaskView{
+		ID:                 t.ID.String(),
+		Fingerprint:        t.Fingerprint,
+		InstanceID:         t.InstanceID.String(),
+		InstanceName:       t.InstanceName,
+		Category:           t.Category,
+		Severity:           t.Severity,
+		Status:             t.Status,
+		Title:              t.Title,
+		Description:        t.Description,
+		ProposedFix:        t.ProposedFix,
+		ExpectedGreenState: t.ExpectedGreenState,
+		ClaimedBy:          t.ClaimedBy,
+		ClaimedAt:          t.ClaimedAt,
+		CreatedAt:          t.CreatedAt,
+		UpdatedAt:          t.UpdatedAt,
+	}
+}
+
+// taskClient builds the producer client shared by the query tools. A nil client
+// means reporting is disabled in .tmux-cli/setting.yaml — surfaced as an error so
+// the agent gets a clear, actionable message instead of a silent no-op.
+func (s *Server) taskClient() (*producer.Client, error) {
+	cfg, err := producer.LoadConfig(s.workingDir)
+	if err != nil {
+		return nil, err
+	}
+	client := newProducerClient(cfg)
+	if client == nil {
+		return nil, fmt.Errorf("%w: task reporting is disabled (enable api in .tmux-cli/setting.yaml)", ErrInvalidInput)
+	}
+	return client, nil
+}
+
+// rejectIfNotIn rejects value when it is non-empty and not a member of set,
+// naming the field and listing the allowed values. An empty value is accepted
+// (the caller decides whether the field is required separately).
+func rejectIfNotIn(field, value string, set map[string]bool) error {
+	if value == "" {
+		return nil
+	}
+	if !set[value] {
+		return fmt.Errorf("%w: invalid %s %q; allowed: %s", ErrInvalidInput, field, value, sortedKeys(set))
+	}
+	return nil
+}
+
+// ----------------------------------------------------------------------------
+// task-list
+// ----------------------------------------------------------------------------
+
+// TaskListInput defines the input schema for the task-list tool. All filters are
+// optional and AND-combined.
+type TaskListInput struct {
+	Fingerprint string `json:"fingerprint,omitempty" jsonschema:"Tasks reported by this machine fingerprint"`
+	ClaimedBy   string `json:"claimed_by,omitempty" jsonschema:"Tasks claimed by (assigned to) this machine fingerprint"`
+	Status      string `json:"status,omitempty" jsonschema:"Filter by status: new, claimed, in_progress, resolved, failed, denied, archived"`
+	Category    string `json:"category,omitempty" jsonschema:"Filter by category: plan, supervisor, validator, execute, general"`
+	Severity    string `json:"severity,omitempty" jsonschema:"Filter by severity: critical, warning, info"`
+	Since       string `json:"since,omitempty" jsonschema:"ISO-8601 datetime; only tasks created at or after this time"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"Page size, clamped to 1..200 (default 50)"`
+	Offset      int    `json:"offset,omitempty" jsonschema:"Rows to skip (default 0)"`
+}
+
+// TaskListOutput is one page of results plus the full filtered total. Rows are
+// TaskSummary (bounded); use task-get for a row's full body and event history.
+type TaskListOutput struct {
+	Tasks  []TaskSummary `json:"tasks"`
+	Total  int           `json:"total" jsonschema:"Total tasks matching the filters, ignoring pagination"`
+	Limit  int           `json:"limit"`
+	Offset int           `json:"offset"`
+}
+
+// TaskList queries the backend for a filtered, paginated page of tasks.
+func (s *Server) TaskList(ctx context.Context, in TaskListInput) (*TaskListOutput, error) {
+	if err := rejectIfNotIn("status", in.Status, producer.ValidStatuses); err != nil {
+		return nil, err
+	}
+	if err := rejectIfNotIn("category", in.Category, producer.ValidCategories); err != nil {
+		return nil, err
+	}
+	if err := rejectIfNotIn("severity", in.Severity, producer.ValidSeverities); err != nil {
+		return nil, err
+	}
+
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+
+	list, err := client.ListTasks(ctx, producer.ListTasksParams{
+		Fingerprint: in.Fingerprint,
+		ClaimedBy:   in.ClaimedBy,
+		Status:      in.Status,
+		Category:    in.Category,
+		Severity:    in.Severity,
+		Since:       in.Since,
+		Limit:       in.Limit,
+		Offset:      in.Offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := &TaskListOutput{Total: list.Total, Limit: list.Limit, Offset: list.Offset}
+	out.Tasks = make([]TaskSummary, 0, len(list.Tasks))
+	for _, t := range list.Tasks {
+		out.Tasks = append(out.Tasks, toTaskSummary(t))
+	}
+	return out, nil
+}
+
+// TaskListHandler is the MCP tool handler for task-list.
+func (s *Server) TaskListHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskListInput) (
+	*sdkmcp.CallToolResult, TaskListOutput, error,
+) {
+	output, err := s.TaskList(ctx, input)
+	if err != nil {
+		return nil, TaskListOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// ----------------------------------------------------------------------------
+// task-get
+// ----------------------------------------------------------------------------
+
+// TaskGetInput defines the input schema for the task-get tool.
+type TaskGetInput struct {
+	ID string `json:"id" jsonschema:"Backend task id to fetch; required"`
+}
+
+// TaskEventView is an agent-facing projection of one task history event.
+type TaskEventView struct {
+	ID        string         `json:"id"`
+	Action    string         `json:"action"`
+	Actor     string         `json:"actor,omitempty"`
+	OldValue  map[string]any `json:"old_value,omitempty"`
+	NewValue  map[string]any `json:"new_value,omitempty"`
+	CreatedAt string         `json:"created_at,omitempty"`
+}
+
+// TaskGetOutput is a single task plus its event history.
+type TaskGetOutput struct {
+	Task   TaskView        `json:"task"`
+	Events []TaskEventView `json:"events"`
+}
+
+// TaskGet fetches one task and its event history.
+func (s *Server) TaskGet(ctx context.Context, in TaskGetInput) (*TaskGetOutput, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, fmt.Errorf("%w: missing required field: id", ErrInvalidInput)
+	}
+
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+
+	detail, err := client.GetTask(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &TaskGetOutput{Task: toTaskView(detail.Task)}
+	out.Events = make([]TaskEventView, 0, len(detail.Events))
+	for _, e := range detail.Events {
+		out.Events = append(out.Events, TaskEventView{
+			ID:        e.ID.String(),
+			Action:    e.Action,
+			Actor:     e.Actor,
+			OldValue:  e.OldValue,
+			NewValue:  e.NewValue,
+			CreatedAt: e.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+// TaskGetHandler is the MCP tool handler for task-get.
+func (s *Server) TaskGetHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskGetInput) (
+	*sdkmcp.CallToolResult, TaskGetOutput, error,
+) {
+	output, err := s.TaskGet(ctx, input)
+	if err != nil {
+		return nil, TaskGetOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// ----------------------------------------------------------------------------
+// task-claim
+// ----------------------------------------------------------------------------
+
+// TaskClaimInput defines the input schema for the task-claim tool. Both filters
+// are optional and narrow the pool of claimable tasks.
+type TaskClaimInput struct {
+	Category string `json:"category,omitempty" jsonschema:"Only claim tasks of this category: plan, supervisor, validator, execute, general"`
+	Severity string `json:"severity,omitempty" jsonschema:"Only claim tasks of this severity: critical, warning, info"`
+}
+
+// TaskClaimOutput reports whether a task was claimed and, if so, the task. When
+// nothing was claimable Claimed is false and Task is nil — that is not an error.
+type TaskClaimOutput struct {
+	Claimed bool      `json:"claimed" jsonschema:"True if a task was claimed; false when nothing matched"`
+	Task    *TaskView `json:"task,omitempty"`
+}
+
+// TaskClaim atomically claims the next highest-priority new task.
+func (s *Server) TaskClaim(ctx context.Context, in TaskClaimInput) (*TaskClaimOutput, error) {
+	if err := rejectIfNotIn("category", in.Category, producer.ValidCategories); err != nil {
+		return nil, err
+	}
+	if err := rejectIfNotIn("severity", in.Severity, producer.ValidSeverities); err != nil {
+		return nil, err
+	}
+
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+
+	task, err := client.ClaimTask(ctx, producer.ClaimParams{Category: in.Category, Severity: in.Severity})
+	if err != nil {
+		return nil, err
+	}
+	if task == nil {
+		return &TaskClaimOutput{Claimed: false}, nil
+	}
+	view := toTaskView(*task)
+	return &TaskClaimOutput{Claimed: true, Task: &view}, nil
+}
+
+// TaskClaimHandler is the MCP tool handler for task-claim.
+func (s *Server) TaskClaimHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskClaimInput) (
+	*sdkmcp.CallToolResult, TaskClaimOutput, error,
+) {
+	output, err := s.TaskClaim(ctx, input)
+	if err != nil {
+		return nil, TaskClaimOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// ----------------------------------------------------------------------------
+// task-update-status
+// ----------------------------------------------------------------------------
+
+// TaskUpdateStatusInput defines the input schema for the task-update-status tool.
+type TaskUpdateStatusInput struct {
+	ID         string         `json:"id" jsonschema:"Backend task id to advance; required"`
+	Status     string         `json:"status" jsonschema:"Target status; required; one of in_progress, resolved, failed"`
+	Resolution map[string]any `json:"resolution,omitempty" jsonschema:"Optional structured resolution recorded when transitioning to resolved"`
+}
+
+// TaskUpdateStatusOutput is the updated task.
+type TaskUpdateStatusOutput struct {
+	Task TaskView `json:"task"`
+}
+
+// TaskUpdateStatus advances a claimed task's status. Only the worker that claimed
+// the task may advance it (the backend enforces this and returns ErrForbidden).
+func (s *Server) TaskUpdateStatus(ctx context.Context, in TaskUpdateStatusInput) (*TaskUpdateStatusOutput, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, fmt.Errorf("%w: missing required field: id", ErrInvalidInput)
+	}
+	if strings.TrimSpace(in.Status) == "" {
+		return nil, fmt.Errorf("%w: missing required field: status", ErrInvalidInput)
+	}
+	if !producer.ValidWorkerStatusTargets[in.Status] {
+		return nil, fmt.Errorf("%w: invalid status %q; allowed: %s", ErrInvalidInput, in.Status, sortedKeys(producer.ValidWorkerStatusTargets))
+	}
+
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+
+	task, err := client.UpdateTaskStatus(ctx, id, producer.UpdateStatusParams{
+		Status:     in.Status,
+		Resolution: in.Resolution,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &TaskUpdateStatusOutput{Task: toTaskView(*task)}, nil
+}
+
+// TaskUpdateStatusHandler is the MCP tool handler for task-update-status.
+func (s *Server) TaskUpdateStatusHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskUpdateStatusInput) (
+	*sdkmcp.CallToolResult, TaskUpdateStatusOutput, error,
+) {
+	output, err := s.TaskUpdateStatus(ctx, input)
+	if err != nil {
+		return nil, TaskUpdateStatusOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}

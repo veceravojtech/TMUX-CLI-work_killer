@@ -22,3 +22,28 @@ var ValidSeverities = map[string]bool{
 	"warning":  true,
 	"info":     true,
 }
+
+// ValidStatuses is the single source of truth for the closed set of backend task
+// statuses (the lifecycle plus the administrative terminal states). It is used to
+// validate the optional status filter on the task-list/query tools. Advancing a
+// task's status is narrower — see ValidWorkerStatusTargets.
+var ValidStatuses = map[string]bool{
+	"new":         true,
+	"claimed":     true,
+	"in_progress": true,
+	"resolved":    true,
+	"failed":      true,
+	"denied":      true,
+	"archived":    true,
+}
+
+// ValidWorkerStatusTargets is the set of statuses a claiming worker may set via
+// PATCH /api/v1/tasks/{id}/status. "claimed" is reached only through the claim
+// endpoint; "new"/"denied"/"archived" are not worker-settable. The backend still
+// enforces the from->to transition (and returns ErrInvalidTransition); this set
+// only gives the agent a fast, clear rejection for an obviously wrong target.
+var ValidWorkerStatusTargets = map[string]bool{
+	"in_progress": true,
+	"resolved":    true,
+	"failed":      true,
+}

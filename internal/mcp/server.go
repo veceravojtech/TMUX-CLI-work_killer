@@ -821,5 +821,41 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 		},
 	}, s.TaskReportHandler)
 
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-list",
+		Description: "List/search backend tasks with optional AND-combined filters: fingerprint (tasks I reported), claimed_by (tasks assigned to me), status, category, severity, since (ISO-8601), limit (1..200, default 50), offset. Returns a page of tasks plus the full filtered total. Read-only.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, s.TaskListHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-get",
+		Description: "Fetch one backend task by id, including its full event history (created, claimed, status_changed). Errors if the id does not exist. Read-only.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, s.TaskGetHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-claim",
+		Description: "Atomically claim the next highest-priority unclaimed task (critical > warning > info, then oldest first), optionally narrowed by category and/or severity. Stamps the task with this machine's fingerprint. Returns {claimed:true, task} or {claimed:false} when nothing matched. Not idempotent — each call may claim a different task.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.TaskClaimHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-update-status",
+		Description: "Advance a claimed task's status. status must be one of in_progress, resolved, failed (claimed is reached only via task-claim). Optional resolution object is recorded when transitioning to resolved. Only the machine that claimed the task may advance it. Allowed transitions: claimed->in_progress|resolved|failed, in_progress->resolved|failed.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.TaskUpdateStatusHandler)
+
 	return nil
 }
