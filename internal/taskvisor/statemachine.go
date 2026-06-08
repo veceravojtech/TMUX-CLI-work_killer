@@ -6,8 +6,10 @@ import (
 	"hash/fnv"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/console/tmux-cli/internal/setup"
@@ -109,7 +111,7 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 	// halt never interrupts a running goal's already-observed signal. The math
 	// routes through the P2 clock seam (d.now()) so it is injectable in tests;
 	// time.Now() here would defeat that. Zero maxWallClock ⇒ disabled (no-op).
-	if d.maxWallClock > 0 {
+	if d.maxWallClock > 0 && !d.activatedAt.IsZero() {
 		if elapsed := d.now().Sub(d.activatedAt); elapsed >= d.maxWallClock {
 			return d.haltWallClock(goals, elapsed)
 		}
@@ -271,10 +273,18 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 			if err != nil {
 				return err
 			}
+			supName := supervisorWindow(goal.ID, mg)
+			found := false
 			for _, w := range windows {
-				if w.Name == supervisorWindow(goal.ID, mg) && w.CurrentCommand == "zsh" {
-					return d.handleFailedCycle(goal, goals, "Crash detected — supervisor returned to shell.", "code-defect")
+				if w.Name == supName {
+					found = true
+					if w.CurrentCommand == "zsh" {
+						return d.handleFailedCycle(goal, goals, "Crash detected — supervisor returned to shell.", "code-defect")
+					}
 				}
+			}
+			if !found {
+				return d.handleFailedCycle(goal, goals, "Crash detected — supervisor window vanished.", "code-defect")
 			}
 		}
 		return nil
@@ -302,21 +312,7 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	if err != nil {
 		return fmt.Errorf("validate script: %w", err)
 	}
-	if passed {
-		if err := SaveValidatorSignal(d.workDir, goal.ID, &ValidatorSignal{
-			Verdict:   "pass",
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		}); err != nil {
-			return err
-		}
-		goal.Status = GoalDone
-		goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-		log.Printf("%s: running -> done (%s)", goal.ID, goalDuration(goal))
-		if err := SaveGoals(d.workDir, goals); err != nil {
-			return err
-		}
-		return d.advanceToNextGoal(goals, goal.ID, true)
-	}
+	rt.scriptPassed = passed
 	if stderr != "" && !d.hasValidateMd(goal.ID) {
 		return d.handleFailedCycle(goal, goals, stderr, "code-defect")
 	}
@@ -402,13 +398,12 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 
 	// P7 deterministic terminal-pass gate: a goal that DECLARES validate steps
 	// cannot terminally pass on the LLM validator's judgment alone — the only
-	// independent anchor is validate.sh, which is provably NOT passed here (the
-	// supervising phase short-circuits to a terminal pass at :264 when the script
-	// passes, so control reaches this seam only when it did not). A `pass` is
-	// downgraded to error/ops and reuses the existing error switch arm
-	// (rerunValidationOnly, charges ValidationRetries). No-validate goals and all
-	// non-pass verdicts pass through unchanged.
-	verdict, owner = GateTerminalPass(verdict, owner, PassGate{RequireValidate: len(goal.Validate) > 0, ScriptPassed: false})
+	// independent anchor is validate.sh. ScriptPassed carries the real validate.sh
+	// result from checkSupervisingPhase (threaded via goalRuntime.scriptPassed).
+	// When ScriptPassed=true, the gate permits the terminal pass; when false, a
+	// `pass` is downgraded to error/ops (rerunValidationOnly, charges
+	// ValidationRetries). No-validate goals and non-pass verdicts pass through.
+	verdict, owner = GateTerminalPass(verdict, owner, PassGate{RequireValidate: len(goal.Validate) > 0, ScriptPassed: rt.scriptPassed})
 
 	// An unsubstantiated spec-defect (blocked/planner with no concretely-cited
 	// contradiction) is a validator failure, not a planner failure — re-validate
@@ -1150,6 +1145,9 @@ func (d *Daemon) checkStaleBinary(goals *GoalsFile) error {
 	}
 
 	d.staleBanner = fmt.Sprintf("BINARY STALE — restart taskvisor to apply (%s)", detail)
+	if d.restartOnStaleBinary {
+		return d.restartStaleBinary(goals, detail)
+	}
 	if d.haltOnStaleBinary {
 		return d.haltStaleBinary(goals, detail)
 	}
@@ -1160,6 +1158,60 @@ func (d *Daemon) haltStaleBinary(goals *GoalsFile, detail string) error {
 	log.Printf("ALARM: binary stale (%s) — halting daemon (HaltOnStaleBinary=true)", detail)
 	d.haltReason = fmt.Sprintf("HALTED: binary replaced — restart taskvisor (%s)", detail)
 	return d.deactivate()
+}
+
+func (d *Daemon) backupGoalsBeforeRestart() {
+	src := GoalsFilePath(d.workDir)
+	if _, err := os.Stat(src); err != nil {
+		return
+	}
+	backupDir := filepath.Join(d.workDir, ".tmux-cli", "backups")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		log.Printf("exec-replace backup: mkdir failed: %v", err)
+		return
+	}
+	dst := filepath.Join(backupDir, fmt.Sprintf("goals-%s.yaml", time.Now().Format("20060102-150405")))
+	data, err := os.ReadFile(src)
+	if err != nil {
+		log.Printf("exec-replace backup: read failed: %v", err)
+		return
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		log.Printf("exec-replace backup: write failed: %v", err)
+		return
+	}
+	log.Printf("exec-replace: backed up goals.yaml to %s", dst)
+}
+
+func (d *Daemon) restartStaleBinary(goals *GoalsFile, detail string) error {
+	if d.restartAttempted {
+		return nil
+	}
+	d.restartAttempted = true
+	log.Printf("ALARM: binary stale (%s) — exec-replacing (RestartOnStaleBinary=true)", detail)
+
+	d.backupGoalsBeforeRestart()
+	restartMarker := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-restart")
+	_ = os.WriteFile(restartMarker, nil, 0o644)
+	signal.Stop(d.signalCh)
+
+	resolved, err := os.Executable()
+	if err != nil {
+		log.Printf("exec-replace: os.Executable failed: %v — skipping restart", err)
+		signal.Notify(d.signalCh, syscall.SIGTERM, syscall.SIGINT)
+		return nil
+	}
+	resolved, err = filepath.EvalSymlinks(resolved)
+	if err != nil {
+		log.Printf("exec-replace: EvalSymlinks failed: %v — using unresolved path", err)
+	}
+
+	if err := d.execReplaceFn(resolved, os.Args, os.Environ()); err != nil {
+		signal.Notify(d.signalCh, syscall.SIGTERM, syscall.SIGINT)
+		log.Printf("exec-replace: exec failed: %v — continuing poll loop", err)
+		return nil
+	}
+	return nil
 }
 
 func (d *Daemon) haltWallClock(goals *GoalsFile, elapsed time.Duration) error {

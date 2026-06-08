@@ -754,15 +754,15 @@ func TestResolveResearchRoot_TwoCallersIsolated(t *testing.T) {
 // --- R1: reconciliation with the daemon's actual namespaced window names ---
 
 // The taskvisor daemon (window_names.go) emits supervisor-<ns> / validator-<ns> /
-// execute-<ns>-<n> / inv-<ns>-<n> at MaxGoals>1, where <ns> is the goal id with
+// execute-<ns>-<n> / investigator-<ns>-<n> at MaxGoals>1, where <ns> is the goal id with
 // its "goal-" prefix stripped. parseGoalBinding must recover goal-<ns> from each.
 func TestParseGoalBinding_DaemonNamespacedForms(t *testing.T) {
 	cases := map[string]string{
-		"supervisor-020": "goal-020",
-		"validator-020":  "goal-020",
-		"execute-020-1":  "goal-020",
-		"execute-020-12": "goal-020",
-		"inv-021-3":      "goal-021",
+		"supervisor-020":     "goal-020",
+		"validator-020":      "goal-020",
+		"execute-020-1":      "goal-020",
+		"execute-020-12":     "goal-020",
+		"investigator-021-3": "goal-021",
 	}
 	for win, wantID := range cases {
 		t.Run(win, func(t *testing.T) {
@@ -777,7 +777,7 @@ func TestParseGoalBinding_DaemonNamespacedForms(t *testing.T) {
 // The MaxGoals<=1 bare window names must NOT bind a goal — they fall back to the
 // global marker so single-goal routing stays byte-identical.
 func TestParseGoalBinding_BareNamesDoNotBind(t *testing.T) {
-	for _, win := range []string{"supervisor", "validator", "execute-1", "inv-2", "execute-12"} {
+	for _, win := range []string{"supervisor", "validator", "execute-1", "investigator-2", "execute-12"} {
 		t.Run(win, func(t *testing.T) {
 			id, cycle, ok := parseGoalBinding(win)
 			assert.False(t, ok, "bare MaxGoals<=1 name %q must not bind a goal", win)
@@ -1283,7 +1283,7 @@ func TestWindowsSpawnWorker_WorkingDirectory_ThreadsToCreateWindow(t *testing.T)
 		{TmuxWindowID: "@0", Name: "validator"},
 	}, nil)
 	// The cwd must arrive via CreateWindowInDir, NOT the session-default CreateWindow.
-	mockExec.On("CreateWindowInDir", "test-session", "inv-1", "", wt).Return("@1", nil)
+	mockExec.On("CreateWindowInDir", "test-session", "investigator-1", "", wt).Return("@1", nil)
 	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
@@ -1294,12 +1294,12 @@ func TestWindowsSpawnWorker_WorkingDirectory_ThreadsToCreateWindow(t *testing.T)
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, name, _, err := server.WindowsSpawnWorker("validator", "Investigate: tests", "goal.md", "run tests", "", "", "inv-", wt)
+	_, name, _, err := server.WindowsSpawnWorker("validator", "Investigate: tests", "goal.md", "run tests", "", "", "investigator-", wt)
 
 	require.NoError(t, err)
-	assert.Equal(t, "inv-1", name)
+	assert.Equal(t, "investigator-1", name)
 	mockExec.AssertExpectations(t)
-	mockExec.AssertNotCalled(t, "CreateWindow", "test-session", "inv-1", "")
+	mockExec.AssertNotCalled(t, "CreateWindow", "test-session", "investigator-1", "")
 }
 
 // TestWindowsSpawnWorker_EmptyWorkingDirectory_UsesSessionDefault verifies that an

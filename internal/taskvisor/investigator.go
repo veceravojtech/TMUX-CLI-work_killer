@@ -111,7 +111,11 @@ var investigatorTypePriority = map[string]int{
 // files at projectRoot (RC-B: a hardcoded `go build ./...` pad manufactured a
 // guaranteed failure in non-Go projects) — and capped at 4, preferring
 // higher-signal types. The two pad entries are always DISTINCT.
-func deriveInvestigators(projectRoot string, validate []string) []Investigator {
+//
+// When scope is non-nil and validate-rule-derived investigators number fewer
+// than 2, scope-based investigators are derived by file extension (Go→test+build,
+// shell→bash -n, XML→go build) and appended before generic padding fires.
+func deriveInvestigators(projectRoot string, validate []string, scope []string) []Investigator {
 	var list []Investigator
 	for _, rule := range validate {
 		rule = strings.TrimSpace(rule)
@@ -132,6 +136,15 @@ func deriveInvestigators(projectRoot string, validate []string) []Investigator {
 		list = append(list, inv)
 	}
 
+	if len(list) < 2 && len(scope) > 0 {
+		profile := classifyScope(scope)
+		for _, inv := range scopeDerivedInvestigators(projectRoot, profile) {
+			if !hasInvestigatorType(list, inv.Type) {
+				list = append(list, inv)
+			}
+		}
+	}
+
 	// Pad to the >=2 guarantee. First pad: stack-aware sanity check. Second pad
 	// (validate was empty): a DIFFERENT repo-hygiene check — never two identical
 	// entries, which would double a failure and waste a validation budget slot.
@@ -143,6 +156,140 @@ func deriveInvestigators(projectRoot string, validate []string) []Investigator {
 	}
 
 	return capInvestigators(list)
+}
+
+type scopeProfile struct {
+	Go      []string
+	Shell   []string
+	XML     []string
+	Unknown []string
+}
+
+func classifyScope(scope []string) scopeProfile {
+	var p scopeProfile
+	for _, entry := range scope {
+		ext := strings.ToLower(filepath.Ext(entry))
+		switch ext {
+		case ".go":
+			p.Go = append(p.Go, entry)
+		case ".sh", ".bash":
+			p.Shell = append(p.Shell, entry)
+		case ".xml":
+			p.XML = append(p.XML, entry)
+		default:
+			p.Unknown = append(p.Unknown, entry)
+		}
+	}
+	return p
+}
+
+func (p scopeProfile) isComplex() bool {
+	typeCount := 0
+	if len(p.Go) > 0 {
+		typeCount++
+	}
+	if len(p.Shell) > 0 {
+		typeCount++
+	}
+	if len(p.XML) > 0 {
+		typeCount++
+	}
+	totalFiles := len(p.Go) + len(p.Shell) + len(p.XML)
+	return typeCount > 1 || totalFiles > 3
+}
+
+func scopeDerivedInvestigators(projectRoot string, profile scopeProfile) []Investigator {
+	var list []Investigator
+	list = append(list, goInvestigators(projectRoot, profile)...)
+	list = append(list, shellInvestigators(profile)...)
+	list = append(list, xmlInvestigators(profile)...)
+	return list
+}
+
+func goInvestigators(projectRoot string, profile scopeProfile) []Investigator {
+	if len(profile.Go) == 0 {
+		return nil
+	}
+	var list []Investigator
+	testPath := goTestPaths(profile.Go)
+	list = append(list, Investigator{
+		Name:     "Test execution",
+		Type:     "test-execution",
+		Commands: []string{"go test " + testPath},
+		Pass:     "all green (exit 0)",
+		Fail:     "command fails / violation reported",
+	})
+	list = append(list, Investigator{
+		Name:     "Quality gate",
+		Type:     "quality-gate",
+		Commands: []string{"go build ./..."},
+		Pass:     "exit 0, no errors",
+		Fail:     "command fails / violation reported",
+	})
+	if goScopeComplex(profile.Go) {
+		list = append(list, Investigator{
+			Name:     "Static analysis",
+			Type:     "static-analysis",
+			Commands: []string{"go vet ./..."},
+			Pass:     "exit 0, no errors",
+			Fail:     "command fails / violation reported",
+		})
+	}
+	return list
+}
+
+func goScopeComplex(goPaths []string) bool {
+	if len(goPaths) > 3 {
+		return true
+	}
+	dirs := make(map[string]bool)
+	for _, p := range goPaths {
+		dirs[filepath.Dir(p)] = true
+	}
+	return len(dirs) > 1
+}
+
+func shellInvestigators(profile scopeProfile) []Investigator {
+	if len(profile.Shell) == 0 {
+		return nil
+	}
+	target := profile.Shell[0]
+	return []Investigator{{
+		Name:     "Static analysis",
+		Type:     "static-analysis",
+		Commands: []string{"bash -n " + target},
+		Pass:     "command succeeds",
+		Fail:     "command fails / violation reported",
+	}}
+}
+
+func xmlInvestigators(profile scopeProfile) []Investigator {
+	if len(profile.XML) == 0 {
+		return nil
+	}
+	if len(profile.Go) > 0 {
+		return nil
+	}
+	return []Investigator{{
+		Name:     "Quality gate",
+		Type:     "quality-gate",
+		Commands: []string{"go build ./..."},
+		Pass:     "exit 0, no errors",
+		Fail:     "command fails / violation reported",
+	}}
+}
+
+func goTestPaths(goPaths []string) string {
+	dirs := make(map[string]bool)
+	for _, p := range goPaths {
+		dirs[filepath.Dir(p)] = true
+	}
+	if len(dirs) == 1 {
+		for d := range dirs {
+			return "./" + filepath.ToSlash(d) + "/..."
+		}
+	}
+	return "./..."
 }
 
 // projectSanityInvestigator returns the stack-aware pad entry. Detection is by

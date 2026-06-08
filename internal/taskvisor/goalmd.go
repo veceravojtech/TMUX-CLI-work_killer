@@ -55,7 +55,7 @@ func WriteGoalMD(goalDir, description, phase string, acceptance, validate []stri
 	if len(list) == 0 {
 		// WriteGoalMD's signature is fixed (no fsRoot param) — recover the
 		// project root from the canonical goalDir shape, same as the B2b gate.
-		list = deriveInvestigators(ownSuiteFSRoot(goalDir), validate)
+		list = deriveInvestigators(ownSuiteFSRoot(goalDir), validate, nil)
 		// Event goals get an extra, non-skippable emission investigator that
 		// asserts the PRODUCER actually constructs/dispatches the event (catches
 		// dead choreography). Only when the planner supplied no explicit
@@ -188,7 +188,7 @@ func EnsureInvestigationConfig(projectRoot, goalDir string, validate []string) (
 		return false, nil // valid section: preserve verbatim
 	} else {
 		var sb strings.Builder
-		renderInvestigationConfig(&sb, deriveInvestigators(projectRoot, validate), ResolveExecRuntime(projectRoot))
+		renderInvestigationConfig(&sb, deriveInvestigators(projectRoot, validate, nil), ResolveExecRuntime(projectRoot))
 		newMD := spliceInvestigationConfig(md, sb.String(), hasSection)
 		if werr := atomicWrite(mdPath, []byte(newMD), 0o644); werr != nil {
 			return false, werr

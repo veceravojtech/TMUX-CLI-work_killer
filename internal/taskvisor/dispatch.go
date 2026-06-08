@@ -232,7 +232,7 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	if err := d.killWindowByName(validatorWindow(goal.ID, mg)); err != nil {
 		return err
 	}
-	if err := d.killWindowsByPrefix(invPrefix(goal.ID, mg)); err != nil {
+	if err := d.killWindowsByPrefix(investigatorPrefix(goal.ID, mg)); err != nil {
 		return err
 	}
 
@@ -414,7 +414,7 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	if err := d.killWindowByName(validatorWindow(goal.ID, mg)); err != nil {
 		return err
 	}
-	if err := d.killWindowsByPrefix(invPrefix(goal.ID, mg)); err != nil {
+	if err := d.killWindowsByPrefix(investigatorPrefix(goal.ID, mg)); err != nil {
 		return err
 	}
 

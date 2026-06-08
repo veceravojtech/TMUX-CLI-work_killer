@@ -27,10 +27,11 @@ Tests must pass without a running tmux server (unit tests use `testutil.MockTmux
 cmd/tmux-cli/
   main.go              version constant, Execute()
   root.go              cobra root command
-  session.go           all CLI subcommands (start, kill, list, windows-*, taskvisor
-                       start/goal/revalidation-plan/inline-plan, etc.)
+  session.go           all CLI subcommands (start, kill, list, project init, windows-*,
+                       taskvisor start/goal/revalidation-plan/inline-plan, etc.)
                        embeds hook scripts and command templates via //go:embed
-                       runAutoSetup() runs before every start/start-attach
+                       runAutoSetup() runs before every start/start-attach/project-init
+  project_test.go      tests for project init command (11 tests)
   session_helper.go    ResolveWindowIdentifier helper
   mcp.go               MCP server CLI command (stdio transport)
   embedded/            Go-embedded assets
@@ -136,9 +137,10 @@ internal/
 ## What users edit
 
 - `.tmux-cli/setting.yaml` — the single config file (hooks toggle, custom hooks, commands enable, supervisor.max_cycles,
-  taskvisor.require_plan_approval (default false), taskvisor.halt_on_stale_binary (default false))
+  taskvisor.require_plan_approval (default false), taskvisor.halt_on_stale_binary (default false),
+  taskvisor.restart_on_stale_binary (default false))
 - `.tmux-cli/tasks.yaml` — can be pre-created to queue planned work for the supervisor
-- TUI settings editor exposes 24 items — must mirror all `Settings` struct fields
+- TUI settings editor exposes 25 items — must mirror all `Settings` struct fields
 
 ## Testing conventions
 
@@ -153,7 +155,7 @@ internal/
 
 - **Goal description is a short title (max 120 chars)**: Detailed criteria belong in `--acceptance` and `--validate`. Both the MCP `goal-create` tool and the `goal add` CLI command enforce this limit at write time. `LoadGoals` does NOT validate length (read tolerance).
 - **TUI settings must reflect all fields in `setting.yaml`**: Every field in the `Settings` struct (`internal/setup/config.go`) must be editable in the TUI (`internal/tui/settings.go`). If a new field is added to `Settings`/`setting.yaml`, the TUI `items` list and `ToSettings()` must be updated in the same PR — including tests. `ToSettings()` must overlay displayed fields onto the loaded settings (not `DefaultSettings()`), so undisplayed fields are preserved. If this invariant is broken, fix it immediately including tests.
-- **`supervisor.max_goals` defaults to 1**: `SupervisorSettings.MaxGoals` (`yaml:"max_goals"`) bounds how many goals the daemon may have in flight concurrently; it is surfaced in the TUI as the `supervisor.max_goals` item (kind `int`, default `1`). A value `<=0` (or absent from a legacy `setting.yaml`) coerces to `1` via the daemon's `maxGoals()` accessor. At `>1`, parallel independent-goal dispatch is enabled but gated on **disjoint goal scope** (the scheduler skips goals whose scope overlaps an in-flight goal) plus **per-goal git worktree isolation**, so concurrent goals never collide on files or windows. **Window naming is NOT part of the byte-identical-at-`max_goals=1` contract**: goal windows are ALWAYS namespaced (`supervisor-<ns>` / `validator-<ns>` / `execute-<ns>-` / `inv-<ns>-`) regardless of `max_goals` (`internal/taskvisor/window_names.go`). This keeps the daemon from ever killing/recreating the human's window-0 bare `supervisor` (the interactive/standalone window) for goal execution — window-0 `supervisor` is created once by `session.Manager` and the daemon only ensures it exists on deactivate, never renames or reuses it ([[never-kill-tmux-server-pid]]).
+- **`supervisor.max_goals` defaults to 1**: `SupervisorSettings.MaxGoals` (`yaml:"max_goals"`) bounds how many goals the daemon may have in flight concurrently; it is surfaced in the TUI as the `supervisor.max_goals` item (kind `int`, default `1`). A value `<=0` (or absent from a legacy `setting.yaml`) coerces to `1` via the daemon's `maxGoals()` accessor. At `>1`, parallel independent-goal dispatch is enabled but gated on **disjoint goal scope** (the scheduler skips goals whose scope overlaps an in-flight goal) plus **per-goal git worktree isolation**, so concurrent goals never collide on files or windows. **Window naming is NOT part of the byte-identical-at-`max_goals=1` contract**: goal windows are ALWAYS namespaced (`supervisor-<ns>` / `validator-<ns>` / `execute-<ns>-` / `investigator-<ns>-`) regardless of `max_goals` (`internal/taskvisor/window_names.go`). This keeps the daemon from ever killing/recreating the human's window-0 bare `supervisor` (the interactive/standalone window) for goal execution — window-0 `supervisor` is created once by `session.Manager` and the daemon only ensures it exists on deactivate, never renames or reuses it ([[never-kill-tmux-server-pid]]).
 - **Goal reset is "zero + re-seed", never hand-set to Max…**: `GoalsFile.ResetGoal` (`internal/taskvisor/goals.go`) only acts on a `failed` goal and sets it back to `pending`, zeroing ALL FOUR live per-class retry counters (`CodeRetries`, `SpecRetries`, `ValidationRetries`, `BlockRetries`) in addition to the legacy `Retries`. With all four at `0` and the status non-terminal, the `LoadGoals` re-seed guard fires on the next load and restores each counter from its corresponding `Max…` budget. Do NOT hand-set the live counters to their `Max…` values inside `ResetGoal` — that duplicates `LoadGoals` and would wrongly grant budget when a `Max…` is `0`. `ResetGoal` ALSO clears the `NextDispatch` routing marker (so the next dispatch takes the fresh-goal full-planner path via the legacy heuristic, not a stale retry route), clears the `FailedBy` timeout-salvage marker (so the salvage scan never watches — or late-flips — a re-pended goal), and blanks the `StartedAt`/`FinishedAt` timestamps. These clears are part of the invariant — a "cleanup" that removes them reintroduces stale-routing bugs (RC-D).
 
 ## Common pitfalls

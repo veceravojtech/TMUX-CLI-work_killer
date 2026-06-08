@@ -23,6 +23,17 @@ fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 [[ -f "$PROJECT_DIR/.tmux-cli/taskvisor-active" ]] && exit 0
+
+# --- All goals terminal? No work to restart ---
+GOALS_FILE="${PROJECT_DIR}/.tmux-cli/goals.yaml"
+if [[ -f "$GOALS_FILE" ]]; then
+    TOTAL_GOALS=$(grep -cE '^\s*status:\s' "$GOALS_FILE" 2>/dev/null) || TOTAL_GOALS=0
+    NON_TERMINAL=$(grep -cE '^\s*status:\s*(pending|running)' "$GOALS_FILE" 2>/dev/null) || NON_TERMINAL=0
+    if [[ "$TOTAL_GOALS" -gt 0 && "$NON_TERMINAL" -eq 0 ]]; then
+        exit 0
+    fi
+fi
+
 SESSION_ID=""
 WINDOW_NAME=""
 TMUX_WINDOW_ID=""

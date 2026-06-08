@@ -578,7 +578,7 @@ func (gf *GoalsFile) DeleteGoal(id string) (*Goal, bool) {
 
 func (gf *GoalsFile) ResetGoal(id string) bool {
 	g, ok := gf.GoalByID(id)
-	if !ok || g.Status != GoalFailed {
+	if !ok || (g.Status != GoalFailed && g.Status != GoalDone) {
 		return false
 	}
 	g.Status = GoalPending

@@ -12,7 +12,7 @@ import (
 // (d *Daemon) maxGoals() accessor, which reads setting.yaml.
 //
 // Naming contract (P1): goal windows are ALWAYS namespaced — every helper returns
-// the per-goal form (supervisor-<ns> / validator-<ns> / execute-<ns>- / inv-<ns>-)
+// the per-goal form (supervisor-<ns> / validator-<ns> / execute-<ns>- / investigator-<ns>-)
 // regardless of MaxGoals. The bare singleton names are retired for goal windows;
 // the only surviving bare name is window-0 "supervisor", the human's interactive /
 // standalone window, which the daemon never spawns, kills, or reuses for goal
@@ -91,20 +91,35 @@ func ExecutePrefixForGoal(goalID string) string {
 	return executePrefix(goalID, 2)
 }
 
-// invPrefix returns the investigator-worker window prefix for goalID — always the
-// namespaced "inv-<ns>-". The maxGoals param is retained for call-site
+// investigatorPrefix returns the investigator-worker window prefix for goalID — always the
+// namespaced "investigator-<ns>-". The maxGoals param is retained for call-site
 // compatibility (it no longer branches).
-func invPrefix(goalID string, maxGoals int) string {
+func investigatorPrefix(goalID string, maxGoals int) string {
 	_ = maxGoals
-	return "inv-" + goalNamespace(goalID) + "-"
+	return "investigator-" + goalNamespace(goalID) + "-"
 }
 
-// InvPrefixForGoal returns the namespaced investigator-worker window prefix for
-// goalID — "inv-<ns>-". Mirrors ExecutePrefixForGoal: the package-main goal-skip
+// InvestigatorPrefixForGoal returns the namespaced investigator-worker window prefix for
+// goalID — "investigator-<ns>-". Mirrors ExecutePrefixForGoal: the package-main goal-skip
 // sweep uses it to kill a goal's investigator pool by prefix without ad-hoc string
 // surgery, and it can never drift from the name the daemon spawns.
-func InvPrefixForGoal(goalID string) string {
-	return invPrefix(goalID, 2)
+func InvestigatorPrefixForGoal(goalID string) string {
+	return investigatorPrefix(goalID, 2)
+}
+
+// planAuditWindow returns the plan-audit window name for goalID — always the
+// namespaced "plan-audit-<ns>". The maxGoals param is retained for call-site
+// compatibility (it no longer branches).
+func planAuditWindow(goalID string, maxGoals int) string {
+	_ = maxGoals
+	return "plan-audit-" + goalNamespace(goalID)
+}
+
+// PlanAuditWindowForGoal returns the namespaced plan-audit window name for
+// goalID — "plan-audit-<ns>". Mirrors ExecutePrefixForGoal; derived from
+// planAuditWindow so it can never drift.
+func PlanAuditWindowForGoal(goalID string) string {
+	return planAuditWindow(goalID, 2)
 }
 
 // SupervisorWindowForGoal returns the namespaced supervisor window name for goalID

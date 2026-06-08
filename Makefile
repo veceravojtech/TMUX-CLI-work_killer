@@ -1,7 +1,7 @@
 # Makefile for tmux-cli
 # TDD-focused Go project
 
-.PHONY: help build test install clean coverage lint fmt vet verify-real
+.PHONY: help build test install clean coverage lint fmt vet verify-real check-file-lengths
 
 # Default target
 .DEFAULT_GOAL := help
@@ -54,8 +54,19 @@ kill:
 
 refresh: kill install start
 
+## check-file-lengths: Fail if any Go source file exceeds 2000 lines
+check-file-lengths:
+	@echo "Checking file lengths (max 2000 lines)..."
+	@LONG=$$(find . -name '*.go' -not -path './vendor/*' | xargs wc -l 2>/dev/null | awk '$$1 > 2000 && $$2 !~ /^(total|celkem)$$/ {print $$2 " (" $$1 " lines)"}'); \
+	if [ -n "$$LONG" ]; then \
+		echo "ERROR: Files exceed 2000-line limit:"; \
+		echo "$$LONG"; \
+		exit 1; \
+	fi
+	@echo "✓ All files within 2000-line limit"
+
 ## build: Build the complete project and generate runnable tmux-cli binary
-build: fmt vet
+build: check-file-lengths fmt vet
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p bin
 	$(GOBUILD) $(LDFLAGS) -o $(BINARY_PATH) ./cmd/tmux-cli

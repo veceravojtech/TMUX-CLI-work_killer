@@ -18,13 +18,13 @@ import (
 // "supervisor" and a sibling goal's windows survive.
 func TestRunTaskvisorGoalSkip_SweepsNamespaced(t *testing.T) {
 	windows := []tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor"},     // window-0 (human) — survives
-		{TmuxWindowID: "@1", Name: "supervisor-007"}, // goal-007 supervisor — killed
-		{TmuxWindowID: "@2", Name: "validator-007"},  // goal-007 validator — killed
-		{TmuxWindowID: "@3", Name: "execute-007-1"},  // goal-007 worker — killed
-		{TmuxWindowID: "@4", Name: "inv-007-1"},      // goal-007 investigator — killed
-		{TmuxWindowID: "@5", Name: "execute-009-1"},  // sibling goal — survives
-		{TmuxWindowID: "@6", Name: "taskvisor"},      // daemon anchor — survives
+		{TmuxWindowID: "@0", Name: "supervisor"},         // window-0 (human) — survives
+		{TmuxWindowID: "@1", Name: "supervisor-007"},     // goal-007 supervisor — killed
+		{TmuxWindowID: "@2", Name: "validator-007"},      // goal-007 validator — killed
+		{TmuxWindowID: "@3", Name: "execute-007-1"},      // goal-007 worker — killed
+		{TmuxWindowID: "@4", Name: "investigator-007-1"}, // goal-007 investigator — killed
+		{TmuxWindowID: "@5", Name: "execute-009-1"},      // sibling goal — survives
+		{TmuxWindowID: "@6", Name: "taskvisor"},          // daemon anchor — survives
 	}
 
 	var killed []string
@@ -33,7 +33,7 @@ func TestRunTaskvisorGoalSkip_SweepsNamespaced(t *testing.T) {
 	}
 
 	assert.ElementsMatch(t,
-		[]string{"supervisor-007", "validator-007", "execute-007-1", "inv-007-1"},
+		[]string{"supervisor-007", "validator-007", "execute-007-1", "investigator-007-1"},
 		killed,
 		"only goal-007's namespaced windows are swept")
 	assert.NotContains(t, killed, "supervisor", "window-0 bare supervisor must be spared")
@@ -432,7 +432,7 @@ func TestGoalResetCmd_Success(t *testing.T) {
 	})
 }
 
-func TestGoalResetCmd_NotFailed(t *testing.T) {
+func TestGoalResetCmd_NotFailedOrDone(t *testing.T) {
 	withTempCwd(t, func(dir string) {
 		gf := &taskvisor.GoalsFile{
 			Goals: []taskvisor.Goal{
@@ -443,7 +443,7 @@ func TestGoalResetCmd_NotFailed(t *testing.T) {
 
 		err := runTaskvisorGoalReset(nil, []string{"goal-001"})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not in failed status")
+		assert.Contains(t, err.Error(), "not in failed or done status")
 	})
 }
 
@@ -468,6 +468,9 @@ func TestGoalStopCmd_FilesPresent(t *testing.T) {
 		require.NoError(t, os.MkdirAll(tmuxDir, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-active"), nil, 0o644))
 		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-start"), nil, 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-goal"), []byte("goal-001"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-cycle"), nil, 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-worktree"), nil, 0o644))
 
 		output := captureStdout(t, func() {
 			err := runTaskvisorGoalStop(nil, nil)
@@ -479,6 +482,12 @@ func TestGoalStopCmd_FilesPresent(t *testing.T) {
 		_, err := os.Stat(filepath.Join(tmuxDir, "taskvisor-active"))
 		assert.True(t, os.IsNotExist(err))
 		_, err = os.Stat(filepath.Join(tmuxDir, "taskvisor-start"))
+		assert.True(t, os.IsNotExist(err))
+		_, err = os.Stat(filepath.Join(tmuxDir, "taskvisor-current-goal"))
+		assert.True(t, os.IsNotExist(err))
+		_, err = os.Stat(filepath.Join(tmuxDir, "taskvisor-current-cycle"))
+		assert.True(t, os.IsNotExist(err))
+		_, err = os.Stat(filepath.Join(tmuxDir, "taskvisor-current-worktree"))
 		assert.True(t, os.IsNotExist(err))
 	})
 }
@@ -554,6 +563,8 @@ func TestGoalPruneCmd_CleansSignalFiles(t *testing.T) {
 		require.NoError(t, os.MkdirAll(tmuxDir, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-goal"), []byte("goal-001"), 0o644))
 		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-start"), nil, 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-cycle"), nil, 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-worktree"), nil, 0o644))
 
 		output := captureStdout(t, func() {
 			err := runTaskvisorGoalPrune(nil, nil)
@@ -567,6 +578,12 @@ func TestGoalPruneCmd_CleansSignalFiles(t *testing.T) {
 
 		_, statErr = os.Stat(filepath.Join(tmuxDir, "taskvisor-start"))
 		assert.True(t, os.IsNotExist(statErr), "taskvisor-start should be removed")
+
+		_, statErr = os.Stat(filepath.Join(tmuxDir, "taskvisor-current-cycle"))
+		assert.True(t, os.IsNotExist(statErr), "taskvisor-current-cycle should be removed")
+
+		_, statErr = os.Stat(filepath.Join(tmuxDir, "taskvisor-current-worktree"))
+		assert.True(t, os.IsNotExist(statErr), "taskvisor-current-worktree should be removed")
 	})
 }
 

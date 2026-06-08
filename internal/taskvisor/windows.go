@@ -50,7 +50,10 @@ func (d *Daemon) killGoalWindows(ids []string) error {
 		if err := d.killWindowByName(validatorWindow(id, mg)); err != nil {
 			return err
 		}
-		if err := d.killWindowsByPrefix(invPrefix(id, mg)); err != nil {
+		if err := d.killWindowsByPrefix(investigatorPrefix(id, mg)); err != nil {
+			return err
+		}
+		if err := d.killWindowByName(planAuditWindow(id, mg)); err != nil {
 			return err
 		}
 	}
@@ -108,15 +111,15 @@ func (d *Daemon) createWindow(name, command, cwd string) (*CreatedWindow, error)
 
 // collectManagedNames enumerates the window names to await-gone before a
 // (re-)dispatch for goalID: this goal's supervisor/validator windows plus every
-// live worker window under this goal's execute-/inv- prefixes. Scoping the prefix
+// live worker window under this goal's execute-/investigator- prefixes. Scoping the prefix
 // scan to goalID means a sibling goal's namespaced windows are never collected
 // (and thus never awaited/killed) when MaxGoals>1. At MaxGoals<=1 the prefixes are
 // bare, so the result matches the pre-namespacing behavior exactly.
 func (d *Daemon) collectManagedNames(goalID string) []string {
 	mg := d.maxGoals()
-	allNames := []string{supervisorWindow(goalID, mg), validatorWindow(goalID, mg)}
+	allNames := []string{supervisorWindow(goalID, mg), validatorWindow(goalID, mg), planAuditWindow(goalID, mg)}
 	execPrefix := executePrefix(goalID, mg)
-	invWinPrefix := invPrefix(goalID, mg)
+	invWinPrefix := investigatorPrefix(goalID, mg)
 	windows, err := d.listWindows()
 	if err == nil {
 		for _, w := range windows {

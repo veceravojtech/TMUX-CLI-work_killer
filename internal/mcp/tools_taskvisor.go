@@ -700,7 +700,7 @@ func (s *Server) GoalPrune() (*GoalPruneOutput, error) {
 		return nil, fmt.Errorf("%w: failed to remove goals directory: %w", ErrInvalidInput, err)
 	}
 
-	for _, name := range []string{"taskvisor-current-goal", "taskvisor-start"} {
+	for _, name := range []string{"taskvisor-current-goal", "taskvisor-start", "taskvisor-current-cycle", "taskvisor-current-worktree"} {
 		p := filepath.Join(s.workingDir, ".tmux-cli", name)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return nil, fmt.Errorf("%w: failed to remove %s: %w", ErrInvalidInput, name, err)

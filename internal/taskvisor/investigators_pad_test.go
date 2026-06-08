@@ -41,7 +41,7 @@ func padCommands(list []Investigator) string {
 func TestDeriveInvestigators_GoProject(t *testing.T) {
 	root := padRoot(t, "go.mod")
 
-	list := deriveInvestigators(root, nil)
+	list := deriveInvestigators(root, nil, nil)
 
 	require.GreaterOrEqual(t, len(list), 2, "empty validate must still pad to >=2")
 	assert.Contains(t, padCommands(list), "go build ./...",
@@ -51,7 +51,7 @@ func TestDeriveInvestigators_GoProject(t *testing.T) {
 func TestDeriveInvestigators_PHPProject(t *testing.T) {
 	root := padRoot(t, "composer.json")
 
-	list := deriveInvestigators(root, nil)
+	list := deriveInvestigators(root, nil, nil)
 
 	require.GreaterOrEqual(t, len(list), 2)
 	cmds := padCommands(list)
@@ -64,7 +64,7 @@ func TestDeriveInvestigators_PHPProject(t *testing.T) {
 func TestDeriveInvestigators_NodeProject(t *testing.T) {
 	root := padRoot(t, "package.json")
 
-	list := deriveInvestigators(root, nil)
+	list := deriveInvestigators(root, nil, nil)
 
 	require.GreaterOrEqual(t, len(list), 2)
 	cmds := padCommands(list)
@@ -76,7 +76,7 @@ func TestDeriveInvestigators_NodeProject(t *testing.T) {
 func TestDeriveInvestigators_MakefileOnly(t *testing.T) {
 	root := padRoot(t, "Makefile")
 
-	list := deriveInvestigators(root, nil)
+	list := deriveInvestigators(root, nil, nil)
 
 	require.GreaterOrEqual(t, len(list), 2)
 	cmds := padCommands(list)
@@ -88,7 +88,7 @@ func TestDeriveInvestigators_MakefileOnly(t *testing.T) {
 func TestDeriveInvestigators_UnknownStack(t *testing.T) {
 	root := padRoot(t) // no marker files at all
 
-	list := deriveInvestigators(root, nil)
+	list := deriveInvestigators(root, nil, nil)
 
 	require.GreaterOrEqual(t, len(list), 2)
 	assert.Equal(t, "Workspace sanity", list[0].Name,
@@ -102,7 +102,7 @@ func TestDeriveInvestigators_UnknownStack(t *testing.T) {
 func TestDeriveInvestigators_NoDuplicatePad(t *testing.T) {
 	root := padRoot(t, "go.mod")
 
-	list := deriveInvestigators(root, nil) // empty validate → BOTH entries are pads
+	list := deriveInvestigators(root, nil, nil) // empty validate → BOTH entries are pads
 
 	require.Len(t, list, 2)
 	assert.NotEqual(t, list[0].Name, list[1].Name,
@@ -115,7 +115,7 @@ func TestDeriveInvestigators_ExplicitRulesUnchanged(t *testing.T) {
 	root := padRoot(t, "composer.json")
 	validate := []string{"vendor/bin/phpstan analyse", "vendor/bin/phpunit --testsuite unit"}
 
-	list := deriveInvestigators(root, validate)
+	list := deriveInvestigators(root, validate, nil)
 
 	// Non-empty validate maps 1:1 via inferInvestigatorType — no pad appended
 	// when the rules already satisfy the >=2 floor.
@@ -126,7 +126,7 @@ func TestDeriveInvestigators_ExplicitRulesUnchanged(t *testing.T) {
 	assert.Equal(t, []string{"vendor/bin/phpunit --testsuite unit"}, list[1].Commands)
 
 	// A single rule still maps 1:1; the pad only FILLS to 2 (project-aware).
-	single := deriveInvestigators(root, []string{"vendor/bin/phpstan analyse"})
+	single := deriveInvestigators(root, []string{"vendor/bin/phpstan analyse"}, nil)
 	require.Len(t, single, 2)
 	assert.Equal(t, []string{"vendor/bin/phpstan analyse"}, single[0].Commands)
 	assert.Contains(t, strings.Join(single[1].Commands, " "), "composer validate",

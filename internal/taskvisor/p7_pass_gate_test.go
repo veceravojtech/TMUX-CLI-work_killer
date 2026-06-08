@@ -296,17 +296,21 @@ func TestLateVerdictSalvage_NoValidateSteps_LatePassSalvaged(t *testing.T) {
 // The supervising-phase deterministic anchor is unchanged: a declared-validate
 // goal whose validate.sh exits 0 reaches GoalDone via the existing path. The
 // gate never fires here (supervising short-circuits to a terminal pass).
-func TestSupervisingPhase_ScriptExit0_DeclaredValidate_TerminalPass(t *testing.T) {
+func TestSupervisingPhase_ScriptExit0_DeclaredValidate_TransitionsToValidating(t *testing.T) {
+	// After always-validate: validate.sh pass no longer short-circuits to GoalDone.
+	// It must transition to phaseValidating with scriptPassed=true so the P7 gate
+	// permits a terminal pass after the investigator also passes.
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
 	d.runtime("goal-001").phase = phaseSupervising
+	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
 		Goals: []Goal{
 			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-06-05T10:00:00Z",
-				Validate: []string{"go test ./..."}, MaxRetries: 3},
+				Acceptance: []string{"it works"}, Validate: []string{"go test ./..."}, MaxRetries: 3},
 		},
 	}
 	writeGoals(t, dir, gf)
@@ -319,15 +323,16 @@ func TestSupervisingPhase_ScriptExit0_DeclaredValidate_TerminalPass(t *testing.T
 	}))
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
-	setupDeactivateMocks(exec, testSession, "@9")
-	d.SetWindowCreateFunc(mockCreateWindowFn("@9"))
+	setupValidatorMocks(exec, testSession, "@5")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 	d.SetScriptRunnerFunc(func(_ context.Context, _, _ string, _ []string) (string, string, int, error) {
 		return "", "", 0, nil // deterministic exit 0
 	})
 
 	g := &gf.Goals[0]
 	require.NoError(t, d.checkSupervisingPhase(g, gf))
-	assert.Equal(t, GoalDone, g.Status, "exit-0 supervising path is the unchanged deterministic anchor")
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase, "must transition to validating, not GoalDone")
+	assert.True(t, d.runtime("goal-001").scriptPassed, "scriptPassed must be true when validate.sh exits 0")
 }
 
 // writeExecScript writes a trivial executable shell script into goalDir.

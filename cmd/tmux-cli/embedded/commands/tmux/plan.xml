@@ -165,6 +165,7 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
   <flow>
     <step n="0" title="Audit guard">
       <action>Remove .tmux-cli/audit-done guard file if it exists.</action>
+      <action>Remove prior audit verdict files for clean-slate audit runs. Check $ARGUMENTS for a `.tmux-cli/goals/goal-{ns}/` path segment; if found, use that ns as an early GOAL_ID. Else check if `.tmux-cli/taskvisor-current-goal` exists and is non-empty and read GOAL_ID from it. If a GOAL_ID was found: `rm -f .tmux-cli/goals/{GOAL_ID}/research/plan-audit-*.md .tmux-cli/goals/{GOAL_ID}/research/plan-approval.md`. Else (standalone): `rm -f docs/architecture/plan-audit-*.md docs/architecture/plan-approval.md`.</action>
       <note>The clean-slate gate runs in step 0c — AFTER step 0b, because it operates on tasks-path, which requires GOAL_ID/GOAL_MODE to be resolved first.</note>
     </step>
 
@@ -227,6 +228,12 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
       </check>
       <check condition="plan.auto_execute is true">
         <action>Set internal flag AUTO_EXECUTE=true. Log: "Auto-execute mode enabled (plan.auto_execute=true)."</action>
+      </check>
+      <check condition="supervisor.unplanned_audit is true (default true if absent)">
+        <action>Set internal flag AUDIT_ENABLED=true. Log: "Blind audit gate enabled (supervisor.unplanned_audit=true)."</action>
+      </check>
+      <check condition="supervisor.unplanned_audit is false">
+        <action>Set internal flag AUDIT_ENABLED=false. Log: "Blind audit gate disabled (supervisor.unplanned_audit=false)."</action>
       </check>
       <action>Standalone mode only: scan .tmux-cli/research/ for prior cycle directories ({y-m-d-hh}/ that are NOT the current session's research-root). In goal mode skip this scan — there is a single goal research/ dir and prior corrections arrive via the dispatch file in $ARGUMENTS.</action>
       <check condition="prior research directories exist">
@@ -304,6 +311,28 @@ tasks:
       <incremental condition="INCREMENTAL mode">
         <action>Preserve existing tasks. Append new tasks. Preserve existing cycle number.</action>
       </incremental>
+    </step>
+
+    <step n="3c" title="Spec cache check (GOAL_MODE only)">
+      <condition>GOAL_MODE is true — skip this step entirely in standalone mode (standalone uses timestamped research dirs, so prior specs are unreachable).</condition>
+      <action>Scan {research-root} for existing spec files matching the pattern execute-*.md. If none found, fall through to step 4.</action>
+      <action>For each pending task in tasks-path, derive the task slug from its context path: strip the task- prefix and .md suffix from the filename (e.g. task-foo-bar.md → foo-bar).</action>
+      <action>For each pending task slug, search for cached spec files matching execute-*-{slug}.md in research-root. If multiple matches exist (from different worker cycles), pick the one with the highest execute-N number (most recent worker).</action>
+      <action>For each matched cached spec file: call spec-validate MCP tool with the file path. The tool checks S0–S8 automatically — reuse the same call pattern as step 6.</action>
+      <branch condition="spec-validate returns valid=true for a matched spec">
+        <action>Spec cache hit: reuse the existing spec. Mark the task as status=done in tasks-path. Update the task context field to point to the cached spec file path. Log: "Spec cache hit: reusing {filename} for task {name} (spec-validate passed)".</action>
+      </branch>
+      <branch condition="spec-validate returns valid=false OR no matching cached spec found for a task">
+        <action>Spec cache miss: task stays pending for fresh spec worker spawning in step 4. Log: "Spec cache miss: {filename} failed spec-validate — will re-spec" (or "no cached spec found for task {name}").</action>
+      </branch>
+      <check condition="all tasks in tasks-path now have status=done after cache reuse">
+        <action>All specs cached and valid — skip spec worker phase. Log: "All specs cached and valid — skipping to coverage verification". Proceed directly to step 8b (coverage verification).</action>
+      </check>
+      <check condition="some tasks still pending after cache check">
+        <action>Fall through to step 4 — spawn workers only for remaining pending tasks.</action>
+      </check>
+      <rule>Only check pending tasks — tasks already marked done (e.g. from INCREMENTAL mode) are not rechecked.</rule>
+      <rule>Slug matching: task context path task-{slug}.md maps to cached spec execute-*-{slug}.md in research-root. When multiple execute-*-{slug}.md files match, pick the highest execute-N number (most recent worker).</rule>
     </step>
 
     <step n="4" title="Spawn spec workers (sequentially within your turn)">
@@ -411,7 +440,7 @@ tasks:
       <action>Read all accepted spec files. Extract file paths from "### Files to Create/Modify" sections.</action>
       <action>Build mapping: file_path → [spec1, spec2, ...]. Flag paths appearing in 2+ specs.</action>
       <check condition="no overlaps">
-        <action>Proceed to step 9.</action>
+        <action>Proceed to step 8d.</action>
       </check>
       <check condition="overlaps found">
         <action>For each overlap, read both specs' Code Map and Implementation Plan to classify:
@@ -419,6 +448,44 @@ tasks:
           - CONFLICTING (same function/section) → flag for step 9 summary with recommendation (consolidate or re-spec one).
           - CONSOLIDATION-CANDIDATE (specs so coupled they should merge) → merge context files, remove redundant task, re-validate merged spec.</action>
       </check>
+      <action>Proceed to step 8d.</action>
+    </step>
+
+    <step n="8d" title="Post-plan sanity check">
+      <condition>File-overlap detection (step 8c) complete. All specs accepted.</condition>
+      <action>Run three advisory sanity checks against the accepted specs. Findings are categorized as CRITICAL or INFO and fed into the step 9 summary.</action>
+
+      <check id="1" title="Goal validation-rule alignment" condition="GOAL_MODE is true">
+        <action>Read .tmux-cli/goals/{GOAL_ID}/goal.md. Extract the ## Validation Rules section.</action>
+        <action>Parse file paths from grep/test/stat-style shell commands in each rule (e.g. `grep -q '...' path/to/file` → extract `path/to/file`). Skip rules with no explicit file path (e.g. `go build ./...`, shell globs, `./...` patterns).</action>
+        <action>Collect all file paths from every accepted spec's ### Files to Create/Modify sections.</action>
+        <action>Flag each validation-rule file path that does NOT appear in any spec's file list as a MISALIGNMENT warning (CRITICAL).</action>
+        <action>If no misalignments: log "Check 1 passed — all validation-rule paths covered by specs".</action>
+      </check>
+
+      <check id="2" title="Code Map path existence">
+        <action>For each accepted spec, extract file:line references from ## Code Map.</action>
+        <action>For each reference, verify the file portion exists on disk (ignore line numbers — files may have shifted).</action>
+        <action>Flag missing files as STALE_REF warnings (CRITICAL).</action>
+        <action>If no stale refs: log "Check 2 passed — all Code Map paths exist on disk".</action>
+      </check>
+
+      <check id="3" title="Dependency consistency">
+        <action>For each accepted spec, read ## Dependencies text.</action>
+        <action>Compare against the corresponding task's depends_on array in tasks-path.</action>
+        <action>Flag mismatches: spec declares "none" but task has depends_on entries, or spec lists dependencies but task has no depends_on (INFO).</action>
+        <action>If consistent: log "Check 3 passed — spec dependencies match tasks.yaml depends_on".</action>
+      </check>
+
+      <branch condition="any CRITICAL findings AND AUTO_APPROVE is true">
+        <action>Replan affected spec(s): for each spec with a CRITICAL finding, kill its old task entry in tasks-path, create a new research-task context file in research-root with the finding appended as a constraint, spawn a fresh spec worker via windows-spawn-worker, and loop back to step 5 (idle and route). Cap at 1 replan per spec to prevent infinite loops.</action>
+      </branch>
+      <branch condition="any findings AND AUTO_APPROVE is false">
+        <action>Append all findings to the step 9 summary under a "Sanity Check" section. User decides whether to act in step 10.</action>
+      </branch>
+      <branch condition="no findings">
+        <action>Log: "Sanity check passed — no misalignments".</action>
+      </branch>
       <action>Proceed to step 9.</action>
     </step>
 
@@ -516,6 +583,44 @@ Research dir: {research-root} (resolved in step 0b)
 
 Run `/tmux:supervisor` to execute the plan.
       </template>
+      <action>Proceed to step 11a (blind audit gate).</action>
+    </step>
+
+    <step n="11a" title="Blind audit gate">
+      <condition>AUDIT_ENABLED is true. If false, skip directly to step 11c.</condition>
+      <action>Initialize AUDIT_PASS = 1.</action>
+      <action>Clean prior verdict files: in GOAL_MODE, `rm -f .tmux-cli/goals/{GOAL_ID}/research/plan-audit-*.md .tmux-cli/goals/{GOAL_ID}/research/plan-approval.md`; in standalone, `rm -f docs/architecture/plan-audit-*.md docs/architecture/plan-approval.md`.</action>
+      <action>Derive AUDIT_WID: if GOAL_MODE, strip the "goal-" prefix from GOAL_ID to get {ns} and set AUDIT_WID = "plan-audit-{ns}" (e.g. goal-002 → plan-audit-002). If standalone (no GOAL_ID), use bare "plan-audit".</action>
+      <action>Create audit window via windows-create (name: {AUDIT_WID}).</action>
+      <action>Send `/tmux:plan-audit` to the {AUDIT_WID} window via windows-send. In GOAL_MODE, pass GOAL_ID as the argument: `/tmux:plan-audit {GOAL_ID}`.</action>
+      <action>Wait for the audit to complete: use windows-message polling (idle — wait for a message from the {AUDIT_WID} window). The audit window will send a tagged message [AUDIT:PASS ...] or [AUDIT:FAIL file=&lt;path&gt;] when finished. Do NOT use Bash polling loops (until/sleep) — they spam errors and waste context. If no message arrives within 10 minutes, kill the audit window and treat as audit-pass (timeout = accept).</action>
+      <action>After receiving the audit response (or timeout), kill audit window via windows-kill (name: {AUDIT_WID}).</action>
+      <action>Check verdict by inspecting the content of the received windows-message: if the message contains [AUDIT:PASS ...], audit passed; if it contains [AUDIT:FAIL file=&lt;path&gt;], audit failed — extract the file= path from the tag and store as AUDIT_FAIL_FILE. On timeout (no message received), treat as audit-pass.</action>
+      <branch condition="received message contains [AUDIT:PASS ...] or no message (timeout)">
+        <action>Audit passed. Write .tmux-cli/audit-done guard file. Proceed to step 11c.</action>
+      </branch>
+      <branch condition="received message contains [AUDIT:FAIL file=&lt;path&gt;]">
+        <action>Audit failed (pass AUDIT_PASS). Store AUDIT_FAIL_FILE = the file= path extracted from the tag. Proceed to step 11b.</action>
+      </branch>
+    </step>
+
+    <step n="11b" title="Audit replan loop">
+      <check condition="AUDIT_PASS >= 3">
+        <action>Print escalation: "Plan audit failed after 3 passes. Escalating to human review. See the findings file from the last [AUDIT:FAIL] message."</action>
+        <action>STOP — do NOT auto-execute.</action>
+      </check>
+      <action>Read the findings file at the path stored in AUDIT_FAIL_FILE (extracted from the [AUDIT:FAIL file=&lt;path&gt;] message).</action>
+      <action>Parse findings: extract goal IDs with SEV-1 or SEV-2 findings.</action>
+      <action>Map goal IDs → spec files via tasks-path task entries (match goal description to task name or spec content).</action>
+      <action>For each affected spec: set task status back to pending in tasks-path. Append ## Audit Feedback (Pass {AUDIT_PASS}) section with relevant findings to the spec's context file.</action>
+      <action>Respawn spec workers for affected tasks via windows-spawn-worker (same flow as step 4).</action>
+      <action>Route through steps 5–7 (idle/route, S1–S9 verify, kill) until all replanned specs accepted.</action>
+      <action>After all replanned specs accepted: rewrite tasks-path with status: ready (re-finalize).</action>
+      <action>Increment AUDIT_PASS. Loop back to step 11a.</action>
+    </step>
+
+    <step n="11c" title="Auto-execute handoff">
+      <action>Write .tmux-cli/audit-done guard file (idempotent — may already exist from step 11a pass).</action>
       <check condition="AUTO_EXECUTE is true">
         <action>Auto-execute mode enabled (plan.auto_execute=true in setting.yaml). Invoking supervisor automatically.</action>
         <action>Write guard file .tmux-cli/auto-execute-guard (prevents the Stop hook from also restarting the supervisor — without this, both auto-execute AND the Stop hook would send /tmux:supervisor, causing a double invocation).</action>

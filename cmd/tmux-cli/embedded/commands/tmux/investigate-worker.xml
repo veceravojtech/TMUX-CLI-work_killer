@@ -22,7 +22,7 @@
       <tool name="windows-create">Workers do not spawn sub-workers</tool>
       <tool name="Bash-mutating">rm, mv, cp, tee, chmod, chown, mkdir, touch, sed -i, kill, mkfs, dd, >, >> ALL FORBIDDEN</tool>
     </forbidden-tools>
-    <exception>Bash heredoc redirect permitted ONLY for the report at the injected CYCLE_DIR (goal mode: .tmux-cli/goals/*/research/cycle-*/inv-*-*.md; standalone: .tmux-cli/research/*/inv-*-*.md). mkdir -p for that directory also permitted.</exception>
+    <exception>Bash heredoc redirect permitted ONLY for the report at the injected CYCLE_DIR (goal mode: .tmux-cli/goals/*/research/cycle-*/investigator-*-*.md; standalone: .tmux-cli/research/*/investigator-*-*.md). mkdir -p for that directory also permitted.</exception>
   </tool-restrictions>
 
   <llm critical="true">
@@ -51,7 +51,7 @@
       <rule critical="true">Only emit [EXECUTE:FAILED] for a payload that HAS ARRIVED but is malformed.</rule>
       <action>Extract from task message:</action>
       <field required="true">SUPERVISOR_WID — reply target (typically "validator")</field>
-      <field required="true">SELF_WID — include in every header (e.g. "inv-1")</field>
+      <field required="true">SELF_WID — include in every header (e.g. "investigator-1")</field>
       <field required="true">SUBTASK, SCOPE, CONTEXT, DELIVERABLE</field>
       <action>Parse retry config from SCOPE: extract numeric count (e.g. "3 total attempts" → 3). Default: 1.</action>
       <check condition="task message received but required field missing">
@@ -122,8 +122,8 @@
     </step>
 
     <step n="4" title="Write report">
-      <action>Report path: &lt;CYCLE_DIR&gt;/inv-&lt;N&gt;-&lt;slug&gt;.md — CYCLE_DIR is injected by the orchestrator in the task message (SCOPE/CONTEXT). Write ONLY within CYCLE_DIR.</action>
-      <rule>N from SELF_WID (inv-2 → 2). Slug from investigator name (kebab-case, ≤40 chars). If CYCLE_DIR is absent from the task message (legacy/standalone), fall back to .tmux-cli/research/{y-m-d-hh}/inv-&lt;N&gt;-&lt;slug&gt;.md.</rule>
+      <action>Report path: &lt;CYCLE_DIR&gt;/investigator-&lt;N&gt;-&lt;slug&gt;.md — CYCLE_DIR is injected by the orchestrator in the task message (SCOPE/CONTEXT). Write ONLY within CYCLE_DIR.</action>
+      <rule>N from SELF_WID (investigator-2 → 2). Slug from investigator name (kebab-case, ≤40 chars). If CYCLE_DIR is absent from the task message (legacy/standalone), fall back to .tmux-cli/research/{y-m-d-hh}/investigator-&lt;N&gt;-&lt;slug&gt;.md.</rule>
       <action>mkdir -p the report directory, then write via Bash heredoc:</action>
       <template>## VERDICT
 pass | fail | blocked | error

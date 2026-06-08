@@ -2,8 +2,12 @@ package taskvisor
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -174,3 +178,124 @@ func writeGoalsYaml(t *testing.T, dir string, content string) {
 // Unused in this file but required by the test harness for compatibility with
 // writeSettings (shared helper).
 var _ = context.Background
+
+func TestTick_StaleBinary_Restart_ExecsWithCorrectArgs(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, true, false)
+	d.restartOnStaleBinary = true
+
+	var capturedPath string
+	var capturedArgs []string
+	var capturedEnv []string
+	d.SetExecReplaceFnForTest(func(path string, args []string, env []string) error {
+		capturedPath = path
+		capturedArgs = args
+		capturedEnv = env
+		return nil
+	})
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, capturedPath, "execReplaceFn must be called with a non-empty path")
+	assert.Equal(t, os.Args, capturedArgs, "execReplaceFn must receive os.Args")
+	assert.Equal(t, os.Environ(), capturedEnv, "execReplaceFn must receive os.Environ()")
+	assert.True(t, d.restartAttempted, "restartAttempted must be set after exec")
+}
+
+func TestTick_StaleBinary_Restart_ExecFails_StaysInPollLoop(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, true, false)
+	d.restartOnStaleBinary = true
+
+	d.setupSignalHandler(context.Background())
+	defer d.cancel()
+
+	d.SetExecReplaceFnForTest(func(path string, args []string, env []string) error {
+		return fmt.Errorf("exec failed")
+	})
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err)
+
+	assert.Equal(t, modeActive, d.mode, "mode must stay active after exec failure")
+	assert.Empty(t, d.haltReason, "haltReason must remain empty after exec failure")
+
+	select {
+	case <-d.ctx.Done():
+		t.Fatal("ctx must not be cancelled after exec failure")
+	default:
+	}
+}
+
+func TestTick_StaleBinary_Restart_ExecFails_NoRetry(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, true, false)
+	d.restartOnStaleBinary = true
+
+	var callCount atomic.Int32
+	d.SetExecReplaceFnForTest(func(path string, args []string, env []string) error {
+		callCount.Add(1)
+		return fmt.Errorf("exec failed")
+	})
+
+	d.setupSignalHandler(context.Background())
+	defer d.cancel()
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), callCount.Load())
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	d.clock = fixedClock(now.Add(2 * time.Minute))
+
+	err = d.checkStaleBinary(goals)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), callCount.Load(), "execReplaceFn must NOT be called a second time")
+}
+
+func TestTick_StaleBinary_Restart_PrecedenceOverHalt(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, true, true)
+	d.restartOnStaleBinary = true
+
+	var execCalled bool
+	d.SetExecReplaceFnForTest(func(path string, args []string, env []string) error {
+		execCalled = true
+		return nil
+	})
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err)
+
+	assert.True(t, execCalled, "execReplaceFn must be called when restart is enabled")
+	assert.Empty(t, d.haltReason, "haltReason must remain empty — restart takes precedence over halt")
+}
+
+func TestTick_StaleBinary_Restart_SignalHandlerStopped(t *testing.T) {
+	d, goals, _ := staleBinaryDaemon(t, true, false)
+	d.restartOnStaleBinary = true
+
+	d.signalCh = make(chan os.Signal, 1)
+	signal.Notify(d.signalCh, syscall.SIGTERM, syscall.SIGINT)
+
+	var signalStoppedBeforeExec bool
+	d.SetExecReplaceFnForTest(func(path string, args []string, env []string) error {
+		select {
+		case d.signalCh <- nil:
+			signalStoppedBeforeExec = true
+		default:
+			signalStoppedBeforeExec = false
+		}
+		return fmt.Errorf("exec failed to test re-registration")
+	})
+
+	err := d.checkStaleBinary(goals)
+	require.NoError(t, err)
+
+	assert.True(t, signalStoppedBeforeExec, "signal.Stop must be called before execReplaceFn — channel should accept a send after Stop")
+
+	// drain the test nil so re-registered Notify doesn't see it
+	select {
+	case <-d.signalCh:
+	default:
+	}
+
+	signal.Stop(d.signalCh)
+}

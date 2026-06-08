@@ -979,6 +979,8 @@ func TestGoalPrune_CleansSignalFiles(t *testing.T) {
 	require.NoError(t, os.MkdirAll(tmuxDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-goal"), []byte("goal-001"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-start"), nil, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-cycle"), nil, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, "taskvisor-current-worktree"), nil, 0o644))
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 	output, err := server.GoalPrune()
@@ -991,6 +993,12 @@ func TestGoalPrune_CleansSignalFiles(t *testing.T) {
 
 	_, statErr = os.Stat(filepath.Join(tmuxDir, "taskvisor-start"))
 	assert.True(t, os.IsNotExist(statErr), "taskvisor-start should be removed")
+
+	_, statErr = os.Stat(filepath.Join(tmuxDir, "taskvisor-current-cycle"))
+	assert.True(t, os.IsNotExist(statErr), "taskvisor-current-cycle should be removed")
+
+	_, statErr = os.Stat(filepath.Join(tmuxDir, "taskvisor-current-worktree"))
+	assert.True(t, os.IsNotExist(statErr), "taskvisor-current-worktree should be removed")
 }
 
 func TestGoalCreate_LockFileCreated(t *testing.T) {

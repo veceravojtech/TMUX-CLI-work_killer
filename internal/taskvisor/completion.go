@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/console/tmux-cli/internal/setup"
+	"github.com/console/tmux-cli/internal/tasks"
 )
 
 // salvageGrace is the window after a timeout-synthesized failure (Goal.FailedBy
@@ -131,8 +132,13 @@ func (d *Daemon) deactivateOnCompletion(goals *GoalsFile) error {
 		return err
 	}
 
-	guardPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-active")
-	_ = os.Remove(guardPath)
+	if _, err := os.Stat(tasks.TasksFilePath(d.workDir)); err == nil {
+		if archErr := tasks.ArchiveTasks(d.workDir); archErr != nil {
+			log.Printf("archive tasks.yaml: %v", archErr)
+		}
+	}
+
+	d.cleanRuntimeMarkers()
 
 	// Deactivation closes any open stall episode (watchdog reset).
 	d.idleTicks = 0

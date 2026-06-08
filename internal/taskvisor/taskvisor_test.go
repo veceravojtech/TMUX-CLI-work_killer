@@ -347,10 +347,11 @@ func TestDeactivate_WaitsForWindowsGone(t *testing.T) {
 	writeSettings(t, dir, true, true)
 	writeGuardFile(t, dir)
 
-	// Kill lookups find the goal's namespaced supervisor-001
+	// Kill lookups find the goal's namespaced supervisor-001 (5 lookups in killGoalWindows:
+	// sup + exec-prefix + val + inv-prefix + plan-audit)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@s", Name: "supervisor-001"},
-	}, nil).Times(4)
+	}, nil).Times(5)
 	exec.On("KillWindow", testSession, "@s").Return(nil)
 	// collectManagedNames
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
@@ -380,7 +381,9 @@ func TestDeactivate_CreatesFreshSupervisor(t *testing.T) {
 
 	// No window-0 "supervisor" is live (teardown + existence check all empty), so
 	// ensureWindow0Supervisor creates a BARE "supervisor" — never a namespaced one.
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(7)
+	// 8 = killGoalWindows(5: sup + exec-prefix + val + inv-prefix + plan-audit)
+	//   + collectManagedNames(1) + waitWindowsGone(1) + ensureWindow0Supervisor(1)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(8)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
@@ -411,7 +414,8 @@ func TestDeactivate_PreservesWindow0Supervisor(t *testing.T) {
 
 		// Teardown lookups empty; existence check + everything after sees a live
 		// bare window-0 "supervisor".
-		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(6)
+		// 7 = killGoalWindows(5) + collectManagedNames(1) + waitWindowsGone(1)
+		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(7)
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 			{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 		}, nil)
@@ -435,7 +439,8 @@ func TestDeactivate_PreservesWindow0Supervisor(t *testing.T) {
 		writeSettings(t, dir, true, true)
 		writeGuardFile(t, dir)
 
-		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(7)
+		// 8 = killGoalWindows(5) + collectManagedNames(1) + waitWindowsGone(1) + ensureWindow0Supervisor(1)
+		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(8)
 		exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 			{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 		}, nil)
@@ -477,7 +482,41 @@ func TestDeactivate_WaitsForClaudeBoot(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestDeactivate_RemovesGuardFile(t *testing.T) {
+func writeAllRuntimeMarkers(t *testing.T, dir string) {
+	t.Helper()
+	tmuxDir := filepath.Join(dir, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(tmuxDir, 0o755))
+	for _, name := range []string{"taskvisor-current-goal", "taskvisor-current-cycle", "taskvisor-current-worktree", "taskvisor-active"} {
+		require.NoError(t, os.WriteFile(filepath.Join(tmuxDir, name), nil, 0o644))
+	}
+}
+
+func assertAllRuntimeMarkersAbsent(t *testing.T, dir string) {
+	t.Helper()
+	tmuxDir := filepath.Join(dir, ".tmux-cli")
+	for _, name := range []string{"taskvisor-current-goal", "taskvisor-current-cycle", "taskvisor-current-worktree", "taskvisor-active"} {
+		_, err := os.Stat(filepath.Join(tmuxDir, name))
+		assert.True(t, os.IsNotExist(err), "%s should be removed", name)
+	}
+}
+
+func TestDeactivate_RemovesAllRuntimeMarkers(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.mode = modeActive
+	d.session = testSession
+	writeSettings(t, dir, true, true)
+	writeAllRuntimeMarkers(t, dir)
+
+	setupDeactivateMocks(exec, testSession, "@0")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+
+	err := d.deactivate()
+	require.NoError(t, err)
+
+	assertAllRuntimeMarkersAbsent(t, dir)
+}
+
+func TestDeactivate_ToleratesMissingMarkers(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.mode = modeActive
 	d.session = testSession
@@ -490,9 +529,7 @@ func TestDeactivate_RemovesGuardFile(t *testing.T) {
 	err := d.deactivate()
 	require.NoError(t, err)
 
-	guardPath := filepath.Join(dir, ".tmux-cli", "taskvisor-active")
-	_, statErr := os.Stat(guardPath)
-	assert.True(t, os.IsNotExist(statErr))
+	assertAllRuntimeMarkersAbsent(t, dir)
 }
 
 func TestDeactivate_ReturnsToIdle(t *testing.T) {
@@ -2214,6 +2251,8 @@ func TestRunValidateScript_EnvAndCwd(t *testing.T) {
 }
 
 func TestCheckProgress_SupervisorDone_ValidateShPass(t *testing.T) {
+	// After always-validate: validate.sh pass transitions to phaseValidating
+	// (not GoalDone). The investigator still runs.
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
@@ -2238,9 +2277,8 @@ func TestCheckProgress_SupervisorDone_ValidateShPass(t *testing.T) {
 
 	// killWindowsByPrefix("execute-") + killWindowByName("supervisor") — no workers
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
-	// deactivate mocks: kill supervisor, execute-, validator + create supervisor window
-	setupDeactivateMocks(exec, testSession, "@9")
-	d.SetWindowCreateFunc(mockCreateWindowFn("@9"))
+	setupValidatorMocks(exec, testSession, "@5")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 
 	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
 		return "", "", 0, nil
@@ -2250,10 +2288,8 @@ func TestCheckProgress_SupervisorDone_ValidateShPass(t *testing.T) {
 	err = d.checkProgress(goal, gf)
 	require.NoError(t, err)
 
-	reloaded, err := LoadGoals(dir)
-	require.NoError(t, err)
-	assert.Equal(t, GoalDone, reloaded.Goals[0].Status)
-	assert.NotEqual(t, phaseValidating, d.runtime("goal-001").phase)
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
+	assert.True(t, d.runtime("goal-001").scriptPassed)
 }
 
 func TestCheckProgress_SupervisorDone_ValidateShFail_ValidateMdExists(t *testing.T) {
@@ -2492,15 +2528,18 @@ func TestDispatch_LogsPhaseTransition(t *testing.T) {
 }
 
 func TestCheckSupervisingPhase_Done_LogsGoalDone(t *testing.T) {
+	// After always-validate: validate.sh pass no longer short-circuits to GoalDone.
+	// It must transition to phaseValidating and set rt.scriptPassed=true.
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
 	d.runtime("goal-001").phase = phaseSupervising
+	d.validatorSendDelay = 0
 
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
 		Goals: []Goal{
-			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-05-20T10:00:00Z", MaxRetries: 3},
+			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-05-20T10:00:00Z", Acceptance: []string{"it works"}, MaxRetries: 3},
 		},
 	}
 	writeGoals(t, dir, gf)
@@ -2513,8 +2552,8 @@ func TestCheckSupervisingPhase_Done_LogsGoalDone(t *testing.T) {
 	}))
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
-	setupDeactivateMocks(exec, testSession, "@9")
-	d.SetWindowCreateFunc(mockCreateWindowFn("@9"))
+	setupValidatorMocks(exec, testSession, "@5")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
 		return "", "", 0, nil
 	})
@@ -2524,8 +2563,9 @@ func TestCheckSupervisingPhase_Done_LogsGoalDone(t *testing.T) {
 		err = d.checkSupervisingPhase(goal, gf)
 	})
 	require.NoError(t, err)
-	assert.Contains(t, output, "goal-001: running -> done")
-	assert.Regexp(t, `running -> done \(\d+`, output)
+	assert.Contains(t, output, "goal-001: phase supervising -> validating")
+	assert.True(t, d.runtime("goal-001").scriptPassed, "scriptPassed must be true when validate.sh exits 0")
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 }
 
 func TestCheckSupervisingPhase_LogsPhaseToValidating(t *testing.T) {
@@ -3217,7 +3257,7 @@ func TestDeactivateOnCompletion_KillsWindowsNoSupervisor(t *testing.T) {
 
 	// notifyCompletion (1 ListWindows for supervisor lookup)
 	// + killWindowByName("supervisor-001"), killWindowsByPrefix("execute-001-"),
-	// killWindowByName("validator-001"), killWindowsByPrefix("inv-001-"),
+	// killWindowByName("validator-001"), killWindowsByPrefix("investigator-001-"),
 	// collectManagedNames, waitWindowsGone — all need ListWindows.
 	// First: notifyCompletion finds no bare "supervisor" → logs and skips.
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
@@ -3237,7 +3277,9 @@ func TestDeactivateOnCompletion_KillsWindowsNoSupervisor(t *testing.T) {
 	exec.On("KillWindow", testSession, "@1").Return(nil)
 	// killWindowByName("validator-001") — none
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// killWindowsByPrefix("inv-") — none
+	// killWindowsByPrefix("investigator-") — none
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	// killWindowByName("plan-audit-001") — none
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	// collectManagedNames — gone
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
@@ -3259,11 +3301,11 @@ func TestDeactivateOnCompletion_KillsWindowsNoSupervisor(t *testing.T) {
 	assert.Equal(t, modeIdle, d.mode)
 }
 
-func TestDeactivateOnCompletion_RemovesGuardFile(t *testing.T) {
+func TestDeactivateOnCompletion_RemovesAllRuntimeMarkers(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.mode = modeActive
 	d.session = testSession
-	writeGuardFile(t, dir)
+	writeAllRuntimeMarkers(t, dir)
 
 	gf := &GoalsFile{
 		Goals: []Goal{
@@ -3277,9 +3319,108 @@ func TestDeactivateOnCompletion_RemovesGuardFile(t *testing.T) {
 	err := d.deactivateOnCompletion(gf)
 	require.NoError(t, err)
 
-	guardPath := filepath.Join(dir, ".tmux-cli", "taskvisor-active")
-	_, statErr := os.Stat(guardPath)
-	assert.True(t, os.IsNotExist(statErr), "guard file should be removed")
+	assertAllRuntimeMarkersAbsent(t, dir)
+}
+
+func TestDeactivateOnCompletion_ArchivesTopLevelTasksYaml(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.mode = modeActive
+	d.session = testSession
+	writeAllRuntimeMarkers(t, dir)
+
+	tasksContent := "cycle: 3\ntasks:\n  - name: do-thing\n    status: done\n"
+	tasksPath := filepath.Join(dir, ".tmux-cli", "tasks.yaml")
+	require.NoError(t, os.WriteFile(tasksPath, []byte(tasksContent), 0o644))
+
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Status: GoalDone},
+		},
+	}
+	writeGoals(t, dir, gf)
+
+	setupDeactivateOnCompletionMocks(exec, testSession)
+
+	err := d.deactivateOnCompletion(gf)
+	require.NoError(t, err)
+
+	_, statErr := os.Stat(tasksPath)
+	assert.True(t, os.IsNotExist(statErr), "tasks.yaml should be archived (removed from original location)")
+
+	archiveBaseDir := filepath.Join(dir, ".tmux-cli", "tasks")
+	hourDirs, err := os.ReadDir(archiveBaseDir)
+	require.NoError(t, err)
+	require.NotEmpty(t, hourDirs, "archive hour directory should exist")
+
+	archivedFiles, err := os.ReadDir(filepath.Join(archiveBaseDir, hourDirs[0].Name()))
+	require.NoError(t, err)
+	require.NotEmpty(t, archivedFiles, "archived tasks file should exist")
+
+	archivedData, err := os.ReadFile(filepath.Join(archiveBaseDir, hourDirs[0].Name(), archivedFiles[0].Name()))
+	require.NoError(t, err)
+	assert.Equal(t, tasksContent, string(archivedData))
+
+	assertAllRuntimeMarkersAbsent(t, dir)
+}
+
+func TestDeactivateOnCompletion_NoTasksYaml_NoError(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.mode = modeActive
+	d.session = testSession
+	writeAllRuntimeMarkers(t, dir)
+
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Status: GoalDone},
+		},
+	}
+	writeGoals(t, dir, gf)
+
+	setupDeactivateOnCompletionMocks(exec, testSession)
+
+	err := d.deactivateOnCompletion(gf)
+	require.NoError(t, err)
+
+	assertAllRuntimeMarkersAbsent(t, dir)
+}
+
+func TestDeactivateOnCompletion_SalvageGrace_NoArchive(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.mode = modeActive
+	d.session = testSession
+	writeAllRuntimeMarkers(t, dir)
+
+	tasksPath := filepath.Join(dir, ".tmux-cli", "tasks.yaml")
+	require.NoError(t, os.WriteFile(tasksPath, []byte("cycle: 1\n"), 0o644))
+
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:         "goal-001",
+				Status:     GoalFailed,
+				FailedBy:   "validation-timeout",
+				FinishedAt: freshRFC3339(),
+			},
+		},
+	}
+	writeGoals(t, dir, gf)
+
+	setupDeactivateOnCompletionMocks(exec, testSession)
+
+	err := d.deactivateOnCompletion(gf)
+	require.NoError(t, err)
+
+	for _, name := range []string{"taskvisor-current-goal", "taskvisor-current-cycle", "taskvisor-current-worktree", "taskvisor-active"} {
+		_, err := os.Stat(filepath.Join(dir, ".tmux-cli", name))
+		assert.False(t, os.IsNotExist(err), "%s should still be present (salvage grace)", name)
+	}
+
+	_, statErr := os.Stat(tasksPath)
+	assert.False(t, os.IsNotExist(statErr), "tasks.yaml should still be present (salvage grace)")
+
+	archiveDir := filepath.Join(dir, ".tmux-cli", "tasks")
+	_, statErr = os.Stat(archiveDir)
+	assert.True(t, os.IsNotExist(statErr), "no archive directory should be created during salvage grace")
 }
 
 func TestDeactivateOnCompletion_BlocksDepsBeforeShutdown(t *testing.T) {
@@ -4114,10 +4255,10 @@ tasks:
 	exec.On("ListWindows", testSession).Return(validatorClaude, nil).Once()
 	exec.On("ListWindows", testSession).Return(validatorClaude, nil).Once()
 	// Stage 5: checkValidatingPhase pass + deactivateOnCompletion
-	// 1 for killWindowByName("validator"), 1 for notifyCompletion,
-	// 4 for teardown kill lookups, 1 for collectManagedNames, 1 for waitWindowsGone
+	// 1 for notifyCompletion,
+	// 5 for teardown kill lookups (killGoalWindows), 1 for collectManagedNames, 1 for waitWindowsGone
 	exec.On("ListWindows", testSession).Return(validatorPlain, nil).Once()
-	exec.On("ListWindows", testSession).Return(empty, nil).Times(7)
+	exec.On("ListWindows", testSession).Return(empty, nil).Times(8)
 
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("", fmt.Errorf("no prompt")).Times(2)
 	exec.On("CaptureWindowOutput", testSession, "@9").Return("", fmt.Errorf("no prompt")).Once()
@@ -5503,4 +5644,193 @@ func TestTick_AllTerminalNoneRunning_Deactivates(t *testing.T) {
 
 	assert.Equal(t, modeIdle, d.mode, "no running, no candidates -> deactivate")
 	assert.FileExists(t, filepath.Join(dir, ".tmux-cli", "goals", "completion-report.md"))
+}
+
+func TestCheckSupervisingPhase_ValidatePass_SetsScriptPassed(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseSupervising
+	d.validatorSendDelay = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
+	setupValidatorMocks(exec, testSession, "@5")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		return "", "", 0, nil
+	})
+
+	goal := &gf.Goals[0]
+	err = d.checkSupervisingPhase(goal, gf)
+	require.NoError(t, err)
+
+	rt := d.runtime("goal-001")
+	assert.True(t, rt.scriptPassed, "scriptPassed must be true when validate.sh exits 0")
+	assert.Equal(t, phaseValidating, rt.phase, "must transition to validating, not done")
+}
+
+func TestCheckSupervisingPhase_ValidateFail_ScriptPassedFalse(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseSupervising
+	d.validatorSendDelay = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 1\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.md"), []byte("- check tests\n"), 0o644))
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
+	setupValidatorMocks(exec, testSession, "@5")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		return "", "tests failed", 1, nil
+	})
+
+	goal := &gf.Goals[0]
+	err = d.checkSupervisingPhase(goal, gf)
+	require.NoError(t, err)
+
+	rt := d.runtime("goal-001")
+	assert.False(t, rt.scriptPassed, "scriptPassed must be false when validate.sh exits non-zero")
+	assert.Equal(t, phaseValidating, rt.phase, "must transition to validating")
+}
+
+func TestCheckValidatingPhase_P7Gate_ScriptPassedTrue_Passes(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseValidating
+	d.runtime("goal-001").scriptPassed = true
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-05-20T10:00:00Z",
+				Validate: []string{"go test ./..."}, MaxRetries: 3},
+			{ID: "goal-002", Description: "next", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: "pass", Timestamp: "2026-05-20T14:35:00Z",
+	}))
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@5", Name: "validator-001"},
+	}, nil).Once()
+	exec.On("KillWindow", testSession, "@5").Return(nil)
+
+	goal := &gf.Goals[0]
+	err = d.checkValidatingPhase(goal, gf)
+	require.NoError(t, err)
+
+	assert.Equal(t, GoalDone, goal.Status, "P7 gate must allow pass when ScriptPassed=true")
+}
+
+func TestCheckValidatingPhase_P7Gate_ScriptPassedFalse_Downgrades(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseValidating
+	d.runtime("goal-001").scriptPassed = false
+	d.validatorSendDelay = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-05-20T10:00:00Z",
+				Validate: []string{"go test ./..."}, MaxRetries: 3, ValidationRetries: 2, MaxValidationRetries: 2},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: "pass", Timestamp: "2026-05-20T14:35:00Z",
+	}))
+
+	// killWindowByName("validator-001")
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@5", Name: "validator-001"},
+	}, nil).Once()
+	exec.On("KillWindow", testSession, "@5").Return(nil)
+	// rerunValidationOnly: killWindowByName("validator-001") + createValidator
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	setupValidatorMocks(exec, testSession, "@6")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@6"))
+
+	goal := &gf.Goals[0]
+	err = d.checkValidatingPhase(goal, gf)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, GoalDone, goal.Status, "P7 gate must downgrade pass when ScriptPassed=false")
+	reloaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+	assert.Equal(t, 1, reloaded.Goals[0].ValidationRetries, "ValidationRetries must be decremented (error/ops route)")
+}
+
+func TestCheckSupervisingPhase_NoValidateScript_ScriptPassedFalse(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseSupervising
+	d.validatorSendDelay = 0
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
+	setupValidatorMocks(exec, testSession, "@5")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
+
+	goal := &gf.Goals[0]
+	err = d.checkSupervisingPhase(goal, gf)
+	require.NoError(t, err)
+
+	rt := d.runtime("goal-001")
+	assert.False(t, rt.scriptPassed, "scriptPassed must be false when no validate.sh exists")
+	assert.Equal(t, phaseValidating, rt.phase, "must transition to validating")
 }

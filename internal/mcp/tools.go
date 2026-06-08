@@ -485,11 +485,11 @@ var goalCycleSuffixRe = regexp.MustCompile(`-c(\d+)$`)
 // real namespaced supervisor window (e.g. "supervisor-020") would otherwise miss
 // the goal binding and fall back to the SHARED global marker — routing two
 // concurrent goals' workers to the same research root. The MaxGoals<=1 bare names
-// ("supervisor"/"validator" carry no -<ns>; "execute-<n>"/"inv-<n>" carry a single
+// ("supervisor"/"validator" carry no -<ns>; "execute-<n>"/"investigator-<n>" carry a single
 // numeric segment) are deliberately NOT matched here, so they still take the
 // marker fallback (byte-identical single-goal routing).
 var namespacedSupRe = regexp.MustCompile(`^(?:supervisor|validator)-(\d+)$`)
-var namespacedWorkerRe = regexp.MustCompile(`^(?:execute|inv)-(\d+)-\d+`)
+var namespacedWorkerRe = regexp.MustCompile(`^(?:execute|investigator)-(\d+)-\d+`)
 
 // parseGoalBinding derives a worker→goal binding from a caller window name. It is a
 // pure function: no filesystem access, never panics. Resolution order: (1) an
@@ -689,8 +689,8 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	// resolved supervisor window so BOTH nextExecuteN allocation and the MaxWorkers
 	// cap (each prefix-parametric) are scoped PER SUPERVISOR — a sibling goal's
 	// workers never consume this goal's budget. "supervisor-<ns>" → "<base>-<ns>-"
-	// (e.g. execute-<ns>- / inv-<ns>-), which also matches the daemon's per-goal
-	// teardown (killWindowsByPrefix executePrefix/invPrefix), so workers are no
+	// (e.g. execute-<ns>- / investigator-<ns>-), which also matches the daemon's per-goal
+	// teardown (killWindowsByPrefix executePrefix/investigatorPrefix), so workers are no
 	// longer orphaned at goal completion. Post-P1 a goal supervisor is ALWAYS
 	// "supervisor-<ns>" (even at MaxGoals=1), so this derivation fires for every
 	// goal. The bare "supervisor" now denotes ONLY window-0 / a standalone

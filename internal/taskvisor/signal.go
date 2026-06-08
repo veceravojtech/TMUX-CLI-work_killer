@@ -164,11 +164,10 @@ func ClassifyVerdict(findings []ValidationFinding) (verdict, owner string) {
 //   - RequireValidate: the goal DECLARES validate steps (len(goal.Validate) > 0),
 //     so a deterministic `validate.sh` is expected to be the independent anchor.
 //   - ScriptPassed: the deterministic `validate.sh` exited 0 (runValidateScript's
-//     `passed` contract). In the validating phase this is provably false (the
-//     supervising phase short-circuits to a terminal pass at statemachine.go:264
-//     when the script passed, so control only reaches the gated seams when it did
-//     not) — the field is accepted honestly so GateTerminalPass is correct in
-//     isolation and future-proof if a deterministic re-check is ever added.
+//     `passed` contract). Threaded from checkSupervisingPhase via
+//     goalRuntime.scriptPassed — true when validate.sh passed, false otherwise
+//     (including when no validate.sh exists or the runtime was cleared). The
+//     salvageLateVerdicts path always passes false (runtime cleared, conservative).
 type PassGate struct {
 	RequireValidate bool
 	ScriptPassed    bool

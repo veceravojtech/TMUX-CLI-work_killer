@@ -58,6 +58,11 @@ type goalRuntime struct {
 	lastProgressHash string
 	lastProgressAt   time.Time
 
+	// scriptPassed records the validate.sh exit-0 result from checkSupervisingPhase,
+	// threaded to checkValidatingPhase for GateTerminalPass. Zero-value false is the
+	// correct default (no validate.sh ran, or runtime was cleared).
+	scriptPassed bool
+
 	// WorktreeDir/Branch hold the per-goal git-worktree isolation state (E1-1a).
 	// Set by ensureWorktree when MaxGoals>1 on a git repo; read by
 	// mergeWorktreeBack/discardWorktree and by execute-35 (validate isolation).
@@ -149,14 +154,18 @@ type Daemon struct {
 	// daemon-level halt (currently only the wall-clock ceiling). Set BEFORE
 	// deactivate() (whose tail render surfaces it) and cleared in activate() so a
 	// (re)start shows a clean IDLE/ACTIVE surface.
-	haltReason        string
-	haltOnStaleBinary bool
-	vcsRevision       string
-	lastStaleCheck    time.Time
-	staleBanner       string
-	specRepairs       int
-	depWarningCount   int
-	stackGateSkips    int
+	haltReason           string
+	haltOnStaleBinary    bool
+	restartOnStaleBinary bool
+	restartAttempted     bool
+	execReplaceFn        func(string, []string, []string) error
+	vcsRevision          string
+	lastStaleCheck       time.Time
+	staleBanner          string
+	specRepairs          int
+	depWarningCount      int
+	stackGateSkips       int
+	execReplaceRestart   bool
 }
 
 func readVCSRevision() string {
@@ -207,6 +216,7 @@ func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
 		scriptRunnerFn:     defaultScriptRunner,
 		scriptTimeout:      validateScriptTimeout,
 		autoResumeInterval: 30 * time.Second,
+		execReplaceFn:      syscall.Exec,
 	}
 }
 
@@ -218,6 +228,10 @@ func (d *Daemon) SetScriptRunnerFunc(fn ScriptRunnerFunc) {
 	d.scriptRunnerFn = fn
 }
 
+func (d *Daemon) SetExecReplaceFnForTest(fn func(string, []string, []string) error) {
+	d.execReplaceFn = fn
+}
+
 func (d *Daemon) Run(ctx context.Context) error {
 	logDir := filepath.Join(d.workDir, ".tmux-cli", "logs")
 	_ = os.MkdirAll(logDir, 0o755)
@@ -226,6 +240,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 		log.SetOutput(logFile)
 		defer logFile.Close()
 	}
+
+	pidPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor.pid")
+	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		log.Printf("warning: write PID file: %v", err)
+	}
+	defer os.Remove(pidPath)
 
 	settings, err := setup.LoadSettings(d.workDir)
 	if err != nil {
@@ -252,6 +272,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.maxWallClock = time.Duration(settings.Taskvisor.MaxWallClockSec) * time.Second
 		}
 		d.haltOnStaleBinary = settings.Taskvisor.HaltOnStaleBinary
+		d.restartOnStaleBinary = settings.Taskvisor.RestartOnStaleBinary
 	}
 
 	// Single authoritative finalization of d.validateTimeout. Runs UNCONDITIONALLY
@@ -268,6 +289,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	if err := d.crashRecovery(); err != nil {
 		log.Printf("crash recovery error: %v", err)
+	}
+
+	restartMarker := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-restart")
+	if _, err := os.Stat(restartMarker); err == nil {
+		_ = os.Remove(restartMarker)
+		if d.mode == modeIdle {
+			log.Printf("exec-replace restart detected — auto-activating")
+			startPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-start")
+			_ = os.WriteFile(startPath, nil, 0o644)
+		}
 	}
 
 	// §5 background auto-resume: re-evaluates precondition-blocked goals on its own
@@ -512,6 +543,15 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	return nil
 }
 
+func (d *Daemon) cleanRuntimeMarkers() {
+	tmuxDir := filepath.Join(d.workDir, ".tmux-cli")
+	for _, name := range []string{"taskvisor-current-goal", "taskvisor-current-cycle", "taskvisor-current-worktree", "taskvisor-active"} {
+		if err := os.Remove(filepath.Join(tmuxDir, name)); err != nil && !os.IsNotExist(err) {
+			log.Printf("cleanRuntimeMarkers: remove %s: %v", name, err)
+		}
+	}
+}
+
 func (d *Daemon) deactivate() error {
 	// currentGoal names the in-flight head (set on dispatch/crashRecovery; may be
 	// empty on an idle-path deactivate). Tear down EVERY in-flight goal namespace
@@ -537,8 +577,7 @@ func (d *Daemon) deactivate() error {
 		return err
 	}
 
-	guardPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-active")
-	_ = os.Remove(guardPath)
+	d.cleanRuntimeMarkers()
 
 	// Deactivation closes any open stall episode (watchdog reset) and drops every
 	// per-goal runtime — no goal is in flight once the daemon is idle.
@@ -655,8 +694,7 @@ func (d *Daemon) setupSignalHandler(parentCtx context.Context) {
 			if err == nil && exists {
 				d.deactivate()
 			} else {
-				guardPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-active")
-				_ = os.Remove(guardPath)
+				d.cleanRuntimeMarkers()
 			}
 			if d.exitFunc != nil {
 				d.exitFunc(0)

@@ -106,6 +106,25 @@ func TestKillWindowsByPrefix_ClosesPipePaneBeforeEachKill(t *testing.T) {
 	}
 }
 
+func TestCollectManagedNames_IncludesPlanAuditWindow(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+
+	writeSettings(t, dir, false, false)
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@1", Name: "execute-001-1"},
+		{TmuxWindowID: "@2", Name: "investigator-001-check"},
+	}, nil)
+
+	names := d.collectManagedNames("goal-001")
+	assert.Contains(t, names, "supervisor-001")
+	assert.Contains(t, names, "validator-001")
+	assert.Contains(t, names, "plan-audit-001")
+	assert.Contains(t, names, "execute-001-1")
+	assert.Contains(t, names, "investigator-001-check")
+}
+
 func TestKillWindowsByPrefix_ClosePipePaneError_ContinuesKilling(t *testing.T) {
 	d, exec, _ := setupDaemon(t)
 	d.session = testSession

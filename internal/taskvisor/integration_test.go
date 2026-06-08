@@ -1444,7 +1444,7 @@ func TestIntegration_DispatchTimeout_FullLifecycle(t *testing.T) {
 	exec.On("KillWindow", testSession, "@1").Return(nil)
 	// killWindowByName("validator") — empty
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	// killWindowsByPrefix("inv-") — empty
+	// killWindowsByPrefix("investigator-") — empty
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
 	// collectManagedNames — empty
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
@@ -1705,7 +1705,7 @@ func TestM09_IncrementalRevalidation(t *testing.T) {
 			reuse = append(reuse, p)
 		}
 	}
-	require.Len(t, rerun, 1, "exactly 1 worker is spawned in cycle 2 (one inv-* per RERUN)")
+	require.Len(t, rerun, 1, "exactly 1 worker is spawned in cycle 2 (one investigator-* per RERUN)")
 	assert.Equal(t, "alpha", rerun[0].FindingID, "the previously-failed finding is re-run")
 	require.Len(t, reuse, 2, "the two unchanged passes are reused")
 	for _, p := range reuse {
@@ -1753,7 +1753,7 @@ func TestM08_CyclePathNoReuse(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasSuffix(cycle1Dir, filepath.Join("goals", goalID, "research", "cycle-1")),
 		"cycle 1 resolves under cycle-1/, got %s", cycle1Dir)
-	cycle1Report := filepath.Join(cycle1Dir, "inv-1-x.md")
+	cycle1Report := filepath.Join(cycle1Dir, "investigator-1-x.md")
 	require.NoError(t, os.WriteFile(cycle1Report, []byte("## VERDICT\nfail\n"), 0o644))
 
 	// Simulate a failed cycle on the code-defect route: one code budget unit is
@@ -1767,7 +1767,7 @@ func TestM08_CyclePathNoReuse(t *testing.T) {
 	assert.True(t, strings.HasSuffix(cycle2Dir, filepath.Join("goals", goalID, "research", "cycle-2")),
 		"cycle 2 resolves under cycle-2/, got %s", cycle2Dir)
 	require.NotEqual(t, cycle1Dir, cycle2Dir, "cycle 2 must not reuse the cycle-1 dir")
-	cycle2Report := filepath.Join(cycle2Dir, "inv-1-x.md")
+	cycle2Report := filepath.Join(cycle2Dir, "investigator-1-x.md")
 	require.NoError(t, os.WriteFile(cycle2Report, []byte("## VERDICT\npass\n"), 0o644))
 
 	// Path isolation: the resolved cycle-2 verdict source is NOT the cycle-1 dir,

@@ -420,15 +420,15 @@ func TestResetGoal_FailedGoal(t *testing.T) {
 	assert.Equal(t, "", gf.Goals[0].FinishedAt)
 }
 
-func TestResetGoal_NotFailed(t *testing.T) {
+func TestResetGoal_NotFailedOrDone(t *testing.T) {
 	gf := &GoalsFile{
 		Goals: []Goal{
-			{ID: "goal-001", Status: GoalDone, Retries: 1},
+			{ID: "goal-001", Status: GoalRunning, Retries: 1},
 		},
 	}
 	ok := gf.ResetGoal("goal-001")
 	assert.False(t, ok)
-	assert.Equal(t, GoalDone, gf.Goals[0].Status)
+	assert.Equal(t, GoalRunning, gf.Goals[0].Status)
 	assert.Equal(t, 1, gf.Goals[0].Retries)
 }
 
@@ -549,14 +549,51 @@ func TestResetGoal_PreservesMaxCounters(t *testing.T) {
 	assert.Equal(t, 0, g.MaxBlockRetries)
 }
 
-// TestResetGoal_NonFailedLeavesLiveCountersUntouched asserts the failed-only
-// guard: a non-failed goal returns false and its live counters are unchanged.
-func TestResetGoal_NonFailedLeavesLiveCountersUntouched(t *testing.T) {
+// TestResetGoal_DoneGoal asserts that a done goal can be reset back to pending,
+// the same as a failed goal — zeroing counters and clearing markers.
+func TestResetGoal_DoneGoal(t *testing.T) {
 	gf := &GoalsFile{
 		Goals: []Goal{
 			{
 				ID:                "goal-001",
 				Status:            GoalDone,
+				CodeRetries:       3,
+				SpecRetries:       2,
+				ValidationRetries: 1,
+				BlockRetries:      1,
+				StuckRetries:      1,
+				Retries:           2,
+				NextDispatch:      "implementer",
+				FailedBy:          "",
+				StartedAt:         "2026-06-01T10:00:00Z",
+				FinishedAt:        "2026-06-01T12:00:00Z",
+			},
+		},
+	}
+	ok := gf.ResetGoal("goal-001")
+	assert.True(t, ok)
+	g := gf.Goals[0]
+	assert.Equal(t, GoalPending, g.Status)
+	assert.Equal(t, 0, g.CodeRetries)
+	assert.Equal(t, 0, g.SpecRetries)
+	assert.Equal(t, 0, g.ValidationRetries)
+	assert.Equal(t, 0, g.BlockRetries)
+	assert.Equal(t, 0, g.StuckRetries)
+	assert.Equal(t, 0, g.Retries)
+	assert.Equal(t, "", g.NextDispatch)
+	assert.Equal(t, "", g.FailedBy)
+	assert.Equal(t, "", g.StartedAt)
+	assert.Equal(t, "", g.FinishedAt)
+}
+
+// TestResetGoal_RunningLeavesLiveCountersUntouched asserts the guard rejects
+// non-terminal statuses: a running goal returns false and is unchanged.
+func TestResetGoal_RunningLeavesLiveCountersUntouched(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:                "goal-001",
+				Status:            GoalRunning,
 				CodeRetries:       3,
 				SpecRetries:       2,
 				ValidationRetries: 1,
@@ -567,7 +604,7 @@ func TestResetGoal_NonFailedLeavesLiveCountersUntouched(t *testing.T) {
 	ok := gf.ResetGoal("goal-001")
 	assert.False(t, ok)
 	g := gf.Goals[0]
-	assert.Equal(t, GoalDone, g.Status)
+	assert.Equal(t, GoalRunning, g.Status)
 	assert.Equal(t, 3, g.CodeRetries)
 	assert.Equal(t, 2, g.SpecRetries)
 	assert.Equal(t, 1, g.ValidationRetries)

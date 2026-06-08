@@ -127,19 +127,28 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 		}
 
 		id = NextGoalID(gf.Goals)
+		budget := MigrateRetries(maxRetries)
 		gf.Goals = append(gf.Goals, Goal{
-			ID:              id,
-			Description:     spec.Description,
-			Acceptance:      spec.Acceptance,
-			Validate:        spec.Validate,
-			Preconditions:   spec.Preconditions,
-			Status:          GoalPending,
-			MaxRetries:      maxRetries,
-			MaxStuckRetries: maxStuckRetries,
-			StuckRetries:    maxStuckRetries,
-			Phase:           spec.Phase,
-			DependsOn:       spec.DependsOn,
-			Scope:           scope,
+			ID:                   id,
+			Description:          spec.Description,
+			Acceptance:           spec.Acceptance,
+			Validate:             spec.Validate,
+			Preconditions:        spec.Preconditions,
+			Status:               GoalPending,
+			MaxRetries:           maxRetries,
+			CodeRetries:          budget.CodeRetries,
+			SpecRetries:          budget.SpecRetries,
+			ValidationRetries:    budget.ValidationRetries,
+			BlockRetries:         budget.BlockRetries,
+			MaxCodeRetries:       budget.CodeRetries,
+			MaxSpecRetries:       budget.SpecRetries,
+			MaxValidationRetries: budget.ValidationRetries,
+			MaxBlockRetries:      budget.BlockRetries,
+			MaxStuckRetries:      maxStuckRetries,
+			StuckRetries:         maxStuckRetries,
+			Phase:                spec.Phase,
+			DependsOn:            spec.DependsOn,
+			Scope:                scope,
 		})
 
 		return SaveGoals(workDir, gf)

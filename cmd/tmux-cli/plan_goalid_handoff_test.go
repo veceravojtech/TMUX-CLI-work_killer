@@ -21,22 +21,23 @@ import (
 func TestPlanXml_AutoExecuteShipsGoalID(t *testing.T) {
 	content := readEmbeddedCommand(t, "plan.xml")
 
-	// --- Step 11 auto-execute handoff ships the goal id ---
-	step11 := strings.Index(content, `<step n="11"`)
-	require.NotEqual(t, -1, step11, "plan.xml must have a step 11 (Finalize/auto-execute)")
-	flowEnd := strings.Index(content[step11:], `</step>`)
-	require.NotEqual(t, -1, flowEnd, "step 11 must be well-formed")
-	step11Body := content[step11 : step11+flowEnd]
+	// --- Step 11c auto-execute handoff ships the goal id ---
+	// (was step 11 before the blind-audit-gate split into 11/11a/11b/11c)
+	step11c := strings.Index(content, `<step n="11c"`)
+	require.NotEqual(t, -1, step11c, "plan.xml must have a step 11c (auto-execute handoff)")
+	flowEnd := strings.Index(content[step11c:], `</step>`)
+	require.NotEqual(t, -1, flowEnd, "step 11c must be well-formed")
+	step11cBody := content[step11c : step11c+flowEnd]
 
 	// {GOAL_ID} already carries the goal- prefix, so the command must be
 	// `/tmux:supervisor {GOAL_ID}` (NOT `goal-{GOAL_ID}`, which would expand to
 	// the doubled `goal-goal-046`).
-	assert.Contains(t, step11Body, "/tmux:supervisor {GOAL_ID}",
-		"plan.xml step 11 GOAL_MODE auto-execute must ship the goal id as a leading token to the fresh supervisor")
-	assert.NotContains(t, step11Body, "/tmux:supervisor goal-{GOAL_ID}",
+	assert.Contains(t, step11cBody, "/tmux:supervisor {GOAL_ID}",
+		"plan.xml step 11c GOAL_MODE auto-execute must ship the goal id as a leading token to the fresh supervisor")
+	assert.NotContains(t, step11cBody, "/tmux:supervisor goal-{GOAL_ID}",
 		"must not double the goal- prefix ({GOAL_ID} already includes it)")
-	assert.Contains(t, step11Body, "GOAL_MODE",
-		"plan.xml step 11 must gate the goal-id handoff on GOAL_MODE")
+	assert.Contains(t, step11cBody, "GOAL_MODE",
+		"plan.xml step 11c must gate the goal-id handoff on GOAL_MODE")
 
 	// --- Step 0b resolves GOAL_ID from the shipped dispatch path ---
 	step0b := strings.Index(content, `<step n="0b"`)

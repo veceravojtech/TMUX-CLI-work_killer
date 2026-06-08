@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"os/exec"
+	"strconv"
+	"syscall"
 
 	"github.com/console/tmux-cli/internal/session"
 	"github.com/console/tmux-cli/internal/setup"
@@ -110,6 +112,23 @@ var statusCmd = &cobra.Command{
 	Short: "Show detailed status of the session for this directory",
 	Long:  `Display detailed information about the tmux-cli session for the current directory.`,
 	RunE:  runSessionStatus,
+}
+
+var projectCmd = &cobra.Command{
+	Use:   "project",
+	Short: "Project management",
+}
+
+var projectInitCmd = &cobra.Command{
+	Use:   "init [PATH]",
+	Short: "Initialize a new tmux-cli project",
+	Long: `Scaffold a .tmux-cli/ project structure, run auto-setup, and create or reuse
+a tmux session non-interactively. Prints Session: <id> on stdout for agent parsing.
+
+If PATH is omitted, the current directory is used. If a session is already running
+for the resolved path, it is reused silently (no interactive prompt).`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runProjectInit,
 }
 
 var windowsCreateCmd = &cobra.Command{
@@ -247,7 +266,7 @@ var taskvisorGoalDeleteCmd = &cobra.Command{
 
 var taskvisorGoalResetCmd = &cobra.Command{
 	Use:   "reset [goal-id]",
-	Short: "Reset a failed goal back to pending",
+	Short: "Reset a failed or done goal back to pending",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTaskvisorGoalReset,
 }
@@ -257,6 +276,13 @@ var taskvisorGoalStopCmd = &cobra.Command{
 	Short: "Send stop signal to taskvisor daemon",
 	Args:  cobra.NoArgs,
 	RunE:  runTaskvisorGoalStop,
+}
+
+var taskvisorRestartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: "Restart the taskvisor daemon",
+	Args:  cobra.NoArgs,
+	RunE:  runTaskvisorRestart,
 }
 
 var taskvisorGoalSkipCmd = &cobra.Command{
@@ -375,6 +401,7 @@ func init() {
 	taskvisorGoalAddCmd.MarkFlagRequired("description")
 
 	taskvisorCmd.AddCommand(taskvisorStartCmd)
+	taskvisorCmd.AddCommand(taskvisorRestartCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalAddCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalListCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalDeleteCmd)
@@ -396,7 +423,12 @@ func init() {
 	taskvisorInlinePlanCmd.Flags().StringArrayVar(&revalChangedFiles, "changed-file", nil, "A file changed this cycle (repeatable); defaults to git diff --name-only HEAD")
 	taskvisorCmd.AddCommand(taskvisorInlinePlanCmd)
 
+	// Project init flags
+	projectInitCmd.Flags().Bool("no-attach", false, "Don't attach to the session after creation")
+	projectCmd.AddCommand(projectInitCmd)
+
 	// Add all commands directly to root
+	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(startAttachCmd)
 	rootCmd.AddCommand(killCmd)
@@ -546,6 +578,95 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Attaching to session '%s'...\n", sessionID)
 	return executor.AttachSession(sessionID)
+}
+
+func runProjectInit(cmd *cobra.Command, args []string) error {
+	var projectDir string
+	if len(args) > 0 {
+		projectDir = args[0]
+	} else {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get current directory: %w", err)
+		}
+		projectDir = wd
+	}
+	noAttach, _ := cmd.Flags().GetBool("no-attach")
+	executor := tmux.NewTmuxExecutor()
+	return runProjectInitWithExecutor(executor, projectDir, noAttach)
+}
+
+func runProjectInitWithExecutor(executor tmux.TmuxExecutor, projectDir string, noAttach bool) error {
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		return fmt.Errorf("create project directory: %w", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(projectDir, ".git")); os.IsNotExist(err) {
+		if err := exec.Command("git", "init", "--quiet", projectDir).Run(); err != nil {
+			return fmt.Errorf("git init: %w", err)
+		}
+	}
+
+	settingPath := filepath.Join(projectDir, ".tmux-cli", "setting.yaml")
+	if _, err := os.Stat(settingPath); os.IsNotExist(err) {
+		if err := setup.SaveSettings(projectDir, setup.DefaultSettings()); err != nil {
+			return fmt.Errorf("save settings: %w", err)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Join(projectDir, ".tmux-cli", "goals"), 0o755); err != nil {
+		return fmt.Errorf("create goals directory: %w", err)
+	}
+
+	claudeMDPath := filepath.Join(projectDir, "CLAUDE.md")
+	if _, err := os.Stat(claudeMDPath); os.IsNotExist(err) {
+		content := fmt.Sprintf("# %s\n", filepath.Base(projectDir))
+		if err := os.WriteFile(claudeMDPath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write CLAUDE.md: %w", err)
+		}
+	}
+
+	if err := runAutoSetup(projectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: auto-setup: %v\n", err)
+	}
+
+	absPath, err := filepath.Abs(projectDir)
+	if err != nil {
+		return fmt.Errorf("resolve absolute path: %w", err)
+	}
+	canonicalPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return fmt.Errorf("resolve symlinks: %w", err)
+	}
+
+	var sessionID string
+	existingID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", canonicalPath)
+	if existingID != "" {
+		if running, _ := executor.HasSession(existingID); running {
+			sessionID = existingID
+		}
+	}
+
+	if sessionID == "" {
+		sessionID = session.GenerateSessionID(canonicalPath)
+		mgr := session.NewSessionManager(executor)
+		if err := mgr.CreateSession(sessionID, canonicalPath); err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+	}
+
+	mgr := session.NewSessionManager(executor)
+	if err := mgr.EnsureTaskvisorWindow(sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: taskvisor setup: %v\n", err)
+	}
+
+	fmt.Printf("Session: %s\n", sessionID)
+
+	if !noAttach {
+		return executor.AttachSession(sessionID)
+	}
+
+	return nil
 }
 
 func runSessionKill(cmd *cobra.Command, args []string) error {
@@ -1491,8 +1612,8 @@ func runTaskvisorGoalReset(cmd *cobra.Command, args []string) error {
 		if !ok {
 			return fmt.Errorf("goal not found: %s", goalID)
 		}
-		if g.Status != taskvisor.GoalFailed {
-			return fmt.Errorf("goal is not in failed status (current: %s)", g.Status)
+		if g.Status != taskvisor.GoalFailed && g.Status != taskvisor.GoalDone {
+			return fmt.Errorf("goal is not in failed or done status (current: %s)", g.Status)
 		}
 
 		gf.ResetGoal(goalID)
@@ -1517,7 +1638,7 @@ func goalSkipWindowsToKill(windows []tmux.WindowInfo, goalID string) []tmux.Wind
 	sup := taskvisor.SupervisorWindowForGoal(goalID)
 	vals := taskvisor.ValidatorWindowNames(goalID)
 	ep := taskvisor.ExecutePrefixForGoal(goalID)
-	ip := taskvisor.InvPrefixForGoal(goalID)
+	ip := taskvisor.InvestigatorPrefixForGoal(goalID)
 	var kill []tmux.WindowInfo
 	for _, w := range windows {
 		if w.Name == "supervisor" {
@@ -1593,13 +1714,112 @@ func runTaskvisorGoalSkip(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func stopDaemonProcess(cwd string) error {
+	pidPath := filepath.Join(cwd, ".tmux-cli", "taskvisor.pid")
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read PID file: %w", err)
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		_ = os.Remove(pidPath)
+		return fmt.Errorf("invalid PID in %s: %w", pidPath, err)
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		_ = os.Remove(pidPath)
+		return nil
+	}
+
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		_ = os.Remove(pidPath)
+		return nil
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			_ = proc // keep vet happy
+			_ = os.Remove(pidPath)
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	fmt.Fprintf(os.Stderr, "warning: daemon PID %d did not exit within 10s after SIGTERM\n", pid)
+	_ = os.Remove(pidPath)
+	return nil
+}
+
+func runTaskvisorRestart(cmd *cobra.Command, args []string) error {
+	cwd, err := taskvisorProjectRoot()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+	executor := tmux.NewTmuxExecutor()
+	return doTaskvisorRestart(cwd, executor)
+}
+
+func doTaskvisorRestart(cwd string, executor tmux.TmuxExecutor) error {
+	if err := stopDaemonProcess(cwd); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: stop daemon process: %v\n", err)
+	}
+
+	sessionID, err := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", cwd)
+	if err != nil || sessionID == "" {
+		return fmt.Errorf("no tmux-cli session found for this directory — cannot restart daemon")
+	}
+
+	windows, err := executor.ListWindows(sessionID)
+	if err != nil {
+		return fmt.Errorf("list windows: %w", err)
+	}
+
+	var taskvisorWindowID string
+	for _, w := range windows {
+		if w.Name == "taskvisor" {
+			taskvisorWindowID = w.TmuxWindowID
+			break
+		}
+	}
+	if taskvisorWindowID == "" {
+		return fmt.Errorf("no 'taskvisor' window found in session — cannot restart daemon")
+	}
+
+	if err := executor.SendMessage(sessionID, taskvisorWindowID, "tmux-cli taskvisor --run"); err != nil {
+		return fmt.Errorf("send relaunch command: %w", err)
+	}
+
+	pidPath := filepath.Join(cwd, ".tmux-cli", "taskvisor.pid")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(pidPath); err == nil {
+			fmt.Println("Taskvisor daemon restarted successfully")
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	fmt.Println("Taskvisor relaunch command sent (PID file not yet confirmed)")
+	return nil
+}
+
 func runTaskvisorGoalStop(cmd *cobra.Command, args []string) error {
 	cwd, err := taskvisorProjectRoot()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
 	}
 
-	for _, name := range []string{"taskvisor-active", "taskvisor-start"} {
+	if err := stopDaemonProcess(cwd); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: stop daemon process: %v\n", err)
+	}
+
+	for _, name := range []string{"taskvisor-active", "taskvisor-start", "taskvisor-current-goal", "taskvisor-current-cycle", "taskvisor-current-worktree"} {
 		p := filepath.Join(cwd, ".tmux-cli", name)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", name, err)
@@ -1640,7 +1860,7 @@ func runTaskvisorGoalPrune(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("remove goals directory: %w", err)
 	}
 
-	for _, name := range []string{"taskvisor-current-goal", "taskvisor-start"} {
+	for _, name := range []string{"taskvisor-current-goal", "taskvisor-start", "taskvisor-current-cycle", "taskvisor-current-worktree"} {
 		p := filepath.Join(cwd, ".tmux-cli", name)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", name, err)

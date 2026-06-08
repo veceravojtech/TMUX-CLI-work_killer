@@ -32,7 +32,7 @@ type SupervisorSettings struct {
 	// MaxGoals bounds how many goals the daemon may have in flight concurrently.
 	// A value <=0 (or absent from a legacy setting.yaml) means "1" at runtime —
 	// the daemon's maxGoals() accessor coerces it. At 1 every tmux window keeps
-	// its bare singleton name (supervisor/validator/execute-/inv-); >1 namespaces
+	// its bare singleton name (supervisor/validator/execute-/investigator-); >1 namespaces
 	// each goal's windows so concurrent goals never collide (execute-31 wiring).
 	MaxGoals        int  `yaml:"max_goals"`
 	CycleDelay      int  `yaml:"cycle_delay"`
@@ -90,9 +90,10 @@ type TaskvisorSettings struct {
 	// files in the same package can each pass in isolation yet break the combined
 	// suite. A non-zero exit fails the goal and cascades to its dependents. Empty
 	// (the default) disables the gate — byte-identical to the pre-gate build.
-	IntegrationCmd      string `yaml:"integration_cmd"`
-	RequirePlanApproval bool   `yaml:"require_plan_approval"`
-	HaltOnStaleBinary   bool   `yaml:"halt_on_stale_binary"`
+	IntegrationCmd       string `yaml:"integration_cmd"`
+	RequirePlanApproval  bool   `yaml:"require_plan_approval"`
+	HaltOnStaleBinary    bool   `yaml:"halt_on_stale_binary"`
+	RestartOnStaleBinary bool   `yaml:"restart_on_stale_binary"`
 }
 
 // WorkerBudgetSec is the per-worker time budget in seconds, mirroring the
@@ -180,7 +181,8 @@ func DefaultSettings() *Settings {
 			Timeout: 30,
 		},
 		Taskvisor: TaskvisorSettings{
-			DispatchTimeout: 3600,
+			RestartOnStaleBinary: true,
+			DispatchTimeout:      3600,
 			// Seed the default from the worker budget (derived, not hardcoded)
 			// so there is a single source of truth: DeriveValidateTimeout(600,4,4) = 1260.
 			ValidateTimeout:           DeriveValidateTimeout(WorkerBudgetSec, DefaultMaxWorkers, DefaultMaxWorkers),

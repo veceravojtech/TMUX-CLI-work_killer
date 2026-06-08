@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/console/tmux-cli/internal/tasks"
 )
 
 func (d *Daemon) crashRecovery() error {
@@ -18,7 +20,7 @@ func (d *Daemon) crashRecovery() error {
 	sessionID, err := d.discoverSession()
 	if err != nil {
 		log.Printf("crash recovery: no session found: %v", err)
-		_ = os.Remove(guardPath)
+		d.cleanRuntimeMarkers()
 		return nil
 	}
 	d.session = sessionID
@@ -90,23 +92,59 @@ func (d *Daemon) crashRecovery() error {
 	changed := false
 	for _, g := range needWindowCheck {
 		rt := d.runtime(g.ID)
-		resumedValidating := false
+		resumed := false
 		for _, w := range windows {
-			if w.Name == validatorWindow(g.ID, mg) || strings.HasPrefix(w.Name, invPrefix(g.ID, mg)) {
+			if w.Name == validatorWindow(g.ID, mg) || strings.HasPrefix(w.Name, investigatorPrefix(g.ID, mg)) {
 				rt.phase = phaseValidating
 				rt.phaseStartedAt = d.now()
 				log.Printf("crash recovery: %s validator/investigator window found, resuming validating phase", g.ID)
-				resumedValidating = true
+				resumed = true
+				break
+			}
+			if w.Name == supervisorWindow(g.ID, mg) {
+				rt.phase = phaseSupervising
+				rt.dispatchTime = d.now()
+				rt.bootConfirmedAt = d.now()
+				if passed, _, rerr := d.runValidateScript(g); rerr == nil {
+					rt.scriptPassed = passed
+				}
+				log.Printf("crash recovery: %s supervisor window alive, resuming supervising phase (scriptPassed=%v)", g.ID, rt.scriptPassed)
+				resumed = true
 				break
 			}
 		}
-		if resumedValidating {
+		if resumed {
 			continue
 		}
 
-		log.Printf("crash recovery: re-dispatching %s (supervisor state unknown after crash)", g.ID)
+		tasksPath := tasks.GoalTasksFilePath(d.workDir, g.ID)
+		allDone := false
+		if data, rerr := os.ReadFile(tasksPath); rerr == nil {
+			allDone = !strings.Contains(string(data), "status: pending") &&
+				strings.Contains(string(data), "status: done")
+		}
+
+		if allDone {
+			if passed, _, verr := d.runValidateScript(g); verr == nil && passed {
+				rt := d.runtime(g.ID)
+				rt.phase = phaseValidating
+				rt.scriptPassed = true
+				rt.validateTime = d.now()
+				log.Printf("crash recovery: %s — tasks all done + validate.sh passes; spawning investigator", g.ID)
+				if err := d.createValidatorAndSendPayload(g); err != nil {
+					log.Printf("crash recovery: %s — validator spawn failed: %v; re-pending", g.ID, err)
+				} else {
+					continue
+				}
+			}
+		}
+
+		log.Printf("crash recovery: re-dispatching %s (no live window, tasks not all done)", g.ID)
 		if g.Retries < g.MaxRetries {
 			g.Status = GoalPending
+			if _, serr := os.Stat(tasks.GoalTasksFilePath(d.workDir, g.ID)); serr == nil {
+				g.NextDispatch = dispatchImplementer
+			}
 		} else {
 			g.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 			g.Status = GoalFailed

@@ -61,7 +61,7 @@ func TestValidatorWindowNames_NamespacedFirstThenBareFallback(t *testing.T) {
 	assert.Equal(t, []string{"validator-046", "validator"}, ValidatorWindowNames("goal-046"))
 }
 
-// --- executePrefix / invPrefix.
+// --- executePrefix / investigatorPrefix.
 
 func TestExecutePrefix_SingleGoalIsNamespaced(t *testing.T) {
 	assert.Equal(t, "execute-020-", executePrefix("goal-020", 1))
@@ -90,25 +90,44 @@ func TestExecutePrefixForGoal(t *testing.T) {
 	}
 }
 
-func TestInvPrefix_SingleGoalIsNamespaced(t *testing.T) {
-	assert.Equal(t, "inv-020-", invPrefix("goal-020", 1))
+func TestInvestigatorPrefix_SingleGoalIsNamespaced(t *testing.T) {
+	assert.Equal(t, "investigator-020-", investigatorPrefix("goal-020", 1))
 }
 
-func TestInvPrefix_MultiGoalNamespaced(t *testing.T) {
-	assert.Equal(t, "inv-020-", invPrefix("goal-020", 2))
+func TestInvestigatorPrefix_MultiGoalNamespaced(t *testing.T) {
+	assert.Equal(t, "investigator-020-", investigatorPrefix("goal-020", 2))
 }
 
-// InvPrefixForGoal / SupervisorWindowForGoal expose the namespaced names to the
+// InvestigatorPrefixForGoal / SupervisorWindowForGoal expose the namespaced names to the
 // package-main goal-skip sweep, derived from the same unexported helpers the
 // daemon spawns with so they can never drift.
-func TestInvPrefixForGoal(t *testing.T) {
-	assert.Equal(t, "inv-7-", InvPrefixForGoal("goal-7"))
-	assert.Equal(t, invPrefix("goal-7", 2), InvPrefixForGoal("goal-7"))
+func TestInvestigatorPrefixForGoal(t *testing.T) {
+	assert.Equal(t, "investigator-7-", InvestigatorPrefixForGoal("goal-7"))
+	assert.Equal(t, investigatorPrefix("goal-7", 2), InvestigatorPrefixForGoal("goal-7"))
 }
 
 func TestSupervisorWindowForGoal(t *testing.T) {
 	assert.Equal(t, "supervisor-7", SupervisorWindowForGoal("goal-7"))
 	assert.Equal(t, supervisorWindow("goal-7", 2), SupervisorWindowForGoal("goal-7"))
+}
+
+// --- planAuditWindow: goal-namespaced plan-audit window name.
+
+func TestPlanAuditWindow_SingleGoalIsNamespaced(t *testing.T) {
+	assert.Equal(t, "plan-audit-020", planAuditWindow("goal-020", 1))
+}
+
+func TestPlanAuditWindow_MultiGoalIsNamespaced(t *testing.T) {
+	assert.Equal(t, "plan-audit-020", planAuditWindow("goal-020", 2))
+}
+
+func TestPlanAuditWindow_SingleDigitGoal(t *testing.T) {
+	assert.Equal(t, "plan-audit-7", planAuditWindow("goal-7", 1))
+}
+
+func TestPlanAuditWindowForGoal(t *testing.T) {
+	assert.Equal(t, "plan-audit-7", PlanAuditWindowForGoal("goal-7"))
+	assert.Equal(t, planAuditWindow("goal-7", 2), PlanAuditWindowForGoal("goal-7"))
 }
 
 // --- maxGoals(): the lone impurity, reading setting.yaml with a default of 1.
@@ -165,7 +184,7 @@ func TestCollectManagedNames_SingleGoalIsNamespaced(t *testing.T) {
 	exec := new(testutil.MockTmuxExecutor)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@1", Name: "execute-020-1"},
-		{TmuxWindowID: "@2", Name: "inv-020-1"},
+		{TmuxWindowID: "@2", Name: "investigator-020-1"},
 		{TmuxWindowID: "@3", Name: "execute-021-1"},
 		{TmuxWindowID: "@4", Name: "unrelated"},
 	}, nil)
@@ -175,5 +194,5 @@ func TestCollectManagedNames_SingleGoalIsNamespaced(t *testing.T) {
 
 	names := d.collectManagedNames("goal-020")
 
-	assert.Equal(t, []string{"supervisor-020", "validator-020", "execute-020-1", "inv-020-1"}, names)
+	assert.Equal(t, []string{"supervisor-020", "validator-020", "plan-audit-020", "execute-020-1", "investigator-020-1"}, names)
 }
