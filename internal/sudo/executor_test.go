@@ -101,190 +101,11 @@ func fakeExecCommand(scenario string) func(ctx context.Context, name string, arg
 	}
 }
 
-func TestExecutor_Execute_Success(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = fakeExecCommand("success")
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	e := NewExecutor("testpass", 30*time.Second)
-	result, err := e.Execute(context.Background(), "echo hello")
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Equal(t, "hello\n", result.Stdout)
-	assert.Equal(t, 0, result.ExitCode)
-	assert.Greater(t, result.Duration, time.Duration(0))
-}
-
-func TestExecutor_Execute_StderrCapture(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = fakeExecCommand("stderr")
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	e := NewExecutor("testpass", 30*time.Second)
-	result, err := e.Execute(context.Background(), "echo out; echo err >&2")
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Equal(t, "out\n", result.Stdout)
-	assert.Equal(t, "err\n", result.Stderr)
-	assert.Equal(t, 0, result.ExitCode)
-}
-
-func TestExecutor_Execute_NonZeroExit(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = fakeExecCommand("nonzero")
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	e := NewExecutor("testpass", 30*time.Second)
-	result, err := e.Execute(context.Background(), "ls /nonexistent")
-
-	require.NoError(t, err, "non-zero exit is data, not error")
-	require.NotNil(t, result)
-	assert.Equal(t, 2, result.ExitCode)
-	assert.Contains(t, result.Stderr, "No such file or directory")
-}
-
-func TestExecutor_Execute_EmptyCommand(t *testing.T) {
-	e := NewExecutor("testpass", 30*time.Second)
-	result, err := e.Execute(context.Background(), "")
-
-	require.ErrorIs(t, err, ErrEmptyCommand)
-	assert.Nil(t, result)
-}
-
-func TestExecutor_Execute_NoPassword(t *testing.T) {
-	e := NewExecutor("", 30*time.Second)
-	result, err := e.Execute(context.Background(), "whoami")
-
-	require.ErrorIs(t, err, ErrNoPassword)
-	assert.Nil(t, result)
-}
-
-func TestExecutor_Execute_ContextTimeout(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = fakeExecCommand("sleep")
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	e := NewExecutor("testpass", 30*time.Second)
-	result, err := e.Execute(ctx, "sleep 300")
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.Nil(t, result)
-}
-
-func TestExecutor_Execute_ContextCanceled(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = fakeExecCommand("sleep")
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	e := NewExecutor("testpass", 30*time.Second)
-
-	// Cancel after a short delay
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-	}()
-
-	result, err := e.Execute(ctx, "sleep 300")
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.Canceled)
-	assert.Nil(t, result)
-}
-
-func TestExecutor_Execute_PasswordPipedToStdin(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = fakeExecCommand("password_echo")
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	e := NewExecutor("s3cret!P@ss", 30*time.Second)
-	result, err := e.Execute(context.Background(), "read_stdin")
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Equal(t, "password=s3cret!P@ss\n", result.Stdout)
-}
-
-func TestExecutor_Execute_Duration(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = fakeExecCommand("duration")
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	e := NewExecutor("testpass", 30*time.Second)
-	start := time.Now()
-	result, err := e.Execute(context.Background(), "sleep 0.05")
-	elapsed := time.Since(start)
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Greater(t, result.Duration, time.Duration(0))
-	// Duration should be roughly in the ballpark of wall time
-	assert.InDelta(t, elapsed.Milliseconds(), result.Duration.Milliseconds(), 200)
-}
-
-func TestExecutor_Execute_SpecialCharsInCommand(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = fakeExecCommand("special_chars")
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	e := NewExecutor("testpass", 30*time.Second)
-	cmd := "echo 'hello world' && cat /etc/hosts"
-	result, err := e.Execute(context.Background(), cmd)
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Equal(t, cmd+"\n", result.Stdout)
-	assert.Equal(t, 0, result.ExitCode)
-}
-
-func TestExecutor_Execute_DefaultTimeout(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = fakeExecCommand("sleep")
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	e := NewExecutor("testpass", 100*time.Millisecond)
-	start := time.Now()
-	result, err := e.Execute(context.Background(), "sleep 300")
-	elapsed := time.Since(start)
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.Nil(t, result)
-	assert.Less(t, elapsed, 2*time.Second, "defaultTimeout should kill command in ~100ms")
-}
-
-func TestExecutor_Interface_Compliance(t *testing.T) {
-	var _ SudoExecutor = (*Executor)(nil)
-}
-
 func TestNewExecutor(t *testing.T) {
 	e := NewExecutor("mypass", 45*time.Second)
 	require.NotNil(t, e)
 	assert.Equal(t, "mypass", e.password)
 	assert.Equal(t, 45*time.Second, e.defaultTimeout)
-}
-
-// TestExecutor_Execute_SudoNotFound verifies ErrSudoNotFound when the binary is missing.
-func TestExecutor_Execute_SudoNotFound(t *testing.T) {
-	origExecCommand := execCommand
-	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		// Use a name without path separators so LookPath runs and fails with ErrNotFound
-		return exec.CommandContext(ctx, "nonexistent-sudo-binary-"+strconv.Itoa(os.Getpid()))
-	}
-	t.Cleanup(func() { execCommand = origExecCommand })
-
-	e := NewExecutor("testpass", 30*time.Second)
-	result, err := e.Execute(context.Background(), "whoami")
-
-	require.ErrorIs(t, err, ErrSudoNotFound)
-	assert.Nil(t, result)
 }
 
 func TestExecutor_ExecuteStream_Success(t *testing.T) {
@@ -341,4 +162,85 @@ func TestExecutor_ExecuteStream_NonZeroExit(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exit status 2")
 	assert.Contains(t, stderr.String(), "No such file or directory")
+}
+
+func TestExecutor_ExecuteStream_ContextTimeout(t *testing.T) {
+	origExecCommand := execCommand
+	execCommand = fakeExecCommand("sleep")
+	t.Cleanup(func() { execCommand = origExecCommand })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	e := NewExecutor("testpass", 30*time.Second)
+	var stdout, stderr strings.Builder
+	err := e.ExecuteStream(ctx, "sleep 300", &stdout, &stderr)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestExecutor_ExecuteStream_ContextCanceled(t *testing.T) {
+	origExecCommand := execCommand
+	execCommand = fakeExecCommand("sleep")
+	t.Cleanup(func() { execCommand = origExecCommand })
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	e := NewExecutor("testpass", 30*time.Second)
+
+	// Cancel after a short delay
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	var stdout, stderr strings.Builder
+	err := e.ExecuteStream(ctx, "sleep 300", &stdout, &stderr)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestExecutor_ExecuteStream_PasswordPipedToStdin(t *testing.T) {
+	origExecCommand := execCommand
+	execCommand = fakeExecCommand("password_echo")
+	t.Cleanup(func() { execCommand = origExecCommand })
+
+	e := NewExecutor("s3cret!P@ss", 30*time.Second)
+	var stdout, stderr strings.Builder
+	err := e.ExecuteStream(context.Background(), "read_stdin", &stdout, &stderr)
+
+	require.NoError(t, err)
+	assert.Equal(t, "password=s3cret!P@ss\n", stdout.String())
+}
+
+func TestExecutor_ExecuteStream_SpecialCharsInCommand(t *testing.T) {
+	origExecCommand := execCommand
+	execCommand = fakeExecCommand("special_chars")
+	t.Cleanup(func() { execCommand = origExecCommand })
+
+	e := NewExecutor("testpass", 30*time.Second)
+	cmd := "echo 'hello world' && cat /etc/hosts"
+	var stdout, stderr strings.Builder
+	err := e.ExecuteStream(context.Background(), cmd, &stdout, &stderr)
+
+	require.NoError(t, err)
+	assert.Equal(t, cmd+"\n", stdout.String())
+}
+
+// TestExecutor_ExecuteStream_SudoNotFound verifies ErrSudoNotFound when the binary is missing.
+func TestExecutor_ExecuteStream_SudoNotFound(t *testing.T) {
+	origExecCommand := execCommand
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		// Use a name without path separators so LookPath runs and fails with ErrNotFound
+		return exec.CommandContext(ctx, "nonexistent-sudo-binary-"+strconv.Itoa(os.Getpid()))
+	}
+	t.Cleanup(func() { execCommand = origExecCommand })
+
+	e := NewExecutor("testpass", 30*time.Second)
+	var stdout, stderr strings.Builder
+	err := e.ExecuteStream(context.Background(), "whoami", &stdout, &stderr)
+
+	require.ErrorIs(t, err, ErrSudoNotFound)
 }

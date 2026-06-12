@@ -1,7 +1,6 @@
 package sudo
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,20 +15,7 @@ var (
 	ErrSudoNotFound = errors.New("sudo: sudo binary not found")
 )
 
-// SudoExecutor defines the interface for executing commands via sudo.
-type SudoExecutor interface {
-	Execute(ctx context.Context, command string) (*Result, error)
-}
-
-// Result captures all output from a sudo command execution.
-type Result struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
-	Duration time.Duration
-}
-
-// Executor is the production implementation of SudoExecutor.
+// Executor runs commands via sudo, piping the configured password to stdin.
 type Executor struct {
 	password       string
 	defaultTimeout time.Duration
@@ -49,7 +35,6 @@ type preparedCommand struct {
 	cmd    *exec.Cmd
 	ctx    context.Context
 	cancel context.CancelFunc
-	start  time.Time
 }
 
 func (e *Executor) prepareCommand(ctx context.Context, command string) (*preparedCommand, error) {
@@ -66,7 +51,7 @@ func (e *Executor) prepareCommand(ctx context.Context, command string) (*prepare
 	}
 
 	cmd := execCommand(ctx, "sudo", "-S", "bash", "-c", command)
-	return &preparedCommand{cmd: cmd, ctx: ctx, cancel: cancel, start: time.Now()}, nil
+	return &preparedCommand{cmd: cmd, ctx: ctx, cancel: cancel}, nil
 }
 
 func (e *Executor) startAndPipePassword(cmd *exec.Cmd) error {
@@ -95,53 +80,6 @@ func handleWaitError(err error, ctx context.Context) error {
 		return ErrSudoNotFound
 	}
 	return err
-}
-
-// Execute runs a command via sudo -S bash -c, piping the password to stdin.
-func (e *Executor) Execute(ctx context.Context, command string) (*Result, error) {
-	pc, err := e.prepareCommand(ctx, command)
-	if err != nil {
-		return nil, err
-	}
-	if pc.cancel != nil {
-		defer pc.cancel()
-	}
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	pc.cmd.Stdout = &stdoutBuf
-	pc.cmd.Stderr = &stderrBuf
-
-	if err := e.startAndPipePassword(pc.cmd); err != nil {
-		return nil, err
-	}
-
-	err = pc.cmd.Wait()
-	duration := time.Since(pc.start)
-
-	if err != nil {
-		if pc.ctx.Err() != nil {
-			return nil, fmt.Errorf("sudo command timed out: %w", pc.ctx.Err())
-		}
-
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return &Result{
-				Stdout:   stdoutBuf.String(),
-				Stderr:   stderrBuf.String(),
-				ExitCode: exitErr.ExitCode(),
-				Duration: duration,
-			}, nil
-		}
-
-		return nil, handleWaitError(err, pc.ctx)
-	}
-
-	return &Result{
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
-		ExitCode: 0,
-		Duration: duration,
-	}, nil
 }
 
 // ExecuteStream runs a command via sudo, streaming stdout/stderr to the provided writers.
