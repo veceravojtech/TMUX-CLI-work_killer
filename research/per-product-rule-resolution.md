@@ -114,8 +114,8 @@ packs:
 - Manifest integrity test: every referenced file exists; no orphan files.
 
 ### 3.6 Scope boundary
-- **Phase 1** = the `<conventions>` cross-cutting block (clean, 1:1 condition mapping, high value).
-- **Phase 2 (deferred)** = per-step `condition=` branches inside goal generation (`is_cross_bc`, `uses_jwt`, `symfony/messenger in composer.json`, etc.) — entangled with generation logic, riskier to extract.
+- **Phase 1** = the `<conventions>` cross-cutting block (clean, 1:1 condition mapping, high value). **Shipped a38a4d2.**
+- **Phase 2** = ADAPTED and redesigned in `rules-e2e-design.md` (2026-06-12): the per-step `condition=` branches are NOT extracted wholesale — survey showed three classes (capability signals / discovery-content predicates / control flow). What extracts is the condition *evaluation* (Signals + `rules resolve --signals` as single authority) and the stack-instructional *content* (dedup against ddd-conventions.md + code rules), while control flow stays in XML. Full E2E lifecycle (rule→goal injection, spec S9, execute/investigate/audit consumption, `rules lint`/`check`, ingestion skill) is designed there with phasing 2a–2e.
 
 ---
 
