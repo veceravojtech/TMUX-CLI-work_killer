@@ -19,17 +19,31 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
       - name: Run tests
         run: go test -race -short ./...
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0-dev" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build binaries
         run: |
           mkdir -p release
+          VERSION="${{ steps.version.outputs.value }}"
+          echo "Building version ${VERSION}"
           for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             OS="${pair%/*}"
             ARCH="${pair#*/}"
             echo "Building tmux-cli-${OS}-${ARCH}..."
-            GOOS="$OS" GOARCH="$ARCH" go build -ldflags "-s -w" -o "tmux-cli" ./cmd/tmux-cli
+            GOOS="$OS" GOARCH="$ARCH" go build -ldflags "-s -w -X main.version=${VERSION}" -o "tmux-cli" ./cmd/tmux-cli
             tar -czf "release/tmux-cli-${OS}-${ARCH}.tar.gz" tmux-cli
             rm tmux-cli
           done

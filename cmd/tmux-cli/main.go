@@ -4,11 +4,12 @@ import (
 	"runtime/debug"
 )
 
-// version information
-const (
-	version = "0.1.0"
-	appName = "tmux-cli"
-)
+// version information. `version` is the default for local/dev builds; release
+// builds override it via -ldflags "-X main.version=<semver>" (set from the git
+// tag by the release workflow). The commit suffix comes from vcsRevision().
+var version = "0.1.0"
+
+const appName = "tmux-cli"
 
 func vcsRevision() string {
 	info, ok := debug.ReadBuildInfo()
