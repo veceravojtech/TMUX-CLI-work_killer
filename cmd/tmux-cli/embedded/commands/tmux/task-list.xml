@@ -95,20 +95,49 @@ age = humanized now − created_at (e.g. 3d, 5h).</template>
       </substep>
     </step>
 
-    <step n="4" title="Wrap-up">
-      <check condition="consume created at least one goal">
-        <action>Check .tmux-cli/taskvisor-active: if absent, print: "Goals queued — start the daemon with the taskvisor-start MCP tool (or tmux-cli taskvisor) to execute them."</action>
-        <action>Print: "Run /tmux:task-list again after the run to reconcile results back to the backend."</action>
+    <step n="4" title="Auto-start taskvisor (MODE == consume, at least one goal created)">
+      <check condition="MODE != consume OR no goal was created this run">
+        <action>Skip this step entirely.</action>
       </check>
+      <substep n="4.1" title="Assess daemon state">
+        <action>PID_ALIVE: .tmux-cli/taskvisor.pid exists AND `kill -0 $(cat .tmux-cli/taskvisor.pid)` succeeds.</action>
+        <action>ACTIVE: .tmux-cli/taskvisor-active exists.</action>
+        <check condition="PID_ALIVE AND ACTIVE">
+          <action>Print: "taskvisor is already active — {goal ids} will be scheduled on the next tick." Skip to substep 4.4.</action>
+        </check>
+      </substep>
+      <substep n="4.2" title="Ensure the daemon process is running">
+        <check condition="NOT PID_ALIVE">
+          <action>Run: tmux-cli taskvisor restart</action>
+          <check condition="restart errors (no session / no taskvisor window)">
+            <action>Print: "Cannot auto-start: {error}. Start a session with tmux-cli start, then run: tmux-cli taskvisor restart — the queued goals will execute on activation."</action>
+            <action>Skip to substep 4.4 (degraded — goals stay queued).</action>
+          </check>
+        </check>
+      </substep>
+      <substep n="4.3" title="Activate and confirm">
+        <action>Call the taskvisor-start MCP tool (validates pending goals exist and writes the .tmux-cli/taskvisor-start marker; the idle daemon consumes it on its next poll).</action>
+        <action>Poll for .tmux-cli/taskvisor-active every 3s, up to 30s.</action>
+        <check condition="taskvisor-active appears">
+          <action>Print: "taskvisor ACTIVE — executing {goal ids}."</action>
+        </check>
+        <check condition="timeout">
+          <action>Print the last ~10 lines of .tmux-cli/logs/taskvisor.log and: "Daemon did not activate within 30s — inspect the taskvisor window; goals remain queued."</action>
+        </check>
+      </substep>
+      <substep n="4.4" title="Reconcile reminder">
+        <action>Print: "Run /tmux:task-list again after the run to reconcile results back to the backend."</action>
+      </substep>
     </step>
   </flow>
 
   <execution-rules>
-    <rule>Order is fixed: reconcile → list → consume; reconcile always runs so the rendered list is truthful</rule>
+    <rule>Order is fixed: reconcile → list → consume → auto-start; reconcile always runs so the rendered list is truthful</rule>
     <rule>Claim before work; in_progress after goal creation; resolved/failed only from the mapped goal's terminal status</rule>
     <rule>Only file written: MAPPING_FILE (full-file rewrite after reconcile, append on consume)</rule>
     <rule>GOALS_FILE is read-only; goals are created exclusively through goal-create</rule>
     <rule>Status-update failures (403/404/422) drop the mapping with a warning — never retried, never fatal to the run</rule>
     <rule>Consume cap: 3 per invocation regardless of N</rule>
+    <rule>Consume always ends with the daemon executing (or a named, actionable reason why not) — queued-but-idle is a failure of this spec</rule>
   </execution-rules>
 </task>
