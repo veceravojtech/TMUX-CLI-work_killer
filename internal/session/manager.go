@@ -148,14 +148,3 @@ func (m *SessionManager) EnsureTaskvisorWindow(sessionID string) error {
 
 	return m.executor.SendMessage(sessionID, windowID, "tmux-cli taskvisor --run")
 }
-
-// KillSession kills a tmux session by ID
-// This is an idempotent operation - killing an already-dead session is not an error
-func (m *SessionManager) KillSession(id string) error {
-	if id == "" {
-		return fmt.Errorf("kill session: session ID is required")
-	}
-
-	_ = m.executor.KillSession(id)
-	return nil
-}

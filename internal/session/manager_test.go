@@ -296,40 +296,6 @@ func TestSessionManager_CreateSession_ServerNeverReady(t *testing.T) {
 	mockExec.AssertNotCalled(t, "SetSessionEnvironment", mock.Anything, mock.Anything, mock.Anything)
 }
 
-// TestSessionManager_KillSession_Success tests successful kill
-func TestSessionManager_KillSession_Success(t *testing.T) {
-	mockExec := new(MockTmuxExecutor)
-	mockExec.On("KillSession", "test-id").Return(nil)
-
-	manager := NewSessionManager(mockExec)
-	err := manager.KillSession("test-id")
-
-	assert.NoError(t, err)
-}
-
-// TestSessionManager_KillSession_EmptyID tests error for empty ID
-func TestSessionManager_KillSession_EmptyID(t *testing.T) {
-	mockExec := new(MockTmuxExecutor)
-
-	manager := NewSessionManager(mockExec)
-	err := manager.KillSession("")
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "session ID is required")
-}
-
-// TestSessionManager_KillSession_Idempotent tests killing already-dead session
-func TestSessionManager_KillSession_Idempotent(t *testing.T) {
-	mockExec := new(MockTmuxExecutor)
-	mockExec.On("KillSession", "test-id").Return(errors.New("session not found"))
-
-	manager := NewSessionManager(mockExec)
-	err := manager.KillSession("test-id")
-
-	// Should not error - kill is idempotent
-	assert.NoError(t, err)
-}
-
 func TestEnsureTaskvisorWindow_CreatesWhenAbsent(t *testing.T) {
 	mockExec := new(MockTmuxExecutor)
 
