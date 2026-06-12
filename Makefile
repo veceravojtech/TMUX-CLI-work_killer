@@ -1,7 +1,7 @@
 # Makefile for tmux-cli
 # TDD-focused Go project
 
-.PHONY: help build test install clean coverage lint fmt vet verify-real check-file-lengths
+.PHONY: help build test install clean coverage lint fmt vet verify-real check-file-lengths release
 
 # Default target
 .DEFAULT_GOAL := help
@@ -37,6 +37,7 @@ help:
 	@echo "  make test-all     - Run all tests (unit + tmux + integration + MCP)"
 	@echo "  make verify-real  - Build + E2E verification with real tmux (RECOMMENDED)"
 	@echo "  make install      - Install binary to ~/.local/bin"
+	@echo "  make release      - Cut a release (patch bump; ARGS=\"--minor --watch\" etc.)"
 	@echo "  make clean        - Remove built binaries and test cache"
 	@echo "  make coverage     - Run tests with coverage report"
 	@echo "  make lint         - Run linters (fmt, vet)"
@@ -129,6 +130,11 @@ install: build
 	@echo ""
 	@echo "Make sure $(INSTALL_PATH) is in your PATH:"
 	@echo "  export PATH=\"\$$PATH:$(INSTALL_PATH)\""
+
+## release: Tag and push a release via scripts/release.sh (patch bump by default)
+## Pass flags through ARGS, e.g.: make release ARGS="--minor --watch" or ARGS="--dry-run"
+release:
+	@./scripts/release.sh $(ARGS)
 
 ## clean: Remove built binaries and test cache
 clean:
