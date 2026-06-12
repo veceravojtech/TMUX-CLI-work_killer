@@ -43,13 +43,27 @@ deterministic source; the planner XML's scattered re-derivation prose
 (grep composer.json, re-read Playwright line per step) collapses to "read the
 signal dump captured in Step 0".
 
-### 2.3 Generation — rule→goal injection (phase 2b; the core)
-New generation substep after the conventions load builds a **RULE_INDEX**:
-parse every resolved code-rules YAML → `{id, severity, applies_to, acceptance,
-validate, validate_kind, signal, phase, depends_on_rules}`.
+### 2.2b Matching authority — `tmux-cli rules match` (phase 2b; closes the determinism boundary)
+Agents never glob-match. New subcommand:
 
-At every goal-creation step, match the goal's Deliverables against
-`applies_to` globs. For the matching set:
+```
+tmux-cli rules match --files <p1,p2,...> [--phase <phase>] [--json]
+```
+
+resolves code-rules for the project, filters to rules whose `applies_to`
+globs match any given file path (and whose `phase` matches when --phase is
+passed), and emits per rule the PRE-RENDERED injection payload: id, severity,
+validate_kind, paths, the `CR-<id>` acceptance line, and — for rules with a
+signal — the fail-closed validate command. Consumers: generation (per goal,
+with deliverable paths) and the plan supervisor (per task, with the task's
+file footprint). Glob/severity/signal routing lives in `internal/rules`,
+shared with resolve; the agent only copies payloads into goal-create /
+task messages.
+
+### 2.3 Generation — rule→goal injection (phase 2b; the core)
+At every goal-creation step, generation runs `rules match --files
+<deliverable paths> --phase <goal phase>` (§2.2b) — no agent-side glob
+matching, no hand-built RULE_INDEX. For the returned set:
 
 | rule shape              | injected into goal                                                                 |
 |-------------------------|------------------------------------------------------------------------------------|
@@ -57,6 +71,15 @@ At every goal-creation step, match the goal's Deliverables against
 | `must` (any kind)       | one acceptance criterion per rule, tagged `CR-<id>`, body = the rule's first acceptance entry |
 | automated/mixed w/ signal | one fail-closed validate line: `sh -c '! grep -rE "<signal>" <goal-scope-globs>'` — ONLY after the plan-time baseline run passes (§6) |
 | review/mixed            | folded into ONE `convention-audit` investigator per goal: paths = goal scope, fail = "any cited must rule violated; should violations reported as findings", commands = the automated signals (greps) for the mixed rules |
+
+**Investigator-budget rule** (validateInvestigators enforces 2–4 entries):
+when the step's goal template already emits a `convention-audit` investigator,
+the rule checks MERGE into it (extend fail criteria + commands); when it
+doesn't and the template emits 4 investigators, generation drops the
+template's lowest-value investigator in favor of the rule investigator only
+if `must` review rules apply — otherwise the rules ride spec citation alone.
+Steps revised in 2b emit ≤3 template investigators when code-rules are
+resolvable, reserving the fourth slot.
 
 Anti-bloat caps (§6): acceptance injection for `must` only; broad-glob rules
 (`src/**`) ride the investigator + spec citation, never per-goal acceptance,
@@ -69,9 +92,11 @@ compare. `depends_on_rules` does NOT create goal dependencies in greenfield
 the implementer.
 
 ### 2.4 Spec (plan.xml spec workers + spec-validate)
-- `buildTaskMessage` (internal/mcp/tools.go:600) gains a `CODE_RULES:` field —
-  the supervisor passes the goal's applicable rule IDs + paths into the worker
-  boot message (plan.xml step 4 / self-spec step 3d alike).
+- `buildTaskMessage` (internal/mcp/tools.go:600) gains a `CODE_RULES:` field.
+  The supervisor derives it per task by running `rules match --files <task
+  file footprint>` (§2.2b) — it never parses the goal.md prose line; the
+  prose line stays human/implementer-facing only. Applies to plan.xml step 4
+  worker dispatch and self-spec step 3d alike.
 - Spec template gains a **`## Code Rules` section**: one line per `must` rule
   ID — how the design satisfies it; `should` rules listed with apply/skip+why.
 - `SpecValidate` (internal/mcp/tools.go:764) gains **S9 code-rules coverage**:
@@ -190,11 +215,16 @@ cheapness). Automated signals are therefore the highest-value rules to grow.
 
 ## 6. Safety rails
 
-1. **Vacuous-gate (four-surfaces lesson):** every generation-injected grep is
-   baseline-RUN at plan time; a grep that cannot fire (bad glob, wrong file)
-   is dropped with a logged warning, never injected dead. Falsifiability
-   fixtures (signal ↔ examples) are pre-proven by `rules lint`/embedded
-   selftest before any signal is eligible for injection.
+1. **Vacuous-gate (four-surfaces lesson), stated precisely:** falsifiability
+   of a signal is established by its lint fixtures (signal matches
+   examples.bad, not examples.good — `rules lint`/embedded selftest), NOT by
+   a plan-time project run — on greenfield the tree is empty and an
+   absence-grep is expectedly, vacuously green. The plan-time baseline run
+   therefore checks only RUNNABLE-NESS: the rendered command must exit 0 or
+   1 (grep's no-match/match), never 2 (bad pattern/path class errors); a
+   command erroring at baseline is dropped with a logged warning, never
+   injected dead. Only signals with lint-proven fixtures are eligible for
+   injection at all.
 2. **Acceptance bloat cap:** `must`-only injection; broad-glob (`src/**`)
    rules ride the single per-goal convention-audit investigator unless phase
    matches. One investigator per goal for ALL review rules — the 2–4
@@ -215,7 +245,7 @@ cheapness). Automated signals are therefore the highest-value rules to grow.
 | phase | content | touches |
 |-------|---------|---------|
 | 2a | Stack line in discovery + Detect parser; Signals + Detect grow Class A/B-cheap; `resolve --signals` | task-plan-discover.xml, internal/rules, rules.go CLI |
-| 2b | RULE_INDEX + rule→goal injection (acceptance/validate/investigator) + plan-time grep baseline | task-plan-generate.xml (+ relevant shards), generation tests |
+| 2b | `rules match` CLI (internal/rules, shared globs/routing) + rule→goal injection (acceptance/validate/investigator incl. budget rule) + runnable-ness baseline | rules.go CLI, internal/rules, task-plan-generate.xml (+ relevant shards), generation tests |
 | 2c | Consumption: buildTaskMessage CODE_RULES, spec §Code Rules + SpecValidate S9, execute.xml 1b, audit prompt input, investigate-worker note | tools.go, plan.xml, execute.xml, investigate-worker.xml + MCP tests |
 | 2d | `rules lint` (checker → internal/rules/lint.go, shared with catalogue test), `/tmux:rules:add` skill | rules.go CLI, new command XML |
 | 2e | `rules check` diff gate; opportunistic shard dedup vs ddd-conventions; XML conditions → signal-dump reads | rules.go CLI, generation shards |
