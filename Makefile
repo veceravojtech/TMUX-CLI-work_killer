@@ -38,7 +38,7 @@ help:
 	@echo "  make verify-real  - Build + E2E verification with real tmux (RECOMMENDED)"
 	@echo "  make install      - Install binary to ~/.local/bin"
 	@echo "  make release      - Cut a release (patch bump; ARGS=\"--minor --watch\" etc.)"
-	@echo "  make clean        - Remove built binaries and test cache"
+	@echo "  make clean        - Remove built binaries, test binaries and coverage artifacts"
 	@echo "  make coverage     - Run tests with coverage report"
 	@echo "  make lint         - Run linters (fmt, vet)"
 	@echo "  make fmt          - Format code"
@@ -136,12 +136,15 @@ install: build
 release:
 	@./scripts/release.sh $(ARGS)
 
-## clean: Remove built binaries and test cache
+## clean: Remove built binaries, test binaries, coverage artifacts and test logs
 clean:
 	@echo "Cleaning..."
 	$(GOCLEAN)
 	@rm -rf bin/
+	@rm -f *.test
 	@rm -f coverage.out coverage.html
+	@rm -rf coverage/
+	@rm -f test-output.log
 	@echo "✓ Clean complete"
 
 ## fmt: Format all Go files
