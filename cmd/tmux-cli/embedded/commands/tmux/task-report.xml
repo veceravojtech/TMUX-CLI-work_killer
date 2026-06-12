@@ -1,0 +1,126 @@
+<task id="task-report" name="Backend task reporter">
+  <objective>Compose a complete, evidence-backed task report and submit it to the tmux-cli backend via the task-report MCP tool. The MCP tool hard-rejects missing fields, contentless stubs, and out-of-enum values with NO coercion — this command's job is to derive every field properly BEFORE the wire call so a rejection never happens.</objective>
+
+  <glossary>
+    <term name="PROBLEM">The problem being reported. Resolved from: (1) $ARGUMENTS free-form text, (2) a path in $ARGUMENTS to a saved outbox draft (.tmux-cli/task-reports/outbox-*.md) for retry, (3) the current conversation context when $ARGUMENTS is empty.</term>
+    <term name="GOAL_ID">Optional. A goal-\d+ token found in PROBLEM or the conversation, used to locate on-disk evidence. Absent for non-goal reports.</term>
+    <term name="GOAL_DIR">.tmux-cli/goals/{GOAL_ID}/ — signal.json, corrections/, runbook.md, goal.md.</term>
+    <term name="OUTBOX_DIR">.tmux-cli/task-reports/ — where a composed report is saved when the backend is unreachable, so the work is never lost.</term>
+  </glossary>
+
+  <llm critical="true">
+    <mandate>NEVER submit a stub proposed_fix ("fix it", "tbd", "n/a", "none", "not applicable", "to be determined") — the backend rejects them; derive a concrete remediation or name the smallest concrete diagnostic step</mandate>
+    <mandate>NEVER invent evidence — quote verbatim from files/logs or omit the Evidence section line; paraphrased "evidence" is worse than none</mandate>
+    <mandate>NEVER use a category or severity outside the closed sets in step 3 — the backend rejects them with NO coercion</mandate>
+    <mandate>NEVER modify any project file — the only writes allowed are OUTBOX_DIR drafts on submission failure</mandate>
+    <mandate>One report per invocation — never batch multiple distinct problems into one report; tell the user to re-invoke for the second problem</mandate>
+  </llm>
+
+  <flow>
+    <step n="0" title="Preflight: reporting enabled">
+      <action>Read .tmux-cli/setting.yaml and resolve API enablement: flat `apiEnabled` key wins when present, else nested `api.enabled`.</action>
+      <check condition="reporting disabled">
+        <action>Print: "Task reporting is disabled — set api.enabled: true in .tmux-cli/setting.yaml (or run tmux-cli setting) and retry."</action>
+        <action>STOP</action>
+      </check>
+    </step>
+
+    <step n="1" title="Resolve the problem statement">
+      <action>If $ARGUMENTS is a path matching .tmux-cli/task-reports/outbox-*.md, read that draft: it already contains the six fields — skip to step 5 and submit it verbatim.</action>
+      <action>Else set PROBLEM from $ARGUMENTS, or — when empty — from the most recent concrete problem discussed in this conversation.</action>
+      <check condition="PROBLEM cannot be determined">
+        <action>Print: "Nothing to report — pass a problem statement: /tmux:task-report &lt;what went wrong&gt;"</action>
+        <action>STOP</action>
+      </check>
+    </step>
+
+    <step n="2" title="Gather evidence from on-disk artifacts">
+      <action>Scan PROBLEM and conversation for a goal-\d+ token; if found, set GOAL_ID.</action>
+      <check condition="GOAL_ID is set">
+        <action>Read {GOAL_DIR}/signal.json — the verdict, owner, and per-finding detail (failing_command, output_excerpt, expected_state).</action>
+        <action>Read the highest-numbered {GOAL_DIR}/corrections/cycle-N.md — the last correction the implementer saw.</action>
+        <action>Read {GOAL_DIR}/runbook.md if present — the ops remedy for a parked goal.</action>
+        <action>Read the GOAL_ID entry in .tmux-cli/goals.yaml — status, retry counters, failed_by/blocked_by.</action>
+        <action>Read the tail (last ~50 lines) of .tmux-cli/logs/taskvisor.log filtered to GOAL_ID lines.</action>
+        <action>Read the tails of .tmux-cli/logs/panes/*{ns}*.log for the goal's namespace if pane logs exist.</action>
+      </check>
+      <action>For non-goal problems: collect verbatim error output, failing command, and file:line references already present in the conversation.</action>
+      <rule>Evidence is QUOTED, never paraphrased. Cap each excerpt at ~15 lines; prefer the lines that show the failure over surrounding noise.</rule>
+    </step>
+
+    <step n="3" title="Derive the six required fields">
+      <substep n="3.1" title="category — closed set, decision table">
+        <table>
+          <row when="planner/spec defect: contradictory or under-specified goal, bad plan, wrong acceptance/validate rules">plan</row>
+          <row when="daemon/dispatch/scheduling: taskvisor tick, dispatch, window lifecycle, budgets, cascade, worktrees">supervisor</row>
+          <row when="validation infrastructure: validator/investigator behavior, validate.sh handling, verdict classification">validator</row>
+          <row when="implementer/code: worker behavior, code defects in produced work, execute.xml protocol">execute</row>
+          <row when="anything else: install, setup, docs, ideas, backend itself">general</row>
+        </table>
+      </substep>
+      <substep n="3.2" title="severity — closed set">
+        <table>
+          <row when="blocks goals outright, cascades the DAG, loses work or data, no workaround">critical</row>
+          <row when="degraded behavior or wasted budget with a known workaround">warning</row>
+          <row when="cosmetic, documentation, improvement idea">info</row>
+        </table>
+      </substep>
+      <substep n="3.3" title="title">
+        <rule>One line, ≤80 chars, names the specific mechanism — "GateTerminalPass downgrades pass on stale scriptPassed", never "validation is broken".</rule>
+      </substep>
+      <substep n="3.4" title="description — fixed skeleton">
+        <template>## What happened
+{observed behavior, with ids/timestamps}
+
+## Expected
+{correct behavior}
+
+## Evidence
+{verbatim excerpts from step 2, each introduced by its source path}
+
+## Reproduction
+{numbered steps, or "not reproduced — observed once" when honest}</template>
+      </substep>
+      <substep n="3.5" title="proposed_fix">
+        <rule>Concrete remediation at file/function/config level when the cause is known (e.g. "re-run validate.sh in rerunValidationOnly before GateTerminalPass").</rule>
+        <rule>When the cause is unknown, name the smallest concrete diagnostic step (e.g. "add reason logging to runValidateScript non-pass paths, then re-trigger") — that is actionable; "investigate" alone is not.</rule>
+        <check condition="derived proposed_fix lowercases/trims to one of: '', 'fix it', 'none', 'n/a', 'na', 'not applicable', 'to be determined', 'tbd'">
+          <action>Rewrite it — derive from the Evidence section what change or diagnostic would settle the issue. Do NOT submit until this gate passes.</action>
+        </check>
+      </substep>
+      <substep n="3.6" title="expected_green_state">
+        <rule>An observable, checkable condition — a command that passes, a log line that appears, a status that changes. Prefer a runnable command in backticks.</rule>
+      </substep>
+    </step>
+
+    <step n="4" title="Assemble optional payload">
+      <action>Build a payload map with machine context: goal_id, cycle, window names, key log excerpts — only fields that exist.</action>
+      <rule>Payload is bounded: ≤10KB total; truncate excerpts rather than dropping the submission.</rule>
+    </step>
+
+    <step n="5" title="Submit">
+      <action>Call the task-report MCP tool with: category, severity, title, description, proposed_fix, expected_green_state, payload.</action>
+      <check condition="tool returns an invalid-input error">
+        <action>The error names the failing field(s). Fix exactly those fields per step 3 and resubmit ONCE. If it fails again, fall through to the outbox branch.</action>
+      </check>
+      <check condition="tool returns 'task reporting is disabled'">
+        <action>Print the step-0 enable instruction and STOP.</action>
+      </check>
+      <check condition="network/backend error (timeout, non-2xx)">
+        <action>Write the full composed report (all six fields + payload as a fenced yaml block) to {OUTBOX_DIR}/outbox-{UTC timestamp yyyymmdd-hhmmss}.md (mkdir -p the directory).</action>
+        <action>Print: "Backend unreachable — report saved to {path}. Retry with: /tmux:task-report {path}"</action>
+        <action>STOP</action>
+      </check>
+      <check condition="success">
+        <action>Print the report summary (category/severity/title) followed by: "Reported: task id={id} status={status}. Track it with /tmux:task-list."</action>
+      </check>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>Local validation mirrors the MCP tool exactly: six non-empty fields, no stub proposed_fix, closed category/severity sets — a wire rejection means this spec was not followed</rule>
+    <rule>Evidence verbatim, bounded excerpts, sources named</rule>
+    <rule>Only writes allowed: OUTBOX_DIR drafts on submission failure</rule>
+    <rule>One problem per report; one resubmit attempt on invalid-input, then outbox</rule>
+  </execution-rules>
+</task>

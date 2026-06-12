@@ -1,0 +1,114 @@
+<task id="task-list" name="Backend task queue: reconcile, list, consume">
+  <objective>Make the backend task queue truthful and actionable: (1) RECONCILE — settle every locally-consumed task whose goal finished (goal done → task resolved, goal failed → task failed) via task-update-status; (2) LIST — render all unresolved tasks; (3) CONSUME (opt-in) — claim tasks and convert them into taskvisor goals, recording the task↔goal mapping so a later run can reconcile them. The lifecycle contract: task-claim is ALWAYS called before any work is taken, and task-update-status ALWAYS marks the outcome.</objective>
+
+  <glossary>
+    <term name="MODE">"list" (default) or "consume" — set by a `consume` token in $ARGUMENTS.</term>
+    <term name="N">Consume count: integer following the `consume` token. Default 1, hard cap 3.</term>
+    <term name="FILTERS">Optional `category=&lt;c&gt;` and `severity=&lt;s&gt;` tokens in $ARGUMENTS. Validate against the closed sets (category: plan, supervisor, validator, execute, general; severity: critical, warning, info) and reject unknown values naming the allowed ones.</term>
+    <term name="MAPPING_FILE">.tmux-cli/task-goals.yaml — the local task↔goal ledger: `mappings: [{task_id, goal_id, title, claimed_at}]`. Created on first consume; absence means nothing to reconcile.</term>
+    <term name="GOALS_FILE">.tmux-cli/goals.yaml — read-only here (atomic-rename writes make unlocked reads safe). NEVER written by this command.</term>
+  </glossary>
+
+  <llm critical="true">
+    <mandate>NEVER take work without claiming first — task-claim precedes goal-create, no exceptions</mandate>
+    <mandate>NEVER write GOALS_FILE — goals are created ONLY via the goal-create MCP tool; the only file this command writes is MAPPING_FILE</mandate>
+    <mandate>NEVER mark a task resolved unless its mapped goal Status is "done" in GOALS_FILE — resolution is earned by the validated goal, not assumed</mandate>
+    <mandate>NEVER retry-loop a failed status update — 403/404/422 means another actor advanced the task; drop the mapping with a warning and move on</mandate>
+    <mandate>Consume is opt-in and capped at 3 per invocation — never drain the queue</mandate>
+  </llm>
+
+  <flow>
+    <step n="0" title="Parse arguments and preflight">
+      <action>Tokenize $ARGUMENTS; extract MODE, N, FILTERS per the glossary. Unknown tokens → print usage and STOP.</action>
+      <action>Read .tmux-cli/setting.yaml and resolve API enablement (flat `apiEnabled` wins over nested `api.enabled`).</action>
+      <check condition="reporting disabled">
+        <action>Print: "Task API is disabled — set api.enabled: true in .tmux-cli/setting.yaml and retry."</action>
+        <action>STOP</action>
+      </check>
+    </step>
+
+    <step n="1" title="Reconcile (always runs, before listing)">
+      <action>Read MAPPING_FILE. Absent or empty → skip to step 2.</action>
+      <action>Read GOALS_FILE once (read-only).</action>
+      <action>For each mapping entry, find its goal_id in GOALS_FILE and decide:</action>
+      <branch condition="goal Status == done">
+        <action>Call task-update-status with id=task_id, status=resolved, resolution={goal_id, finished_at from the goal, summary: "goal validated and completed"}.</action>
+        <action>On success: remove the mapping entry; record "task {task_id} → resolved (goal {goal_id} done)".</action>
+      </branch>
+      <branch condition="goal Status == failed, OR Status == blocked with blocked_by == convergence-circuit-breaker">
+        <action>Call task-update-status with id=task_id, status=failed, resolution={goal_id, reason: the goal's failed_by/blocked_by value}.</action>
+        <action>On success: remove the mapping entry; record "task {task_id} → failed (goal {goal_id} {reason})".</action>
+      </branch>
+      <branch condition="goal Status is pending/running/blocked (non-breaker)">
+        <action>Keep the mapping; record as in-flight for the step-2 table.</action>
+      </branch>
+      <branch condition="goal_id not present in GOALS_FILE (pruned/re-planned)">
+        <action>Remove the mapping and print: "WARNING: goal {goal_id} no longer exists — task {task_id} left in its current backend state; handle manually via task-update-status."</action>
+      </branch>
+      <check condition="task-update-status returns forbidden/not-found/invalid-transition">
+        <action>Another actor advanced the task. Remove the mapping, print a one-line warning with the error, and continue with the next entry — never retry.</action>
+      </check>
+      <action>Rewrite MAPPING_FILE with the surviving entries (write the full file once, after the loop).</action>
+      <action>Print a reconcile summary line: "Reconciled: {r} resolved, {f} failed, {k} in-flight, {d} dropped." (omit when all four are 0).</action>
+    </step>
+
+    <step n="2" title="List unresolved tasks">
+      <action>The backend filters by a single status per call. Compose "unresolved" from three task-list MCP calls: status=new, status=claimed, status=in_progress — each with FILTERS applied and limit=50.</action>
+      <action>Merge the pages, de-duplicate by id, and sort: severity (critical &gt; warning &gt; info), then created_at ascending (oldest first).</action>
+      <action>Render one table:</action>
+      <template>| id | sev | category | status | age | title |
+mark rows that appear in MAPPING_FILE with "→ {goal_id}" appended to status (locally in-flight);
+age = humanized now − created_at (e.g. 3d, 5h).</template>
+      <action>Use description_preview only — never call task-get for rows the user did not ask about.</action>
+      <action>Print totals per status; when any call reports total &gt; limit, print: "more available — narrow with category=/severity= filters".</action>
+      <check condition="all three calls return zero tasks">
+        <action>Print: "No unresolved tasks." Then STOP (consume mode has nothing to claim either).</action>
+      </check>
+    </step>
+
+    <step n="3" title="Consume — claim and convert to goals (MODE == consume only)">
+      <action>Repeat up to N times (stop early when nothing claimable):</action>
+      <substep n="3.1" title="Claim BEFORE any work">
+        <action>Call task-claim with FILTERS (category/severity).</action>
+        <check condition="claimed == false">
+          <action>Print: "Nothing claimable (filters: {FILTERS})." and exit the consume loop.</action>
+        </check>
+        <action>Use the returned task object verbatim — id, title, description, proposed_fix, expected_green_state, severity.</action>
+      </substep>
+      <substep n="3.2" title="Convert to a goal via goal-create">
+        <params>
+          <param name="description">Task title, truncated to 120 chars.</param>
+          <param name="acceptance">expected_green_state split into individually checkable items, plus: "Backend task {id} is satisfied: {expected_green_state first line}".</param>
+          <param name="validate">Concrete bare commands (no shell wrappers, no &amp;&amp; chains), derived in priority order: (1) backticked/recognizable commands inside expected_green_state, (2) commands inside proposed_fix, (3) a minimal deterministic check the green state implies (a test run or a grep against the named artifact). MUST be non-empty — if no command is derivable, the task is not consumable: print "task {id} has no checkable green state — refine it on the backend first", call task-update-status id status=failed resolution={reason: "unconsumable: no derivable validate command"}, drop it, and continue the loop.</param>
+          <param name="context">Full task description + "## Proposed fix\n" + proposed_fix + "\n## Origin\nBackend task {id}; resolution is marked automatically by /tmux:task-list reconcile once this goal completes."</param>
+          <param name="priority">critical→10, warning→5, info→0.</param>
+          <param name="max_retries">3</param>
+        </params>
+        <check condition="goal-create fails">
+          <action>Print the error. The task stays claimed on the backend (there is no unclaim) — print: "task {id} remains claimed; re-run /tmux:task-list consume after fixing, or advance it manually with task-update-status." Continue the loop.</action>
+        </check>
+      </substep>
+      <substep n="3.3" title="Record mapping + mark in_progress">
+        <action>Append {task_id, goal_id, title, claimed_at: now UTC} to MAPPING_FILE (create the file with a `mappings:` root on first use).</action>
+        <action>Call task-update-status with id=task_id, status=in_progress — work is queued, the claim is acted on.</action>
+        <action>Print: "task {id} → {goal_id} (claimed, in_progress)".</action>
+      </substep>
+    </step>
+
+    <step n="4" title="Wrap-up">
+      <check condition="consume created at least one goal">
+        <action>Check .tmux-cli/taskvisor-active: if absent, print: "Goals queued — start the daemon with the taskvisor-start MCP tool (or tmux-cli taskvisor) to execute them."</action>
+        <action>Print: "Run /tmux:task-list again after the run to reconcile results back to the backend."</action>
+      </check>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>Order is fixed: reconcile → list → consume; reconcile always runs so the rendered list is truthful</rule>
+    <rule>Claim before work; in_progress after goal creation; resolved/failed only from the mapped goal's terminal status</rule>
+    <rule>Only file written: MAPPING_FILE (full-file rewrite after reconcile, append on consume)</rule>
+    <rule>GOALS_FILE is read-only; goals are created exclusively through goal-create</rule>
+    <rule>Status-update failures (403/404/422) drop the mapping with a warning — never retried, never fatal to the run</rule>
+    <rule>Consume cap: 3 per invocation regardless of N</rule>
+  </execution-rules>
+</task>
