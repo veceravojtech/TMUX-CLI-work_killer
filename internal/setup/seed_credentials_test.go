@@ -3,8 +3,6 @@ package setup
 import (
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,20 +32,6 @@ func readEmbeddedTemplate(t *testing.T, rel ...string) string {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err, "%s must exist", filepath.Join(rel...))
 	return string(data)
-}
-
-func readSeedGenerateBundle(t *testing.T) string {
-	t.Helper()
-	spine := readEmbeddedCommand(t, "task-plan-generate.xml")
-	stubRe := regexp.MustCompile(`(?s)<step n="[^"]+" title="[^"]+">\s*<load file="([^"]+)">[^<]*</load>\s*</step>`)
-	result := stubRe.ReplaceAllStringFunc(spine, func(stub string) string {
-		m := stubRe.FindStringSubmatch(stub)
-		require.Len(t, m, 2, "stub must capture file path")
-		rel := strings.Replace(m[1], ".claude/commands/tmux/", "", 1)
-		shard := readEmbeddedCommand(t, rel)
-		return shard
-	})
-	return result
 }
 
 // step319a reads the step-3.19a shard directly so "never" assertions are
