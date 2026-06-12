@@ -17,6 +17,15 @@ func setupSignalDir(t *testing.T, root, goalID string) {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 }
 
+// SaveSupervisorSignal is a test-only fixture writer: production supervisor
+// signals are written by the external supervisor agent, never by Go code, so
+// this helper exists solely to construct signal.json fixtures while routing
+// through the production saveSignal core (same marshal + atomicWrite path).
+func SaveSupervisorSignal(projectRoot, goalID string, sig *SupervisorSignal) error {
+	sig.Source = "supervisor"
+	return saveSignal(projectRoot, goalID, sig)
+}
+
 func TestLoadSignal_Missing(t *testing.T) {
 	root := t.TempDir()
 	sig, err := LoadSignal(root, "goal-001")

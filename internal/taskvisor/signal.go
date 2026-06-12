@@ -423,11 +423,6 @@ func LoadSignal(projectRoot, goalID string) (any, error) {
 	}
 }
 
-func SaveSupervisorSignal(projectRoot, goalID string, sig *SupervisorSignal) error {
-	sig.Source = "supervisor"
-	return saveSignal(projectRoot, goalID, sig)
-}
-
 func SaveValidatorSignal(projectRoot, goalID string, sig *ValidatorSignal) error {
 	sig.Source = "validator"
 	return saveSignal(projectRoot, goalID, sig)
