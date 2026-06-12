@@ -115,13 +115,6 @@ func planAuditWindow(goalID string, maxGoals int) string {
 	return "plan-audit-" + goalNamespace(goalID)
 }
 
-// PlanAuditWindowForGoal returns the namespaced plan-audit window name for
-// goalID — "plan-audit-<ns>". Mirrors ExecutePrefixForGoal; derived from
-// planAuditWindow so it can never drift.
-func PlanAuditWindowForGoal(goalID string) string {
-	return planAuditWindow(goalID, 2)
-}
-
 // SupervisorWindowForGoal returns the namespaced supervisor window name for goalID
 // — "supervisor-<ns>". Exposed for the package-main goal-skip sweep so it targets
 // the goal's supervisor window via the real helper (never bare window-0

@@ -125,11 +125,6 @@ func TestPlanAuditWindow_SingleDigitGoal(t *testing.T) {
 	assert.Equal(t, "plan-audit-7", planAuditWindow("goal-7", 1))
 }
 
-func TestPlanAuditWindowForGoal(t *testing.T) {
-	assert.Equal(t, "plan-audit-7", PlanAuditWindowForGoal("goal-7"))
-	assert.Equal(t, planAuditWindow("goal-7", 2), PlanAuditWindowForGoal("goal-7"))
-}
-
 // --- maxGoals(): the lone impurity, reading setting.yaml with a default of 1.
 
 func TestMaxGoals_DefaultsToOneWhenUnset(t *testing.T) {
