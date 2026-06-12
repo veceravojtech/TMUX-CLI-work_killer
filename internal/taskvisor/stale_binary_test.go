@@ -62,8 +62,8 @@ goals:
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil).Maybe()
 	// deactivate() (stale-binary halt path) now emits a [TASKVISOR:STATE from=active
-	// to=idle] notification to the "supervisor" window (@0); tolerate the SendMessage.
-	executor.On("SendMessage", mock.Anything, "@0", mock.Anything).Return(nil).Maybe()
+	// to=idle] notification to the "supervisor" window (@0); tolerate the SendMessageWithDelay.
+	executor.On("SendMessageWithDelay", mock.Anything, "@0", mock.Anything).Return(nil).Maybe()
 
 	d := New(dir, executor)
 	d.mode = modeActive

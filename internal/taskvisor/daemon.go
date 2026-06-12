@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"sync"
 	"syscall"
 	"time"
 
@@ -104,18 +105,24 @@ type Daemon struct {
 	// interface. See reporting.go for the submission helpers.
 	producer *producer.Client
 	// reportedFailures is the in-memory dedup set for terminal goal-failure
-	// reports (completion.go: reportFailedGoals). A goal ID is added once its
-	// GoalFailed report is submitted so repeated deactivateOnCompletion passes
-	// never double-report. Lazily initialized on first use (nil-safe; no New()
-	// change). Intentionally NOT persisted to goals.yaml — it resets on process
-	// restart, where re-reporting from goals.yaml is acceptable and rare, and a
-	// schema change is avoided.
+	// reports (completion.go: reportFailedGoals). A goal ID is EAGERLY marked
+	// when its GoalFailed report submission starts (deduping both repeated
+	// deactivateOnCompletion passes and sweeps racing an in-flight async
+	// submission) and cleared by the submit callback on error so the next sweep
+	// retries. Lazily initialized on first use (nil-safe; no New() change).
+	// Intentionally NOT persisted to goals.yaml — it resets on process restart,
+	// where re-reporting from goals.yaml is acceptable and rare, and a schema
+	// change is avoided.
 	reportedFailures map[string]bool
-	mode             mode
-	session          string
-	pollInterval     time.Duration
-	dispatchTimeout  time.Duration
-	validateTimeout  time.Duration
+	// reportedFailuresMu guards ALL reportedFailures access, including the lazy
+	// map init: the clear-on-error callback runs on submitReport's goroutine,
+	// concurrent with the tick loop's sweeps.
+	reportedFailuresMu sync.Mutex
+	mode               mode
+	session            string
+	pollInterval       time.Duration
+	dispatchTimeout    time.Duration
+	validateTimeout    time.Duration
 	// progressTimeout bounds how long a dispatched supervisor/validator window may
 	// emit NO new pane output before the per-tick heartbeat (checkProgressHeartbeat)
 	// declares it wedged and recovers early — closing the silent-timeout hole where
@@ -353,12 +360,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.setupSignalHandler(ctx)
 	defer d.cancel()
 
-	if err := d.crashRecovery(); err != nil {
+	// The restart marker is read BEFORE crash recovery so a deliberate
+	// exec-replace deploy is resumed (and announced) as a planned restart, not a
+	// crash. It is consumed unconditionally afterwards; the auto-activate branch
+	// still keys on the post-recovery mode (idle means nothing was in flight).
+	restartMarker := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-restart")
+	_, markerErr := os.Stat(restartMarker)
+	plannedRestart := markerErr == nil
+
+	if err := d.crashRecovery(plannedRestart); err != nil {
 		log.Printf("crash recovery error: %v", err)
 	}
 
-	restartMarker := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-restart")
-	if _, err := os.Stat(restartMarker); err == nil {
+	if plannedRestart {
 		_ = os.Remove(restartMarker)
 		if d.mode == modeIdle {
 			log.Printf("exec-replace restart detected — auto-activating")
@@ -546,7 +560,7 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	if settings.Taskvisor.RequirePlanApproval {
 		approvalPath := filepath.Join(d.workDir, "docs", "architecture", "plan-approval.md")
 		if _, err := os.Stat(approvalPath); os.IsNotExist(err) {
-			d.haltReason = "HALTED: RequirePlanApproval is true but docs/architecture/plan-approval.md is absent — run /tmux:plan-audit first"
+			d.haltReason = "HALTED: RequirePlanApproval is true but docs/architecture/plan-approval.md is absent — run /tmux:plan first (its blind audit gate writes the approval file)"
 			return d.deactivate()
 		}
 	}
@@ -716,13 +730,18 @@ func (d *Daemon) listWindows() ([]tmux.WindowInfo, error) {
 	return d.executor.ListWindows(d.session)
 }
 
+// notifySupervisor targets the long-lived window-0 Claude pane, which can be
+// mid-render or busy when the notification lands — an Enter fired immediately
+// after the text gets grouped into the paste and swallowed, leaving the message
+// sitting unsubmitted in the input box. SendMessageWithDelay's 1s gap before
+// Enter defeats the paste grouping (same reason windows-message uses it).
 func (d *Daemon) notifySupervisor(msg string) {
 	win, err := d.findWindowByName("supervisor")
 	if err != nil {
 		log.Printf("notify: supervisor window not found, skipping: %v", err)
 		return
 	}
-	if err := d.executor.SendMessage(d.session, win.TmuxWindowID, msg); err != nil {
+	if err := d.executor.SendMessageWithDelay(d.session, win.TmuxWindowID, msg); err != nil {
 		log.Printf("notify: failed to send to supervisor: %v", err)
 	}
 }
@@ -739,7 +758,7 @@ func (d *Daemon) notifyCompletion(goals *GoalsFile) {
 			if dur == "" {
 				dur = "unknown"
 			}
-			if err := d.executor.SendMessage(d.session, win.TmuxWindowID, fmt.Sprintf("[TASKVISOR:GOAL-DONE id=%s desc=%q duration=%s]", g.ID, g.Description, dur)); err != nil {
+			if err := d.executor.SendMessageWithDelay(d.session, win.TmuxWindowID, fmt.Sprintf("[TASKVISOR:GOAL-DONE id=%s desc=%q duration=%s]", g.ID, g.Description, dur)); err != nil {
 				log.Printf("notify: failed to send GOAL-DONE for %s: %v", g.ID, err)
 			}
 		}
@@ -756,7 +775,7 @@ func (d *Daemon) notifyCompletion(goals *GoalsFile) {
 		}
 	}
 	wall := d.now().Sub(d.activatedAt).Round(time.Second)
-	if err := d.executor.SendMessage(d.session, win.TmuxWindowID, fmt.Sprintf("[TASKVISOR:ALL-COMPLETE done=%d failed=%d blocked=%d wall=%s]",
+	if err := d.executor.SendMessageWithDelay(d.session, win.TmuxWindowID, fmt.Sprintf("[TASKVISOR:ALL-COMPLETE done=%d failed=%d blocked=%d wall=%s]",
 		doneN, failedN, blockedN, wall)); err != nil {
 		log.Printf("notify: failed to send ALL-COMPLETE: %v", err)
 	}

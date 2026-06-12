@@ -45,6 +45,11 @@ var keysFS embed.FS
 // TMUX_CLI_API_URL environment variable is set.
 const defaultAPIURL = "https://tmux.vojta.ai"
 
+// errBodyLimit caps how many bytes of a non-2xx response body are read into the
+// returned error. Enough for a full Symfony violation list while keeping a
+// hostile/huge body from bloating logs.
+const errBodyLimit = 2048
+
 // Client signs and POSTs task submissions to the backend. A nil *Client is a
 // valid no-op receiver.
 type Client struct {
@@ -132,9 +137,15 @@ func (c *Client) SubmitTask(ctx context.Context, req TaskRequest) (*TaskResponse
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Drain the body so the underlying connection can be reused.
+		// Surface a bounded slice of the rejection body (e.g. a 422 validation
+		// violation list) so the cause is diagnosable, then drain the remainder
+		// so the underlying connection can be reused.
+		slice, _ := io.ReadAll(io.LimitReader(resp.Body, errBodyLimit))
 		io.Copy(io.Discard, resp.Body)
 		err := fmt.Errorf("producer: task submission returned status %d", resp.StatusCode)
+		if body := strings.TrimSpace(string(slice)); body != "" {
+			err = fmt.Errorf("producer: task submission returned status %d: %s", resp.StatusCode, body)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		return nil, err
 	}

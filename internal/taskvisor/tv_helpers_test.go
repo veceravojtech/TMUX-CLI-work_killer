@@ -102,7 +102,7 @@ func setupDeactivateMocks(exec *testutil.MockTmuxExecutor, session, newWindowID 
 	exec.On("ListWindows", session).Return([]tmux.WindowInfo{
 		{TmuxWindowID: newWindowID, Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
-	exec.On("SendMessage", session, newWindowID, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", session, newWindowID, mock.Anything).Return(nil).Maybe()
 }
 
 // setupDispatchMocks programs the ListWindows sequence one dispatch() makes. The

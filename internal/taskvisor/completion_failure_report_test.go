@@ -1,22 +1,28 @@
 package taskvisor
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/console/tmux-cli/internal/producer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // These tests run with d.producer == nil (the dev/test default: no signing key
-// is embedded, so producer.New returns nil). reportFailure is therefore a no-op
-// on the wire, but reportFailedGoals' iteration / status-filter / dedup logic
-// runs unchanged, and d.reportedFailures is the faithful, synchronous record of
-// which terminally-failed goals were submitted (the map is marked iff
-// reportFailure was invoked for that goal). Payload/category/severity assembly
-// is verified directly against the pure buildFailedGoalReport helper, which
-// composes execute-1's reporting.go helpers without any network.
+// is embedded, so producer.New returns nil) unless they swap the submitReportFn
+// seam (reporting_contract_test.go). Submission routes through that seam: the
+// default (*Daemon).submitReport is a no-goroutine no-op with a nil producer
+// that invokes onResult(nil) synchronously — delivered-equivalent — so
+// reportFailedGoals' iteration / status-filter / dedup logic runs unchanged and
+// d.reportedFailures KEEPS the eager mark (the map is marked iff a submission
+// was attempted; only a real submit error clears it via onResult). Seam-swapping
+// tests control onResult explicitly to pin the eager-mark + clear-on-error
+// truthfulness contract. Payload/category/severity assembly is verified directly
+// against the pure buildFailedGoalReport helper, which composes execute-1's
+// reporting.go helpers without any network.
 
 func failedGoal(id string) Goal {
 	return Goal{ID: id, Description: "do the thing", Status: GoalFailed}
@@ -119,7 +125,8 @@ func TestReportFailedGoals_NilProducer(t *testing.T) {
 }
 
 // TestReportFailedGoals_MissingSignal: a failed goal with no signal.json is
-// still reported; the report carries an empty proposedFix and empty verdict.
+// still reported; the report carries an empty verdict but a derived non-blank
+// proposedFix (the backend rejects blank contract fields with a 422).
 func TestReportFailedGoals_MissingSignal(t *testing.T) {
 	d, _, _ := setupDaemon(t)
 	gf := &GoalsFile{Goals: []Goal{failedGoal("goal-001")}}
@@ -127,9 +134,9 @@ func TestReportFailedGoals_MissingSignal(t *testing.T) {
 	require.NotPanics(t, func() { d.reportFailedGoals(gf) })
 	assert.True(t, d.reportedFailures["goal-001"])
 
-	// No signal on disk → empty-signal assembly.
+	// No signal on disk → empty-signal assembly, non-blank fallback fix.
 	r := buildFailedGoalReport(&gf.Goals[0], nil)
-	assert.Empty(t, r.proposedFix)
+	assert.NotEmpty(t, strings.TrimSpace(r.proposedFix))
 	assert.Empty(t, r.payload["verdict"])
 }
 
@@ -181,7 +188,8 @@ func TestBuildFailedGoalReport_PayloadContents(t *testing.T) {
 }
 
 // TestBuildFailedGoalReport_NilSignal: with no signal, severity stays critical,
-// category defaults to execute, proposedFix is empty, verdict is empty.
+// category defaults to execute, verdict is empty — but proposedFix falls back
+// to a derived non-blank remediation (backend NotBlank contract).
 func TestBuildFailedGoalReport_NilSignal(t *testing.T) {
 	g := Goal{ID: "goal-007", Description: "x", Status: GoalFailed}
 
@@ -189,9 +197,79 @@ func TestBuildFailedGoalReport_NilSignal(t *testing.T) {
 
 	assert.Equal(t, "critical", r.severity)
 	assert.Equal(t, "execute", r.category)
-	assert.Empty(t, r.proposedFix)
+	assert.NotEmpty(t, strings.TrimSpace(r.proposedFix))
 	assert.Empty(t, r.payload["verdict"])
 	assert.Equal(t, "", r.payload["failed_by"])
+}
+
+// TestBuildFailedGoalReport_NilSignalNonBlankFallbacks: the worst derivable
+// case — nil signal AND empty acceptance — still yields non-blank contract
+// fields, with the fix naming the goal so a backend consumer can act on it.
+func TestBuildFailedGoalReport_NilSignalNonBlankFallbacks(t *testing.T) {
+	g := Goal{ID: "goal-013", Description: "ship it", Status: GoalFailed} // Acceptance nil
+
+	r := buildFailedGoalReport(&g, nil)
+
+	assert.NotEmpty(t, strings.TrimSpace(r.proposedFix))
+	assert.Contains(t, r.proposedFix, "goal-013", "fallback fix must name the goal")
+	assert.NotEmpty(t, strings.TrimSpace(r.expected))
+	assert.Contains(t, r.expected, "goal-013", "fallback green state must name the goal")
+}
+
+// --- Truthful marking via the submitReportFn seam ---------------------------
+
+// TestReportFailedGoals_NotMarkedOnSubmitFailure: a failed submission clears the
+// eager mark (onResult with error), so the next sweep resubmits.
+func TestReportFailedGoals_NotMarkedOnSubmitFailure(t *testing.T) {
+	count := 0
+	swapSubmitReport(t, func(_ *Daemon, _ producer.TaskRequest, onResult func(error)) {
+		count++
+		onResult(errors.New("producer: task submission returned status 422"))
+	})
+	d, _, _ := setupDaemon(t)
+	gf := &GoalsFile{Goals: []Goal{failedGoal("goal-001")}}
+
+	d.reportFailedGoals(gf)
+	assert.False(t, d.reportedFailures["goal-001"], "a failed submit must not retain the delivered mark")
+
+	d.reportFailedGoals(gf)
+	assert.Equal(t, 2, count, "the next sweep resubmits after a failed submit")
+}
+
+// TestReportFailedGoals_MarkedOnSubmitSuccess: a successful submission keeps the
+// mark, so later sweeps never resubmit.
+func TestReportFailedGoals_MarkedOnSubmitSuccess(t *testing.T) {
+	count := 0
+	swapSubmitReport(t, func(_ *Daemon, _ producer.TaskRequest, onResult func(error)) {
+		count++
+		onResult(nil)
+	})
+	d, _, _ := setupDaemon(t)
+	gf := &GoalsFile{Goals: []Goal{failedGoal("goal-001")}}
+
+	d.reportFailedGoals(gf)
+	assert.True(t, d.reportedFailures["goal-001"])
+
+	d.reportFailedGoals(gf)
+	assert.Equal(t, 1, count, "a delivered goal is never resubmitted")
+}
+
+// TestReportFailedGoals_NoDuplicateWhileInFlight: the mark is set EAGERLY, so a
+// second sweep racing an in-flight submission (onResult never invoked yet)
+// submits nothing — exactly one request total.
+func TestReportFailedGoals_NoDuplicateWhileInFlight(t *testing.T) {
+	count := 0
+	swapSubmitReport(t, func(_ *Daemon, _ producer.TaskRequest, onResult func(error)) {
+		count++ // onResult deliberately never invoked: submission still in flight
+	})
+	d, _, _ := setupDaemon(t)
+	gf := &GoalsFile{Goals: []Goal{failedGoal("goal-001")}}
+
+	d.reportFailedGoals(gf)
+	d.reportFailedGoals(gf)
+
+	assert.Equal(t, 1, count, "eager mark dedups while a submission is in flight")
+	assert.True(t, d.reportedFailures["goal-001"])
 }
 
 // --- Integration via deactivateOnCompletion -------------------------------

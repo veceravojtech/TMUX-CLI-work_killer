@@ -91,7 +91,11 @@ func (d *Daemon) checkInvariant(goals *GoalsFile) {
 			n, strings.Join(shown, ", "), suffix)
 		d.reportFailure("general", "critical",
 			fmt.Sprintf("INVARIANT VIOLATION (Bug-A): %d blocked by done", n),
-			desc, invariantPayload(ids, goals.Goals))
+			desc, invariantPayload(ids, goals.Goals),
+			withProposedFix(fmt.Sprintf(
+				"Fix the ReconcileBlocks regression that left goal(s) %s%s blocked by a done goal; the goals_dump payload carries the full post-reconcile state.",
+				strings.Join(shown, ", "), suffix)),
+			withExpectedGreenState("After ReconcileBlocks runs, no non-terminal goal remains BlockedBy a done goal — checkInvariant flags zero goals."))
 		d.invariantReported = true
 	}
 }
@@ -162,7 +166,11 @@ func (d *Daemon) checkStall(goals *GoalsFile) {
 			fmt.Sprintf("Stall watchdog: daemon idle %d ticks", d.idleTicks),
 			fmt.Sprintf("Daemon idle %d ticks with %d runnable goal(s) but nothing dispatched: %s",
 				d.idleTicks, len(candidates), strings.Join(ids, ", ")),
-			stallPayload(ids, d.idleTicks, stallWatchdogTicks))
+			stallPayload(ids, d.idleTicks, stallWatchdogTicks),
+			withProposedFix(fmt.Sprintf(
+				"Inspect dispatch gating for runnable goal(s) %s: the scope gate, preconditions, and supervisor.max_goals — one of them is withholding dispatch.",
+				strings.Join(ids, ", "))),
+			withExpectedGreenState("A runnable goal dispatches on the next tick, or zero runnable candidates remain."))
 		d.stallReported = true
 	}
 }

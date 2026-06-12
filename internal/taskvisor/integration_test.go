@@ -434,7 +434,7 @@ func TestIntegration_CrashRecoveryMidValidation(t *testing.T) {
 
 	exec.On("CaptureWindowOutput", testSession, "@5").Return("❯ ", nil)
 
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 	assert.Equal(t, modeActive, d.mode)
 	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 	assert.Equal(t, "goal-001", d.currentGoal)

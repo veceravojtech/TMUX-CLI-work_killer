@@ -271,7 +271,7 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 		// A heartbeat-internal error (e.g. a transient CaptureWindowOutput failure)
 		// is logged and swallowed so the hard-timeout/crash branches still run — the
 		// heartbeat is purely additive and never blocks the existing safety nets.
-		if stuck, herr := d.checkProgressHeartbeat(rt, supervisorWindow(goal.ID, mg)); herr != nil {
+		if stuck, herr := d.checkProgressHeartbeat(rt, supervisorWindow(goal.ID, mg), executePrefix(goal.ID, mg)); herr != nil {
 			log.Printf("%s: supervisor heartbeat check error: %v", goal.ID, herr)
 		} else if stuck {
 			return d.handleStuckSupervisor(goal, goals)
@@ -353,7 +353,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		// hangs), so the heartbeat fires BEFORE the validate hard-timeout to recover
 		// a wedged validator in minutes. A heartbeat-internal error is logged and
 		// swallowed so the existing timeout/crash branches still run unchanged.
-		if stuck, herr := d.checkProgressHeartbeat(rt, validatorWindow(goal.ID, mg)); herr != nil {
+		if stuck, herr := d.checkProgressHeartbeat(rt, validatorWindow(goal.ID, mg), investigatorPrefix(goal.ID, mg)); herr != nil {
 			log.Printf("%s: validator heartbeat check error: %v", goal.ID, herr)
 		} else if stuck {
 			return d.handleStuckValidator(goal, goals)
@@ -518,44 +518,83 @@ func hashPane(s string) string {
 	return fmt.Sprintf("%016x", h.Sum64())
 }
 
-// checkProgressHeartbeat reports whether the goal's supervisor/validator window
-// (windowName) has emitted NO new pane output for at least d.progressTimeout while
-// the window is still running the agent — the signal that an LLM has wedged but
+// checkProgressHeartbeat reports whether the goal's ENTIRE window namespace —
+// the lead window (windowName: supervisor or validator) plus its worker pool
+// (windows named with poolPrefix: execute-<ns>-* or investigator-<ns>-*) — has
+// emitted NO new pane output for at least d.progressTimeout while the lead
+// window is still running the agent — the signal that the goal has wedged but
 // not crashed. It is the parallel mechanism to diagnostics.go's stall watchdog,
 // which self-disables while a worker runs (AnyRunning early-return), leaving the
 // running worker invisible until the 1h hard timeout.
 //
+// Pool output counts as goal progress because the stuck handlers sweep the WHOLE
+// namespace: an idle lead window with a grinding pool is not a harmful wedge (it
+// wakes when the pool reports), but killing it destroys the pool's in-flight
+// work. Goal-005 (2026-06-12): an exec-replace deploy + interrupted supervisor
+// left the lead pane static for 5m while two workers were mid-task; the old
+// lead-only heartbeat stuck-killed and recreated all of them. Pool MEMBERSHIP is
+// folded into the digest too (the \x00-framed window names), so a worker
+// appearing or vanishing also refreshes the heartbeat.
+//
 // Returns (false, nil) — never fires — in every guard case:
 //   - d.progressTimeout <= 0: the heartbeat is DISABLED (literal-Daemon legacy
-//     harness). NO CaptureWindowOutput / findWindowByName call is made, so the
+//     harness). NO CaptureWindowOutput / ListWindows call is made, so the
 //     pre-P2 tick is byte-identical.
-//   - the window is gone (findWindowByName miss): lookup err swallowed; the hard
+//   - the lead window is gone (or the listing failed): swallowed; the hard
 //     timeout still applies.
-//   - CurrentCommand is "zsh" or "" (back at the shell): the existing crash-detect
-//     branch owns this, not the heartbeat.
+//   - the lead's CurrentCommand is "zsh" or "" (back at the shell): the existing
+//     crash-detect branch owns this, not the heartbeat.
 //
-// On a live agent window it captures the pane and hashes it: a changed digest
-// refreshes lastProgressHash + lastProgressAt (progress, no fire); an unchanged
-// digest whose lastProgressAt is older than d.progressTimeout fires (stuck). The
-// first observation always seeds (IsZero) and never fires the same tick. A capture
-// error is returned to the caller, which logs it and falls through to the hard
-// timeout (the heartbeat never blocks the existing safety nets).
-func (d *Daemon) checkProgressHeartbeat(rt *goalRuntime, windowName string) (bool, error) {
+// On a live lead window it captures the lead + pool panes and hashes them: a
+// changed digest refreshes lastProgressHash + lastProgressAt (progress, no
+// fire); an unchanged digest whose lastProgressAt is older than
+// d.progressTimeout fires (stuck). The first observation always seeds (IsZero)
+// and never fires the same tick. A LEAD capture error is returned to the caller,
+// which logs it and falls through to the hard timeout (the heartbeat never
+// blocks the existing safety nets); a POOL capture error skips that window only
+// — it raced a kill between list and capture, and its disappearance already
+// changes the digest next tick.
+func (d *Daemon) checkProgressHeartbeat(rt *goalRuntime, windowName, poolPrefix string) (bool, error) {
 	if d.progressTimeout <= 0 {
 		return false, nil
 	}
-	win, err := d.findWindowByName(windowName)
+	windows, err := d.listWindows()
 	if err != nil {
+		return false, nil // listing failed — swallow; hard-timeout still applies
+	}
+	lead := -1
+	for i := range windows {
+		if windows[i].Name == windowName {
+			lead = i
+			break
+		}
+	}
+	if lead == -1 {
 		return false, nil // window absent — swallow; hard-timeout still applies
 	}
-	if win.CurrentCommand == "zsh" || win.CurrentCommand == "" {
+	if windows[lead].CurrentCommand == "zsh" || windows[lead].CurrentCommand == "" {
 		return false, nil // back at the shell — crash-detect owns this, not us
 	}
-	output, err := d.executor.CaptureWindowOutput(d.session, win.TmuxWindowID)
+	output, err := d.executor.CaptureWindowOutput(d.session, windows[lead].TmuxWindowID)
 	if err != nil {
 		return false, err
 	}
-	h := hashPane(output)
+	var combined strings.Builder
+	combined.WriteString(output)
+	if poolPrefix != "" {
+		for i := range windows {
+			if !strings.HasPrefix(windows[i].Name, poolPrefix) {
+				continue
+			}
+			combined.WriteString("\x00" + windows[i].Name + "\x00")
+			poolOut, perr := d.executor.CaptureWindowOutput(d.session, windows[i].TmuxWindowID)
+			if perr != nil {
+				continue
+			}
+			combined.WriteString(poolOut)
+		}
+	}
+	h := hashPane(combined.String())
 	if h != rt.lastProgressHash {
 		rt.lastProgressHash = h
 		rt.lastProgressAt = d.now()

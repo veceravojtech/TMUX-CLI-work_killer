@@ -183,21 +183,6 @@ func classifyScope(scope []string) scopeProfile {
 	return p
 }
 
-func (p scopeProfile) isComplex() bool {
-	typeCount := 0
-	if len(p.Go) > 0 {
-		typeCount++
-	}
-	if len(p.Shell) > 0 {
-		typeCount++
-	}
-	if len(p.XML) > 0 {
-		typeCount++
-	}
-	totalFiles := len(p.Go) + len(p.Shell) + len(p.XML)
-	return typeCount > 1 || totalFiles > 3
-}
-
 func scopeDerivedInvestigators(projectRoot string, profile scopeProfile) []Investigator {
 	var list []Investigator
 	list = append(list, goInvestigators(projectRoot, profile)...)

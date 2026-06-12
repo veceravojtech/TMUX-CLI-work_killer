@@ -1,5 +1,5 @@
 <task id="plan" name="Planning supervisor — parallel spec-writing orchestrator">
-  <objective>Spawn N parallel /tmux:execute workers via tmux-cli to produce implementation-ready specification files. Read a plan/spec file, decompose it into modules, create research-task context files, spawn spec-writing workers, verify spec quality against the S1–S9 pushback catalogue, present specs for interactive user approval, and finalize approved specs into tasks.yaml for /tmux:supervisor.</objective>
+  <objective>Spawn N parallel /tmux:execute workers via tmux-cli to produce implementation-ready specification files. Read a plan/spec file, decompose it into modules, create research-task context files, decide via the dispatch gate (step 3d) whether spawning workers pays for itself — single-task plans are self-specced inline by the supervisor — spawn spec-writing workers when it does, verify spec quality against the S1–S9 pushback catalogue, present specs for interactive user approval, and finalize approved specs into tasks.yaml for /tmux:supervisor.</objective>
 
   <input>
     <arg name="$ARGUMENTS">Path to a plan/spec file OR inline task description. The planning supervisor reads it, derives module decomposition, and spawns parallel spec-writing workers.</arg>
@@ -28,6 +28,7 @@
     <term name="spec file">Markdown file a worker produces as its deliverable. Contains implementation-ready specification with mandatory sections (Intent through Spec Change Log). Named execute-&lt;N&gt;-&lt;slug&gt;.md in research-root.</term>
     <term name="AUTO_APPROVE">Internal flag set when plan.auto_approve=true in setting.yaml. Causes steps 9-10 to be skipped.</term>
     <term name="AUTO_EXECUTE">Internal flag set when plan.auto_execute=true in setting.yaml. Causes step 11 to auto-invoke /tmux:supervisor after finalization.</term>
+    <term name="SELF_SPEC">Internal flag set by the dispatch gate (step 3d) when exactly ONE task is pending. The planning supervisor writes that spec inline — no worker spawn — through the same validation gates (spec-validate + S5/S6/S9, max 3 self-revision rounds). Forces the blind audit (step 11a) regardless of supervisor.unplanned_audit, because author == verifier.</term>
     <term name="FRESH mode">No usable tasks.yaml exists — derive everything from scratch.</term>
     <term name="INCREMENTAL mode">tasks.yaml exists with status: planning — preserve existing tasks, append new spec tasks.</term>
     <term name="ranking heuristic">Priority ordering for decomposition: (1) closest to user-facing surface or critical path, (2) closest to impact target, (3) smallest budget before completion, (4) overturns prior assumption if confirmed. Break ties by lowest budget.</term>
@@ -69,7 +70,8 @@
     <mandate>When AUTO_EXECUTE is true, ALWAYS send /clear + /tmux:supervisor to PLAN_WID after finalization — this is the handoff to the implementation supervisor</mandate>
     <mandate>ALWAYS use windows-spawn-worker for spawning — never assemble manually via windows-create + windows-send</mandate>
     <mandate>ALWAYS verify spec quality against S1–S9 before accepting a worker's DONE</mandate>
-    <mandate>Default to MAXIMUM parallelism for spec workers — implementation dependency does NOT block spec-writing</mandate>
+    <mandate>Default to MAXIMUM parallelism for spec workers when dispatching (2+ pending tasks after the step 3d gate) — implementation dependency does NOT block spec-writing</mandate>
+    <mandate>NEVER spawn a worker for a single pending task — the step 3d dispatch gate self-specs it inline; a worker would re-load the exact context the supervisor already holds, buying no parallelism for pure overhead. SOLE EXCEPTION: step 11b audit-fail replans DISPATCH a real worker even for a single task — a self-written spec that failed independent review must never be self-specced again</mandate>
     <mandate>NEVER spawn a worker before tasks.yaml is written and verified (step 3b gate)</mandate>
     <mandate>NEVER call /worker:execute — use /tmux:execute which is the correct skill name</mandate>
     <mandate>NEVER use sleep — idle is the trigger for incoming windows-message</mandate>
@@ -193,7 +195,13 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
         <action>Proceed to step 1.</action>
       </branch>
       <branch condition="exists AND status=ready AND GOAL_MODE is true">
-        <action>Auto-archive WITHOUT user confirmation: move tasks-path to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed), log "Archived stale finalized plan for {GOAL_ID} (status: ready) — daemon re-dispatch implies re-plan", then proceed in FRESH mode. A daemon-dispatched planner has NO human to answer a confirmation prompt — waiting would burn the goal's entire cycle timeout and get misclassified as a code defect. A `ready` file here is always stale: either this goal's prior cycle (superseded by this re-dispatch) or a leftover the daemon already consumed.</action>
+        <action>LIVENESS CHECK — verify no live execution is bound to tasks-path before archiving: (1) derive {ns} from GOAL_ID (strip the `goal-` prefix); read tasks-path collecting every task wid and the subset with status=in_progress; read `.tmux-cli/goals/{GOAL_ID}/supervisor-window` as OWN_WID if present (the daemon wrote it for THIS dispatch — it names this planner's own window). (2) Call windows-list. Liveness signals: (a) a live window named equal to any wid from tasks-path; (b) any task with status=in_progress (conservative — counts even without a matching window); (c) a supervisor-{ns} window NOT attributable to OWN_WID. A supervisor-{ns} entry equal to OWN_WID is the planner itself — never a signal. (3) If the windows-list call fails, treat the goal as live (fail-safe: liveness cannot be verified, so archiving is forbidden; include the error in the decline log).</action>
+        <branch condition="any liveness signal fired">
+          <action>DECLINE the re-plan: log "Declined re-plan for {GOAL_ID}: live execution bound to tasks-path (signals: {fired signals}) — leaving the plan untouched; the original supervisor's workers continue unaffected." If the only signal is an in_progress entry with no matching window, append the remediation hint: "archive manually if the supervisor is known dead". STOP the entire flow — do not proceed to step 1, leave tasks-path byte-untouched, kill no windows, message no agents.</action>
+        </branch>
+        <branch condition="no liveness signal fired (truly stale)">
+          <action>Auto-archive WITHOUT user confirmation: move tasks-path to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed), log "Archived stale finalized plan for {GOAL_ID} (status: ready) — daemon re-dispatch implies re-plan", then proceed in FRESH mode. A daemon-dispatched planner has NO human to answer a confirmation prompt — waiting would burn the goal's entire cycle timeout and get misclassified as a code defect. A `ready` file here is NOT always stale — the liveness check above distinguishes a truly stale plan (this goal's prior cycle superseded by this re-dispatch, or a leftover the daemon already consumed) from one under live supervision.</action>
+        </branch>
       </branch>
       <branch condition="exists AND status=ready AND GOAL_MODE is false">
         <action>Warn user: "Tasks already finalized (status: ready). Re-planning will archive the current plan."</action>
@@ -315,24 +323,40 @@ tasks:
 
     <step n="3c" title="Spec cache check (GOAL_MODE only)">
       <condition>GOAL_MODE is true — skip this step entirely in standalone mode (standalone uses timestamped research dirs, so prior specs are unreachable).</condition>
-      <action>Scan {research-root} for existing spec files matching the pattern execute-*.md. If none found, fall through to step 4.</action>
+      <action>Scan {research-root} for existing spec files matching the pattern execute-*.md. If none found, fall through to step 3d.</action>
       <action>For each pending task in tasks-path, derive the task slug from its context path: strip the task- prefix and .md suffix from the filename (e.g. task-foo-bar.md → foo-bar).</action>
       <action>For each pending task slug, search for cached spec files matching execute-*-{slug}.md in research-root. If multiple matches exist (from different worker cycles), pick the one with the highest execute-N number (most recent worker).</action>
-      <action>For each matched cached spec file: call spec-validate MCP tool with the file path. The tool checks S0–S8 automatically — reuse the same call pattern as step 6.</action>
-      <branch condition="spec-validate returns valid=true for a matched spec">
-        <action>Spec cache hit: reuse the existing spec. Mark the task as status=done in tasks-path. Update the task context field to point to the cached spec file path. Log: "Spec cache hit: reusing {filename} for task {name} (spec-validate passed)".</action>
+      <action>For each matched cached spec file: call spec-validate MCP tool with the file path (the tool checks S0–S4, S7, S8 automatically — same call pattern as step 6), then run the manual S5/S6/S9 checks from step 6 on it. A cached spec faces the SAME full gate as a fresh worker spec — cached specs are the ones most likely to carry stale dependencies (S5), so they must not get a weaker gate.</action>
+      <branch condition="spec-validate returns valid=true AND the manual S5/S6/S9 checks pass for a matched spec">
+        <action>Spec cache hit: reuse the existing spec. Mark the task as status=done in tasks-path. Update the task context field to point to the cached spec file path. Log: "Spec cache hit: reusing {filename} for task {name} (spec-validate + S5/S6/S9 passed)".</action>
       </branch>
-      <branch condition="spec-validate returns valid=false OR no matching cached spec found for a task">
-        <action>Spec cache miss: task stays pending for fresh spec worker spawning in step 4. Log: "Spec cache miss: {filename} failed spec-validate — will re-spec" (or "no cached spec found for task {name}").</action>
+      <branch condition="spec-validate returns valid=false OR any manual S5/S6/S9 check fails OR no matching cached spec found for a task">
+        <action>Spec cache miss: task stays pending for the dispatch gate (step 3d). Log: "Spec cache miss: {filename} failed spec-validate or S5/S6/S9 — will re-spec" (or "no cached spec found for task {name}").</action>
       </branch>
       <check condition="all tasks in tasks-path now have status=done after cache reuse">
         <action>All specs cached and valid — skip spec worker phase. Log: "All specs cached and valid — skipping to coverage verification". Proceed directly to step 8b (coverage verification).</action>
       </check>
       <check condition="some tasks still pending after cache check">
-        <action>Fall through to step 4 — spawn workers only for remaining pending tasks.</action>
+        <action>Fall through to step 3d — the dispatch gate decides whether the remaining pending tasks warrant worker spawning.</action>
       </check>
       <rule>Only check pending tasks — tasks already marked done (e.g. from INCREMENTAL mode) are not rechecked.</rule>
       <rule>Slug matching: task context path task-{slug}.md maps to cached spec execute-*-{slug}.md in research-root. When multiple execute-*-{slug}.md files match, pick the highest execute-N number (most recent worker).</rule>
+    </step>
+
+    <step n="3d" title="Dispatch decision gate">
+      <condition>Pending tasks remain after steps 3b/3c (in standalone mode step 3c is skipped — arrive here directly from 3b). Count tasks with status=pending in tasks-path.</condition>
+      <branch condition="exactly ONE task is pending">
+        <action>SELF_SPEC mode — do NOT spawn a worker. A spec worker would re-load the exact context this supervisor already holds (the plan, the module scope, the source files); for one module the spawn/route/kill cycle buys zero parallelism and no extra context capacity — one agent's context is enough. Set internal flag SELF_SPEC=true. Log: "Dispatch gate: 1 pending task — self-speccing inline (no worker spawn)".</action>
+        <action>Write the spec yourself, exactly as a worker would: read the task's research-task context file and the source files it lists (isolate deep codebase exploration in sub-agents per the EXPLORATION guidance in &lt;spec-deliverable-template&gt; — distilled summaries only), then produce {research-root}/execute-{N}-{slug}.md — {N} from the task's wid, {slug} from its context filename — containing every mandatory section of &lt;spec-deliverable-template&gt;. Run the template's SELF-REVIEW before submitting your own spec to validation.</action>
+        <action>Validate your own spec through the SAME gates a worker faces: call spec-validate MCP tool on the file, then manually check S5/S6/S9 (definitions in step 6). On any failure, revise the spec and record the round in ## Spec Change Log (gap cited, what changed, KEEP instructions). Cap: 3 self-revision rounds — after the 3rd, accept as-is and log the unresolved gap(s) for the step 9 summary, mirroring the worker pushback cap.</action>
+        <action>On acceptance: mark the task status=done in tasks-path and update its context field to the spec file path (same mechanics as a step 3c cache hit). Proceed directly to step 8b (coverage verification) — steps 4–7 are skipped entirely.</action>
+        <rule critical="true">SELF_SPEC forces the blind audit: step 11a runs even when supervisor.unplanned_audit=false. With author == verifier, the audit sub-agent is the only independent review of the spec — skipping it would leave the plan with no external gate at all.</rule>
+      </branch>
+      <branch condition="2 or more tasks are pending">
+        <action>Dispatch normally — parallel spec workers amortize their spawn cost and keep per-module context isolated. Proceed to step 4.</action>
+      </branch>
+      <rule>The gate counts PENDING tasks only — tasks already done via the step 3c spec cache or INCREMENTAL mode do not count toward the dispatch threshold.</rule>
+      <rule>The gate decides HOW specs get written, never how many — it must not merge, split, or re-scope tasks (that authority stays with step 3 and the user-approved decomposition).</rule>
     </step>
 
     <step n="4" title="Spawn spec workers (sequentially within your turn)">
@@ -390,6 +414,7 @@ tasks:
       <gap id="S5">Dependencies not specified when the module clearly depends on others (check the plan's dependency graph)</gap>
       <gap id="S6">I/O Matrix missing when module has meaningful interfaces (APIs, CLI commands, message protocols, file formats) — if module has no I/O interfaces, this gap does not apply</gap>
       <gap id="S9">Modified files in Code Map lack current-state annotations (CURRENT/CHANGE/PRESERVE) — implementation worker needs to know what exists before changing it</gap>
+      <note>ID collision: spec-validate can ALSO emit an "S9" gap, but with a different meaning — subjective validation gates (gate objectivity, fires only on Validation Rules / Investigation Config sections, which worker tech-specs lack). If the tool ever returns S9, push back using the tool's message text, not the manual S9 definition above.</note>
       <rule>Pushback at most 3x per worker. Each pushback MUST cite exactly one gap.</rule>
       <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S9&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
       <check condition="spec-validate returns valid=true AND S5/S6/S9 manual checks pass">
@@ -401,7 +426,7 @@ tasks:
     </step>
 
     <step n="7" title="Kill window, update task state">
-      <action>Mark the corresponding task as status=done in .tmux-cli/tasks.yaml.</action>
+      <action>Mark the corresponding task as status=done in tasks-path (resolved in step 0b — NEVER the hardcoded top-level .tmux-cli/tasks.yaml in GOAL_MODE).</action>
       <action>Call windows-kill with windowId = the NAME (e.g. "execute-3"), not the @id.</action>
       <critical>NEVER kill PLAN_WID.</critical>
       <critical>If windows-kill returns "invalid window ID format: window IDs not allowed", you passed @N — retry with the name.</critical>
@@ -418,7 +443,7 @@ tasks:
     </step>
 
     <step n="8b" title="Coverage verification">
-      <condition>All workers completed (all tasks status=done). Step 8 produced no new workers.</condition>
+      <condition>All tasks status=done — either all workers completed (step 8 produced no new workers), or a direct jump from step 3c (full cache hit) / step 3d (SELF_SPEC accepted).</condition>
       <action>Re-read the original input ($ARGUMENTS — plan file or inline description).</action>
       <action>Extract all identifiable requirements, goals, or deliverables. Number them as a checklist.</action>
       <action>For each requirement, check whether at least one accepted spec's ## Intent addresses it. Build mapping: requirement → spec file(s).</action>
@@ -587,36 +612,44 @@ Run `/tmux:supervisor` to execute the plan.
     </step>
 
     <step n="11a" title="Blind audit gate">
-      <condition>AUDIT_ENABLED is true. If false, skip directly to step 11c.</condition>
-      <action>Initialize AUDIT_PASS = 1.</action>
-      <action>Clean prior verdict files: in GOAL_MODE, `rm -f .tmux-cli/goals/{GOAL_ID}/research/plan-audit-*.md .tmux-cli/goals/{GOAL_ID}/research/plan-approval.md`; in standalone, `rm -f docs/architecture/plan-audit-*.md docs/architecture/plan-approval.md`.</action>
-      <action>Derive AUDIT_WID: if GOAL_MODE, strip the "goal-" prefix from GOAL_ID to get {ns} and set AUDIT_WID = "plan-audit-{ns}" (e.g. goal-002 → plan-audit-002). If standalone (no GOAL_ID), use bare "plan-audit".</action>
-      <action>Create audit window via windows-create (name: {AUDIT_WID}).</action>
-      <action>Send `/tmux:plan-audit` to the {AUDIT_WID} window via windows-send. In GOAL_MODE, pass GOAL_ID as the argument: `/tmux:plan-audit {GOAL_ID}`.</action>
-      <action>Wait for the audit to complete: use windows-message polling (idle — wait for a message from the {AUDIT_WID} window). The audit window will send a tagged message [AUDIT:PASS ...] or [AUDIT:FAIL file=&lt;path&gt;] when finished. Do NOT use Bash polling loops (until/sleep) — they spam errors and waste context. If no message arrives within 10 minutes, kill the audit window and treat as audit-pass (timeout = accept).</action>
-      <action>After receiving the audit response (or timeout), kill audit window via windows-kill (name: {AUDIT_WID}).</action>
-      <action>Check verdict by inspecting the content of the received windows-message: if the message contains [AUDIT:PASS ...], audit passed; if it contains [AUDIT:FAIL file=&lt;path&gt;], audit failed — extract the file= path from the tag and store as AUDIT_FAIL_FILE. On timeout (no message received), treat as audit-pass.</action>
-      <branch condition="received message contains [AUDIT:PASS ...] or no message (timeout)">
+      <condition>AUDIT_ENABLED is true OR SELF_SPEC is true. SELF_SPEC FORCES this gate: the supervisor authored the spec itself, so the audit sub-agent is the only independent review — when overriding supervisor.unplanned_audit=false, log "Audit forced: SELF_SPEC plan (author == verifier)". If neither flag is set, skip directly to step 11c.</condition>
+      <action>First entry only (AUDIT_PASS not yet set): initialize AUDIT_PASS = 1 and clean prior verdict files — in GOAL_MODE `rm -f .tmux-cli/goals/{GOAL_ID}/research/plan-audit-*.md .tmux-cli/goals/{GOAL_ID}/research/plan-approval.md`; in standalone `rm -f docs/architecture/plan-audit-*.md docs/architecture/plan-approval.md`. On loop-backs from step 11b do NEITHER — AUDIT_PASS keeps its incremented value and earlier passes' findings files survive as the ledger the next pass re-verifies.</action>
+      <action>Resolve VERDICT_DIR: {research-root} in GOAL_MODE; docs/architecture/ in standalone (create if absent — the daemon's RequirePlanApproval gate looks for docs/architecture/plan-approval.md).</action>
+      <action>Run the audit as ONE serial Claude-native sub-agent via the Agent tool. Do NOT create a tmux window, do NOT use windows-send or windows-message — the sub-agent runs in-process and returns its result synchronously. It starts with a FRESH context containing none of this planning conversation; that isolation is what makes the audit blind. Compose a fully self-contained prompt instructing it to:
+        - Read ONLY on-disk artifacts, scoped to THIS plan: .tmux-cli/goals/{GOAL_ID}/goal.md and this goal's entry in goals.yaml (GOAL_MODE only), tasks-path, every spec and context file in {research-root}, prior findings files {VERDICT_DIR}/plan-audit-*.md (present on pass 2+), and AGENTS.md or CLAUDE.md for project conventions. It must never see planner conversation state.
+        - Daemon's-eye validate evaluation: every validate command is concrete and runnable, a bare command (no shell wrappers or chains), and depends_on edges are valid — no cycles, no dangling references.
+        - Score against the 8-dimension checklist — exactly these, no inventions: (1) validate-executability, (2) dependency-correctness, (3) runtime-state-gating, (4) host-container-split, (5) objective-acceptance, (6) spec-discovery-consistency, (7) environment-prerequisites, (8) scope-sanity.
+        - Severity-weighted scoring: start at 100; deduct SEV-1 −25 (blocks execution or produces wrong results), SEV-2 −15 (retry loops, cascading failures, silent corruption), SEV-3 −8 (unclear spec likely to waste retries), SEV-4 −3 (style/convention violation); floor at 0. PASS requires score >= 90 AND zero open SEV-1/SEV-2 findings.
+        - Guardrail: reach 90% by fixing the plan, never by weakening validate/acceptance — the auditor reports defects; it must never water down validate commands or acceptance criteria to lift the score.
+        - On pass 2+: re-verify every RESOLVED claim from prior findings files against the current artifacts BEFORE scoring; a regressed RESOLVED re-opens at its original severity.
+        - Write EXACTLY ONE file and nothing else: on pass {VERDICT_DIR}/plan-approval.md (score, timestamp, per-dimension summary); on fail {VERDICT_DIR}/plan-audit-{AUDIT_PASS}.md (score, findings table with severity/dimension/file:line, remediation priority). The audit is otherwise strictly read-only — never modify goals, specs, tasks.yaml, or code.
+        - End its final message with exactly one verdict line: AUDIT:PASS score={score} or AUDIT:FAIL score={score} file={abs-path-to-findings-file}.</action>
+      <action>Parse the verdict line from the sub-agent's returned final message. There is no window to poll and no timeout to manage.</action>
+      <check condition="the Agent call errors OR no parsable AUDIT verdict line in the final message OR AUDIT:FAIL cites a file= that does not exist on disk">
+        <action>Retry the sub-agent ONCE with the same prompt. If the retry fails the same way, log "Audit sub-agent failed twice — accepting plan without audit (fail-open)" and treat as audit-pass.</action>
+      </check>
+      <branch condition="verdict is AUDIT:PASS (or fail-open after two sub-agent failures)">
         <action>Audit passed. Write .tmux-cli/audit-done guard file. Proceed to step 11c.</action>
       </branch>
-      <branch condition="received message contains [AUDIT:FAIL file=&lt;path&gt;]">
-        <action>Audit failed (pass AUDIT_PASS). Store AUDIT_FAIL_FILE = the file= path extracted from the tag. Proceed to step 11b.</action>
+      <branch condition="verdict is AUDIT:FAIL with an existing file= path">
+        <action>Audit failed (pass AUDIT_PASS). Store AUDIT_FAIL_FILE = the file= path from the verdict line. Proceed to step 11b.</action>
       </branch>
     </step>
 
     <step n="11b" title="Audit replan loop">
       <check condition="AUDIT_PASS >= 3">
-        <action>Print escalation: "Plan audit failed after 3 passes. Escalating to human review. See the findings file from the last [AUDIT:FAIL] message."</action>
+        <action>Print escalation: "Plan audit failed after 3 passes. Escalating to human review. See the findings file from the last AUDIT:FAIL verdict."</action>
         <action>STOP — do NOT auto-execute.</action>
       </check>
-      <action>Read the findings file at the path stored in AUDIT_FAIL_FILE (extracted from the [AUDIT:FAIL file=&lt;path&gt;] message).</action>
-      <action>Parse findings: extract goal IDs with SEV-1 or SEV-2 findings.</action>
-      <action>Map goal IDs → spec files via tasks-path task entries (match goal description to task name or spec content).</action>
-      <action>For each affected spec: set task status back to pending in tasks-path. Append ## Audit Feedback (Pass {AUDIT_PASS}) section with relevant findings to the spec's context file.</action>
+      <action>Read the findings file at the path stored in AUDIT_FAIL_FILE (from the sub-agent's AUDIT:FAIL verdict line).</action>
+      <action>Parse findings: select the replan tier — the most severe severity level that has any findings in the table. SEV-1/SEV-2 (together) when any exist; else SEV-3 (the audit failed on accumulated score with zero severe findings); else SEV-4 as last resort (a score-fail on style nits alone — replanning them beats re-auditing identical artifacts, burning all 3 passes, and parking an autonomous run for a human). Collect every finding in the selected tier with the file:line references its findings-table row cites. A failing audit MUST yield a non-empty replan set — an AUDIT:FAIL with an empty findings table is a malformed verdict (treat per the step 11a malformed-verdict retry).</action>
+      <action>Map findings → affected specs via the cited file paths: a finding citing a spec or context file in {research-root} affects that task directly; a finding citing tasks-path or a source file maps to the task(s) whose spec's Code Map / Files to Create/Modify covers it.</action>
+      <action>For each affected spec: set task status back to pending in tasks-path. Append ## Audit Feedback (Pass {AUDIT_PASS}) section to the spec's context file containing ALL findings that cite this spec — every severity, not only the selected tier — so one replan round clears the spec's full deduction load instead of leaving sub-tier findings to sink the next pass's score.</action>
       <action>Respawn spec workers for affected tasks via windows-spawn-worker (same flow as step 4).</action>
+      <rule condition="SELF_SPEC is true">Audit-fail replans DISPATCH a real worker even on a single-task plan — never self-spec the same module twice. The self-written spec just failed independent review; the replan needs independent eyes. Pass the audit findings via the context file as usual.</rule>
       <action>Route through steps 5–7 (idle/route, S1–S9 verify, kill) until all replanned specs accepted.</action>
       <action>After all replanned specs accepted: rewrite tasks-path with status: ready (re-finalize).</action>
-      <action>Increment AUDIT_PASS. Loop back to step 11a.</action>
+      <action>Increment AUDIT_PASS. Loop back to step 11a and launch a FRESH audit sub-agent — skip the first-entry initialization/cleanup so prior findings files survive as the re-verification ledger.</action>
     </step>
 
     <step n="11c" title="Auto-execute handoff">
@@ -643,7 +676,8 @@ Run `/tmux:supervisor` to execute the plan.
     <rule>Every tasks.yaml reference in this flow means tasks-path (resolved in step 0b) — per-goal .tmux-cli/goals/{GOAL_ID}/tasks.yaml in GOAL_MODE, top-level .tmux-cli/tasks.yaml in standalone</rule>
     <rule>tasks.yaml status transitions: missing → planning (step 3b) → ready (step 11 only, after user approval)</rule>
     <rule>Research-task context files are created BEFORE tasks.yaml references them</rule>
-    <rule>Spec files are created BY workers, verified BY the planning supervisor against S1–S9</rule>
+    <rule>Spec files are created BY workers, verified BY the planning supervisor against S1–S9 — EXCEPT under SELF_SPEC (step 3d, exactly 1 pending task), where the supervisor writes the spec inline through the same spec-validate + S5/S6/S9 gates (max 3 self-revision rounds) and the blind audit is forced</rule>
+    <rule>Step 3d dispatch gate: exactly 1 pending task → SELF_SPEC inline (no spawn); 2+ pending tasks → step 4 dispatch with maximum parallelism</rule>
     <rule>All scope and context detail lives in the context .md file — tasks.yaml entries are lean (name, wid, status, context path, depends_on). The context file IS the spec — ensure it is complete and self-contained for /tmux:supervisor consumption</rule>
     <rule>The deliverable parameter on windows-spawn-worker overrides the standard FINDINGS/RISKS/RECOMMENDATION/FILES format with the spec template</rule>
     <rule>windows-send: used ONLY for auto-execute self-restart commands to PLAN_WID in step 11 (/clear, /tmux:supervisor)</rule>
@@ -676,6 +710,8 @@ Run `/tmux:supervisor` to execute the plan.
       • DO NOT pass @N to windows-kill — use the window NAME
       • DO NOT accept DONE without file=&lt;abs-path&gt; — REMIND to use file-only protocol
       • DO NOT spawn any worker (step 4) before tasks.yaml is written and verified (step 3b) — blocking gate, no exceptions
+      • NEVER spawn a spec worker for a single pending task — the step 3d dispatch gate self-specs it inline through the same validation gates; spawning starts at 2+ pending tasks. SOLE EXCEPTION: step 11b audit-fail replans dispatch a real worker (never self-spec the same module twice)
+      • NEVER skip the blind audit (step 11a) when SELF_SPEC is true — it is the only independent review of a self-written spec, regardless of supervisor.unplanned_audit
       • DO NOT serialize spec-writing for implementation dependencies — specs are written by reading source, not by depending on other implementations
       • ALWAYS create research-task context files before writing tasks.yaml entries that reference them
       • ALWAYS verify spec quality against S1–S9 before accepting a worker's DONE

@@ -37,7 +37,8 @@ cmd/tmux-cli/
   embedded/            Go-embedded assets
     *.sh               hook shell scripts (5 files)
     commands/tmux/     command templates installed to .claude/commands/tmux/
-      plan-audit.xml + plan-audit.md  blind 8-dimension plan audit command
+                       (blind plan audit lives inline in plan.xml step 11a —
+                        a serial native sub-agent, no separate command)
       task-plan-generate/             21 per-step shard files loaded by spine stubs
                                       (new step = new shard + spine stub)
     templates/         project scaffolding templates (_base, php-symfony)

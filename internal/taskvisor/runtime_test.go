@@ -180,7 +180,7 @@ func TestCrashRecovery_RebuildsRuntimeForRunningGoal(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
 	before := time.Now()
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 
 	assert.Equal(t, modeActive, d.mode)
 	assert.Equal(t, "goal-001", d.currentGoal, "currentGoal points at the recovered running goal")

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +112,64 @@ func TestSubmitTask_Non2xxReturnsError(t *testing.T) {
 	assert.Nil(t, resp)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
+}
+
+// TestSubmitTask_Non2xxIncludesBody: a rejection body (e.g. a Symfony 422
+// violation list) is surfaced in the error so the rejection cause is
+// diagnosable instead of a bare status line.
+func TestSubmitTask_Non2xxIncludesBody(t *testing.T) {
+	_, priv := testKeypair(t)
+	violation := `{"violations":[{"propertyPath":"proposedFix","title":"This value should not be blank."}]}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, violation)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	resp, err := c.SubmitTask(context.Background(), sampleRequest())
+	assert.Nil(t, resp)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "422")
+	assert.Contains(t, err.Error(), "should not be blank", "the violation body must be surfaced")
+}
+
+// TestSubmitTask_Non2xxBodyBounded: the surfaced body slice is capped at 2048
+// bytes no matter how large the response is.
+func TestSubmitTask_Non2xxBodyBounded(t *testing.T) {
+	_, priv := testKeypair(t)
+	big := strings.Repeat("x", 5000)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, big)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	_, err := c.SubmitTask(context.Background(), sampleRequest())
+	require.Error(t, err)
+
+	prefix := "producer: task submission returned status 422: "
+	require.True(t, strings.HasPrefix(err.Error(), prefix), "err=%q", err.Error())
+	assert.LessOrEqual(t, len(err.Error())-len(prefix), 2048, "body slice must be capped at 2048 bytes")
+}
+
+// TestSubmitTask_Non2xxEmptyBody: an empty rejection body preserves the
+// status-only error format (no trailing ": ").
+func TestSubmitTask_Non2xxEmptyBody(t *testing.T) {
+	_, priv := testKeypair(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	_, err := c.SubmitTask(context.Background(), sampleRequest())
+	require.Error(t, err)
+	assert.Equal(t, "producer: task submission returned status 500", err.Error())
 }
 
 func TestSubmitTask_TransportTimeout(t *testing.T) {

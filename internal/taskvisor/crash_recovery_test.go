@@ -20,7 +20,7 @@ import (
 func TestCrashRecovery_NoGuardFile(t *testing.T) {
 	d, _, _ := setupDaemon(t)
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 	assert.Equal(t, modeIdle, d.mode)
 }
@@ -38,9 +38,10 @@ func TestCrashRecovery_GuardWithSupervisorWindow(t *testing.T) {
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	before := time.Now()
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -67,7 +68,7 @@ func TestCrashRecovery_GuardWithValidatorWindow(t *testing.T) {
 	}, nil)
 
 	before := time.Now()
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -89,14 +90,15 @@ func TestCrashRecovery_GuardWithSignalFile(t *testing.T) {
 	}))
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
-	// The CRASH-RECOVERY notifySupervisor lookup lists windows exactly once
-	// (no bare "supervisor" present → silently skipped). The pass-1 signal-resume
+	// The survey and the CRASH-RECOVERY notifySupervisor lookup list windows once each
+	// (no bare "supervisor" present → notify silently skipped). The pass-1 signal-resume
 	// path adds no further listing — asserted below via call count.
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	before := time.Now()
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -104,8 +106,8 @@ func TestCrashRecovery_GuardWithSignalFile(t *testing.T) {
 	assert.Equal(t, "goal-001", d.currentGoal)
 	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
 	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
-	// Only the notify lookup lists windows; pass-1 signal-resume never lists again.
-	exec.AssertNumberOfCalls(t, "ListWindows", 1)
+	// The survey + the notify lookup each list once; pass-1 signal-resume never lists again.
+	exec.AssertNumberOfCalls(t, "ListWindows", 2)
 }
 
 func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
@@ -120,14 +122,15 @@ func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
 	}))
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
-	// The CRASH-RECOVERY notifySupervisor lookup lists windows exactly once
-	// (no bare "supervisor" present → silently skipped). The pass-1 signal-resume
+	// The survey and the CRASH-RECOVERY notifySupervisor lookup list windows once each
+	// (no bare "supervisor" present → notify silently skipped). The pass-1 signal-resume
 	// path adds no further listing — asserted below via call count.
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	before := time.Now()
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -135,8 +138,8 @@ func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
 	assert.Equal(t, "goal-001", d.currentGoal)
 	assert.WithinDuration(t, time.Now(), d.runtime("goal-001").phaseStartedAt, time.Second)
 	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
-	// Only the notify lookup lists windows; pass-1 signal-resume never lists again.
-	exec.AssertNumberOfCalls(t, "ListWindows", 1)
+	// The survey + the notify lookup each list once; pass-1 signal-resume never lists again.
+	exec.AssertNumberOfCalls(t, "ListWindows", 2)
 }
 
 func TestCrashRecovery_GuardNoWindowsRetriesLeft(t *testing.T) {
@@ -150,7 +153,7 @@ func TestCrashRecovery_GuardNoWindowsRetriesLeft(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -173,7 +176,7 @@ func TestCrashRecovery_GuardNoWindowsRetriesExhausted(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -203,7 +206,7 @@ func TestCrashRecovery_MultipleRunningGoals_AllRecovered(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 	assert.Equal(t, modeActive, d.mode)
 
@@ -225,7 +228,7 @@ func TestCrashRecovery_MissingGoalsYaml(t *testing.T) {
 	setupDeactivateMocks(exec, testSession, "@0")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeIdle, d.mode)
@@ -245,7 +248,7 @@ func TestCrashRecovery_GuardCorruptGoals(t *testing.T) {
 	setupDeactivateMocks(exec, testSession, "@0")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeIdle, d.mode)
@@ -269,7 +272,7 @@ func TestCrashRecovery_GuardNoRunningGoal(t *testing.T) {
 	setupDeactivateMocks(exec, testSession, "@0")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeIdle, d.mode)
@@ -289,7 +292,7 @@ func TestCrashRecovery_GuardWithInvestigatorWindow(t *testing.T) {
 	}, nil)
 
 	before := time.Now()
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -314,7 +317,7 @@ func TestCrashRecovery_GuardWithMultipleInvWindows(t *testing.T) {
 	}, nil)
 
 	before := time.Now()
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -339,7 +342,7 @@ func TestCrashRecovery_GuardWithValidatorAndInvWindows(t *testing.T) {
 	}, nil)
 
 	before := time.Now()
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -363,9 +366,10 @@ func TestCrashRecovery_GuardWithSupervisorAndInvWindows(t *testing.T) {
 		{TmuxWindowID: "@1", Name: "investigator-001-1"},
 	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	before := time.Now()
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -394,7 +398,7 @@ func TestCrashRecovery_ReDispatchSavesOnce(t *testing.T) {
 	// Small sleep so any file write gets a distinct mtime
 	time.Sleep(10 * time.Millisecond)
 
-	err = d.crashRecovery()
+	err = d.crashRecovery(false)
 	require.NoError(t, err)
 
 	// Read the final saved state
@@ -426,7 +430,7 @@ func TestCrashRecovery_RePendWithTasksYaml_SetsNextDispatchImplementer(t *testin
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	goals, err := LoadGoals(dir)
@@ -450,7 +454,7 @@ func TestCrashRecovery_RePendWithoutTasksYaml_LeavesNextDispatchEmpty(t *testing
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	goals, err := LoadGoals(dir)
@@ -484,7 +488,7 @@ func TestCrashRecovery_SupervisorAliveResume(t *testing.T) {
 	}, nil)
 
 	before := time.Now()
-	err = d.crashRecovery()
+	err = d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -535,7 +539,7 @@ func TestCrashRecovery_AllDone_ValidatePasses_SpawnSucceeds(t *testing.T) {
 	exec.On("CaptureWindowOutput", testSession, "@1").Return("output ❯ ", nil)
 	exec.On("SendMessage", testSession, "@1", mock.Anything).Return(nil)
 
-	err = d.crashRecovery()
+	err = d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -575,7 +579,7 @@ func TestCrashRecovery_AllDone_ValidatePasses_SpawnFails(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
-	err = d.crashRecovery()
+	err = d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -607,7 +611,7 @@ func TestCrashRecovery_AllDone_ValidateFails(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
-	err = d.crashRecovery()
+	err = d.crashRecovery(false)
 	require.NoError(t, err)
 
 	assert.Equal(t, modeActive, d.mode)
@@ -732,7 +736,7 @@ func TestRecoverAfterCrash_RetriesExhausted_SetsFinishedAt(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
-	err := d.crashRecovery()
+	err := d.crashRecovery(false)
 	require.NoError(t, err)
 
 	reloaded, err := LoadGoals(dir)

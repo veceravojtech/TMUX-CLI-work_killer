@@ -80,8 +80,9 @@ func TestCrashRecovery_ReportsWorkerCrash_OnReDispatch(t *testing.T) {
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 
 	goals, err := LoadGoals(dir)
 	require.NoError(t, err)
@@ -111,7 +112,7 @@ func TestCrashRecovery_ReportsWorkerCrash_OnFail(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 
 	goals, err := LoadGoals(dir)
 	require.NoError(t, err)
@@ -140,7 +141,7 @@ func TestCrashRecovery_NoReport_WhenWindowSurvives(t *testing.T) {
 		{TmuxWindowID: "@0", Name: supervisorWindow("goal-001", 1)},
 	}, nil)
 
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 
 	assert.Empty(t, *captured, "supervisor-alive resume must NOT report a crash")
 
@@ -157,7 +158,7 @@ func TestCrashRecovery_NoReport_OnMissingGuard(t *testing.T) {
 	captured := swapCrashReporter(t)
 	d, _, _ := setupDaemon(t)
 
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 	assert.Empty(t, *captured, "missing-guard idle path must NOT report")
 }
 
@@ -178,8 +179,9 @@ func TestCrashRecovery_NoReport_OnSignalResume(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 
 	assert.Empty(t, *captured, "Pass-1 signal-resume must NOT report")
 	assert.Equal(t, phaseSupervising, d.runtime("goal-001").phase)
@@ -203,8 +205,9 @@ func TestCrashRecovery_MultipleCrashedGoals_OneReportEach(t *testing.T) {
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 
 	require.Len(t, *captured, 2, "exactly one report per crashed goal")
 	ids := []string{(*captured)[0].goalID, (*captured)[1].goalID}
@@ -231,7 +234,7 @@ func TestCrashRecovery_NilProducer_NoPanic(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
 
 	require.NotPanics(t, func() {
-		require.NoError(t, d.crashRecovery())
+		require.NoError(t, d.crashRecovery(false))
 	})
 
 	goals, err := LoadGoals(dir)

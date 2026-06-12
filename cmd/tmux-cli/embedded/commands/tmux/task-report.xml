@@ -26,7 +26,7 @@
     </step>
 
     <step n="1" title="Resolve the problem statement">
-      <action>If $ARGUMENTS is a path matching .tmux-cli/task-reports/outbox-*.md, read that draft: it already contains the six fields — skip to step 5 and submit it verbatim.</action>
+      <action>If $ARGUMENTS is a path matching .tmux-cli/task-reports/outbox-*.md, read that draft: it already contains the six fields. If it carries an `## Invalid Fields:` line (saved after a backend invalid-input rejection), re-derive exactly the named fields per step 3, drop the marker line, then go to step 5. Otherwise (saved on network/backend unreachability) skip to step 5 and submit it verbatim.</action>
       <action>Else set PROBLEM from $ARGUMENTS, or — when empty — from the most recent concrete problem discussed in this conversation.</action>
       <check condition="PROBLEM cannot be determined">
         <action>Print: "Nothing to report — pass a problem statement: /tmux:task-report &lt;what went wrong&gt;"</action>
@@ -101,7 +101,7 @@
     <step n="5" title="Submit">
       <action>Call the task-report MCP tool with: category, severity, title, description, proposed_fix, expected_green_state, payload.</action>
       <check condition="tool returns an invalid-input error">
-        <action>The error names the failing field(s). Fix exactly those fields per step 3 and resubmit ONCE. If it fails again, fall through to the outbox branch.</action>
+        <action>The error names the failing field(s). Fix exactly those fields per step 3 and resubmit ONCE. If it fails again, fall through to the outbox branch — and append a final line `## Invalid Fields: {comma-separated field names from the last error}` to the draft, so the retry re-derives them instead of resubmitting a payload the backend already rejected (a verbatim retry of an invalid draft can never succeed).</action>
       </check>
       <check condition="tool returns 'task reporting is disabled'">
         <action>Print the step-0 enable instruction and STOP.</action>
@@ -121,6 +121,6 @@
     <rule>Local validation mirrors the MCP tool exactly: six non-empty fields, no stub proposed_fix, closed category/severity sets — a wire rejection means this spec was not followed</rule>
     <rule>Evidence verbatim, bounded excerpts, sources named</rule>
     <rule>Only writes allowed: OUTBOX_DIR drafts on submission failure</rule>
-    <rule>One problem per report; one resubmit attempt on invalid-input, then outbox</rule>
+    <rule>One problem per report; one resubmit attempt on invalid-input, then outbox WITH the `## Invalid Fields:` marker — never park a known-invalid draft for verbatim retry</rule>
   </execution-rules>
 </task>

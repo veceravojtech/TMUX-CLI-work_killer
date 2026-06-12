@@ -311,8 +311,8 @@ Re-run /tmux:task-plan-discover to regenerate discovery outputs, or edit the fil
       </substep>
     </step>
 
-    <step n="6" title="Handoff to plan audit">
-      <action>Print: "Generation complete. Run /tmux:plan-audit before /tmux:supervisor — execution is blocked until plan-approval.md records ≥90% with zero open SEV-1/SEV-2."</action>
+    <step n="6" title="Handoff to planning">
+      <action>Print: "Generation complete. Run /tmux:plan — its blind audit gate (step 11a) audits the finalized plan via a serial native sub-agent before handing off to /tmux:supervisor. With require_plan_approval enabled, execution stays blocked until plan-approval.md records ≥90% with zero open SEV-1/SEV-2."</action>
     </step>
 
 

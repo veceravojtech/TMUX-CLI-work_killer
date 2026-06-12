@@ -579,7 +579,7 @@ func TestHeartbeat_DisabledWhenTimeoutZero(t *testing.T) {
 	d := &Daemon{executor: exec, session: testSession} // progressTimeout zero, clock nil
 	rt := &goalRuntime{}
 
-	stuck, err := d.checkProgressHeartbeat(rt, "supervisor-001")
+	stuck, err := d.checkProgressHeartbeat(rt, "supervisor-001", "execute-001-")
 
 	require.NoError(t, err)
 	assert.False(t, stuck, "disabled heartbeat never fires")
@@ -655,6 +655,7 @@ func TestHandleStuckSupervisor_DecrementsStuckRetries(t *testing.T) {
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@1").Return("ready ❯ ", nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	goal := &gf.Goals[0]
 	require.NoError(t, d.handleStuckSupervisor(goal, gf))
@@ -718,6 +719,7 @@ func TestHandleStuckValidator_DecrementsStuckRetries(t *testing.T) {
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@1").Return("ready ❯ ", nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	goal := &gf.Goals[0]
 	require.NoError(t, d.handleStuckValidator(goal, gf))

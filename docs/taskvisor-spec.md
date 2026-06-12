@@ -182,7 +182,7 @@ The `--run` flag is internal — it starts the daemon loop directly. The daemon 
 
 1. Write `.tmux-cli/taskvisor-active` guard file (suppresses hooks)
 2. Verify `plan.auto_approve` and `plan.auto_execute` are true in setting.yaml — if not, set them (required for autonomous operation)
-3. **RequirePlanApproval gate**: if `require_plan_approval: true` in setting.yaml and `docs/architecture/plan-approval.md` does not exist, set `haltReason` and call `deactivate()`. The `/tmux:plan-audit` command produces this approval file — run it before starting the daemon when the gate is enabled.
+3. **RequirePlanApproval gate**: if `require_plan_approval: true` in setting.yaml and `docs/architecture/plan-approval.md` does not exist, set `haltReason` and call `deactivate()`. The approval file is produced by `/tmux:plan`'s blind audit gate (plan.xml step 11a, a serial native sub-agent) — run a plan before starting the daemon when the gate is enabled.
 4. Set `current_goal` to first pending goal in goals.yaml
 5. Sweep leftover per-goal windows (`supervisor-<ns>` / `execute-<ns>-` / `validator-<ns>` / `inv-<ns>-`) from a prior run — window-0 `supervisor` is NOT in the sweep set
 6. Begin dispatch loop
@@ -442,7 +442,7 @@ type Settings struct {
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `require_plan_approval` | bool | `false` | When true, `activate()` halts unless `docs/architecture/plan-approval.md` exists. Run `/tmux:plan-audit` to produce the approval file. |
+| `require_plan_approval` | bool | `false` | When true, `activate()` halts unless `docs/architecture/plan-approval.md` exists. `/tmux:plan`'s blind audit gate (step 11a) produces the approval file. |
 | `halt_on_stale_binary` | bool | `false` | When true, the daemon halts (after finishing the in-flight goal phase) if the binary on disk has changed since startup. When false, only a dashboard banner is shown. |
 
 ## CLI Commands

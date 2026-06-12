@@ -22,11 +22,11 @@ func TestNotifySupervisor_Success(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", "test msg").Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", "test msg").Return(nil)
 
 	d.notifySupervisor("test msg")
 
-	exec.AssertCalled(t, "SendMessage", testSession, "@0", "test msg")
+	exec.AssertCalled(t, "SendMessageWithDelay", testSession, "@0", "test msg")
 }
 
 func TestNotifySupervisor_MissingWindow(t *testing.T) {
@@ -39,7 +39,7 @@ func TestNotifySupervisor_MissingWindow(t *testing.T) {
 
 	d.notifySupervisor("test msg")
 
-	exec.AssertNotCalled(t, "SendMessage", mock.Anything, mock.Anything, mock.Anything)
+	exec.AssertNotCalled(t, "SendMessageWithDelay", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestNotifySupervisor_SendError(t *testing.T) {
@@ -49,11 +49,11 @@ func TestNotifySupervisor_SendError(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", "test msg").Return(fmt.Errorf("send failed"))
+	exec.On("SendMessageWithDelay", testSession, "@0", "test msg").Return(fmt.Errorf("send failed"))
 
 	d.notifySupervisor("test msg")
 
-	exec.AssertCalled(t, "SendMessage", testSession, "@0", "test msg")
+	exec.AssertCalled(t, "SendMessageWithDelay", testSession, "@0", "test msg")
 }
 
 func TestNotifySupervisor_EmptySession(t *testing.T) {
@@ -63,7 +63,7 @@ func TestNotifySupervisor_EmptySession(t *testing.T) {
 	d.notifySupervisor("test msg")
 
 	exec.AssertNotCalled(t, "ListWindows", mock.Anything)
-	exec.AssertNotCalled(t, "SendMessage", mock.Anything, mock.Anything, mock.Anything)
+	exec.AssertNotCalled(t, "SendMessageWithDelay", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestCountCascaded(t *testing.T) {
@@ -105,13 +105,13 @@ func TestDeactivateOnCompletion_GoalDoneNotifications(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	require.NoError(t, d.deactivateOnCompletion(gf))
 
 	var sentMsgs []string
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			sentMsgs = append(sentMsgs, call.Arguments.String(2))
 		}
 	}
@@ -158,13 +158,13 @@ func TestDeactivateOnCompletion_AllCompleteNotification(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	require.NoError(t, d.deactivateOnCompletion(gf))
 
 	var allCompleteMsg string
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:ALL-COMPLETE") {
 				allCompleteMsg = msg
@@ -195,13 +195,13 @@ func TestDeactivateOnCompletion_AllCompleteAfterGoalDone(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	require.NoError(t, d.deactivateOnCompletion(gf))
 
 	var msgOrder []string
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "GOAL-DONE") {
 				msgOrder = append(msgOrder, "GOAL-DONE")
@@ -234,14 +234,14 @@ func TestHandleStuckSupervisor_GoalFailedNotification(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	goal := &gf.Goals[0]
 	require.NoError(t, d.handleStuckSupervisor(goal, gf))
 
 	var foundNotif bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-FAILED") &&
 				strings.Contains(msg, "reason=stuck-supervisor") &&
@@ -276,14 +276,14 @@ func TestRerunValidationOnly_GoalFailedNotification(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	goal := &gf.Goals[0]
 	require.NoError(t, d.rerunValidationOnly(goal, gf, nil))
 
 	var foundNotif bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-FAILED") &&
 				strings.Contains(msg, "reason=validation-exhausted") &&
@@ -318,14 +318,14 @@ func TestHandleFailedCycle_GoalFailedNotification(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	goal := &gf.Goals[0]
 	require.NoError(t, d.handleFailedCycle(goal, gf, "test reason", "code-defect"))
 
 	var foundNotif bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-FAILED") &&
 				strings.Contains(msg, "reason=code-exhausted") &&
@@ -361,7 +361,7 @@ func TestBounceToGeneration_GoalFailedNotification(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	goal := &gf.Goals[0]
 	valSig := &ValidatorSignal{Verdict: VerdictBlocked, Owner: "planner"}
@@ -369,7 +369,7 @@ func TestBounceToGeneration_GoalFailedNotification(t *testing.T) {
 
 	var foundNotif bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-FAILED") &&
 				strings.Contains(msg, "reason=spec-exhausted") &&
@@ -399,14 +399,14 @@ func TestHaltRetryCeiling_GoalFailedNotification(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	goal := &gf.Goals[0]
 	require.NoError(t, d.haltRetryCeiling(goal, gf))
 
 	var foundNotif bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-FAILED") &&
 				strings.Contains(msg, "reason=retry-ceiling") &&
@@ -434,7 +434,7 @@ func TestHaltBlockedEnv_NoGoalFailedNotification(t *testing.T) {
 	require.NoError(t, err)
 
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
-	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	goal := &gf.Goals[0]
 	valSig := &ValidatorSignal{
@@ -445,7 +445,7 @@ func TestHaltBlockedEnv_NoGoalFailedNotification(t *testing.T) {
 	require.NoError(t, d.haltBlockedEnv(goal, gf, valSig))
 
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" {
+		if call.Method == "SendMessageWithDelay" {
 			msg := call.Arguments.String(2)
 			assert.NotContains(t, msg, "GOAL-FAILED", "haltBlockedEnv must NOT send GOAL-FAILED (soft cascade)")
 		}
@@ -479,7 +479,7 @@ func TestDeactivateOnCompletion_MissingSupervisor_NoError(t *testing.T) {
 	}, nil)
 	exec.On("KillWindow", testSession, mock.Anything).Return(nil)
 	exec.On("CaptureWindowOutput", testSession, "@2").Return("ready ❯ ", nil)
-	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	require.NoError(t, d.deactivateOnCompletion(gf), "must complete without error even when supervisor window is missing")
 	assert.Equal(t, modeIdle, d.mode)
@@ -508,7 +508,7 @@ func TestHandleStuckValidator_GoalFailedNotification(t *testing.T) {
 		{TmuxWindowID: "@0", Name: "supervisor"},
 		{TmuxWindowID: "@3", Name: "validator-001"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 	exec.On("ClosePipePane", testSession, mock.Anything).Return(nil)
 	exec.On("KillWindow", testSession, mock.Anything).Return(nil)
 
@@ -517,7 +517,7 @@ func TestHandleStuckValidator_GoalFailedNotification(t *testing.T) {
 
 	var foundNotif bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-FAILED") &&
 				strings.Contains(msg, "reason=stuck-validator") &&
@@ -589,7 +589,7 @@ func TestFinalizeWorktreeOnDone_IntegrationFailed_GoalFailedNotification(t *test
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	goal := &gf.Goals[0]
 	failed, err := d.finalizeWorktreeOnDone(gf, goal)
@@ -598,7 +598,7 @@ func TestFinalizeWorktreeOnDone_IntegrationFailed_GoalFailedNotification(t *test
 
 	var foundNotif bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-FAILED") &&
 				strings.Contains(msg, "reason=integration-gate-failed") &&
@@ -627,14 +627,14 @@ func TestActivate_NotifiesIdleToActive(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	require.NoError(t, d.activate(gf))
 	assert.Equal(t, modeActive, d.mode)
 
 	var found bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			if strings.Contains(call.Arguments.String(2), "[TASKVISOR:STATE from=idle to=active goals=2]") {
 				found = true
 			}
@@ -659,7 +659,7 @@ func TestActivate_ExecReplaceRestart_NotifiesBeforeActivation(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		sent = append(sent, args.String(2))
 	})
 
@@ -695,7 +695,7 @@ func TestActivate_ExecReplaceRestart_FlagClearedAfterNotify(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	require.NoError(t, d.activate(gf))
 	assert.False(t, d.execReplaceRestart, "execReplaceRestart must be cleared after activate")
@@ -710,7 +710,7 @@ func TestDeactivate_NotifiesActiveToIdle(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
 	require.NoError(t, d.deactivate())
@@ -718,7 +718,7 @@ func TestDeactivate_NotifiesActiveToIdle(t *testing.T) {
 
 	var found bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			if strings.Contains(call.Arguments.String(2), "[TASKVISOR:STATE from=active to=idle]") {
 				found = true
 			}
@@ -740,7 +740,7 @@ func TestDeactivate_NoSessionSkipsNotification(t *testing.T) {
 	require.NoError(t, d.deactivate())
 
 	exec.AssertNotCalled(t, "ListWindows", mock.Anything)
-	exec.AssertNotCalled(t, "SendMessage", mock.Anything, mock.Anything, mock.Anything)
+	exec.AssertNotCalled(t, "SendMessageWithDelay", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestDispatch_NotifiesGoalDispatched(t *testing.T) {
@@ -767,6 +767,7 @@ func TestDispatch_NotifiesGoalDispatched(t *testing.T) {
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@1").Return("ready ❯ ", nil)
 	exec.On("KillWindow", testSession, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
 	d.SetWindowCreateFunc(mockCreateWindowFn("@1"))
 
@@ -774,7 +775,7 @@ func TestDispatch_NotifiesGoalDispatched(t *testing.T) {
 
 	var found bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" {
+		if call.Method == "SendMessageWithDelay" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-DISPATCHED") &&
 				strings.Contains(msg, "id=goal-001") &&
@@ -823,6 +824,7 @@ tasks:
 	}, nil)
 	exec.On("CaptureWindowOutput", testSession, "@1").Return("ready ❯ ", nil)
 	exec.On("KillWindow", testSession, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
 	d.SetWindowCreateFunc(mockCreateWindowFn("@1"))
 
@@ -830,7 +832,7 @@ tasks:
 
 	var found bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" {
+		if call.Method == "SendMessageWithDelay" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-DISPATCHED") &&
 				strings.Contains(msg, "id=goal-001") &&
@@ -858,14 +860,14 @@ func TestCrashRecovery_NotifiesCrashRecovery(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 
 	var found bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
-			if strings.Contains(call.Arguments.String(2), "[TASKVISOR:CRASH-RECOVERY goals=2]") {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
+			if strings.Contains(call.Arguments.String(2), "[TASKVISOR:CRASH-RECOVERY goals=2 live-windows=none]") {
 				found = true
 			}
 		}
@@ -887,13 +889,13 @@ func TestCrashRecovery_NoRunningGoals_NoNotification(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
-	require.NoError(t, d.crashRecovery())
+	require.NoError(t, d.crashRecovery(false))
 
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" {
+		if call.Method == "SendMessageWithDelay" {
 			assert.NotContains(t, call.Arguments.String(2), "CRASH-RECOVERY",
 				"must not send CRASH-RECOVERY when no running goals")
 		}
@@ -950,7 +952,7 @@ func TestFinalizeWorktreeOnDone_MergeConflict_GoalFailedNotification(t *testing.
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@0", Name: "supervisor"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	goal := &gf.Goals[0]
 	failed, err := d.finalizeWorktreeOnDone(gf, goal)
@@ -959,7 +961,7 @@ func TestFinalizeWorktreeOnDone_MergeConflict_GoalFailedNotification(t *testing.
 
 	var foundNotif bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessage" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
 			msg := call.Arguments.String(2)
 			if strings.Contains(msg, "[TASKVISOR:GOAL-FAILED") &&
 				strings.Contains(msg, "reason=merge-conflict") &&

@@ -13,7 +13,14 @@ import (
 	"github.com/console/tmux-cli/internal/tmux"
 )
 
-func (d *Daemon) crashRecovery() error {
+// crashRecovery restores the daemon's in-flight goal state on startup when the
+// taskvisor-active guard says a previous run was supervising. plannedRestart
+// distinguishes a deliberate exec-replace restart (the taskvisor-restart marker
+// was present, i.e. a binary deploy with RestartOnStaleBinary) from a genuine
+// crash: the RESUME logic is identical — live windows are resumed in place, never
+// recreated — but the supervisor notification says STATE exec-replace-restart
+// instead of CRASH-RECOVERY, so a routine deploy is not reported as a crash.
+func (d *Daemon) crashRecovery(plannedRestart bool) error {
 	guardPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-active")
 	if _, err := os.Stat(guardPath); os.IsNotExist(err) {
 		return nil
@@ -48,8 +55,35 @@ func (d *Daemon) crashRecovery() error {
 		return d.deactivate()
 	}
 
+	// Survey the running goals' namespace windows ONCE, up front. The recovery
+	// announcement carries the detected-live set as name(@id) pairs so an
+	// operator can verify against the post-recovery state whether those windows
+	// were resumed in place or recreated: names are REUSED on recreation, the
+	// tmux window ID is not — a supervisor-005 that was @23 before and @58 after
+	// was recreated. Pass 2 reuses this listing (it used to list lazily; the
+	// survey makes the one listing unconditional). A listing failure degrades
+	// the survey to "unknown" and is re-raised only if pass 2 needs the list.
+	mg := d.maxGoals()
+	windows, winErr := d.executor.ListWindows(d.session)
+	if winErr != nil {
+		log.Printf("crash recovery: list windows for survey: %v", winErr)
+	}
+	liveStr := "unknown"
+	if winErr == nil {
+		liveStr = "none"
+		if live := liveGoalWindows(windows, running, mg); len(live) > 0 {
+			liveStr = strings.Join(live, ",")
+		}
+	}
+
 	d.mode = modeActive
-	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:CRASH-RECOVERY goals=%d]", len(running)))
+	if plannedRestart {
+		log.Printf("exec-replace restart: resuming %d in-flight goal(s) in place where possible; live windows: %s", len(running), liveStr)
+		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:STATE exec-replace-restart resumed=%d live-windows=%s]", len(running), liveStr))
+	} else {
+		log.Printf("crash recovery: %d in-flight goal(s); live windows: %s", len(running), liveStr)
+		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:CRASH-RECOVERY goals=%d live-windows=%s]", len(running), liveStr))
+	}
 	// CurrentGoal is the legacy scalar head-tracker; bind it to the first in-flight
 	// goal for compatibility. The per-goal runtime restored below is the
 	// authoritative state at MaxGoals>1.
@@ -86,12 +120,12 @@ func (d *Daemon) crashRecovery() error {
 
 	// Pass 2: no signal — a live validator/investigator window means work was
 	// mid-validation (resume), otherwise the supervisor state is lost and the goal
-	// is re-dispatched (re-pended, or failed when its retry budget is spent).
-	windows, err := d.executor.ListWindows(d.session)
-	if err != nil {
-		return err
+	// is re-dispatched (re-pended, or failed when its retry budget is spent). The
+	// window list is the survey's; a listing failure surfaces here, where the
+	// list is load-bearing (the survey alone tolerates it as "unknown").
+	if winErr != nil {
+		return winErr
 	}
-	mg := d.maxGoals()
 	changed := false
 	for _, g := range needWindowCheck {
 		rt := d.runtime(g.ID)
@@ -165,6 +199,28 @@ func (d *Daemon) crashRecovery() error {
 	return nil
 }
 
+// liveGoalWindows returns a name(@id) entry for every window in the listing that
+// belongs to one of the running goals' namespaces — supervisor, validator,
+// investigator-pool and execute-pool windows. It is the pure half of the recovery
+// survey: the announcement embeds these pairs so recreation is detectable later
+// (the name survives a kill+recreate, the tmux window ID does not). Order follows
+// the tmux listing, so consecutive surveys of an unchanged session compare equal.
+func liveGoalWindows(windows []tmux.WindowInfo, running []*Goal, mg int) []string {
+	var live []string
+	for _, w := range windows {
+		for _, g := range running {
+			if w.Name == supervisorWindow(g.ID, mg) ||
+				w.Name == validatorWindow(g.ID, mg) ||
+				strings.HasPrefix(w.Name, investigatorPrefix(g.ID, mg)) ||
+				strings.HasPrefix(w.Name, executePrefix(g.ID, mg)) {
+				live = append(live, fmt.Sprintf("%s(%s)", w.Name, w.TmuxWindowID))
+				break
+			}
+		}
+	}
+	return live
+}
+
 // reportWorkerCrashFn is the indirection the genuine-crash branch invokes to emit
 // the recovered-worker-crash report. It defaults to (*Daemon).reportWorkerCrash
 // and is a package var ONLY so recovery_test.go can count and inspect crash
@@ -177,11 +233,13 @@ var reportWorkerCrashFn = (*Daemon).reportWorkerCrash
 // reportWorkerCrash assembles and submits ONE execute/warning report for a
 // recovered worker crash — a GoalRunning goal whose worker window vanished and is
 // being re-dispatched (action="re-dispatch") or failed (action="fail"). The
-// submission is delegated to reportFailure, a goroutine-wrapped no-op when
-// d.producer is nil, so recovery never blocks on the network and never panics
-// with reporting disabled. The only I/O here is the bounded log-tail read;
-// surviving windows and allDone are reused from the caller (no extra ListWindows
-// or tasks-file read).
+// submission is delegated to reportFailure, whose nil-producer no-op lives in
+// submitReport, so recovery never blocks on the network and never panics with
+// reporting disabled. Both backend NotBlank contract fields are explicit and
+// action-dependent: a re-dispatch is self-healing (watch for recurrence), a fail
+// is terminal (diagnose, then goal reset). The only I/O here is the bounded
+// log-tail read; surviving windows and allDone are reused from the caller (no
+// extra ListWindows or tasks-file read).
 func (d *Daemon) reportWorkerCrash(g *Goal, mg int, action string, allDone bool, surviving []tmux.WindowInfo) {
 	logPath := filepath.Join(d.workDir, ".tmux-cli", "logs", "taskvisor.log")
 	payload := crashReportPayload(g, mg, action, allDone, surviving, readLogTail(logPath))
@@ -190,7 +248,22 @@ func (d *Daemon) reportWorkerCrash(g *Goal, mg int, action string, allDone bool,
 		"GoalRunning goal %s lost its worker window (expected %s); recovery action: %s.",
 		g.ID, supervisorWindow(g.ID, mg), action,
 	)
-	d.reportFailure("execute", "warning", title, desc, payload)
+	var fix string
+	if action == "re-dispatch" {
+		fix = fmt.Sprintf(
+			"No action needed yet: %s was re-dispatched automatically. If crashes recur, inspect the log_tail payload and .tmux-cli/logs/taskvisor.log for what killed the worker window.",
+			g.ID)
+	} else {
+		fix = fmt.Sprintf(
+			"Diagnose the crash from the log_tail payload and .tmux-cli/logs/taskvisor.log, fix the cause, then run `taskvisor goal reset %s` to re-pend the goal.",
+			g.ID)
+	}
+	expected := expectedGreenState(*g)
+	if strings.TrimSpace(expected) == "" {
+		expected = fmt.Sprintf("Goal %s runs to a terminal status with its worker window alive until completion.", g.ID)
+	}
+	d.reportFailure("execute", "warning", title, desc, payload,
+		withProposedFix(fix), withExpectedGreenState(expected))
 }
 
 // crashReportPayload builds the worker-crash report payload deterministically (no

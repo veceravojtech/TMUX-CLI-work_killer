@@ -674,6 +674,7 @@ func TestTick_MaxGoalsTwo_DispatchesTwoDisjointGoals(t *testing.T) {
 	setupNamespacedDispatchMocks(exec, testSession, "supervisor-021", "@21")
 	exec.On("CaptureWindowOutput", testSession, mock.Anything).Return("❯ ", nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("KillWindow", testSession, mock.Anything).Return(nil)
 
 	var createdNames []string
@@ -720,6 +721,7 @@ func TestTick_MaxGoalsTwo_UnknownScopeSerializes(t *testing.T) {
 	setupNamespacedDispatchMocks(exec, testSession, "supervisor-020", "@20")
 	exec.On("CaptureWindowOutput", testSession, mock.Anything).Return("❯ ", nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("KillWindow", testSession, mock.Anything).Return(nil)
 
 	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
@@ -782,6 +784,7 @@ func TestTick_MaxGoalsThree_OneCandidateLeavesSlotsIdle(t *testing.T) {
 	setupNamespacedDispatchMocks(exec, testSession, "supervisor-030", "@30")
 	exec.On("CaptureWindowOutput", testSession, mock.Anything).Return("❯ ", nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil)
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("KillWindow", testSession, mock.Anything).Return(nil)
 	d.SetWindowCreateFunc(mockCreateWindowFn("@30"))
 

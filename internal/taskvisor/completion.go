@@ -259,9 +259,12 @@ type failedGoalReport struct {
 // composing execute-1's reporting.go helpers (inferCategory, goalToYAML,
 // proposedFixFromSignal, expectedGreenState) — it NEVER redefines them. sig may
 // be nil (no signal.json / unparseable): category then falls back to "execute",
-// verdict/findings/proposedFix are empty, and the goal YAML + FailedBy/cycle
-// still populate the payload. Severity is ALWAYS "critical" — by the time a goal
-// reaches here it is terminally failed (salvage grace, if any, already elapsed).
+// verdict/findings are empty, and the goal YAML + FailedBy/cycle still populate
+// the payload. proposedFix/expected are NEVER blank (the backend rejects blank
+// contract fields with a 422): a missing correction or empty acceptance falls
+// back to derived text naming the goal. Severity is ALWAYS "critical" — by the
+// time a goal reaches here it is terminally failed (salvage grace, if any,
+// already elapsed).
 func buildFailedGoalReport(g *Goal, sig *ValidatorSignal) failedGoalReport {
 	var verdict, findings string
 	if sig != nil {
@@ -279,14 +282,24 @@ func buildFailedGoalReport(g *Goal, sig *ValidatorSignal) failedGoalReport {
 		"failed_by": g.FailedBy,
 		"cycle":     CurrentCycle(g),
 	}
+	proposedFix := proposedFixFromSignal(sig)
+	if strings.TrimSpace(proposedFix) == "" {
+		proposedFix = fmt.Sprintf(
+			"No validator correction recorded for %s; inspect the .tmux-cli/goals/%s/ artifacts and the goal YAML in the payload, fix the cause, then run `taskvisor goal reset %s`.",
+			g.ID, g.ID, g.ID)
+	}
+	expected := expectedGreenState(*g)
+	if strings.TrimSpace(expected) == "" {
+		expected = fmt.Sprintf("Goal %s revalidates to done: %s", g.ID, g.Description)
+	}
 	return failedGoalReport{
 		category:    inferCategory(sig, *g),
 		severity:    "critical",
 		title:       fmt.Sprintf("Goal %s failed after retries", g.ID),
 		description: description,
 		payload:     payload,
-		proposedFix: proposedFixFromSignal(sig),
-		expected:    expectedGreenState(*g),
+		proposedFix: proposedFix,
+		expected:    expected,
 	}
 }
 
@@ -313,22 +326,35 @@ func summarizeFindings(sig *ValidatorSignal) string {
 }
 
 // reportFailedGoals submits exactly one backend failure report per GoalFailed
-// goal, de-duplicated across repeated deactivateOnCompletion invocations via the
-// in-memory d.reportedFailures set. It NEVER reports GoalDone (success or
-// SkipGoal), GoalBlocked, GoalPending or GoalRunning. Detection/iteration is
-// cheap and synchronous; the network submit is goroutine-wrapped + nil-producer
-// no-op inside execute-1's d.reportFailure, so this is non-blocking and safe
-// when reporting is disabled. Best-effort: a missing/unparseable signal.json is
-// logged and the report is still submitted with an empty signal.
+// goal. It NEVER reports GoalDone (success or SkipGoal), GoalBlocked,
+// GoalPending or GoalRunning. The d.reportedFailures mark is TRUTHFUL: it is
+// set eagerly under reportedFailuresMu before submission starts (deduping both
+// repeated deactivateOnCompletion passes and a sweep racing an in-flight async
+// submission) and cleared by the submit callback when the submission errors, so
+// the next sweep retries instead of silently dropping the report. With a nil
+// producer submitReport invokes the callback synchronously with nil — the mark
+// is kept (delivered-equivalent, preserving the disabled-reporting contract).
+// Detection/iteration is cheap and synchronous; the network submit runs on
+// submitReport's goroutine, so this is non-blocking. Best-effort: a missing/
+// unparseable signal.json is logged and the report is still submitted with an
+// empty signal.
 func (d *Daemon) reportFailedGoals(goals *GoalsFile) {
-	if d.reportedFailures == nil {
-		d.reportedFailures = make(map[string]bool)
-	}
 	for i := range goals.Goals {
 		g := &goals.Goals[i]
-		if g.Status != GoalFailed || d.reportedFailures[g.ID] {
+		if g.Status != GoalFailed {
 			continue
 		}
+		d.reportedFailuresMu.Lock()
+		if d.reportedFailures == nil {
+			d.reportedFailures = make(map[string]bool)
+		}
+		if d.reportedFailures[g.ID] {
+			d.reportedFailuresMu.Unlock()
+			continue
+		}
+		d.reportedFailures[g.ID] = true
+		d.reportedFailuresMu.Unlock()
+
 		var sig *ValidatorSignal
 		if loaded, err := LoadSignal(d.workDir, g.ID); err != nil {
 			log.Printf("reportFailedGoals: load signal for %s: %v", g.ID, err)
@@ -336,8 +362,17 @@ func (d *Daemon) reportFailedGoals(goals *GoalsFile) {
 			sig = s
 		}
 		r := buildFailedGoalReport(g, sig)
-		d.reportFailure(r.category, r.severity, r.title, r.description, r.payload,
+		req := d.buildRequest(r.category, r.severity, r.title, r.description, r.payload,
 			withProposedFix(r.proposedFix), withExpectedGreenState(r.expected))
-		d.reportedFailures[g.ID] = true
+		goalID := g.ID
+		submitReportFn(d, req, func(err error) {
+			if err == nil {
+				return
+			}
+			d.reportedFailuresMu.Lock()
+			delete(d.reportedFailures, goalID)
+			d.reportedFailuresMu.Unlock()
+			log.Printf("reportFailedGoals: submission for %s failed — will retry on next sweep: %v", goalID, err)
+		})
 	}
 }

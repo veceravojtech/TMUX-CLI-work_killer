@@ -104,7 +104,7 @@ func TestRun_LegacySettingMissingWallClock_CeilingActive(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@9", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@9", mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, "@9", mock.Anything).Return(nil).Maybe()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -317,7 +317,7 @@ func TestTick_PerGoalWallClock_IndependentHalt(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
 		{TmuxWindowID: "@9", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
-	exec.On("SendMessage", testSession, "@9", mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, "@9", mock.Anything).Return(nil).Maybe()
 
 	var tickErr error
 	logOut := captureLog(t, func() {

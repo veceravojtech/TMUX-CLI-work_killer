@@ -161,6 +161,7 @@ func TestActivate_KillsExistingWindows(t *testing.T) {
 	exec.On("KillWindow", testSession, "@3").Return(nil)
 	exec.On("KillWindow", testSession, "@4").Return(nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	err := d.activate(gf)
 	require.NoError(t, err)
@@ -215,6 +216,7 @@ func TestDeactivate_KillsAllManagedWindows(t *testing.T) {
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
 
@@ -254,6 +256,7 @@ func TestDeactivate_WaitsForWindowsGone(t *testing.T) {
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	d.SetWindowCreateFunc(mockCreateWindowFn("@1"))
 
@@ -277,6 +280,7 @@ func TestDeactivate_CreatesFreshSupervisor(t *testing.T) {
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	var createdName string
 	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
@@ -310,6 +314,7 @@ func TestDeactivate_PreservesWindow0Supervisor(t *testing.T) {
 			{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 		}, nil)
 		exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+		exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 		var created []string
 		d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
@@ -336,6 +341,7 @@ func TestDeactivate_PreservesWindow0Supervisor(t *testing.T) {
 			{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 		}, nil)
 		exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+		exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 		var created []string
 		d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
@@ -368,6 +374,7 @@ func TestDeactivate_WaitsForClaudeBoot(t *testing.T) {
 		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
 	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 
