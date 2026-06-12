@@ -30,7 +30,7 @@
     <term name="AUTO_EXECUTE">Internal flag set when plan.auto_execute=true in setting.yaml. Causes step 11 to auto-invoke /tmux:supervisor after finalization.</term>
     <term name="SELF_SPEC">Internal flag set by the dispatch gate (step 3d) when exactly ONE task is pending. The planning supervisor writes that spec inline — no worker spawn — through the same validation gates (spec-validate + S5/S6/S9, max 3 self-revision rounds). Forces the blind audit (step 11a) regardless of supervisor.unplanned_audit, because author == verifier. Step 3d additionally records the solo-lane gate verdict as a top-level `lane` key in tasks-path; lane=solo SLIMS the forced audit to the daemon's-eye validate evaluation — it never skips it.</term>
     <term name="FRESH mode">No usable tasks.yaml exists — derive everything from scratch.</term>
-    <term name="INCREMENTAL mode">tasks.yaml exists with status: planning — preserve existing tasks, append new spec tasks.</term>
+    <term name="INCREMENTAL mode">tasks.yaml exists with status: planning — preserve existing tasks, append new spec tasks. Inherited in_progress tasks whose worker window is dead are reset to pending by the step 0c recovery so step 4 respawns them.</term>
     <term name="ranking heuristic">Priority ordering for decomposition: (1) closest to user-facing surface or critical path, (2) closest to impact target, (3) smallest budget before completion, (4) overturns prior assumption if confirmed. Break ties by lowest budget.</term>
     <term name="pushback catalogue">The S1–S9 taxonomy in step 6 used to gate spec quality before acceptance.</term>
   </glossary>
@@ -192,6 +192,7 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
       <action>Check if tasks-path (resolved in step 0b) exists:</action>
       <branch condition="exists AND status=planning">
         <action>INCREMENTAL mode — existing tasks preserved. Inform user: "Existing plan found with N tasks (status: planning). Entering incremental mode — existing tasks preserved."</action>
+        <action>IN_PROGRESS RECOVERY (deadlock guard): collect every task with status=in_progress from tasks-path. If none exist, skip this action. Otherwise call windows-list once and classify each: a task whose wid has a live window of that exact name is a LIVE worker — leave it in_progress (its messages still route to this supervisor window name in step 5); a task whose wid has NO live window is an ORPHAN — its worker died with the previous planner. Reset each orphan to status=pending in tasks-path and log "Recovered {wid} (in_progress, no live window) → pending — step 4 respawns it". If the windows-list call fails, reset NOTHING (fail-safe — liveness cannot be verified; step 1's MCP precondition will STOP the flow). Without this recovery, inherited in_progress tasks with dead workers deadlock the flow: step 4 spawns only pending tasks and step 5 idles forever on [EXECUTE:*] messages that can never arrive.</action>
         <action>Proceed to step 1.</action>
       </branch>
       <branch condition="exists AND status=ready AND GOAL_MODE is true">
@@ -249,21 +250,6 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
         <action>Store prior-learnings summary for use in step 3.</action>
       </check>
       <rule>This context MUST inform your decomposition decisions, task scoping, and research-task context file content throughout the session.</rule>
-    </step>
-
-    <step n="1c" title="Tasks gate">
-      <action>Check if tasks-path (resolved in step 0b) exists.</action>
-      <check condition="tasks-path exists AND has tasks with status=pending or status=in_progress AND this is a new invocation (not handled by step 0c) AND GOAL_MODE is true">
-        <action>Auto-archive WITHOUT user confirmation: move tasks-path to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed), log "Archived unfinished plan for {GOAL_ID} — daemon re-dispatch implies re-plan", and proceed with a fresh tasks-path. A daemon-dispatched planner must never park on a prompt.</action>
-      </check>
-      <check condition="tasks-path exists AND has tasks with status=pending or status=in_progress AND this is a new invocation (not handled by step 0c) AND GOAL_MODE is false">
-        <action>STOP. Print: "STOP GATE: Unfinished tasks found in {tasks-path}. [list each task name and status]. To continue previous work, re-run without new input. To start fresh, reply 'archive and start new'."</action>
-        <action>If user says "archive and start new": archive tasks-path to .tmux-cli/tasks/{y-m-d-hh}/tasks-{mm}.yaml (create directory if needed) and proceed with fresh tasks-path.</action>
-        <action>Wait for user response before proceeding.</action>
-      </check>
-      <check condition="tasks-path does not exist OR all tasks done OR already handled by step 0c">
-        <action>Proceed to step 2.</action>
-      </check>
     </step>
 
     <step n="2" title="Identify PLAN_WID">
@@ -403,7 +389,7 @@ tasks:
     <step n="5a" title="Continuous effectivity check">
       <condition>A spec has been accepted in step 6, AND other workers are still running or queued.</condition>
       <action>Before moving on, re-evaluate every running and queued worker against the new spec:
-        - REFUTED: if the accepted spec reveals that a running worker's module is unnecessary or duplicated → send [SUPERVISOR:KILL]; mark task deleted.
+        - REFUTED: if the accepted spec reveals that a running worker's module is unnecessary or duplicated → send [SUPERVISOR:KILL]; remove the task entry from tasks-path and log the reason (leave wid gaps — never renumber).
         - NARROWED: if the accepted spec identifies constraints that tighten another worker's focus → send [SUPERVISOR:AMEND] with narrowed scope.
         - NEW-SURFACE: if the accepted spec reveals a new module not in the original plan → create context file, add to tasks.yaml, spawn immediately alongside remaining workers.</action>
       <when>Fire this check after EVERY accepted DONE. Do not skip.</when>
@@ -437,7 +423,7 @@ tasks:
     <step n="8" title="Findings-driven replan">
       <condition>An accepted spec materially changes the plan — reveals a new module, invalidates a queued module, or exposes a missed dependency.</condition>
       <action>Update the queue autonomously:
-        - If a queued worker is now pointless, mark its task deleted + log reason.
+        - If a queued worker is now pointless, remove its task entry from tasks-path + log reason.
         - If a queued worker needs broader/narrower scope, rewrite its research-task context file.
         - If a new module emerged, create context file, add to tasks.yaml, and spawn.</action>
       <action>If new workers were spawned, loop back to step 5 (idle and route).</action>
@@ -445,7 +431,7 @@ tasks:
     </step>
 
     <step n="8b" title="Coverage verification">
-      <condition>All tasks status=done — either all workers completed (step 8 produced no new workers), or a direct jump from step 3c (full cache hit) / step 3d (SELF_SPEC accepted).</condition>
+      <condition>All tasks status=done — either all workers completed (step 8 produced no new workers), or a direct jump from step 3c (full cache hit) / step 3d (SELF_SPEC accepted), or a re-entry from step 11b (audit replan — fresh coverage-pass budget; gates return to 11b's re-finalize, not step 9).</condition>
       <action>Re-read the original input ($ARGUMENTS — plan file or inline description).</action>
       <action>Extract all identifiable requirements, goals, or deliverables. Number them as a checklist.</action>
       <action>For each requirement, check whether at least one accepted spec's ## Intent addresses it. Build mapping: requirement → spec file(s).</action>
@@ -513,7 +499,7 @@ tasks:
       <branch condition="no findings">
         <action>Log: "Sanity check passed — no misalignments".</action>
       </branch>
-      <action>Proceed to step 9.</action>
+      <action>Proceed to step 9 (on a step 11b re-entry: return to step 11b's re-finalize action instead).</action>
     </step>
 
     <step n="9" title="All specs collected → present to user">
@@ -658,7 +644,8 @@ Run `/tmux:supervisor` to execute the plan.
       <action>Respawn spec workers for affected tasks via windows-spawn-worker (same flow as step 4).</action>
       <rule condition="SELF_SPEC is true">Audit-fail replans DISPATCH a real worker even on a single-task plan — never self-spec the same module twice. The self-written spec just failed independent review; the replan needs independent eyes. Pass the audit findings via the context file as usual.</rule>
       <action>Route through steps 5–7 (idle/route, S1–S9 verify, kill) until all replanned specs accepted.</action>
-      <action>After all replanned specs accepted: rewrite tasks-path with status: ready (re-finalize), preserving any top-level `lane` key (same rule as step 11).</action>
+      <action>After all replanned specs accepted: route through steps 8b (coverage verification) → 8c (file-overlap detection) → 8d (post-plan sanity) exactly as on the first pass BEFORE re-finalizing — log the 8b coverage map and the 8c file-overlap report a second time. On this 11b re-entry the gates RETURN HERE when complete (never fall through to step 9), and 8b gets a FRESH coverage-pass budget for each audit replan round (the loop is already bounded by AUDIT_PASS).</action>
+      <action>Re-finalize: rewrite tasks-path with status: ready, preserving any top-level `lane` key (same rule as step 11), AND re-run step 11's "## Research Files" replace-in-place on goal.md (GOAL_MODE) so replacement spec filenames (new execute-N slugs) are indexed and stale entries dropped.</action>
       <action>Increment AUDIT_PASS. Loop back to step 11a and launch a FRESH audit sub-agent — skip the first-entry initialization/cleanup so prior findings files survive as the re-verification ledger.</action>
     </step>
 

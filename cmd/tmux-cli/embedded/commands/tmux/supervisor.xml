@@ -316,7 +316,7 @@ escalation_count: &lt;N&gt;
     <step n="5a" title="Continuous effectivity check (autonomous)">
       <condition>An [EXECUTE:DONE] has been accepted in step 6, AND other workers are still running or queued.</condition>
       <action>Before moving on, re-evaluate every running and queued worker against the new finding:
-        - REFUTED: if the new finding demotes the running worker's premise or marks its scope as now-pointless → send [SUPERVISOR:KILL] via windows-message (worker exits cleanly) OR windows-kill the window directly; mark the task deleted. Do not let the worker burn budget on a now-pointless scope.
+        - REFUTED: if the new finding demotes the running worker's premise or marks its scope as now-pointless → send [SUPERVISOR:KILL] via windows-message (worker exits cleanly) OR windows-kill the window directly; remove the task entry from tasks-path and log the reason (leave wid gaps — never renumber). Do not let the worker burn budget on a now-pointless scope.
         - NARROWED: if the new finding identifies a specific symbol or constraint that tightens the running worker's focus → send [SUPERVISOR:AMEND] with the narrowed scope; worker applies it mid-run.
         - PREREQUISITE-UNBLOCKED: if the new finding is the prerequisite a queued dependent was waiting for → spawn the dependent now in parallel with remaining running workers; do not wait.
         - NEW-SURFACE: if the new finding exposes a high-yield parallel task → spawn it immediately alongside existing workers per &lt;ranking&gt;; do not wait for current workers to finish first.</action>
@@ -357,7 +357,7 @@ escalation_count: &lt;N&gt;
     <step n="8a" title="Findings-driven replan (autonomous)">
       <condition>An accepted worker's RECOMMENDATION materially changes the queued plan — demotes a primary surface, refutes a downstream worker's premise, adds a prerequisite, or identifies a queued worker as now-pointless.</condition>
       <action>Update the queue AUTONOMOUSLY:
-        - If a queued worker is now pointless, mark its task deleted + log reason in synthesis.
+        - If a queued worker is now pointless, remove its task entry from tasks-path + log reason in synthesis.
         - If a queued worker now needs narrower/broader scope, rewrite its task-message template — do not ask.
         - If a new follow-up emerged and fits budget, insert at the correct dependency position per &lt;ranking&gt;.</action>
       <autonomy-ref>Apply per &lt;autonomy-policy&gt; — replan is not user-gated.</autonomy-ref>
