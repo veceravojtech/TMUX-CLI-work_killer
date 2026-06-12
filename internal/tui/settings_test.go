@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 28)
+	assert.Len(t, m.items, 29)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -55,6 +55,7 @@ commands:
 	assert.Equal(t, "taskvisor.validate_script_timeout_sec", m.items[20].key)
 	assert.Equal(t, "api.enabled", m.items[26].key)
 	assert.Equal(t, "api.url", m.items[27].key)
+	assert.Equal(t, "taskvisor.auto_commit", m.items[28].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -174,24 +175,24 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 23, m.cursor)
 
-	// Step down through the remaining items to the last one (28 items → max index 27)
-	for want := 24; want <= 27; want++ {
+	// Step down through the remaining items to the last one (29 items → max index 28)
+	for want := 24; want <= 28; want++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 		assert.Equal(t, want, m.cursor)
 	}
 
-	// Can't go past last item (28 items → max index 27)
+	// Can't go past last item (29 items → max index 28)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 27, m.cursor)
+	assert.Equal(t, 28, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 26, m.cursor)
+	assert.Equal(t, 27, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 27; i++ {
+	for i := 0; i < 28; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -910,7 +911,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 28)
+	assert.Len(t, m.items, 29)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -960,7 +961,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 28)
+	assert.Len(t, m.items, 29)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -1475,4 +1476,73 @@ func TestModel_VimKeys(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	m = updated.(Model)
 	assert.Equal(t, 0, m.cursor)
+}
+
+// TestSettingsTUI_AutoCommit_RoundTrip proves the 29th item taskvisor.auto_commit
+// surfaces as a bool seeded from AutoCommitEnabled(), that a toggle writes the
+// *bool pointer via ToSettings(), and that sibling/undisplayed base fields are
+// preserved (AGENTS.md TUI overlay invariant).
+func TestSettingsTUI_AutoCommit_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 7
+taskvisor:
+  dispatch_timeout: 1234
+  validate_timeout: 5678
+  circuit_breaker_k: 4
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	var found bool
+	for i, item := range m.items {
+		if item.key == "taskvisor.auto_commit" {
+			found = true
+			assert.Equal(t, "bool", item.kind)
+			assert.True(t, item.value, "item must seed true (default ON via the LoadSettings backfill)")
+			m.items[i].value = false
+		}
+	}
+	require.True(t, found, "taskvisor.auto_commit must be in TUI items")
+
+	result := m.ToSettings()
+	require.NotNil(t, result.Taskvisor.AutoCommit, "ToSettings must write the *bool pointer")
+	assert.False(t, *result.Taskvisor.AutoCommit, "toggled-off value must overlay into ToSettings")
+	assert.False(t, result.Taskvisor.AutoCommitEnabled())
+	// Sibling/undisplayed fields preserved (overlay onto base, not DefaultSettings).
+	assert.Equal(t, 1234, result.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 5678, result.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 4, result.Taskvisor.CircuitBreakerK)
+	assert.Equal(t, 7, result.Supervisor.MaxCycles)
+}
+
+// TestSettingsTUI_AutoCommit_ExplicitFalsePreserved proves an opt-out base
+// setting.yaml seeds the item false and survives an unedited ToSettings()
+// round-trip — the TUI must never silently re-enable auto-commit.
+func TestSettingsTUI_AutoCommit_ExplicitFalsePreserved(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `commands:
+  enabled: true
+taskvisor:
+  auto_commit: false
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	for _, item := range m.items {
+		if item.key == "taskvisor.auto_commit" {
+			assert.False(t, item.value, "item must seed false from the explicit opt-out")
+		}
+	}
+
+	result := m.ToSettings()
+	require.NotNil(t, result.Taskvisor.AutoCommit)
+	assert.False(t, *result.Taskvisor.AutoCommit, "explicit false must survive the TUI round-trip")
 }

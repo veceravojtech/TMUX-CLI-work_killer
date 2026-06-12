@@ -57,6 +57,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.restart_on_stale_binary", label: "Restart On Stale Binary", kind: "bool", value: settings.Taskvisor.RestartOnStaleBinary},
 			{key: "api.enabled", label: "API Reporting Enabled", kind: "bool", value: settings.API.Enabled},
 			{key: "api.url", label: "API URL", kind: "string", strVal: settings.API.URL},
+			{key: "taskvisor.auto_commit", label: "Taskvisor Auto-Commit", kind: "bool", value: settings.Taskvisor.AutoCommitEnabled()},
 		},
 	}
 }
@@ -239,6 +240,9 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Taskvisor.HaltOnStaleBinary = item.value
 		case "taskvisor.restart_on_stale_binary":
 			s.Taskvisor.RestartOnStaleBinary = item.value
+		case "taskvisor.auto_commit":
+			v := item.value
+			s.Taskvisor.AutoCommit = &v
 		case "api.enabled":
 			s.API.Enabled = item.value
 		case "api.url":
