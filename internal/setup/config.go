@@ -54,6 +54,20 @@ type SupervisorSettings struct {
 type PlanSettings struct {
 	AutoApprove bool `yaml:"auto_approve"`
 	AutoExecute bool `yaml:"auto_execute"`
+	// Audit gates the blind plan audit (plan.xml step 11a), decoupled from
+	// supervisor.unplanned_audit which keeps gating only the unplanned-work
+	// Stop hook. A *bool (not plain bool) so a legacy setting.yaml that
+	// predates the key (nil) is distinguishable from an explicit
+	// `audit: false` opt-out: nil is backfilled to true by LoadSettings
+	// (mirroring the AutoCommit idiom). Read via AuditEnabled(), never directly.
+	Audit *bool `yaml:"audit"`
+}
+
+// AuditEnabled reports whether the blind plan audit is on. Nil (a
+// hand-constructed Settings{} or a pre-backfill legacy decode) defaults ON;
+// only an explicit false opts out.
+func (p PlanSettings) AuditEnabled() bool {
+	return p.Audit == nil || *p.Audit
 }
 
 type SudoSettings struct {
@@ -192,6 +206,7 @@ type Settings struct {
 
 func DefaultSettings() *Settings {
 	autoCommit := true
+	planAudit := true
 	return &Settings{
 		Hooks: HooksSettings{
 			SessionNotify:    false,
@@ -218,6 +233,7 @@ func DefaultSettings() *Settings {
 		Plan: PlanSettings{
 			AutoApprove: true,
 			AutoExecute: true,
+			Audit:       &planAudit,
 		},
 		Sudo: SudoSettings{
 			Timeout: 30,
@@ -280,6 +296,12 @@ func LoadSettings(projectRoot string) (*Settings, error) {
 	if s.Taskvisor.AutoCommit == nil {
 		autoCommit := true
 		s.Taskvisor.AutoCommit = &autoCommit
+	}
+	// Backfill plan.audit for a legacy setting.yaml predating the key: nil
+	// means pre-feature (default ON), while an explicit false survives untouched.
+	if s.Plan.Audit == nil {
+		planAudit := true
+		s.Plan.Audit = &planAudit
 	}
 	if err := SaveSettings(projectRoot, &s); err != nil {
 		return nil, err

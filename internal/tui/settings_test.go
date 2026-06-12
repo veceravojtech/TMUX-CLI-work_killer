@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 29)
+	assert.Len(t, m.items, 30)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -56,6 +56,9 @@ commands:
 	assert.Equal(t, "api.enabled", m.items[26].key)
 	assert.Equal(t, "api.url", m.items[27].key)
 	assert.Equal(t, "taskvisor.auto_commit", m.items[28].key)
+	assert.Equal(t, "plan.audit", m.items[29].key)
+	assert.Equal(t, "bool", m.items[29].kind)
+	assert.True(t, m.items[29].value)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -175,24 +178,24 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 23, m.cursor)
 
-	// Step down through the remaining items to the last one (29 items → max index 28)
-	for want := 24; want <= 28; want++ {
+	// Step down through the remaining items to the last one (30 items → max index 29)
+	for want := 24; want <= 29; want++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 		assert.Equal(t, want, m.cursor)
 	}
 
-	// Can't go past last item (29 items → max index 28)
+	// Can't go past last item (30 items → max index 29)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 28, m.cursor)
+	assert.Equal(t, 29, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 27, m.cursor)
+	assert.Equal(t, 28, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 28; i++ {
+	for i := 0; i < 29; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -308,6 +311,43 @@ supervisor:
 
 	assert.True(t, result.Supervisor.UnplannedAudit, "unplanned_audit must be preserved")
 	assert.Equal(t, 5, result.Supervisor.MaxCycles)
+}
+
+// TestModel_ToSettings_PlanAuditToggle proves flipping the plan.audit item to
+// false writes a non-nil false pointer back via ToSettings (the pointer
+// write-back idiom shared with taskvisor.auto_commit).
+func TestModel_ToSettings_PlanAuditToggle(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "plan.audit" {
+			m.items[i].value = false
+		}
+	}
+
+	result := m.ToSettings()
+	require.NotNil(t, result.Plan.Audit)
+	assert.False(t, *result.Plan.Audit)
+	assert.False(t, result.Plan.AuditEnabled())
+}
+
+// TestModel_ToSettings_PreservesPlanAudit proves an explicit audit=false in the
+// base settings survives an untouched ToSettings round-trip (mirroring
+// TestModel_ToSettings_PreservesUnplannedAudit).
+func TestModel_ToSettings_PreservesPlanAudit(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	off := false
+	settings.Plan.Audit = &off
+
+	m := NewModel(dir, settings)
+	result := m.ToSettings()
+
+	require.NotNil(t, result.Plan.Audit)
+	assert.False(t, *result.Plan.Audit, "explicit plan.audit=false must be preserved")
+	assert.False(t, result.Plan.AuditEnabled())
 }
 
 func TestModel_ToSettings_UnplannedAuditToggle(t *testing.T) {
@@ -911,7 +951,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 29)
+	assert.Len(t, m.items, 30)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -961,7 +1001,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 29)
+	assert.Len(t, m.items, 30)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {

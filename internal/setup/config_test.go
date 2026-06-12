@@ -19,6 +19,8 @@ func TestDefaultSettings_Values(t *testing.T) {
 	assert.Equal(t, 0, s.Supervisor.MaxCycles)
 	assert.Equal(t, 5, s.Supervisor.CycleDelay)
 	assert.True(t, s.Supervisor.UnplannedAudit)
+	require.NotNil(t, s.Plan.Audit)
+	assert.True(t, *s.Plan.Audit)
 }
 
 func TestLoadSettings_SupervisorMaxCycles(t *testing.T) {
@@ -781,4 +783,69 @@ func TestDefaultSettings_AutoCommitOn(t *testing.T) {
 func TestTaskvisorSettings_AutoCommitEnabled_NilSafe(t *testing.T) {
 	var ts TaskvisorSettings
 	assert.True(t, ts.AutoCommitEnabled(), "nil pointer must read as enabled")
+}
+
+// TestLoadSettings_PlanAuditDefaultsOnWhenAbsent proves a legacy setting.yaml
+// with a plan: block but no audit key loads with the blind plan audit ENABLED
+// (nil → true backfill, mirroring the AutoCommit idiom) and that the save-back
+// persists the key explicitly so the file self-documents after one load.
+func TestLoadSettings_PlanAuditDefaultsOnWhenAbsent(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `plan:
+  auto_approve: true
+  auto_execute: true
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+
+	require.NotNil(t, s.Plan.Audit, "nil must be backfilled to a true-pointer")
+	assert.True(t, *s.Plan.Audit)
+	assert.True(t, s.Plan.AuditEnabled(), "legacy yaml must default the plan audit ON")
+
+	raw, err := os.ReadFile(settingFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "audit: true", "save-back must persist the backfilled key")
+}
+
+// TestLoadSettings_PlanAuditExplicitFalseSurvives proves the opt-out round-trips:
+// an explicit plan.audit: false is never clobbered by the backfill or save-back.
+func TestLoadSettings_PlanAuditExplicitFalseSurvives(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `plan:
+  audit: false
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Plan.Audit)
+	assert.False(t, *s.Plan.Audit)
+	assert.False(t, s.Plan.AuditEnabled(), "explicit false must opt out")
+
+	// Round-trip: load again after the save-back — false must survive.
+	s2, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.False(t, s2.Plan.AuditEnabled(), "opt-out must survive the save-back round-trip")
+}
+
+// TestPlanSettings_AuditEnabled_NilDefaultsTrue pins the accessor's nil-safety
+// for hand-constructed PlanSettings{} (tests, partial yaml decodes) and the
+// explicit-false read path.
+func TestPlanSettings_AuditEnabled_NilDefaultsTrue(t *testing.T) {
+	var ps PlanSettings
+	assert.True(t, ps.AuditEnabled(), "nil pointer must read as enabled")
+
+	off := false
+	ps.Audit = &off
+	assert.False(t, ps.AuditEnabled(), "explicit false must read as disabled")
 }

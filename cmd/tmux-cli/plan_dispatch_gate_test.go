@@ -64,7 +64,7 @@ func TestPlanXml_DispatchDecisionGate(t *testing.T) {
 	require.NotEqual(t, -1, step11aEnd, "step 11a must be well-formed")
 	auditBody := content[step11a : step11a+step11aEnd]
 	assert.Contains(t, auditBody, "OR SELF_SPEC is true",
-		"step 11a must run when SELF_SPEC is true even if supervisor.unplanned_audit=false")
+		"step 11a must run when SELF_SPEC is true even if plan.audit=false")
 
 	// --- audit-fail replans on a self-specced plan dispatch a real worker ---
 	step11b := strings.Index(content, `<step n="11b" title="Audit replan loop">`)
@@ -93,4 +93,36 @@ func TestPlanXml_DispatchDecisionGate(t *testing.T) {
 	// deadlocks between "NEVER spawn" and 11b's "dispatch a real worker".
 	assert.GreaterOrEqual(t, strings.Count(content, "SOLE EXCEPTION: step 11b"), 2,
 		"every single-task spawn ban must carve out the step 11b audit-fail replan exception")
+}
+
+// TestPlanXML_PlanAuditDecoupled guards the plan.audit decoupling: the blind
+// plan audit (steps 1b/11a) is gated by the dedicated plan.audit setting, and
+// supervisor.unplanned_audit — which keeps gating only the unplanned-work Stop
+// hook — no longer appears anywhere in plan.xml.
+func TestPlanXML_PlanAuditDecoupled(t *testing.T) {
+	content := readEmbeddedCommand(t, "plan.xml")
+
+	// --- step 1b derives AUDIT_ENABLED from plan.audit ---
+	step1b := strings.Index(content, `<step n="1b"`)
+	require.NotEqual(t, -1, step1b, "plan.xml must have a step 1b")
+	step1bEnd := strings.Index(content[step1b:], "</step>")
+	require.NotEqual(t, -1, step1bEnd, "step 1b must be well-formed")
+	gateBody := content[step1b : step1b+step1bEnd]
+	assert.Contains(t, gateBody, "plan.audit",
+		"step 1b must derive AUDIT_ENABLED from plan.audit")
+	assert.Contains(t, gateBody, "(default true if absent)",
+		"step 1b must keep the absent-key-defaults-true clause matching the Go backfill")
+
+	// --- step 11a override log names plan.audit ---
+	step11a := strings.Index(content, `<step n="11a" title="Blind audit gate">`)
+	require.NotEqual(t, -1, step11a, "plan.xml must have a step 11a Blind audit gate")
+	step11aEnd := strings.Index(content[step11a:], "</step>")
+	require.NotEqual(t, -1, step11aEnd, "step 11a must be well-formed")
+	auditBody := content[step11a : step11a+step11aEnd]
+	assert.Contains(t, auditBody, "plan.audit=false",
+		"the SELF_SPEC override log must name plan.audit, not supervisor.unplanned_audit")
+
+	// --- the old key is fully evicted (all 5 reference sites rewritten) ---
+	assert.NotContains(t, content, "supervisor.unplanned_audit",
+		"plan.xml must not reference supervisor.unplanned_audit — it gates only the Stop hook now")
 }

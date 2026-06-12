@@ -28,7 +28,7 @@
     <term name="spec file">Markdown file a worker produces as its deliverable. Contains implementation-ready specification with mandatory sections (Intent through Spec Change Log). Named execute-&lt;N&gt;-&lt;slug&gt;.md in research-root.</term>
     <term name="AUTO_APPROVE">Internal flag set when plan.auto_approve=true in setting.yaml. Causes steps 9-10 to be skipped.</term>
     <term name="AUTO_EXECUTE">Internal flag set when plan.auto_execute=true in setting.yaml. Causes step 11 to auto-invoke /tmux:supervisor after finalization.</term>
-    <term name="SELF_SPEC">Internal flag set by the dispatch gate (step 3d) when exactly ONE task is pending. The planning supervisor writes that spec inline — no worker spawn — through the same validation gates (spec-validate + S5/S6/S9, max 3 self-revision rounds). Forces the blind audit (step 11a) regardless of supervisor.unplanned_audit, because author == verifier. Step 3d additionally records the solo-lane gate verdict as a top-level `lane` key in tasks-path; lane=solo SLIMS the forced audit to the daemon's-eye validate evaluation — it never skips it.</term>
+    <term name="SELF_SPEC">Internal flag set by the dispatch gate (step 3d) when exactly ONE task is pending. The planning supervisor writes that spec inline — no worker spawn — through the same validation gates (spec-validate + S5/S6/S9, max 3 self-revision rounds). Forces the blind audit (step 11a) regardless of plan.audit, because author == verifier. Step 3d additionally records the solo-lane gate verdict as a top-level `lane` key in tasks-path; lane=solo SLIMS the forced audit to the daemon's-eye validate evaluation — it never skips it.</term>
     <term name="FRESH mode">No usable tasks.yaml exists — derive everything from scratch.</term>
     <term name="INCREMENTAL mode">tasks.yaml exists with status: planning — preserve existing tasks, append new spec tasks. Inherited in_progress tasks whose worker window is dead are reset to pending by the step 0c recovery so step 4 respawns them.</term>
     <term name="ranking heuristic">Priority ordering for decomposition: (1) closest to user-facing surface or critical path, (2) closest to impact target, (3) smallest budget before completion, (4) overturns prior assumption if confirmed. Break ties by lowest budget.</term>
@@ -238,11 +238,11 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
       <check condition="plan.auto_execute is true">
         <action>Set internal flag AUTO_EXECUTE=true. Log: "Auto-execute mode enabled (plan.auto_execute=true)."</action>
       </check>
-      <check condition="supervisor.unplanned_audit is true (default true if absent)">
-        <action>Set internal flag AUDIT_ENABLED=true. Log: "Blind audit gate enabled (supervisor.unplanned_audit=true)."</action>
+      <check condition="plan.audit is true (default true if absent)">
+        <action>Set internal flag AUDIT_ENABLED=true. Log: "Blind audit gate enabled (plan.audit=true)."</action>
       </check>
-      <check condition="supervisor.unplanned_audit is false">
-        <action>Set internal flag AUDIT_ENABLED=false. Log: "Blind audit gate disabled (supervisor.unplanned_audit=false)."</action>
+      <check condition="plan.audit is false">
+        <action>Set internal flag AUDIT_ENABLED=false. Log: "Blind audit gate disabled (plan.audit=false)."</action>
       </check>
       <action>Standalone mode only: scan .tmux-cli/research/ for prior cycle directories ({y-m-d-hh}/ that are NOT the current session's research-root). In goal mode skip this scan — there is a single goal research/ dir and prior corrections arrive via the dispatch file in $ARGUMENTS.</action>
       <check condition="prior research directories exist">
@@ -337,7 +337,7 @@ tasks:
         <action>Write the spec yourself, exactly as a worker would: read the task's research-task context file and the source files it lists (isolate deep codebase exploration in sub-agents per the EXPLORATION guidance in &lt;spec-deliverable-template&gt; — distilled summaries only), then produce {research-root}/execute-{N}-{slug}.md — {N} from the task's wid, {slug} from its context filename — containing every mandatory section of &lt;spec-deliverable-template&gt;. Run the template's SELF-REVIEW before submitting your own spec to validation.</action>
         <action>Validate your own spec through the SAME gates a worker faces: call spec-validate MCP tool on the file, then manually check S5/S6/S9 (definitions in step 6). On any failure, revise the spec and record the round in ## Spec Change Log (gap cited, what changed, KEEP instructions). Cap: 3 self-revision rounds — after the 3rd, accept as-is and log the unresolved gap(s) for the step 9 summary, mirroring the worker pushback cap.</action>
         <action>On acceptance: mark the task status=done in tasks-path and update its context field to the spec file path (same mechanics as a step 3c cache hit). Proceed directly to step 8b (coverage verification) — steps 4–7 are skipped entirely.</action>
-        <rule critical="true">SELF_SPEC forces the blind audit: step 11a runs even when supervisor.unplanned_audit=false. With author == verifier, the audit sub-agent is the only independent review of the spec — skipping it would leave the plan with no external gate at all.</rule>
+        <rule critical="true">SELF_SPEC forces the blind audit: step 11a runs even when plan.audit=false. With author == verifier, the audit sub-agent is the only independent review of the spec — skipping it would leave the plan with no external gate at all.</rule>
       </branch>
       <branch condition="2 or more tasks are pending">
         <action title="solo-lane stale-solo demotion">2+ pending tasks can never be solo (G1 miss by construction — the gate itself is not evaluated): if GOAL_MODE and goal.md `## Lane` == solo, write explicit top-level `lane: full` to tasks-path (demotes the stale inherited solo); otherwise write nothing.</action>
@@ -601,7 +601,7 @@ Run `/tmux:supervisor` to execute the plan.
     </step>
 
     <step n="11a" title="Blind audit gate">
-      <condition>AUDIT_ENABLED is true OR SELF_SPEC is true. SELF_SPEC FORCES this gate: the supervisor authored the spec itself, so the audit sub-agent is the only independent review — when overriding supervisor.unplanned_audit=false, log "Audit forced: SELF_SPEC plan (author == verifier)". If neither flag is set, skip directly to step 11c.</condition>
+      <condition>AUDIT_ENABLED is true OR SELF_SPEC is true. SELF_SPEC FORCES this gate: the supervisor authored the spec itself, so the audit sub-agent is the only independent review — when overriding plan.audit=false, log "Audit forced: SELF_SPEC plan (author == verifier)". If neither flag is set, skip directly to step 11c.</condition>
       <action>First entry only (AUDIT_PASS not yet set): initialize AUDIT_PASS = 1 and clean prior verdict files — in GOAL_MODE `rm -f .tmux-cli/goals/{GOAL_ID}/research/plan-audit-*.md .tmux-cli/goals/{GOAL_ID}/research/plan-approval.md`; in standalone `rm -f docs/architecture/plan-audit-*.md docs/architecture/plan-approval.md`. On loop-backs from step 11b do NEITHER — AUDIT_PASS keeps its incremented value and earlier passes' findings files survive as the ledger the next pass re-verifies.</action>
       <action>Resolve VERDICT_DIR: {research-root} in GOAL_MODE; docs/architecture/ in standalone (create if absent — the daemon's RequirePlanApproval gate looks for docs/architecture/plan-approval.md).</action>
       <action>Read the top-level `lane` key from tasks-path BEFORE composing the sub-agent prompt. The sub-agent stays blind either way — it never learns the lane; it only receives the instruction set composed below.</action>
@@ -708,7 +708,7 @@ Run `/tmux:supervisor` to execute the plan.
       • DO NOT accept DONE without file=&lt;abs-path&gt; — REMIND to use file-only protocol
       • DO NOT spawn any worker (step 4) before tasks.yaml is written and verified (step 3b) — blocking gate, no exceptions
       • NEVER spawn a spec worker for a single pending task — the step 3d dispatch gate self-specs it inline through the same validation gates; spawning starts at 2+ pending tasks. SOLE EXCEPTION: step 11b audit-fail replans dispatch a real worker (never self-spec the same module twice)
-      • NEVER skip the blind audit (step 11a) when SELF_SPEC is true — it is the only independent review of a self-written spec, regardless of supervisor.unplanned_audit
+      • NEVER skip the blind audit (step 11a) when SELF_SPEC is true — it is the only independent review of a self-written spec, regardless of plan.audit
       • DO NOT serialize spec-writing for implementation dependencies — specs are written by reading source, not by depending on other implementations
       • ALWAYS create research-task context files before writing tasks.yaml entries that reference them
       • ALWAYS verify spec quality against S1–S9 before accepting a worker's DONE
