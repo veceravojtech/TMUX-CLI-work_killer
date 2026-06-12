@@ -53,10 +53,6 @@ func writeValidatorSignal(t *testing.T, dir, goalID, verdict, nextAction string)
 	}))
 }
 
-func setupKillMocksEmpty(exec *testutil.MockTmuxExecutor) {
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
-}
-
 func TestIntegration_FullCyclePass(t *testing.T) {
 	d, exec, dir := setupIntegrationDaemon(t)
 
