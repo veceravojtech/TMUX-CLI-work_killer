@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io/fs"
 	"path"
 	"strings"
@@ -44,31 +45,21 @@ func TestInvestigateWorkerXml_OwnsClassificationTable(t *testing.T) {
 		"the <classification> block must precede the overall-VERDICT roll-up")
 }
 
-// TestValidateXml_IsDeprecationStub asserts validate.xml has been collapsed to a
-// thin deprecation alias: it carries a deprecation notice and no longer carries
-// the duplicated classification body (the <decision-table> / "Connection
-// refused" rows). The file is NOT deleted — a stray manual invocation of the
-// deprecated validate skill must still parse.
-func TestValidateXml_IsDeprecationStub(t *testing.T) {
-	content := readEmbeddedCommand(t, "validate.xml")
-
-	assert.Contains(t, content, "<deprecated>",
-		"validate.xml must carry a <deprecated> notice")
-	assert.Contains(t, content, "investigate-worker.xml",
-		"the deprecation notice must point at investigate-worker.xml as the new home")
-	assert.Contains(t, content, "retained one release",
-		"the deprecation notice must state the one-release retention policy")
-
-	// The classification body must be GONE — it now lives in investigate-worker.xml.
-	assert.NotContains(t, content, "<decision-table>",
-		"validate.xml must no longer carry the duplicated <decision-table>")
-	assert.NotContains(t, content, "Connection refused",
-		"validate.xml must no longer carry the duplicated env-failure table rows")
-
-	// The stub must still be a well-formed validate task shell so a manual
-	// invocation loads cleanly.
-	assert.Contains(t, content, `<task id="validate"`,
-		"validate.xml must keep its <task id=\"validate\"> root element")
+// TestValidateXml_IsDeleted asserts the deprecated validate-skill alias is gone
+// from the embedded FS entirely: neither validate.xml nor its validate.md stub
+// twin ships anymore. The one-release retention window has elapsed; the live
+// classifier home is investigate-worker.xml (see
+// TestInvestigateWorkerXml_OwnsClassificationTable above).
+func TestValidateXml_IsDeleted(t *testing.T) {
+	for _, name := range []string{
+		"embedded/commands/tmux/validate.xml",
+		"embedded/commands/tmux/validate.md",
+	} {
+		_, err := embeddedCommands.ReadFile(name)
+		require.Error(t, err, "%s must not ship in the embedded FS", name)
+		assert.True(t, errors.Is(err, fs.ErrNotExist),
+			"%s must be absent from the embedded FS (want fs.ErrNotExist, got %v)", name, err)
+	}
 }
 
 // TestNoEmbeddedCommandPointsAtValidateStepTable asserts every embedded command

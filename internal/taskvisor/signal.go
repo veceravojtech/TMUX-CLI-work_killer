@@ -101,7 +101,7 @@ type CorrectionEdit struct {
 //
 // Environment/connectivity/auth/missing-secret failures must arrive here
 // PRE-CLASSIFIED as env-config (or infra-flake) by the validator prompt
-// (validate.xml step 3's deterministic decision rule + decision table). This
+// (investigate-worker.xml step 3's deterministic decision rule + decision table). This
 // function intentionally treats an unrecognised/empty FailureClass as a code
 // defect (tier-1 leaf-4 catch-all), so any misclassification of an env failure
 // is fixed UPSTREAM in the validator prompt, never by changing logic here.

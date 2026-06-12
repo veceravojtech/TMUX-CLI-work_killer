@@ -609,7 +609,7 @@ func TestGoalValidationDone_NoResultsLeavesLedgerAbsent(t *testing.T) {
 
 // --- C8 / M-06 spec-defect detection tests ---
 //
-// These prove the binding-cross-reference contract: when the validate.xml /
+// These prove the binding-cross-reference contract: when the
 // investigate.xml preflight detects a Config artifact that contradicts a
 // declared binding (e.g. composer.json under a greenfield binding), it emits a
 // finding {status:blocked, class:spec-defect, owner:planner} that round-trips

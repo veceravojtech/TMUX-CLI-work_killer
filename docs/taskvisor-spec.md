@@ -248,7 +248,7 @@ At dispatch time (both `dispatch()` and `dispatchRetry()`), the daemon detects d
    - Wait for killed windows to disappear (same poll-until-gone pattern as dispatch step 5)
    - Create "validator" window via `mcp.NewServer(workDir).WindowsCreate("validator", "")`
    - Wait for Claude boot (same poll pattern as dispatch)
-   - Send `/tmux:validate` then after 2s send task payload (goal description + acceptance + validate rules)
+   - Send `/tmux:investigate` then after 2s send task payload (goal description + acceptance + validate rules)
    - Switch internal phase to "validating", record timestamp
 3. If not found: check dispatch_timeout. Check if Claude exited (CurrentCommand="zsh" after boot confirmed + 5s grace -> no signal = crash -> treat as fail)
 
@@ -406,7 +406,7 @@ type ValidationFinding struct {
 }
 ```
 
-## Validator Skill (/tmux:validate)
+## Validator Skill (/tmux:validate — superseded by /tmux:investigate; historical)
 
 New Claude Code skill that:
 - Receives task payload: goal description, acceptance criteria, validate rules

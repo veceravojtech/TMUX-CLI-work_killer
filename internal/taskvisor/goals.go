@@ -170,7 +170,7 @@ type Goal struct {
 	// ALONE — never co-scheduled with any in-flight goal, and no goal is
 	// co-scheduled while a Migrates goal is in flight. It is the robust guarantee
 	// for in-worker migrations the daemon cannot exec-wrap with WithDBLock; the
-	// flock .tmux-cli/db.lock shell wrapper documented in execute.xml/validate.xml
+	// flock .tmux-cli/db.lock shell wrapper documented in execute.xml/supervisor.xml
 	// is best-effort defense-in-depth. Absent ⇒ false (a normal goal).
 	Migrates bool `yaml:"migrates,omitempty"`
 
