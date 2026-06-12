@@ -112,6 +112,21 @@ type TaskvisorSettings struct {
 	RequirePlanApproval  bool   `yaml:"require_plan_approval"`
 	HaltOnStaleBinary    bool   `yaml:"halt_on_stale_binary"`
 	RestartOnStaleBinary bool   `yaml:"restart_on_stale_binary"`
+	// AutoCommit gates the completion-time auto-commit step: when a goal
+	// transitions to done, the daemon commits the goal's scope-matched changeset
+	// to the currently checked-out branch (one commit boundary per goal). A
+	// *bool (not plain bool) so a legacy setting.yaml that predates the key
+	// (nil) is distinguishable from an explicit `auto_commit: false` opt-out:
+	// nil is backfilled to true by LoadSettings (mirroring the TransientRetry
+	// idiom). Read via AutoCommitEnabled(), never directly.
+	AutoCommit *bool `yaml:"auto_commit"`
+}
+
+// AutoCommitEnabled reports whether completion-time auto-commit is on. Nil
+// (a hand-constructed Settings{} or a pre-backfill legacy decode) defaults ON;
+// only an explicit false opts out.
+func (t TaskvisorSettings) AutoCommitEnabled() bool {
+	return t.AutoCommit == nil || *t.AutoCommit
 }
 
 // WorkerBudgetSec is the per-worker time budget in seconds, mirroring the
@@ -176,6 +191,7 @@ type Settings struct {
 }
 
 func DefaultSettings() *Settings {
+	autoCommit := true
 	return &Settings{
 		Hooks: HooksSettings{
 			SessionNotify:    false,
@@ -220,6 +236,7 @@ func DefaultSettings() *Settings {
 			TransientRetryMaxAttempts: 3,
 			TransientRetryBackoffMs:   500,
 			MaxWallClockSec:           14400,
+			AutoCommit:                &autoCommit,
 		},
 	}
 }
@@ -257,6 +274,12 @@ func LoadSettings(projectRoot string) (*Settings, error) {
 	}
 	if s.Taskvisor.TransientRetryBackoffMs == 0 {
 		s.Taskvisor.TransientRetryBackoffMs = 500
+	}
+	// Backfill auto_commit for a legacy setting.yaml predating the key: nil
+	// means pre-feature (default ON), while an explicit false survives untouched.
+	if s.Taskvisor.AutoCommit == nil {
+		autoCommit := true
+		s.Taskvisor.AutoCommit = &autoCommit
 	}
 	if err := SaveSettings(projectRoot, &s); err != nil {
 		return nil, err

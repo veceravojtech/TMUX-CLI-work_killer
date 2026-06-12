@@ -158,6 +158,12 @@ type Daemon struct {
 	// per-goal worktree lifecycle (E1-1a). Nil ⇒ defaultGitRunner (real git). With
 	// MaxGoals=1 no git path is ever reached, so this is never invoked.
 	gitRunnerFn GitRunnerFunc
+	// autoCommit gates the completion-time auto-commit step (autoCommitGoal):
+	// on a goal's done transition the daemon commits the goal's scope-matched
+	// changeset to the current branch. Seeded true by New() and overridden from
+	// taskvisor.auto_commit (AutoCommitEnabled) in Run(); warn-only by contract —
+	// a commit failure never alters goal status or daemon flow.
+	autoCommit bool
 	// autoResumeInterval paces resumeDownstreamLoop, the §5 background poll that
 	// re-evaluates precondition-blocked goals. Independent of pollInterval; seeded
 	// from taskvisor.auto_resume_interval_sec (default 30s) at construction/Run.
@@ -273,6 +279,10 @@ func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
 		scriptTimeout:      validateScriptTimeout,
 		autoResumeInterval: 30 * time.Second,
 		execReplaceFn:      syscall.Exec,
+		// autoCommit seeds ON (matching DefaultSettings) so the per-goal commit
+		// boundary reaches a literal-Daemon run that never loads settings; Run()
+		// overrides it from taskvisor.auto_commit unconditionally.
+		autoCommit: true,
 	}
 }
 
@@ -338,6 +348,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 		d.haltOnStaleBinary = settings.Taskvisor.HaltOnStaleBinary
 		d.restartOnStaleBinary = settings.Taskvisor.RestartOnStaleBinary
+		d.autoCommit = settings.Taskvisor.AutoCommitEnabled()
 	}
 
 	// Backend failure reporting (goal-008/009). Config is read independently of

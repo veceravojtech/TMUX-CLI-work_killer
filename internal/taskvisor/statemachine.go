@@ -476,6 +476,9 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		// After the successful SaveGoals so a commit only happens for a durably
+		// recorded done; warn-only — never alters the verdict flow.
+		d.autoCommitGoal(goal)
 		return d.advanceToNextGoal(goals, goal.ID, true)
 	case verdict == VerdictFail:
 		// Code defect — the implementer must fix it. Charges CodeRetries only.
@@ -752,6 +755,11 @@ func (d *Daemon) salvageLateVerdicts(goals *GoalsFile) error {
 		}
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
+		}
+		// Pass arm only, after the successful SaveGoals: a salvaged done gets the
+		// same per-goal commit boundary as the primary done site (warn-only).
+		if verdict == VerdictPass {
+			d.autoCommitGoal(g)
 		}
 	}
 	return nil

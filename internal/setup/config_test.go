@@ -714,3 +714,71 @@ func TestSaveSettings_WritesYAML(t *testing.T) {
 	assert.Equal(t, "notify.sh", loaded.Hooks.Custom[0].Command)
 	assert.Equal(t, 3, loaded.Hooks.Custom[0].Timeout)
 }
+
+// TestLoadSettings_AutoCommitDefaultsOnWhenAbsent proves a legacy setting.yaml
+// without the auto_commit key loads with auto-commit ENABLED (nil → true
+// backfill, mirroring the TransientRetry idiom) and that the save-back persists
+// the key explicitly so the file self-documents after one load.
+func TestLoadSettings_AutoCommitDefaultsOnWhenAbsent(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  dispatch_timeout: 3600
+  poll_interval: 5
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+
+	require.NotNil(t, s.Taskvisor.AutoCommit, "nil must be backfilled to a true-pointer")
+	assert.True(t, *s.Taskvisor.AutoCommit)
+	assert.True(t, s.Taskvisor.AutoCommitEnabled(), "legacy yaml must default auto-commit ON")
+
+	raw, err := os.ReadFile(settingFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "auto_commit: true", "save-back must persist the backfilled key")
+}
+
+// TestLoadSettings_AutoCommitExplicitFalseSurvives proves the opt-out round-trips:
+// an explicit auto_commit: false is never clobbered by the backfill or save-back.
+func TestLoadSettings_AutoCommitExplicitFalseSurvives(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  auto_commit: false
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Taskvisor.AutoCommit)
+	assert.False(t, *s.Taskvisor.AutoCommit)
+	assert.False(t, s.Taskvisor.AutoCommitEnabled(), "explicit false must opt out")
+
+	// Round-trip: load again after the save-back — false must survive.
+	s2, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.False(t, s2.Taskvisor.AutoCommitEnabled(), "opt-out must survive the save-back round-trip")
+}
+
+// TestDefaultSettings_AutoCommitOn pins the new-project default: auto-commit ON.
+func TestDefaultSettings_AutoCommitOn(t *testing.T) {
+	s := DefaultSettings()
+	require.NotNil(t, s.Taskvisor.AutoCommit)
+	assert.True(t, *s.Taskvisor.AutoCommit)
+	assert.True(t, s.Taskvisor.AutoCommitEnabled())
+}
+
+// TestTaskvisorSettings_AutoCommitEnabled_NilSafe pins the accessor's nil-safety
+// for hand-constructed Settings{} (tests, partial yaml decodes).
+func TestTaskvisorSettings_AutoCommitEnabled_NilSafe(t *testing.T) {
+	var ts TaskvisorSettings
+	assert.True(t, ts.AutoCommitEnabled(), "nil pointer must read as enabled")
+}
