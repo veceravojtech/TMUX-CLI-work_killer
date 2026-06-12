@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 27)
+	assert.Len(t, m.items, 28)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -52,8 +52,9 @@ commands:
 	assert.Equal(t, "supervisor.max_goals", m.items[17].key)
 	assert.Equal(t, "supervisor.max_stuck_retries", m.items[18].key)
 	assert.Equal(t, "taskvisor.progress_timeout_sec", m.items[19].key)
-	assert.Equal(t, "api.enabled", m.items[25].key)
-	assert.Equal(t, "api.url", m.items[26].key)
+	assert.Equal(t, "taskvisor.validate_script_timeout_sec", m.items[20].key)
+	assert.Equal(t, "api.enabled", m.items[26].key)
+	assert.Equal(t, "api.url", m.items[27].key)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -173,24 +174,24 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 23, m.cursor)
 
-	// Step down through the remaining items to the last one (27 items → max index 26)
-	for want := 24; want <= 26; want++ {
+	// Step down through the remaining items to the last one (28 items → max index 27)
+	for want := 24; want <= 27; want++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 		assert.Equal(t, want, m.cursor)
 	}
 
-	// Can't go past last item (27 items → max index 26)
+	// Can't go past last item (28 items → max index 27)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 26, m.cursor)
+	assert.Equal(t, 27, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 25, m.cursor)
+	assert.Equal(t, 26, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 26; i++ {
+	for i := 0; i < 27; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -771,6 +772,44 @@ taskvisor:
 	assert.Equal(t, 7, result.Supervisor.MaxCycles)
 }
 
+func TestSettingsTUI_ValidateScriptTimeoutSec_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: false
+  block_interactive: true
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 7
+  max_goals: 1
+taskvisor:
+  dispatch_timeout: 1234
+  validate_timeout: 5678
+  validate_script_timeout_sec: 120
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	var found bool
+	for i, item := range m.items {
+		if item.key == "taskvisor.validate_script_timeout_sec" {
+			found = true
+			assert.Equal(t, "int", item.kind)
+			assert.Equal(t, 120, item.intVal, "item should seed from loaded settings")
+			m.items[i].intVal = 600
+		}
+	}
+	assert.True(t, found, "taskvisor.validate_script_timeout_sec must be in TUI items")
+
+	result := m.ToSettings()
+	assert.Equal(t, 600, result.Taskvisor.ValidateScriptTimeoutSec, "edited validate_script_timeout_sec must overlay into ToSettings")
+	// Sibling/undisplayed fields preserved (overlay onto base, not DefaultSettings).
+	assert.Equal(t, 1234, result.Taskvisor.DispatchTimeout)
+	assert.Equal(t, 5678, result.Taskvisor.ValidateTimeout)
+	assert.Equal(t, 7, result.Supervisor.MaxCycles)
+}
+
 func TestModel_ToSettings_PreservesMaxWorkers(t *testing.T) {
 	dir := t.TempDir()
 	writeSettingsYAML(t, dir, `hooks:
@@ -871,7 +910,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 27)
+	assert.Len(t, m.items, 28)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -921,7 +960,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 27)
+	assert.Len(t, m.items, 28)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {

@@ -140,7 +140,7 @@ internal/
   taskvisor.require_plan_approval (default false), taskvisor.halt_on_stale_binary (default false),
   taskvisor.restart_on_stale_binary (default false))
 - `.tmux-cli/tasks.yaml` — can be pre-created to queue planned work for the supervisor
-- TUI settings editor exposes 25 items — must mirror all `Settings` struct fields
+- TUI settings editor exposes 28 items — must mirror all `Settings` struct fields
 
 ## Testing conventions
 

@@ -77,6 +77,13 @@ type TaskvisorSettings struct {
 	// where a stuck LLM was invisible until the 1h hard timeout. Default 300 (5m);
 	// a value <=0 disables the heartbeat. Values >0 override the daemon default.
 	ProgressTimeoutSec int `yaml:"progress_timeout_sec"`
+	// ValidateScriptTimeoutSec bounds ONE execution of a goal's validate.sh —
+	// the deterministic P7 anchor (runValidateScript). Default 120; a value <=0
+	// keeps the daemon seed. Deliberately modest: the script runs synchronously
+	// inside the tick under the goals+db locks, so the whole daemon blocks while
+	// it runs — projects with slow suites raise this explicitly. A timeout kill
+	// is classified as reason "timeout" (not a red suite) in the P7 gate logs.
+	ValidateScriptTimeoutSec int `yaml:"validate_script_timeout_sec"`
 	// TransientRetryMaxAttempts bounds the C4-cont transient-failure retry loop in
 	// investigate.xml: a preflight/probe failing for a transient infra reason
 	// (service not ready, timeout, DNS hiccup) is retried up to this many TOTAL
@@ -209,6 +216,7 @@ func DefaultSettings() *Settings {
 			CircuitBreakerK:           2,
 			AutoResumeIntervalSec:     30,
 			ProgressTimeoutSec:        300,
+			ValidateScriptTimeoutSec:  120,
 			TransientRetryMaxAttempts: 3,
 			TransientRetryBackoffMs:   500,
 			MaxWallClockSec:           14400,

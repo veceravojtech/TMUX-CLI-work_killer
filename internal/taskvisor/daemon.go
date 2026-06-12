@@ -61,8 +61,14 @@ type goalRuntime struct {
 
 	// scriptPassed records the validate.sh exit-0 result from checkSupervisingPhase,
 	// threaded to checkValidatingPhase for GateTerminalPass. Zero-value false is the
-	// correct default (no validate.sh ran, or runtime was cleared).
+	// correct default (no validate.sh ran, or runtime was cleared). NOT final within
+	// a cycle: checkValidatingPhase's gate-time re-run (P7-fresh) refreshes it when
+	// an LLM pass would otherwise be vetoed by a stale false.
 	scriptPassed bool
+	// scriptReason names why the LAST validate.sh observation did not pass
+	// (runValidateScript's reason contract; empty when scriptPassed). Surfaced in
+	// the P7 downgrade log so a gated pass is diagnosable without re-running.
+	scriptReason string
 
 	// WorktreeDir/Branch hold the per-goal git-worktree isolation state (E1-1a).
 	// Set by ensureWorktree when MaxGoals>1 on a git repo; read by
@@ -312,6 +318,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 		if settings.Taskvisor.ProgressTimeoutSec > 0 {
 			d.progressTimeout = time.Duration(settings.Taskvisor.ProgressTimeoutSec) * time.Second
+		}
+		// P7-fresh: per-execution validate.sh ceiling. <=0 keeps the New() seed
+		// (validateScriptTimeout), mirroring the ProgressTimeoutSec convention.
+		if settings.Taskvisor.ValidateScriptTimeoutSec > 0 {
+			d.scriptTimeout = time.Duration(settings.Taskvisor.ValidateScriptTimeoutSec) * time.Second
 		}
 		// P3 wall-clock cost ceiling. Left zero (disabled) by New(); a positive
 		// setting enables it. A <=0 value keeps it disabled (byte-identical no-op).

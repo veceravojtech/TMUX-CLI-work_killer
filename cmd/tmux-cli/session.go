@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1604,6 +1605,9 @@ func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no tmux-cli session found for this directory")
 	}
 
+	// Pane logs live at the BASE control plane (cwd here is the project root),
+	// never inside a worktree — same destination windows-spawn-worker uses.
+	paneLogDir := filepath.Join(cwd, ".tmux-cli", "logs", "panes")
 	daemon.SetWindowCreateFunc(func(name, command, cwd string) (*taskvisor.CreatedWindow, error) {
 		windowUUID := session.GenerateUUID()
 		// cwd is the per-goal worktree path (E1-1a) when MaxGoals>1, else "" or the
@@ -1616,6 +1620,16 @@ func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
 		if err := executor.SetWindowOption(sessionID, windowID, tmux.WindowUUIDOption, windowUUID); err != nil {
 			_ = executor.KillWindow(sessionID, windowID)
 			return nil, fmt.Errorf("set window UUID: %w", err)
+		}
+		// Best-effort pane persistence, mirroring windows-spawn-worker (tools.go):
+		// without it a wedged supervisor/validator killed by stuck-recovery leaves
+		// NO post-mortem trace ([[no-worker-pane-persistence]]). The daemon's kill
+		// paths (killWindowByName/killWindowsByPrefix) already ClosePipePane first,
+		// so the stream is flushed before the window dies. A pipe failure must
+		// never block dispatch — log (lands in taskvisor.log) and continue.
+		_ = os.MkdirAll(paneLogDir, 0o755)
+		if ppErr := executor.PipePane(sessionID, windowID, filepath.Join(paneLogDir, name+".log")); ppErr != nil {
+			log.Printf("WARNING: pipe-pane for %s failed (best-effort): %v", name, ppErr)
 		}
 		exportCmd := fmt.Sprintf("export TMUX_WINDOW_UUID=\"%s\"", windowUUID)
 		_ = executor.SendMessage(sessionID, windowID, exportCmd)

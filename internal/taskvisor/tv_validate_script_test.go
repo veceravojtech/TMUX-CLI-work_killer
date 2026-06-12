@@ -19,10 +19,11 @@ func TestRunValidateScript_NoScript(t *testing.T) {
 	require.NoError(t, err)
 
 	goal := &Goal{ID: "goal-001"}
-	passed, stderr, err := d.runValidateScript(goal)
+	passed, reason, stderr, err := d.runValidateScript(goal)
 
 	require.NoError(t, err)
 	assert.False(t, passed)
+	assert.Equal(t, "missing", reason)
 	assert.Empty(t, stderr)
 }
 
@@ -35,10 +36,11 @@ func TestRunValidateScript_ExitZero(t *testing.T) {
 	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\necho ok\nexit 0\n"), 0o755))
 
 	goal := &Goal{ID: "goal-001"}
-	passed, stderr, err := d.runValidateScript(goal)
+	passed, reason, stderr, err := d.runValidateScript(goal)
 
 	require.NoError(t, err)
 	assert.True(t, passed)
+	assert.Empty(t, reason, "pass carries no reason")
 	assert.Empty(t, stderr)
 }
 
@@ -51,10 +53,11 @@ func TestRunValidateScript_ExitNonZero(t *testing.T) {
 	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'test failed' >&2\nexit 1\n"), 0o755))
 
 	goal := &Goal{ID: "goal-001"}
-	passed, stderr, err := d.runValidateScript(goal)
+	passed, reason, stderr, err := d.runValidateScript(goal)
 
 	require.NoError(t, err)
 	assert.False(t, passed)
+	assert.Equal(t, "exit-1", reason, "red exit is classified by its code, not as an op error")
 	assert.Contains(t, stderr, "test failed")
 }
 
@@ -78,11 +81,12 @@ func TestRunValidateScript_Timeout(t *testing.T) {
 
 	goal := &Goal{ID: "goal-001"}
 	start := time.Now()
-	passed, stderr, err := d.runValidateScript(goal)
+	passed, reason, stderr, err := d.runValidateScript(goal)
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
 	assert.False(t, passed)
+	assert.Equal(t, "timeout", reason, "a deadline kill is a timeout, never mistaken for a red suite")
 	assert.Contains(t, stderr, "killed")
 	assert.Less(t, elapsed, 5*time.Second)
 }
@@ -96,10 +100,11 @@ func TestRunValidateScript_NotExecutable(t *testing.T) {
 	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 0\n"), 0o644))
 
 	goal := &Goal{ID: "goal-001"}
-	passed, stderr, err := d.runValidateScript(goal)
+	passed, reason, stderr, err := d.runValidateScript(goal)
 
 	require.NoError(t, err)
 	assert.False(t, passed)
+	assert.Equal(t, "not-executable", reason)
 	assert.Empty(t, stderr)
 }
 
@@ -119,7 +124,7 @@ func TestRunValidateScript_EnvAndCwd(t *testing.T) {
 	})
 
 	goal := &Goal{ID: "goal-001"}
-	passed, _, err := d.runValidateScript(goal)
+	passed, _, _, err := d.runValidateScript(goal)
 
 	require.NoError(t, err)
 	assert.True(t, passed)

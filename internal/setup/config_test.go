@@ -221,6 +221,23 @@ func TestDefaultSettings_MaxWallClockSec(t *testing.T) {
 		"default max_wall_clock_sec should be 14400 (4h) — the P3 wall-clock cost ceiling")
 }
 
+func TestDefaultSettings_ValidateScriptTimeoutSec(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 120, s.Taskvisor.ValidateScriptTimeoutSec,
+		"default validate_script_timeout_sec should be 120 — the per-execution validate.sh ceiling (P7-fresh)")
+}
+
+func TestSaveSettings_ValidateScriptTimeoutSecRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	original := DefaultSettings()
+	original.Taskvisor.ValidateScriptTimeoutSec = 600
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, 600, loaded.Taskvisor.ValidateScriptTimeoutSec, "validate_script_timeout_sec survives a save/load round-trip")
+}
+
 func TestSaveSettings_MaxWallClockSecRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	original := DefaultSettings()

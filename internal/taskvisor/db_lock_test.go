@@ -140,7 +140,7 @@ func TestRunValidateScript_HoldsDBLockDuringExec(t *testing.T) {
 	})
 
 	goal := &Goal{ID: "goal-001"}
-	_, _, err = d.runValidateScript(goal)
+	_, _, _, err = d.runValidateScript(goal)
 	require.NoError(t, err)
 
 	assert.True(t, heldDuringExec, "db.lock must be held during validate.sh exec")
@@ -156,7 +156,7 @@ func TestRunValidateScript_ResultUnchangedUnderLock(t *testing.T) {
 	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\necho ok\nexit 0\n"), 0o755))
 
 	goal := &Goal{ID: "goal-001"}
-	passed, stderr, err := d.runValidateScript(goal)
+	passed, _, stderr, err := d.runValidateScript(goal)
 
 	require.NoError(t, err)
 	assert.True(t, passed, "a passing validate.sh still returns passed=true under the db lock")

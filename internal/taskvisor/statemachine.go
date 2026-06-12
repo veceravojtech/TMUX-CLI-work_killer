@@ -319,11 +319,12 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 		return err
 	}
 
-	passed, stderr, err := d.runValidateScript(goal)
+	passed, reason, stderr, err := d.runValidateScript(goal)
 	if err != nil {
 		return fmt.Errorf("validate script: %w", err)
 	}
 	rt.scriptPassed = passed
+	rt.scriptReason = reason
 	if stderr != "" && !d.hasValidateMd(goal.ID) {
 		return d.handleFailedCycle(goal, goals, stderr, "code-defect")
 	}
@@ -407,14 +408,41 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		}
 	}
 
+	// P7-fresh gate-time re-run: rt.scriptPassed is stamped ONCE per cycle in
+	// checkSupervisingPhase and is never refreshed by the rerunValidationOnly /
+	// handleStuckValidator re-validation loops — both re-enter this phase with
+	// the stale value. A single transient validate.sh non-pass (timeout,
+	// lock-error, exec flake) therefore vetoed EVERY subsequent LLM pass until
+	// ValidationRetries bled out and the goal hard-failed with a green suite
+	// (goals 004/006/007, 2026-06-08). Re-run the script here, ONLY on the
+	// otherwise-fatal combination (LLM pass + declared validate + stale false),
+	// so the gate always judges a FRESH deterministic result. A persistently red
+	// validate.sh still gates below — and now logs why.
+	if verdict == VerdictPass && len(goal.Validate) > 0 && !rt.scriptPassed {
+		passed, reason, _, serr := d.runValidateScript(goal)
+		if serr != nil {
+			return fmt.Errorf("validate script (gate-time re-run): %w", serr)
+		}
+		rt.scriptPassed = passed
+		rt.scriptReason = reason
+		if passed {
+			log.Printf("%s: gate-time validate.sh re-run passed — stale script failure cleared", goal.ID)
+		}
+	}
+
 	// P7 deterministic terminal-pass gate: a goal that DECLARES validate steps
 	// cannot terminally pass on the LLM validator's judgment alone — the only
 	// independent anchor is validate.sh. ScriptPassed carries the real validate.sh
-	// result from checkSupervisingPhase (threaded via goalRuntime.scriptPassed).
-	// When ScriptPassed=true, the gate permits the terminal pass; when false, a
-	// `pass` is downgraded to error/ops (rerunValidationOnly, charges
-	// ValidationRetries). No-validate goals and non-pass verdicts pass through.
+	// result from checkSupervisingPhase (threaded via goalRuntime.scriptPassed,
+	// refreshed by the gate-time re-run above). When ScriptPassed=true, the gate
+	// permits the terminal pass; when false, a `pass` is downgraded to error/ops
+	// (rerunValidationOnly, charges ValidationRetries). No-validate goals and
+	// non-pass verdicts pass through.
+	preGate := verdict
 	verdict, owner = GateTerminalPass(verdict, owner, PassGate{RequireValidate: len(goal.Validate) > 0, ScriptPassed: rt.scriptPassed})
+	if preGate == VerdictPass && verdict != VerdictPass {
+		log.Printf("%s: LLM pass downgraded to %s/%s — validate.sh not passed (%s)", goal.ID, verdict, owner, rt.scriptReason)
+	}
 
 	// An unsubstantiated spec-defect (blocked/planner with no concretely-cited
 	// contradiction) is a validator failure, not a planner failure — re-validate

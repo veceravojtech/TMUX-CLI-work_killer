@@ -19,7 +19,25 @@ import (
 
 type ScriptRunnerFunc func(ctx context.Context, scriptPath, dir string, env []string) (stdout, stderr string, exitCode int, err error)
 
-const validateScriptTimeout = 30 * time.Second
+// validateScriptTimeout seeds Daemon.scriptTimeout (New()); overridable via
+// taskvisor.validate_script_timeout_sec. 120s (was 30s — which silently killed
+// any validate.sh wrapping a real test suite and fed the P7 gate a false
+// non-pass). Kept modest deliberately: the script runs synchronously inside
+// the tick under the goals+db locks, so the whole daemon blocks while it runs —
+// slow suites should raise the setting per project rather than this seed.
+const validateScriptTimeout = 120 * time.Second
+
+// runValidateScript reason values (the non-pass classification contract).
+// Every non-pass used to collapse into a bare `passed=false`, making a
+// timeout kill or a flock hiccup indistinguishable from a genuinely red suite
+// at the P7 gate — reasons make the downgrade diagnosable from the log alone.
+const (
+	scriptReasonMissing       = "missing"
+	scriptReasonNotExecutable = "not-executable"
+	scriptReasonLockError     = "lock-error"
+	scriptReasonExecError     = "exec-error"
+	scriptReasonTimeout       = "timeout"
+)
 
 func defaultScriptRunner(ctx context.Context, scriptPath, dir string, env []string) (stdout, stderr string, exitCode int, err error) {
 	cmd := exec.CommandContext(ctx, scriptPath)
@@ -39,17 +57,23 @@ func defaultScriptRunner(ctx context.Context, scriptPath, dir string, env []stri
 	return outBuf.String(), errBuf.String(), 0, nil
 }
 
-func (d *Daemon) runValidateScript(goal *Goal) (passed bool, stderr string, err error) {
+// runValidateScript executes the goal's deterministic validate.sh anchor.
+// `passed` is true only on exit 0; `reason` names WHY the script did not pass
+// (the scriptReason* constants or "exit-<N>"; empty on pass) so the P7 gate's
+// downgrade log can distinguish an operational non-run from a red suite. The
+// gate still treats EVERY non-pass as "no deterministic backing" — the reason
+// changes observability, never the verdict.
+func (d *Daemon) runValidateScript(goal *Goal) (passed bool, reason, stderr string, err error) {
 	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
 	scriptPath := filepath.Join(goalDir, "validate.sh")
 
 	info, statErr := os.Stat(scriptPath)
 	if statErr != nil {
-		return false, "", nil
+		return false, scriptReasonMissing, "", nil
 	}
 	if info.Mode().Perm()&0o111 == 0 {
 		log.Printf("warning: validate.sh exists but is not executable for goal %s", goal.ID)
-		return false, "", nil
+		return false, scriptReasonNotExecutable, "", nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), d.scriptTimeout)
@@ -78,21 +102,30 @@ func (d *Daemon) runValidateScript(goal *Goal) (passed bool, stderr string, err 
 		return nil
 	}); lockErr != nil {
 		log.Printf("error: acquiring db lock for validate of goal %s: %v", goal.ID, lockErr)
-		return false, "", nil
+		return false, scriptReasonLockError, "", nil
 	}
 	if runErr != nil {
 		log.Printf("error: validate.sh exec error for goal %s: %v", goal.ID, runErr)
-		return false, "", nil
+		return false, scriptReasonExecError, "", nil
 	}
 
 	if exitCode == 0 {
-		return true, "", nil
+		return true, "", "", nil
 	}
+
+	// A deadline-exceeded context means WE killed the script, not that the
+	// suite failed — classify as timeout (previously indistinguishable from a
+	// red exit and completely silent).
+	reason = fmt.Sprintf("exit-%d", exitCode)
+	if ctx.Err() == context.DeadlineExceeded {
+		reason = scriptReasonTimeout
+	}
+	log.Printf("%s: validate.sh did not pass (%s, timeout budget %s)", goal.ID, reason, d.scriptTimeout)
 
 	if len(stderrOut) > 500 {
 		stderrOut = stderrOut[:500]
 	}
-	return false, stderrOut, nil
+	return false, reason, stderrOut, nil
 }
 
 func (d *Daemon) hasValidateMd(goalID string) bool {

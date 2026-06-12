@@ -64,7 +64,7 @@ func TestRunValidateScript_NoWorktree_RunsInBaseDir(t *testing.T) {
 		return "", "", 0, nil
 	})
 
-	passed, _, err := d.runValidateScript(&Goal{ID: "goal-001"})
+	passed, _, _, err := d.runValidateScript(&Goal{ID: "goal-001"})
 	require.NoError(t, err)
 	assert.True(t, passed)
 	assert.Equal(t, dir, gotDir, "no worktree ⇒ runner dir must be the base workDir")
@@ -87,7 +87,7 @@ func TestRunValidateScript_WithWorktree_RunsInWorktreeDir(t *testing.T) {
 		return "", "", 0, nil
 	})
 
-	_, _, err = d.runValidateScript(&Goal{ID: "goal-001"})
+	_, _, _, err = d.runValidateScript(&Goal{ID: "goal-001"})
 	require.NoError(t, err)
 	assert.Equal(t, wt, gotDir, "worktree set ⇒ runner dir must be the worktree")
 	// scriptPath stays rooted at the base control plane regardless of cwd.
@@ -112,7 +112,7 @@ func TestRunValidateScript_ExportsWorktreeDirEnv(t *testing.T) {
 		return "", "", 0, nil
 	})
 
-	_, _, err = d.runValidateScript(&Goal{ID: "goal-001"})
+	_, _, _, err = d.runValidateScript(&Goal{ID: "goal-001"})
 	require.NoError(t, err)
 	assert.Contains(t, gotEnv, "GOAL_ID=goal-001", "GOAL_ID must be preserved")
 	assert.Contains(t, gotEnv, "WORKTREE_DIR="+wt, "WORKTREE_DIR must be exported to validate.sh")

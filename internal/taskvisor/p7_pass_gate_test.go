@@ -377,3 +377,95 @@ func TestP7Integration_DeclaredValidate_ScriptNonZero_FakePass_NeverDone(t *test
 	require.NoError(t, err)
 	assert.NotEqual(t, GoalDone, reloaded.Goals[0].Status, "fake LLM pass never reaches done without deterministic backing")
 }
+
+// P7-fresh: a stale scriptPassed=false (e.g. a transient validate.sh timeout
+// observed back in the supervising phase) must not veto a real pass forever.
+// The gate-time re-run executes validate.sh again; a fresh exit 0 lets the
+// goal terminally pass WITHOUT charging ValidationRetries — the death-spiral
+// fix (goals 004/006/007, 2026-06-08: one transient non-pass downgraded every
+// later LLM pass until the validation budget bled out and a green goal failed).
+func TestCheckValidatingPhase_GateTimeRerun_FreshScriptPassClearsStaleFalse(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	rt := d.runtime("goal-001")
+	rt.phase = phaseValidating
+	rt.scriptPassed = false // stale false from a transient non-pass
+	rt.scriptReason = "timeout"
+
+	goal := routeGoal("goal-001", 3, 2, 2, 0)
+	goal.Validate = []string{"go test ./..."}
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{goal, {ID: "goal-002", Description: "next", Status: GoalPending}}}
+	writeGoals(t, dir, gf)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+	require.NoError(t, writeExecScript(goalDir, "validate.sh"))
+
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: VerdictPass, Timestamp: "2026-06-12T10:00:00Z",
+	}))
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@5", Name: "validator-001"},
+	}, nil)
+	exec.On("KillWindow", testSession, "@5").Return(nil)
+	d.SetScriptRunnerFunc(func(_ context.Context, _, _ string, _ []string) (string, string, int, error) {
+		return "", "", 0, nil // fresh deterministic exit 0
+	})
+
+	g := &gf.Goals[0]
+	require.NoError(t, d.checkValidatingPhase(g, gf))
+
+	assert.Equal(t, GoalDone, g.Status, "fresh validate.sh pass clears the stale false — pass is terminal")
+	assert.Equal(t, 2, g.ValidationRetries, "zero validation budget charged on the recovered pass")
+	assert.Equal(t, 3, g.CodeRetries, "code budget untouched")
+}
+
+// The persistently-red counterpart: when the gate-time re-run STILL fails, the
+// downgrade stands and charges ValidationRetries exactly as before — the
+// re-run only rescues goals whose deterministic anchor actually passes, and
+// the downgrade log now names the script reason.
+func TestCheckValidatingPhase_GateTimeRerun_ScriptStillRed_DowngradesAndCharges(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.validatorSendDelay = 0
+	rt := d.runtime("goal-001")
+	rt.phase = phaseValidating
+	rt.scriptPassed = false
+
+	goal := routeGoal("goal-001", 3, 2, 2, 0)
+	goal.Validate = []string{"go test ./..."}
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{goal}}
+	writeGoals(t, dir, gf)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+	require.NoError(t, writeExecScript(goalDir, "validate.sh"))
+
+	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
+		Verdict: VerdictPass, Timestamp: "2026-06-12T10:00:00Z",
+	}))
+
+	const valID = "@2"
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: valID, Name: "validator-001", CurrentCommand: "claude"},
+	}, nil)
+	exec.On("CaptureWindowOutput", testSession, valID).Return("❯ ", nil)
+	exec.On("KillWindow", testSession, valID).Return(nil)
+	exec.On("SendMessage", testSession, valID, mock.Anything).Return(nil)
+	d.SetWindowCreateFunc(mockCreateWindowFn(valID))
+	d.SetScriptRunnerFunc(func(_ context.Context, _, _ string, _ []string) (string, string, int, error) {
+		return "", "suite is red", 1, nil // still failing — exit-1
+	})
+
+	g := &gf.Goals[0]
+	out := captureLog(t, func() {
+		require.NoError(t, d.checkValidatingPhase(g, gf))
+	})
+
+	assert.NotEqual(t, GoalDone, g.Status, "red anchor ⇒ LLM pass must not terminally pass")
+	assert.Equal(t, 1, g.ValidationRetries, "downgrade charges ValidationRetries 2->1")
+	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase, "re-validation re-created the validator")
+	assert.Contains(t, out, "downgraded", "the downgrade is logged")
+	assert.Contains(t, out, "exit-1", "the downgrade log names the script reason")
+}

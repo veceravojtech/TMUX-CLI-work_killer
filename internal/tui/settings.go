@@ -49,6 +49,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "supervisor.max_goals", label: "Max Goals (concurrent)", kind: "int", intVal: settings.Supervisor.MaxGoals},
 			{key: "supervisor.max_stuck_retries", label: "Max Stuck Retries", kind: "int", intVal: settings.Supervisor.MaxStuckRetries},
 			{key: "taskvisor.progress_timeout_sec", label: "Taskvisor Progress Timeout (s)", kind: "int", intVal: settings.Taskvisor.ProgressTimeoutSec},
+			{key: "taskvisor.validate_script_timeout_sec", label: "Taskvisor Validate Script Timeout (s)", kind: "int", intVal: settings.Taskvisor.ValidateScriptTimeoutSec},
 			{key: "taskvisor.max_wall_clock_sec", label: "Taskvisor Max Wall Clock (sec)", kind: "int", intVal: settings.Taskvisor.MaxWallClockSec},
 			{key: "taskvisor.integration_cmd", label: "Taskvisor Integration Cmd", kind: "string", strVal: settings.Taskvisor.IntegrationCmd},
 			{key: "taskvisor.require_plan_approval", label: "Require Plan Approval", kind: "bool", value: settings.Taskvisor.RequirePlanApproval},
@@ -222,6 +223,8 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Taskvisor.AutoResumeIntervalSec = item.intVal
 		case "taskvisor.progress_timeout_sec":
 			s.Taskvisor.ProgressTimeoutSec = item.intVal
+		case "taskvisor.validate_script_timeout_sec":
+			s.Taskvisor.ValidateScriptTimeoutSec = item.intVal
 		case "taskvisor.max_wall_clock_sec":
 			s.Taskvisor.MaxWallClockSec = item.intVal
 		case "taskvisor.transient_retry_max_attempts":

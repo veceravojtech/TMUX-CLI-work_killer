@@ -108,8 +108,9 @@ func (d *Daemon) crashRecovery() error {
 				rt.phase = phaseSupervising
 				rt.dispatchTime = d.now()
 				rt.bootConfirmedAt = d.now()
-				if passed, _, rerr := d.runValidateScript(g); rerr == nil {
+				if passed, reason, _, rerr := d.runValidateScript(g); rerr == nil {
 					rt.scriptPassed = passed
+					rt.scriptReason = reason
 				}
 				log.Printf("crash recovery: %s supervisor window alive, resuming supervising phase (scriptPassed=%v)", g.ID, rt.scriptPassed)
 				resumed = true
@@ -128,7 +129,7 @@ func (d *Daemon) crashRecovery() error {
 		}
 
 		if allDone {
-			if passed, _, verr := d.runValidateScript(g); verr == nil && passed {
+			if passed, _, _, verr := d.runValidateScript(g); verr == nil && passed {
 				rt := d.runtime(g.ID)
 				rt.phase = phaseValidating
 				rt.scriptPassed = true

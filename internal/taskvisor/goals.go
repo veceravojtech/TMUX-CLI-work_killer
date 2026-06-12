@@ -103,9 +103,9 @@ type Goal struct {
 	// tasks.yaml). Empty = legacy mid-flight goal; dispatchCandidate falls back
 	// to the historical codeBudgetConsumed heuristic. Persisted in goals.yaml
 	// (NOT daemon runtime) so it survives a daemon restart; consumed (cleared)
-	// by dispatch/dispatchRetry once the routing decision is acted on. NOTE:
-	// not yet mirrored by mcp.tvGoal (dual-struct) — an MCP load-resave between
-	// bounce and dispatch drops it, degrading to the legacy heuristic.
+	// by dispatch/dispatchRetry once the routing decision is acted on.
+	// DUAL-STRUCT: mirrored by mcp.tvGoal (tools_taskvisor.go) so an MCP
+	// load-resave between bounce and dispatch preserves it.
 	NextDispatch string `yaml:"next_dispatch,omitempty"`
 
 	Phase     string   `yaml:"phase,omitempty"`
