@@ -2,7 +2,6 @@ package taskvisor
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,36 +28,6 @@ import (
 // (set separately) and the tick comparison read a single controlled instant.
 func fixedClock(at time.Time) func() time.Time {
 	return func() time.Time { return at }
-}
-
-// writeSettingsWithWallClock writes a minimal setting.yaml carrying an explicit
-// taskvisor.max_wall_clock_sec so Run()'s settings-load maps it onto d.maxWallClock.
-func writeSettingsWithWallClock(t *testing.T, dir string, wallClockSec int) {
-	t.Helper()
-	content := fmt.Sprintf(`hooks:
-  session_notify: false
-  block_interactive: true
-commands:
-  enabled: true
-supervisor:
-  max_cycles: 0
-  max_workers: 4
-  cycle_delay: 5
-  unplanned_audit: true
-plan:
-  auto_approve: true
-  auto_execute: true
-sudo:
-  timeout: 30
-taskvisor:
-  dispatch_timeout: 3600
-  validate_timeout: 300
-  poll_interval: 0
-  max_wall_clock_sec: %d
-`, wallClockSec)
-	p := filepath.Join(dir, ".tmux-cli", "setting.yaml")
-	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
-	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
 }
 
 // TestNew_SeedsMaxWallClockDefault pins the Option C fix: New() seeds the 4h
