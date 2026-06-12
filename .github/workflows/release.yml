@@ -19,8 +19,12 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install shells for tests
+        # zsh: command_wrapper tests set SHELL=/bin/zsh and expect a zsh
+        #      wrapper; without zsh installed the code falls back to sh.
+        # (fish is intentionally NOT installed — a test asserts the fish
+        #  fallback path, which requires fish to be absent.)
+        run: sudo apt-get update && sudo apt-get install -y tmux zsh
 
       - name: Run tests
         run: go test -race -short ./...
