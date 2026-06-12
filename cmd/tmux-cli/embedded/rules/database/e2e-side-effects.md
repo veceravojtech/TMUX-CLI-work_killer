@@ -1,0 +1,10 @@
+# E2E side-effect contract (pack: database — HAS_DATABASE)
+
+Binding planning convention, loaded when the project has a database.
+Extracted verbatim from the planner's `<conventions>` block. The symfony
+mailer/messenger/http-client sub-clauses are condition-gated on composer.json
+feature presence and fire only on symfony projects; splitting them into the
+php-symfony pack is deliberately deferred so this battle-tested rule stays
+byte-identical (phase-1 decision).
+
+<rule critical="true" id="E2E-SIDEFX-CONV" condition="HAS_DATABASE">E2E SIDE-EFFECT CONTRACT — extends E2E-ENV-CONV at the side-effect-env-keys seam. The E2E-serving test env MUST isolate all side effects so assertions are deterministic and no external system is contacted. Sub-clauses fire conditionally on feature presence from discovery/ADRs: (1) MAILER (condition: symfony/mailer in composer.json) — .env.test MUST contain MAILER_DSN=null://null. This is the Symfony Flex recipe default; the scaffold ASSERTS it (SC-23: `grep -q 'MAILER_DSN=null://null' .env.test`), it does NOT re-deliver it. Generated E2E specs for mail-sending flows (registration, password reset) assert application-visible outcomes (HTTP status, flash message, API response), never actual email delivery. (2) MESSENGER (condition: symfony/messenger in composer.json) — config/packages/test/messenger.yaml MUST exist and route ALL transports to sync:// (`framework: messenger: transports: async: dsn: 'sync://'`) so message handlers complete synchronously before E2E assertions run. The scaffold CREATES this file (SC-24: `test -f config/packages/test/messenger.yaml`). This is the DELTA — Symfony recipes do NOT default messenger to sync in test env. (3) HTTP-CLIENT (condition: symfony/http-client in composer.json) — generated E2E specs MUST assert application-visible outcomes (HTTP status codes, DB state changes, response bodies), NEVER actual external delivery or third-party service responses. No env-var mandate for http-client — isolation is a spec-generation rule, not a runtime config.</rule>

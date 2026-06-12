@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -32,6 +33,25 @@ func readGenerateBundle(t *testing.T) string {
 		require.NoError(t, readErr, "shard %s must exist in embed FS", embedPath)
 		return string(shardBytes)
 	})
+
+	// The <conventions> block loads the rule catalogue at runtime
+	// (`tmux-cli rules resolve`); the bundle mirrors that by appending every
+	// embedded rules file — the bundle is everything the planning agent loads.
+	var ruleFiles []string
+	err = fs.WalkDir(embeddedRules, "embedded/rules", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		ruleFiles = append(ruleFiles, p)
+		return nil
+	})
+	require.NoError(t, err, "embedded rules must be walkable")
+	sort.Strings(ruleFiles)
+	for _, p := range ruleFiles {
+		data, readErr := embeddedRules.ReadFile(p)
+		require.NoError(t, readErr, "rules file %s must be readable", p)
+		result += "\n" + string(data)
+	}
 
 	return result
 }

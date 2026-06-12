@@ -36,6 +36,23 @@ func readGenerateBundle(t *testing.T) string {
 		shard := readGenerateTemplate(t, rel)
 		return shard
 	})
+
+	// The <conventions> block loads the rule catalogue at runtime
+	// (`tmux-cli rules resolve`); the bundle mirrors that by appending the
+	// embedded rules files — the bundle is everything the planning agent loads.
+	rulesDir := filepath.Join("..", "..", "cmd", "tmux-cli", "embedded", "rules")
+	err := filepath.WalkDir(rulesDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return readErr
+		}
+		result += "\n" + string(data)
+		return nil
+	})
+	require.NoError(t, err, "embedded rules dir must be walkable")
 	return result
 }
 

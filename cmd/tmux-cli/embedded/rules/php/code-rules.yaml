@@ -1,0 +1,357 @@
+# Pack: php — generic PHP code rules (framework-agnostic).
+# Audience: spec/implementation/review agents (kind: code-rules), NOT the
+# planner's binding conventions. See ../SCHEMA.md for the rule schema and
+# how to extend per project (.tmux-cli/rules/local/).
+#
+# Adapted from a production house-rules catalogue grown out of real MR review
+# feedback (adapted_from records the source rule ID); provenance identifiers
+# are intentionally not embedded. Path globs target the generated DDD skeleton
+# (src/<BC>/<Layer>/...).
+
+- id: PHP-TYPE-001
+  category: types
+  scope: generic
+  severity: should
+  title: "Use real UUID types end-to-end, not asserted strings"
+  rule: >
+    Model UUID values with a dedicated UUID type (e.g. Symfony Uid / ramsey
+    Uuid) through method signatures, properties, and DTOs — not as `string`
+    parameters with validation asserts sprinkled at call sites.
+  why: >
+    A real type makes invalid UUIDs unrepresentable and removes scattered
+    runtime assertions; a typed signature documents intent.
+  adapted_from: "PHP-TYPE-001"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "string-typed $id/$uuid parameters paired with Assert/preg_match UUID checks"
+  fix: >
+    Replace the string parameter/property with the UUID value object and
+    construct it once at the boundary.
+  autofix: structural
+  acceptance:
+    - "GIVEN a UUID-carrying signature THEN its type is a UUID value object, not string"
+  validate:
+    - "review: no new string-typed uuid/id parameters with ad-hoc UUID validation in the changed files"
+  validate_kind: review
+  phase: domain
+
+- id: PHP-TYPE-002
+  category: types
+  scope: generic
+  severity: should
+  title: "Prefer a typed value object / enum over a primitive string"
+  rule: >
+    When a string parameter encodes a closed set of values or a domain concept
+    (status, type, code), introduce an enum or value object instead of passing
+    raw strings around.
+  why: >
+    Centralizes validation and naming; removes stringly-typed branching and
+    scattered checks.
+  adapted_from: "PHP-TYPE-002"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "string params compared against literal sets ('confirmed', 'cancelled', ...)"
+  fix: >
+    Introduce a backed enum or value object in the owning module and type the
+    signatures with it.
+  autofix: structural
+  acceptance:
+    - "GIVEN a closed-set string concept THEN it is modeled as an enum/value object"
+  validate:
+    - "review: no new closed-set string parameters in the changed files; enums/VOs used instead"
+  validate_kind: review
+  phase: domain
+
+- id: PHP-CTRL-001
+  category: controllers
+  scope: generic
+  severity: should
+  title: "Hoist repeated per-action setup into the constructor"
+  rule: >
+    Setup repeated at the top of several controller actions (service lookup,
+    config resolution, guard objects) belongs in the constructor or a private
+    accessor — not copy-pasted per action.
+  why: >
+    Duplicate setup drifts; one action gets the fix, the others keep the bug.
+  adapted_from: "PHP-CTRL-001"
+  applies_to:
+    - "src/**/*Controller.php"
+  detect:
+    - "identical setup statements opening 2+ actions of one controller"
+  fix: >
+    Move the shared setup into the constructor (or a private getter) and use
+    the field in actions.
+  autofix: safe
+  acceptance:
+    - "GIVEN a controller THEN no setup block is duplicated across its actions"
+  validate:
+    - "review: changed controllers contain no per-action duplicated setup"
+  validate_kind: review
+  phase: application
+
+- id: PHP-CTRL-002
+  category: controllers
+  scope: generic
+  severity: must
+  title: "No union-type param getters — typed getter throwing a user-facing exception"
+  rule: >
+    A request-parameter accessor returns exactly one type. Invalid or missing
+    input raises a translatable/user-facing exception at the boundary — never
+    a union return that forces `instanceof`/is_string branching in actions.
+  why: >
+    Union returns push validation into every caller; a typed getter with a
+    boundary exception validates once and keeps actions linear.
+  adapted_from: "PHP-CTRL-002"
+  applies_to:
+    - "src/**/*Controller.php"
+  detect:
+    - "getters returning X|Y unions consumed with instanceof in actions"
+  fix: >
+    Make the getter return the single expected type and throw the project's
+    user-facing exception type on violation.
+  autofix: structural
+  acceptance:
+    - "GIVEN a param getter THEN it returns one type and throws on invalid input"
+  validate:
+    - "review: no new union-returning request accessors; invalid input raises the boundary exception"
+  validate_kind: review
+  phase: application
+
+- id: PHP-CTRL-003
+  category: controllers
+  scope: generic
+  severity: must
+  title: "No entity creation in controllers — delegate to a service via a command DTO"
+  rule: >
+    Controllers never construct or persist entities. They build a command DTO
+    from the request and delegate to an application service/handler that owns
+    creation and persistence.
+  why: >
+    Entity construction in controllers bypasses domain invariants and makes the
+    creation path untestable in isolation.
+  adapted_from: "PHP-CTRL-003"
+  applies_to:
+    - "src/**/*Controller.php"
+  detect:
+    - "`new <Entity>(` or `->persist(` / `->flush(` inside a controller action"
+  fix: >
+    Introduce a command DTO + application handler; the controller maps request
+    → command and returns the handler result.
+  autofix: structural
+  acceptance:
+    - "GIVEN a controller action THEN it constructs no entity and calls no persistence API directly"
+  validate:
+    - "review: changed controllers contain no entity construction or direct persistence calls"
+  validate_kind: review
+  phase: application
+
+- id: PHP-DATE-001
+  category: dates
+  scope: generic
+  severity: must
+  title: "Backend is the time authority — never trust frontend timestamps"
+  rule: >
+    Creation/modification timestamps are set server-side with
+    `new \DateTimeImmutable()` — never accepted from request payloads.
+  why: >
+    Client clocks are wrong and client payloads are forgeable; audit fields
+    must be authoritative.
+  adapted_from: "PHP-DATE-001"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "createdAt/updatedAt populated from request DTO fields"
+  fix: >
+    Drop the timestamp from the request contract; set it in the entity/handler.
+  autofix: structural
+  acceptance:
+    - "GIVEN audit timestamps THEN they are set server-side, not read from the request"
+  validate:
+    - "review: no changed code path copies a request-supplied timestamp into createdAt/updatedAt"
+  validate_kind: review
+  phase: cross-cutting
+
+- id: PHP-DATE-002
+  category: dates
+  scope: generic
+  severity: should
+  title: "No `updatedAt` on create"
+  rule: >
+    On entity creation set only `createdAt`; leave `updatedAt` null until the
+    first real update.
+  why: >
+    updatedAt==createdAt rows make "was this ever modified?" unanswerable.
+  adapted_from: "PHP-DATE-002"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "constructor/create factory assigning both createdAt and updatedAt"
+  fix: >
+    Remove the updatedAt assignment from the creation path.
+  autofix: safe
+  acceptance:
+    - "GIVEN a freshly created entity THEN updatedAt is null"
+  validate:
+    - "review: creation paths in the changed files set createdAt only"
+  validate_kind: review
+  phase: cross-cutting
+
+- id: PHP-DATE-003
+  category: dates
+  scope: generic
+  severity: should
+  title: "Serialize DateTimeImmutable directly — let the serializer convert it"
+  rule: >
+    Response DTOs expose `\DateTimeImmutable` fields and let the serializer
+    handle formatting; do not hand-`->format()` dates into strings in
+    handlers/DTOs.
+  why: >
+    One serializer-level format keeps the API consistent; hand-formatting
+    scatters format strings and breaks clients one endpoint at a time.
+  adapted_from: "PHP-DATE-003"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "->format('Y-m-d...') used to build response payload fields"
+  fix: >
+    Type the DTO field as DateTimeImmutable and delete the manual format call.
+  autofix: safe
+  acceptance:
+    - "GIVEN a response DTO date THEN it is typed DateTimeImmutable, not a pre-formatted string"
+  validate:
+    - "review: no new hand-formatted date strings in response DTOs/handlers"
+  validate_kind: review
+  phase: cross-cutting
+
+- id: PHP-NAME-001
+  category: naming
+  scope: generic
+  severity: should
+  title: "Name a class after its domain concept; folder/namespace matches"
+  rule: >
+    Class names spell out the domain concept they model (e.g.
+    `BookingAddressFieldVisibilityOption`, not `AddrOpt`); the containing
+    folder/namespace mirrors the concept.
+  why: >
+    Concept-named classes are findable and self-documenting; abbreviations rot.
+  adapted_from: "PHP-NAME-001"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "abbreviated or generic class names (Manager, Helper, Util) for domain concepts"
+  fix: >
+    Rename the class (and folder) to the full domain concept.
+  autofix: structural
+  acceptance:
+    - "GIVEN a new class THEN its name states the domain concept unabbreviated"
+  validate:
+    - "review: new classes in the diff are concept-named, no generic Manager/Helper/Util names"
+  validate_kind: review
+  phase: cross-cutting
+
+- id: PHP-NAME-002
+  category: naming
+  scope: generic
+  severity: should
+  title: "Don't suffix an option/enum concept with `Id` — use `Option`/`Type`"
+  rule: >
+    A value that selects among options is an Option/Type/Mode — the `Id`
+    suffix is reserved for identity references to persisted entities.
+  why: >
+    Misleading suffixes send readers hunting for an entity that doesn't exist.
+  adapted_from: "PHP-NAME-002"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "enum-like fields/classes named *Id that don't reference an entity"
+  fix: >
+    Rename to *Option/*Type and adjust call sites.
+  autofix: structural
+  acceptance:
+    - "GIVEN an option-selecting value THEN its name ends in Option/Type, not Id"
+  validate:
+    - "review: no new *Id names for non-identity concepts in the diff"
+  validate_kind: review
+  phase: cross-cutting
+
+- id: PHP-NAME-003
+  category: naming
+  scope: generic
+  severity: should
+  title: "Name variables after the concept they hold"
+  rule: >
+    Variables carry the concept name (e.g. `$fullNameVisibilityType`), not the
+    mechanics (`$val`, `$tmp`, `$data2`).
+  why: >
+    Concept-named locals keep long handlers readable without scrolling to the
+    assignment.
+  adapted_from: "PHP-NAME-003"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "$data/$val/$tmp style locals holding domain values"
+  fix: >
+    Rename the local to the concept it holds.
+  autofix: safe
+  acceptance:
+    - "GIVEN a local variable THEN its name states the held concept"
+  validate:
+    - "review: no opaque $data/$val/$tmp locals introduced in the diff"
+  validate_kind: review
+  phase: cross-cutting
+
+- id: PHP-NAME-004
+  category: naming
+  scope: generic
+  severity: should
+  title: "Names must be meaningful, not misleading; getter `get`, handler `handle`"
+  rule: >
+    A name must say what the thing is/does — a setting is `BookOnlineSetting`
+    not `BookOnline`; accessors are get*, command handlers expose handle().
+  why: >
+    Misleading names are worse than vague ones — they assert something false.
+  adapted_from: "PHP-NAME-004"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "class/method names whose reading contradicts their behavior"
+  fix: >
+    Rename to the accurate concept; align accessor/handler verb conventions.
+  autofix: structural
+  acceptance:
+    - "GIVEN a name in the diff THEN reading it states its actual role"
+  validate:
+    - "review: names in the diff are accurate; accessors get*, handlers handle()"
+  validate_kind: review
+  phase: cross-cutting
+
+- id: PHP-TEST-001
+  category: tests
+  scope: generic
+  severity: must
+  title: "Cover service logic with tests — especially ownership/authorization"
+  rule: >
+    New or changed application service logic ships with tests; ownership and
+    authorization branches (actor may only touch their own resources) are
+    mandatory cases.
+  why: >
+    Ownership bugs are security bugs; untested authorization branches regress
+    silently.
+  adapted_from: "PHP-TEST-001"
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "handler/service changes in the diff with no matching test change"
+  fix: >
+    Add unit tests for the changed service including the deny path of every
+    ownership/authorization check.
+  autofix: none
+  acceptance:
+    - "GIVEN changed service logic THEN tests cover it, including authorization deny paths"
+  validate:
+    - "review: every changed handler/service has matching test coverage incl. ownership deny path"
+    - "vendor/bin/phpunit --testsuite=unit"
+  validate_kind: mixed
+  phase: final

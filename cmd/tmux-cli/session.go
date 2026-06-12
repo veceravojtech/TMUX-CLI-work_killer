@@ -51,6 +51,9 @@ var embeddedCommands embed.FS
 //go:embed all:embedded/templates
 var embeddedTemplates embed.FS
 
+//go:embed all:embedded/rules
+var embeddedRules embed.FS
+
 var readPassword = func() (string, error) {
 	fmt.Print("Enter sudo password: ")
 	bytes, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -1688,10 +1691,25 @@ func runAutoSetup(projectPath string) error {
 		return nil
 	})
 
+	rulesMap := make(map[string]string)
+	fs.WalkDir(embeddedRules, "embedded/rules", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		content, readErr := embeddedRules.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		relPath := strings.TrimPrefix(path, "embedded/rules/")
+		rulesMap[relPath] = string(content)
+		return nil
+	})
+
 	return setup.Run(&setup.SetupConfig{
 		ProjectRoot:      projectPath,
 		HookScripts:      hookScripts,
 		CommandTemplates: cmdTemplates,
 		Templates:        tplMap,
+		Rules:            rulesMap,
 	})
 }

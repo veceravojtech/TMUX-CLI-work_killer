@@ -1,7 +1,9 @@
 # Per-Product Rule Resolution — Research & Implementation Plan
 
-**Date:** 2026-06-09
+**Date:** 2026-06-09 · **Implemented:** 2026-06-12 (phase 1 + code-rules catalogue)
 **Decisions locked:** Q1=C (hybrid: Go detects signals + emits pack list, agent loads markdown), Q2=A (extract inline rules into catalogue), Q3=A (planner only)
+**Open questions resolved (2026-06-12):** resolver surface = CLI `tmux-cli rules resolve`; E2E-SIDEFX-CONV kept intact in database/ (symfony split deferred); unknown CAPABILITY signals include packs conservatively with stderr warning, unknown STACK signals load no stack pack (wrong-stack rules misdirect rather than protect) — `--lang`/`--framework` flags pass discovery session state for greenfield.
+**Scope extension (2026-06-12):** the catalogue also carries previo2-style CODE RULES (kind=code-rules, YAML schema per `embedded/rules/SCHEMA.md`) — generic PHP rules (`php/`) + universal Symfony DDD rules (`php-symfony/`, incl. ddd-conventions.md adapted from the previo2 layer contract, provenance stripped, `adapted_from` retained). Project-local growth path: `.tmux-cli/rules/local/{conventions,code-rules}/` — always resolved, never clean-slated by setup. Falsifiability selftest ported as `cmd/tmux-cli/rules_catalogue_test.go`.
 **Goal:** Resolve rules per product/project — when the project uses Docker, load docker rules; when PHP/Symfony, load PHP rules; etc. Clean up and separate concerns out of the monolithic planner XML.
 
 ---

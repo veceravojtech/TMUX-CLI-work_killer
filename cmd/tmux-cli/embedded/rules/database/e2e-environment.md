@@ -1,0 +1,6 @@
+# E2E environment contract (pack: database — HAS_DATABASE)
+
+Binding planning convention, loaded when the project has a database.
+Extracted verbatim from the planner's `<conventions>` block.
+
+<rule critical="true" id="E2E-ENV-CONV" condition="HAS_DATABASE">E2E ENVIRONMENT CONTRACT — BINDING. The HTTP vhost that E2E/host-HTTP probes hit MUST serve the same env/DB that bin/ensure-test-stack.sh seeds (--env=test). Concretely: (1) SCAFFOLD PINNING — goal-002's compose spec (docker mode) or .env.test (local mode) MUST pin APP_ENV=test for the E2E-facing service; acceptance criterion SC-18: `grep -q 'APP_ENV=test' docker-compose.yaml` or `grep -q 'APP_ENV=test' .env.test`. (2) HEALTH-CHECK EXPOSURE — the step 3.25 health-check goal's GET /health response MUST include `env` (kernel.environment) and `database` (connected DB name) fields; acceptance criterion HC-04: `curl -s {{BASE_URL}}/health | jq -e '.env == "test" and (.database | test("test"))'`. (3) GATE-0 RE-ASSERTION — after scaffold completes, Gate-0 re-validates the pinning via the same grep probe. Side-effect env keys (G7) extend this contract by adding their required env vars to the same pinning and health-exposure surface.</rule>

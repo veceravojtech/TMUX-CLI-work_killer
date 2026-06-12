@@ -73,7 +73,13 @@ Error handling before actions: action E2E tests assert RFC 7807 errors (422/400)
 
 Each goal needs 2-4 investigators (GM-08) with type, files, commands, pass/fail criteria (GM-09).
 
-## Step 0c conventions (binding on all later steps)
+## Conventions (binding on all later steps)
+
+Full rule bodies live in the rules catalogue — load them via
+`tmux-cli rules resolve --kind=convention --lang=<LANG> --framework=<FRAMEWORK>`
+(see the `<conventions>` block in task-plan-generate.xml). This table is a
+summary only; code rules for implementers resolve separately with
+`--kind=code-rules`.
 
 | Rule ID | Condition | Summary |
 |---------|-----------|---------|

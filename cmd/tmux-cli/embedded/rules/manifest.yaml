@@ -1,0 +1,68 @@
+# Rule-pack manifest — consumed by `tmux-cli rules resolve` (internal/rules).
+#
+# Two file kinds per pack:
+#   conventions: — BINDING planner conventions (loaded by task-plan-generate's
+#                  <conventions> block; bodies were extracted verbatim from it)
+#   code_rules:  — code rules for spec/implementation/review agents
+#                  (previo-style catalogue; see SCHEMA.md)
+#
+# `when` is a structured condition (no expression language):
+#   run_target: docker|local      — from test-environment.md "Run Target"
+#   has_database: true|false      — from test-environment.md "Test Database"
+#   has_frontend: true|false      — from test-environment.md "Playwright Status"
+#   min_auth_flows: N             — from cross-cutting.md "## Auth Flows"
+#   lang / framework: slug        — --lang/--framework flags (discovery state),
+#                                   else project manifests (composer.json, go.mod, ...)
+# Omitted when ⇒ always.
+#
+# Matching asymmetry (deliberate): capability signals (run_target,
+# has_database, has_frontend, min_auth_flows) that are UNKNOWN match
+# conservatively — the pack loads with a warning, because a missing safety
+# convention is worse than an extra one. Stack signals (lang, framework) must
+# be KNOWN to match — wrong-stack code rules misdirect rather than protect.
+#
+# Project-local rules: .tmux-cli/rules/local/conventions/*.md and
+# .tmux-cli/rules/local/code-rules/* are always included and never touched by
+# setup. See SCHEMA.md.
+
+version: 1
+packs:
+  - id: _base
+    conventions:
+      - command-execution.md
+      - goal-structure.md
+
+  - id: docker
+    when: { run_target: docker }
+    conventions:
+      - runtime-frontload.md
+
+  - id: database
+    when: { has_database: true }
+    conventions:
+      - ensure-stack.md
+      - e2e-environment.md
+      - e2e-side-effects.md
+      - e2e-data-isolation.md
+
+  - id: frontend
+    when: { has_frontend: true }
+    conventions:
+      - node-tooling.md
+      - e2e-artifacts.md
+
+  - id: frontend-auth
+    when: { has_frontend: true, min_auth_flows: 1 }
+    conventions:
+      - e2e-auth-state.md
+
+  - id: php
+    when: { lang: php }
+    code_rules:
+      - code-rules.yaml
+
+  - id: php-symfony
+    when: { lang: php, framework: symfony }
+    code_rules:
+      - code-rules.yaml
+      - ddd-conventions.md

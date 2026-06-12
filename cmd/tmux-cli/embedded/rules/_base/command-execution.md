@@ -1,0 +1,11 @@
+# Command execution conventions (_base — always loaded)
+
+Binding planning conventions. Each `<rule>` element below is a BINDING convention
+on every later planning step, exactly as if inlined in the planner's
+`<conventions>` block (it was extracted from there verbatim).
+
+<rule critical="true" id="CMD-CONV">COMMAND EXECUTION CONVENTION — BINDING ON EVERY LATER STEP. Emit every validate / Investigation-Config command BARE, host-style (`composer install`, `vendor/bin/phpstan analyse --level=9`, `npx playwright test …`). Do NOT hand-prefix with `docker compose exec …`. At dispatch the taskvisor daemon wraps each command by tool family: PHP toolchain (php, composer, bin/console, vendor/bin/*, phpunit, phpstan, ecs, deptrac) → the {{APP_SVC}} container; Node/browser tools (node, npm, npx, playwright) → the {{NODE_SVC}} container; pure host/file commands (test, grep, ls, python3, docker, curl against a published port) left untouched. In local mode the daemon wrap is a no-op, so bare commands run on the host exactly as today. (The wrap is idempotent, so a stray hand-written prefix is harmless — but do not add one.)</rule>
+
+<rule id="HTTP-CONV">HTTP / health-check convention: a validate command that curls the running app MUST target the Base URL / published host port from test-environment.md (e.g. http://localhost:8080), NEVER a hardcoded port (no :8000). The daemon does NOT rewrite ports — emit the published one. Once the runtime stack is up the app is reachable on the host's published port.</rule>
+
+<rule critical="true" id="HTTP-WAIT-CONV">HTTP-WAIT CONVENTION — BINDING. Never emit a fixed `sleep N` before an HTTP or database readiness probe. Use either: (a) docker mode (preferred): compose service healthchecks + `docker compose up -d --wait` — the --wait flag blocks until all healthchecks pass, then probe; or (b) fallback bounded poll (POSIX sh): `i=0; until curl -sf {{BASE_URL}}/path; do i=$((i+1)); [ $i -ge 30 ] &amp;&amp; exit 1; sleep 2; done`. The bounded poll is the canonical form for Gate-0 / scaffold goals where ensure-stack does not yet exist. Interaction: in post-scaffold goals, ENSURE-STACK-CONV (H1) serializes stack-up before probes — HTTP-WAIT covers the first-boot path where no ensure-stack script exists yet.</rule>
