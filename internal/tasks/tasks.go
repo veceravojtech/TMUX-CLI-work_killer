@@ -1,9 +1,7 @@
 package tasks
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -50,55 +48,6 @@ func GoalTasksFilePath(projectRoot, goalID string) string {
 	return filepath.Join(projectRoot, ".tmux-cli", "goals", goalID, "tasks.yaml")
 }
 
-// loadTasksFromPath is the shared load core: a missing file is tolerated and
-// reported as (nil, nil), matching the top-level read tolerance.
-func loadTasksFromPath(p string) (*TasksFile, error) {
-	data, err := os.ReadFile(p)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var tf TasksFile
-	if err := yaml.Unmarshal(data, &tf); err != nil {
-		return nil, err
-	}
-	return &tf, nil
-}
-
-// saveTasksToPath is the shared save core: ensures the parent dir then writes.
-func saveTasksToPath(p string, tf *TasksFile) error {
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-
-	data, err := yaml.Marshal(tf)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(p, data, 0o644)
-}
-
-func LoadTasks(projectRoot string) (*TasksFile, error) {
-	return loadTasksFromPath(TasksFilePath(projectRoot))
-}
-
-func SaveTasks(projectRoot string, tf *TasksFile) error {
-	return saveTasksToPath(TasksFilePath(projectRoot), tf)
-}
-
-// LoadTasksForGoal reads the per-goal fan-out file at GoalTasksFilePath.
-func LoadTasksForGoal(projectRoot, goalID string) (*TasksFile, error) {
-	return loadTasksFromPath(GoalTasksFilePath(projectRoot, goalID))
-}
-
-// SaveTasksForGoal writes the per-goal fan-out file at GoalTasksFilePath.
-func SaveTasksForGoal(projectRoot, goalID string, tf *TasksFile) error {
-	return saveTasksToPath(GoalTasksFilePath(projectRoot, goalID), tf)
-}
-
 func ArchiveTasks(projectRoot string) error {
 	src := TasksFilePath(projectRoot)
 	if _, err := os.Stat(src); err != nil {
@@ -122,40 +71,6 @@ func ArchiveTasks(projectRoot string) error {
 		return err
 	}
 	return os.Remove(src)
-}
-
-const contextTemplate = `# Task: %s
-
-## Problem
-
-[What needs to be fixed/added and why]
-
-## Solution
-
-[How to implement it]
-
-## Files to touch
-
-[List of files that need changes]
-`
-
-func CreateContextFile(projectRoot, researchDir, slug, taskName string) (string, error) {
-	relPath := filepath.Join(".tmux-cli", "research", researchDir, slug+".md")
-	absPath := filepath.Join(projectRoot, relPath)
-
-	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-		return "", err
-	}
-
-	if _, err := os.Stat(absPath); err == nil {
-		return relPath, nil
-	}
-
-	content := fmt.Sprintf(contextTemplate, taskName)
-	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
-		return "", err
-	}
-	return relPath, nil
 }
 
 var allowedTaskKeys = map[string]bool{
@@ -267,37 +182,4 @@ func ValidateTasksFile(path string) []string {
 		}
 	}
 	return errs
-}
-
-func (tf *TasksFile) IsPlanning() bool {
-	return tf.Status == FileStatusPlanning
-}
-
-func (tf *TasksFile) PendingTasks() []Task {
-	var out []Task
-	for _, t := range tf.Tasks {
-		if t.Status == StatusPending {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-func (tf *TasksFile) HasUnfinished() bool {
-	for _, t := range tf.Tasks {
-		if t.Status == StatusPending || t.Status == StatusInProgress {
-			return true
-		}
-	}
-	return false
-}
-
-func (tf *TasksFile) MarkDone(name string) bool {
-	for i := range tf.Tasks {
-		if tf.Tasks[i].Name == name {
-			tf.Tasks[i].Status = StatusDone
-			return true
-		}
-	}
-	return false
 }
