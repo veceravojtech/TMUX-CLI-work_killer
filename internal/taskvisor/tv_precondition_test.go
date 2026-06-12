@@ -203,7 +203,7 @@ func TestBackfill_Goal002Preconditions(t *testing.T) {
 	goalDir, err := EnsureGoalDir(dir, "goal-002")
 	require.NoError(t, err)
 
-	require.NoError(t, WriteGoalMD(goalDir, "Scaffold goal-002", "scaffold",
+	require.NoError(t, WriteGoalMD(goalDir, "Scaffold goal-002", "scaffold", "",
 		[]string{"PA-01 scaffolding present"}, []string{"go build ./..."},
 		[]Precondition{{Kind: "env", Spec: "DATABASE_URL", Remedy: "export DATABASE_URL"}},
 		"context preserved", "out-of-scope preserved", nil))

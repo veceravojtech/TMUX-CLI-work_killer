@@ -810,7 +810,7 @@ func TestParseGoalFindings_ReadsGeneratedConfig(t *testing.T) {
 		{Name: "Quality gate", Type: "quality-gate", Paths: []string{"src/Pricing.php", "src/Tax.php"}, Commands: []string{"phpstan analyse"}, Pass: "exit 0", Fail: "errors"},
 		{Name: "Test execution", Type: "test-execution", Paths: []string{"tests/PricingTest.php"}, Commands: []string{"phpunit"}, Pass: "green", Fail: "red"},
 	}
-	require.NoError(t, taskvisor.WriteGoalMD(dir, "Parse roundtrip", "", []string{"AC1"}, []string{"x"}, nil, "", "", invs))
+	require.NoError(t, taskvisor.WriteGoalMD(dir, "Parse roundtrip", "", "", []string{"AC1"}, []string{"x"}, nil, "", "", invs))
 
 	findings, err := parseGoalFindings(filepath.Join(dir, "goal.md"))
 	require.NoError(t, err)

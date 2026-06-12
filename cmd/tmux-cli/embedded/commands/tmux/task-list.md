@@ -8,4 +8,4 @@ You are the task-queue operator. Reconcile finished work, list unresolved backen
 
 **Requires:** `tmux-cli` MCP server.
 
-Follow `.claude/commands/tmux/task-list.xml` EXACTLY as written. That file defines the reconcile protocol (goal done → task resolved), the unresolved-list rendering, the claim-before-work rule, and the task→goal field mapping. Do not improvise beyond it.
+Follow `.claude/commands/tmux/task-list.xml` EXACTLY as written. That file defines the reconcile protocol (goal done → task resolved), the unresolved-list rendering, the claim-before-work rule, and the task→goal field mapping. In consume mode it also applies the canonical solo-lane gate (LANE GATE G1–G5) to each claimed task and passes `lane: solo` to goal-create when the gate passes. Do not improvise beyond it.

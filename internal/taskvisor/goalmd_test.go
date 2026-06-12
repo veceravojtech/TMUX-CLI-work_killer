@@ -12,7 +12,7 @@ import (
 
 func TestWriteGoalMD_AllSections(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Fix prices", "", []string{"Price matches API", "No rounding errors"}, []string{"go test ./...", "curl check"}, nil, "We need accurate pricing", "UI redesign", nil)
+	err := WriteGoalMD(dir, "Fix prices", "", "", []string{"Price matches API", "No rounding errors"}, []string{"go test ./...", "curl check"}, nil, "We need accurate pricing", "UI redesign", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -35,7 +35,7 @@ func TestWriteGoalMD_AllSections(t *testing.T) {
 
 func TestWriteGoalMD_WithPhase(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Setup DB", "infrastructure", []string{"Tables exist"}, []string{"check"}, nil, "", "", nil)
+	err := WriteGoalMD(dir, "Setup DB", "infrastructure", "", []string{"Tables exist"}, []string{"check"}, nil, "", "", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -61,7 +61,7 @@ func TestWriteGoalMD_WithPhase(t *testing.T) {
 
 func TestWriteGoalMD_EmptyPhaseOmitted(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "No phase goal", "", []string{"AC1"}, []string{"check"}, nil, "", "", nil)
+	err := WriteGoalMD(dir, "No phase goal", "", "", []string{"AC1"}, []string{"check"}, nil, "", "", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -71,7 +71,7 @@ func TestWriteGoalMD_EmptyPhaseOmitted(t *testing.T) {
 
 func TestWriteGoalMD_AcceptanceOnly(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Build API", "", []string{"Returns 200"}, nil, nil, "", "", nil)
+	err := WriteGoalMD(dir, "Build API", "", "", []string{"Returns 200"}, nil, nil, "", "", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -89,7 +89,7 @@ func TestWriteGoalMD_AcceptanceOnly(t *testing.T) {
 
 func TestWriteGoalMD_NoCriteria(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Simple goal", "", nil, nil, nil, "", "", nil)
+	err := WriteGoalMD(dir, "Simple goal", "", "", nil, nil, nil, "", "", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -106,7 +106,7 @@ func TestWriteGoalMD_NoCriteria(t *testing.T) {
 
 func TestWriteGoalMD_ContextAndNotInScope(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Refactor module", "", nil, nil, nil, "Legacy code needs cleanup", "Performance tuning", nil)
+	err := WriteGoalMD(dir, "Refactor module", "", "", nil, nil, nil, "Legacy code needs cleanup", "Performance tuning", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -124,7 +124,7 @@ func TestWriteGoalMD_ContextAndNotInScope(t *testing.T) {
 
 func TestWriteGoalMD_AtomicWrite(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Test atomic", "", []string{"A1"}, nil, nil, "", "", nil)
+	err := WriteGoalMD(dir, "Test atomic", "", "", []string{"A1"}, nil, nil, "", "", nil)
 	require.NoError(t, err)
 
 	tmpPath := filepath.Join(dir, "goal.md.tmp")
@@ -134,7 +134,7 @@ func TestWriteGoalMD_AtomicWrite(t *testing.T) {
 
 func TestWriteGoalMD_MarkdownFormat(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Format check", "", []string{"Criterion A", "Criterion B"}, []string{"validate cmd"}, nil, "Some context", "Out of scope", nil)
+	err := WriteGoalMD(dir, "Format check", "", "", []string{"Criterion A", "Criterion B"}, []string{"validate cmd"}, nil, "Some context", "Out of scope", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -163,7 +163,7 @@ func TestWriteGoalMD_MarkdownFormat(t *testing.T) {
 
 func TestWriteGoalMD_MarkdownFormatWithPhase(t *testing.T) {
 	dir := t.TempDir()
-	err := WriteGoalMD(dir, "Phase check", "domain", []string{"Criterion A"}, []string{"validate cmd"}, nil, "", "", nil)
+	err := WriteGoalMD(dir, "Phase check", "domain", "", []string{"Criterion A"}, []string{"validate cmd"}, nil, "", "", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -185,7 +185,7 @@ func TestWriteGoalMD_PreconditionsSection(t *testing.T) {
 		{Kind: "env", Spec: "DB_USER", Remedy: "export DB_USER"},
 		{Kind: "service", Spec: "localhost:5432", Remedy: "start postgres"},
 	}
-	err := WriteGoalMD(dir, "With preconds", "", []string{"AC1"}, []string{"check"}, preconds, "ctx", "", nil)
+	err := WriteGoalMD(dir, "With preconds", "", "", []string{"AC1"}, []string{"check"}, preconds, "ctx", "", nil)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -208,7 +208,7 @@ func TestWriteGoalMD_PreconditionsSection(t *testing.T) {
 
 	// Empty slice => section omitted (legacy goal.md byte-unchanged).
 	dir2 := t.TempDir()
-	require.NoError(t, WriteGoalMD(dir2, "No preconds", "", []string{"AC1"}, []string{"check"}, nil, "ctx", "", nil))
+	require.NoError(t, WriteGoalMD(dir2, "No preconds", "", "", []string{"AC1"}, []string{"check"}, nil, "ctx", "", nil))
 	data2, err := os.ReadFile(filepath.Join(dir2, "goal.md"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(data2), "## Preconditions")
@@ -221,7 +221,7 @@ func TestWriteGoalMD_RendersProvidedInvestigators(t *testing.T) {
 		{Name: "Test execution", Type: "test-execution", Commands: []string{"phpunit"}, Pass: "green", Fail: "red"},
 		{Name: "Architecture check", Type: "architecture-check", Commands: []string{"deptrac"}, Pass: "no violations", Fail: "violation"},
 	}
-	require.NoError(t, WriteGoalMD(dir, "Provided", "", []string{"AC1"}, []string{"x"}, nil, "", "", invs))
+	require.NoError(t, WriteGoalMD(dir, "Provided", "", "", []string{"AC1"}, []string{"x"}, nil, "", "", invs))
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
 	require.NoError(t, err)
@@ -253,7 +253,7 @@ func TestWriteGoalMD_DerivesFallbackFromValidate(t *testing.T) {
 		"php bin/phpunit --testsuite=unit",
 		"vendor/bin/deptrac analyse",
 	}
-	require.NoError(t, WriteGoalMD(dir, "Fallback", "", []string{"AC1"}, validate, nil, "", "", nil))
+	require.NoError(t, WriteGoalMD(dir, "Fallback", "", "", []string{"AC1"}, validate, nil, "", "", nil))
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
 	require.NoError(t, err)
@@ -275,7 +275,7 @@ func TestWriteGoalMD_FallbackGuaranteesAtLeastTwo(t *testing.T) {
 		{},
 	} {
 		dir := t.TempDir()
-		require.NoError(t, WriteGoalMD(dir, "Few", "", []string{"AC1"}, validate, nil, "", "", nil))
+		require.NoError(t, WriteGoalMD(dir, "Few", "", "", []string{"AC1"}, validate, nil, "", "", nil))
 		data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
 		require.NoError(t, err)
 		assert.GreaterOrEqual(t, strings.Count(string(data), "### Investigator "), 2,
@@ -293,7 +293,7 @@ func TestWriteGoalMD_CapsAtFourInvestigators(t *testing.T) {
 		"npx eslint .",
 		"npx playwright test",
 	}
-	require.NoError(t, WriteGoalMD(dir, "Many", "", []string{"AC1"}, validate, nil, "", "", nil))
+	require.NoError(t, WriteGoalMD(dir, "Many", "", "", []string{"AC1"}, validate, nil, "", "", nil))
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
 	require.NoError(t, err)
 	assert.Equal(t, 4, strings.Count(string(data), "### Investigator "))
@@ -301,7 +301,7 @@ func TestWriteGoalMD_CapsAtFourInvestigators(t *testing.T) {
 
 func TestWriteGoalMD_SingleInvestigationConfigSection(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, WriteGoalMD(dir, "Single", "", []string{"AC1"}, []string{"go test ./..."}, nil, "", "", nil))
+	require.NoError(t, WriteGoalMD(dir, "Single", "", "", []string{"AC1"}, []string{"go test ./..."}, nil, "", "", nil))
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(string(data), "## Investigation Config"))
@@ -313,7 +313,7 @@ func TestWriteGoalMD_OptionalConditionRendered(t *testing.T) {
 		{Name: "With cond", Type: "static-analysis", Pass: "p", Fail: "f", Condition: "only when X"},
 		{Name: "No cond", Type: "static-analysis", Pass: "p", Fail: "f"},
 	}
-	require.NoError(t, WriteGoalMD(dir, "Cond", "", []string{"AC1"}, []string{"x"}, nil, "", "", invs))
+	require.NoError(t, WriteGoalMD(dir, "Cond", "", "", []string{"AC1"}, []string{"x"}, nil, "", "", invs))
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
 	require.NoError(t, err)
 	content := string(data)
@@ -325,7 +325,7 @@ func TestWriteGoalMD_OptionalConditionRendered(t *testing.T) {
 
 func TestWriteGoalMD_EventGoal_RendersEmissionInvestigator(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, WriteGoalMD(dir, "Catalog reserves stock", "event",
+	require.NoError(t, WriteGoalMD(dir, "Catalog reserves stock", "event", "",
 		[]string{`src/Catalog/ constructs App\Share\Event\StockReserved`},
 		[]string{"go build ./..."}, nil, "", "", nil))
 
@@ -344,7 +344,7 @@ func TestWriteGoalMD_EventGoal_EmissionSurvivesCap(t *testing.T) {
 		"vendor/bin/deptrac analyse",
 		"vendor/bin/ecs check",
 	}
-	require.NoError(t, WriteGoalMD(dir, `Catalog emits App\Share\Event\StockReserved`, "event",
+	require.NoError(t, WriteGoalMD(dir, `Catalog emits App\Share\Event\StockReserved`, "event", "",
 		[]string{"AC1"}, validate, nil, "", "", nil))
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -360,7 +360,7 @@ func TestWriteGoalMD_ExplicitInvestigators_NoEmissionAppended(t *testing.T) {
 		{Name: "Q", Type: "quality-gate", Pass: "p", Fail: "f"},
 		{Name: "T", Type: "test-execution", Pass: "p", Fail: "f"},
 	}
-	require.NoError(t, WriteGoalMD(dir, `Catalog emits App\Share\Event\StockReserved`, "event",
+	require.NoError(t, WriteGoalMD(dir, `Catalog emits App\Share\Event\StockReserved`, "event", "",
 		[]string{"AC1"}, []string{"x"}, nil, "", "", invs))
 
 	data, err := os.ReadFile(filepath.Join(dir, "goal.md"))
@@ -385,7 +385,7 @@ func newOwnSuiteGoalDir(t *testing.T, suites ...string) string {
 
 func TestWriteGoalMD_SrcDeliverableGetsOwnSuiteGate(t *testing.T) {
 	dir := newOwnSuiteGoalDir(t, "tests/Integration/Catalog", "tests/Functional/Catalog")
-	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain",
+	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain", "",
 		[]string{"src/Catalog reserves stock"}, []string{"go build ./..."}, nil, "", "", nil))
 
 	content := readGoalMD(t, dir)
@@ -396,7 +396,7 @@ func TestWriteGoalMD_SrcDeliverableGetsOwnSuiteGate(t *testing.T) {
 func TestWriteGoalMD_OwnSuiteGateUsesSelectorScope(t *testing.T) {
 	// Only the Integration suite exists, so the selector scope is exactly it.
 	dir := newOwnSuiteGoalDir(t, "tests/Integration/Catalog")
-	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain",
+	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain", "",
 		[]string{"src/Catalog reserves stock"}, []string{"go build ./..."}, nil, "", "", nil))
 
 	content := readGoalMD(t, dir)
@@ -407,7 +407,7 @@ func TestWriteGoalMD_OwnSuiteGateUsesSelectorScope(t *testing.T) {
 
 func TestWriteGoalMD_OwnSuiteGateNeverUsesUnitFilter(t *testing.T) {
 	dir := newOwnSuiteGoalDir(t, "tests/Integration/Catalog", "tests/Functional/Catalog")
-	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain",
+	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain", "",
 		[]string{"src/Catalog reserves stock"}, []string{"go build ./..."}, nil, "", "", nil))
 
 	cmd := ownSuiteGateCommand(t, readGoalMD(t, dir))
@@ -418,7 +418,7 @@ func TestWriteGoalMD_OwnSuiteGateNeverUsesUnitFilter(t *testing.T) {
 
 func TestWriteGoalMD_DocsGoalNoOwnSuiteGate(t *testing.T) {
 	dir := newOwnSuiteGoalDir(t)
-	require.NoError(t, WriteGoalMD(dir, "Update docs", "domain",
+	require.NoError(t, WriteGoalMD(dir, "Update docs", "domain", "",
 		[]string{"README explains the flow"}, []string{"markdownlint docs/"}, nil, "", "", nil))
 
 	assert.NotContains(t, readGoalMD(t, dir), "own-suite-green",
@@ -431,7 +431,7 @@ func TestWriteGoalMD_ExplicitConfigStillGetsMandatoryGate(t *testing.T) {
 		{Name: "Stan", Type: "quality-gate", Commands: []string{"phpstan"}, Pass: "p", Fail: "f"},
 		{Name: "Tests", Type: "test-execution", Commands: []string{"phpunit"}, Pass: "p", Fail: "f"},
 	}
-	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain",
+	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain", "",
 		[]string{"src/Catalog reserves stock"}, []string{"go build ./..."}, nil, "", "", invs))
 
 	content := readGoalMD(t, dir)
@@ -445,7 +445,7 @@ func TestWriteGoalMD_OwnSuiteGateNotDuplicated(t *testing.T) {
 		{Name: "Own", Type: "own-suite-green", Commands: []string{"vendor/bin/phpunit tests/Integration/Catalog"}, Pass: "p", Fail: "f"},
 		{Name: "Stan", Type: "quality-gate", Commands: []string{"phpstan"}, Pass: "p", Fail: "f"},
 	}
-	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain",
+	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain", "",
 		[]string{"src/Catalog reserves stock"}, []string{"go build ./..."}, nil, "", "", invs))
 
 	content := readGoalMD(t, dir)
@@ -461,7 +461,7 @@ func TestWriteGoalMD_GatePinnedWhenCapExceeded(t *testing.T) {
 		{Name: "C", Type: "architecture-check", Commands: []string{"c"}, Pass: "p", Fail: "f"},
 		{Name: "D", Type: "static-analysis", Commands: []string{"d"}, Pass: "p", Fail: "f"},
 	}
-	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain",
+	require.NoError(t, WriteGoalMD(dir, "Reserve stock", "domain", "",
 		[]string{"src/Catalog reserves stock"}, []string{"go build ./..."}, nil, "", "", invs))
 
 	content := readGoalMD(t, dir)
@@ -553,7 +553,7 @@ func writeGoalMDRaw(t *testing.T, dir, content string) {
 func TestEnsureInvestigationConfig_NoopWhenValidSectionPresent(t *testing.T) {
 	dir := t.TempDir()
 	// A creation-time goal.md always carries a valid (>=2) section.
-	require.NoError(t, WriteGoalMD(dir, "Valid goal", "", []string{"AC1"},
+	require.NoError(t, WriteGoalMD(dir, "Valid goal", "", "", []string{"AC1"},
 		[]string{"go test ./...", "go vet ./..."}, nil, "", "", nil))
 	before, err := os.ReadFile(filepath.Join(dir, "goal.md"))
 	require.NoError(t, err)
@@ -726,7 +726,7 @@ func TestRenderInvestigationConfig_MatchesWriteGoalMDOutput(t *testing.T) {
 	// event phase) embeds exactly this list — its file must CONTAIN the helper's
 	// byte-for-byte output, proving the extraction introduced no drift.
 	dir := t.TempDir()
-	require.NoError(t, WriteGoalMD(dir, "Parity", "", []string{"AC1"},
+	require.NoError(t, WriteGoalMD(dir, "Parity", "", "", []string{"AC1"},
 		[]string{"x"}, nil, "", "", invs))
 	full, err := os.ReadFile(filepath.Join(dir, "goal.md"))
 	require.NoError(t, err)

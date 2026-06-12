@@ -45,6 +45,16 @@ const (
 	dispatchImplementer = "implementer"
 )
 
+// Goal.Lane values (G5). LaneSolo grants the cheaper single-investigator
+// validation lane; LaneFull (or an absent Lane — see LaneOrFull) is the
+// deterministic multi-investigator gate. Lane is written ONLY by goal-create
+// (authoring) and by the one-way G5 demotion (demoteSoloLane: solo→full,
+// never back).
+const (
+	LaneSolo = "solo"
+	LaneFull = "full"
+)
+
 // Precondition is a declarative gate the daemon evaluates before spawning a
 // worker. Kind is one of "env" (environment variable named by Spec must be set
 // and non-empty) or "service" (TCP host:port in Spec must be reachable). Remedy
@@ -120,6 +130,18 @@ type Goal struct {
 	// the mirror). Sorting reorders only the dispatch view (a slice of pointers
 	// into gf.Goals) — never the on-disk goals.yaml.
 	Priority int `yaml:"priority,omitempty"`
+
+	// Lane selects the validation lane: LaneSolo or LaneFull; absent (empty)
+	// means full — LaneOrFull() is the read accessor, so lane-absent goals are
+	// byte-identical to today (omitempty emits no key). Written ONLY at
+	// goal-create and by the one-way G5 demotion (any validation failure, stuck
+	// recovery, or retry flips solo→full permanently). ResetGoal deliberately
+	// does NOT clear it: a demotion must survive a re-pend, or a reset would
+	// resurrect the solo discount on a goal that already proved it needs the
+	// full gate. DUAL-STRUCT: mirrored by mcp.tvGoal (tools_taskvisor.go,
+	// guarded by TestGoalTvGoalYamlTagParity) so an MCP load-resave never
+	// strips it.
+	Lane string `yaml:"lane,omitempty"`
 
 	// EscalationCount is the durable count of escalation-driven prerequisites
 	// wired onto this goal via the goal-add-prerequisite MCP tool. It bounds
@@ -631,6 +653,15 @@ func (gf *GoalsFile) SkipGoal(id string) bool {
 	g.Status = GoalDone
 	g.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	return true
+}
+
+// LaneOrFull returns the goal's effective validation lane: an empty Lane is
+// the full lane, so lane-absent goals behave exactly as before G5.
+func (g *Goal) LaneOrFull() string {
+	if g.Lane == "" {
+		return LaneFull
+	}
+	return g.Lane
 }
 
 func (g *Goal) IncrementRetries() int {

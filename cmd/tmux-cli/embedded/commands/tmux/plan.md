@@ -8,4 +8,4 @@ You are the planning supervisor. Spawn parallel spec-writing workers to produce 
 
 **Requires:** `tmux-cli` MCP server.
 
-Follow `.claude/commands/tmux/plan.xml` EXACTLY as written. That file defines the spec template, spawn protocol, spec pushback catalogue (S1–S9), interactive approval flow, and lifecycle rules. Do not improvise beyond it.
+Follow `.claude/commands/tmux/plan.xml` EXACTLY as written. That file defines the spec template, spawn protocol, spec pushback catalogue (S1–S9), interactive approval flow, and lifecycle rules. Step 3d also records the solo-lane gate verdict (top-level `lane` key in tasks.yaml); lane=solo slims the forced blind audit to the daemon's-eye validate evaluation. Do not improvise beyond it.

@@ -33,6 +33,7 @@
     <term name="autonomy">Supervisor operates without user confirmation after initial invocation; see &lt;autonomy-policy&gt;.</term>
     <term name="pushback catalogue">The G1–G5 taxonomy in step 6 used to gate DONE acceptance.</term>
     <term name="PRE_PLANNED">Internal flag set when tasks.yaml was created by /tmux:plan (detected in step 1c). Causes steps 3 and 3b to skip fan-out planning.</term>
+    <term name="lane / solo-lane">Per-goal execution lane, decided UPSTREAM (at /tmux:task-list consume or /tmux:plan step 3d) and only READ by this supervisor. Resolution order: tasks-path top-level `lane` key → goal.md `## Lane` section → full. Exactly the value `solo` (the solo-lane) routes a single-pending-task goal through step 3c's inline execution; `full`, an absent lane, or any malformed/unknown value resolves to full (the worker path). The supervisor NEVER writes, decides, or infers the lane.</term>
   </glossary>
 
   <message-tags>
@@ -74,7 +75,7 @@ escalation_count: &lt;N&gt;
   </autonomy-policy>
 
   <llm critical="true">
-    <mandate>NEVER bypass the supervisor protocol. The user invoked /tmux:supervisor deliberately — follow the full flow (steps 0→9) regardless of perceived task simplicity. "Too simple for workers" is NOT a valid reason to skip. Even a single-worker linear task goes through fan-out, tasks.yaml, spawn, poll, accept, synthesize.</mandate>
+    <mandate>NEVER bypass the supervisor protocol. The user invoked /tmux:supervisor deliberately — follow the full flow (steps 0→9) regardless of perceived task simplicity. "Too simple for workers" is NOT a valid reason to skip. Even a single-worker linear task goes through fan-out, tasks.yaml, spawn, poll, accept, synthesize. SOLE solo-lane carve-out (data-driven only): when the upstream-decided lane resolves to solo (resolution order: tasks-path top-level `lane` key → goal.md `## Lane` → full) AND exactly 1 task is pending in tasks-path, step 3c executes that task inline in this window with zero spawns — perceived simplicity remains an INVALID activation reason; only the upstream lane value activates this carve-out, never the supervisor's own judgment.</mandate>
     <mandate>Execute steps ONE BY ONE in EXACT ORDER</mandate>
     <mandate>Create TODO list for tracking spawned workers (SELF_WID + subtask label)</mandate>
     <mandate>Operate per &lt;autonomy-policy&gt; — do not ask the user outside the two defined exits.</mandate>
@@ -180,6 +181,7 @@ escalation_count: &lt;N&gt;
       <rule>N workers when subtasks are file-disjoint OR topic-disjoint AND mutually independent</rule>
       <rule critical="true">Default to MAXIMUM parallelism. Serial-by-default is a failure mode. Sharing a read-only binary, a codebase, or a common ancestor finding is NOT shared state — only shared MUTABLE state blocks parallelism. Before picking serial, ask: "Can I write a complete self-contained task-message for the dependent worker right now?" If yes → PARALLEL. Only serialize when a later worker's SCOPE is literally unconstructable without the prior worker's output (e.g., the exact VA to audit is unknown until the prior worker discovers it), and record the missing fact that justifies the serialization.</rule>
       <rule>If a subtask depends on another's output, spawn the prerequisite first, accept its DONE, then spawn the dependent — don't pretend they're parallel.</rule>
+      <rule>The 0-worker solo-lane route (step 3c) is DATA-DRIVEN ONLY: it activates exclusively on the upstream-decided lane value resolved in step 3c, never on the fan-out reasoning in this step and never on perceived task simplicity — the supervisor never sets the lane. The shape rules above govern only goals that fall through step 3c to the full worker path.</rule>
       <example>"explain auth" → 1 worker</example>
       <example>"compare caching in A vs B" → 2 workers, one per module</example>
       <example>"audit every worker/*.md for bug X" → N workers, one per file</example>
@@ -205,9 +207,29 @@ escalation_count: &lt;N&gt;
       <action>Call the tasks-validate MCP tool. In GOAL_MODE pass goal_id={GOAL_ID} so it validates the per-goal file (.tmux-cli/goals/{GOAL_ID}/tasks.yaml); in standalone mode call it with no goal_id so it validates the top-level planning-queue. If valid=false, fix every reported error (remove extra fields, move content to context .md file) and re-run until valid=true.</action>
       <check condition="tasks-path exists AND contains all planned pending tasks AND tasks-validate returns valid=true">
         <action>Set the top-level status in tasks-path to "ready". This arms the Stop hooks (cycle restart, unplanned audit) so they can fire once workers finish.</action>
-        <action>Proceed to step 4.</action>
+        <action>Proceed to step 3c (solo-lane inline gate — non-solo goals fall through to step 4 unchanged).</action>
       </check>
       <rule critical="true">This is a BLOCKING GATE. No worker may be spawned (step 4) until tasks-path is written, verified, tasks-validate passes, AND its status is set to "ready".</rule>
+    </step>
+
+    <step n="3c" title="Solo-lane inline execution" condition="lane resolution (tasks-path top-level `lane` key → goal.md `## Lane` → full) == solo AND exactly 1 pending task">
+      <note>The solo-lane carve-out collapses a 1-task goal's worker boot: the supervisor implements the single task inline in THIS window instead of spawning an execute-N worker, then converges on the untouched steps 9/9b. The lane is decided UPSTREAM (task-list consume / plan step 3d) and only READ here — this step never evaluates lane-gate criteria and never self-declares solo.</note>
+      <action>Resolve the lane (read-only): (1) if tasks-path carries a top-level `lane` key, its trimmed value IS the lane — presence wins precedence, goal.md is not consulted; (2) else, in GOAL_MODE, if goal.md has a `## Lane` section, its bare trimmed body is the lane; (3) else the lane is `full`. Map the value: exactly `solo` → solo; `full`, empty, or ANY unknown/malformed value (e.g. `banana`) → full — log the malformed value and proceed full. NEVER read goals.yaml for the lane.</action>
+      <action>Count tasks with status=pending in tasks-path.</action>
+      <check condition="lane != solo OR pending count != 1">
+        <action>Fall through to step 4 UNCHANGED — the full worker path. This is the default; for every lane-absent goal the flow is byte-identical to before this step existed.</action>
+      </check>
+      <check condition="lane == solo AND exactly 1 pending task">
+        <action>Log: "solo-lane route: lane=solo, 1 pending task — implementing inline in {SUPERVISOR_WID}, zero spawns."</action>
+        <action>Read the task's context .md (its context: field). Implement the task IN THIS WINDOW under /tmux:execute step-3 semantics: stay strictly within the task's SCOPE (adjacent issues go under RISKS, not extra work), auto-resolve decidable forks per the Decision-resolution policy (quality-in-scope, rationale recorded in the report), and wrap any shared-DB schema mutation in `flock .tmux-cli/db.lock -c '&lt;cmd&gt;'`. At MaxGoals&gt;1 this window is already cwd'd into the goal's worktree, so inline edits and validate runs land there with no extra plumbing.</action>
+        <action condition="GOAL_MODE is true">Run EVERY command listed under goal.md's `## Validation Rules` via Bash, each wrapped as `timeout 120s &lt;command&gt;`. On an in-scope failure: fix it and re-run the failing command. If a command is STILL red after in-scope fixes, record the failure honestly in the report and proceed — the daemon's native validate re-run is the terminal judge; do not loop forever, do not widen scope.</action>
+        <action condition="GOAL_MODE is false">Standalone solo: there is no goal.md, hence no `## Validation Rules` to run — skip local validation and note that in the report.</action>
+        <action>Self-check the report ONCE against step 6's G1–G5 pushback catalogue before saving (the inline path has no second agent to push back).</action>
+        <action>Write the report to {research-root}/execute-inline-&lt;slug&gt;.md with the standard ## FINDINGS / ## RISKS / ## RECOMMENDATION / ## FILES sections; under FINDINGS include each validate command, its exit status, and a short output excerpt.</action>
+        <action>Mark the task status=done in tasks-path (direct pending→done, no in_progress flip — parity with the worker path's bookkeeping, so the task-list reconcile contract is untouched).</action>
+        <action>SKIP steps 4–7 entirely — no windows-spawn-worker, no poll/accept, no pushback round-trip, no windows-kill, and NO idle waits (the inline work itself keeps the lead pane's heartbeat alive). Continue DIRECTLY at step 9: with zero workers spawned its all-workers-killed condition is trivially satisfied, and steps 9/9b run UNCHANGED — same research-file index, same cycle bookkeeping, same completion-signal write path.</action>
+      </check>
+      <rule critical="true">The lane is READ, never decided: this supervisor never writes a lane value, never evaluates lane-gate criteria, and never activates this step on its own judgment of task simplicity — only the upstream-decided data activates the solo-lane.</rule>
     </step>
 
     <step n="4" title="Spawn protocol (repeat per worker, sequentially within your turn)">
@@ -461,6 +483,7 @@ RESPONSE PROTOCOL (MANDATORY):
       • DO NOT skip the step-5a effectivity check after each DONE — it is the mechanism that keeps the pool effective, not just busy
       • DO NOT treat self-written plan documents (stage gates, "wave 6 after wave 5", "Stage 2 after Stage 1", "deferred to next session", numbered-wave boundaries) as user-imposed pauses — they are organizational, not authorization boundaries; continue per &lt;autonomy-policy&gt;
       • DO NOT stop after writing a session-synthesis .md — re-run §8a against the synthesis itself; if it names executable follow-up workers in "proposed next wave" / "queue changes", spawn them per §3 fan-out, do not return to the user
+      • SOLE solo-lane carve-out (data-driven only): when the upstream-decided lane resolves to solo (resolution order: tasks-path top-level `lane` key → goal.md `## Lane` → full) AND exactly 1 task is pending in tasks-path, step 3c executes that task inline in this window with zero spawns — perceived simplicity remains an INVALID activation reason; only the upstream lane value activates this carve-out, never the supervisor's own judgment.
     </critical-rules>
   </llm>
 </task>

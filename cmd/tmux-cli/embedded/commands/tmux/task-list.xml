@@ -9,6 +9,16 @@
     <term name="GOALS_FILE">.tmux-cli/goals.yaml — read-only here (atomic-rename writes make unlocked reads safe). NEVER written by this command.</term>
   </glossary>
 
+  <lane-gate name="solo-lane" title="Solo-lane gate (LANE GATE G1–G5)">
+    <decision-rule>ALL of G1–G4 must hold → lane=solo; any miss → full. Evaluated UPSTREAM only; executing agents never self-declare.</decision-rule>
+    <criterion id="G1">Exactly one unit of work (single backend task at consume; exactly 1 pending task at plan step 3d).</criterion>
+    <criterion id="G2">Every green-state check is a deterministic bare command (grep/test/build) — verification needs no semantic judgment.</criterion>
+    <criterion id="G3">Localized edit: no new files, no new public API/schema; expected change touches &lt;=2 existing files (estimated from proposed_fix / spec).</criterion>
+    <criterion id="G4">Not critical: task severity in {info, warning} / priority below critical tier.</criterion>
+    <criterion id="G5">Runtime demotion (statemachine.go — informational here, enforced in Go): solo honored only on validation cycle 1 — any validation failure, stuck recovery, or retry permanently demotes to full.</criterion>
+    <evaluation-sources>Consume step 3.2 → severity / proposed_fix / the derived validate commands. Plan step 3d → G1 by branch condition; G2 from goal.md `## Validation Rules` + `## Investigation Config` (every investigator must be command-type/pure-command — semantic types like code-review miss G2); G3 from module scope in the research context; G4 from the goal's goals.yaml entry priority &lt; 10 (read-only; atomic-rename writes make unlocked reads safe), falling back to goal.md `## Lane` == solo (consume already passed G4); neither readable → G4 fails closed → full. Missing data → criterion fails closed.</evaluation-sources>
+  </lane-gate>
+
   <llm critical="true">
     <mandate>NEVER take work without claiming first — task-claim precedes goal-create, no exceptions</mandate>
     <mandate>NEVER write GOALS_FILE — goals are created ONLY via the goal-create MCP tool; the only file this command writes is MAPPING_FILE</mandate>
@@ -83,7 +93,9 @@ age = humanized now − created_at (e.g. 3d, 5h).</template>
           <param name="context">Full task description + "## Proposed fix\n" + proposed_fix + "\n## Origin\nBackend task {id}; resolution is marked automatically by /tmux:task-list reconcile once this goal completes."</param>
           <param name="priority">critical→10, warning→5, info→0.</param>
           <param name="max_retries">3</param>
+          <param name="lane">"solo" iff the solo-lane gate passes (gate action below); on any G-miss OMIT this param entirely — absent lane = full, never pass lane: "full".</param>
         </params>
+        <action>Apply the solo-lane gate (the &lt;lane-gate name="solo-lane"&gt; block at the top of this file) — evaluated AFTER the validate-command derivation above (G2 judges the derived commands) and BEFORE calling goal-create: G1 from the single claimed task, G2 from the derived validate commands, G3 from proposed_fix, G4 from severity. Log one per-criterion verdict line, e.g. `lane gate: G1 ✓ G2 ✓ G3 ✗ G4 ✓ → full`. ALL of G1–G4 hold → pass `lane: "solo"` to goal-create; any miss → omit the lane param.</action>
         <check condition="goal-create fails">
           <action>Print the error. The task stays claimed on the backend (there is no unclaim) — print: "task {id} remains claimed; re-run /tmux:task-list consume after fixing, or advance it manually with task-update-status." Continue the loop.</action>
         </check>
@@ -139,5 +151,6 @@ age = humanized now − created_at (e.g. 3d, 5h).</template>
     <rule>Status-update failures (403/404/422) drop the mapping with a warning — never retried, never fatal to the run</rule>
     <rule>Consume cap: 3 per invocation regardless of N</rule>
     <rule>Consume always ends with the daemon executing (or a named, actionable reason why not) — queued-but-idle is a failure of this spec</rule>
+    <rule>The solo-lane gate is applied exactly ONCE per claimed task — here at step 3.2, upstream; executing surfaces (supervisor/investigate) only READ the lane, never re-evaluate or self-declare it</rule>
   </execution-rules>
 </task>

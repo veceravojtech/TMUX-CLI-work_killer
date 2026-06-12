@@ -42,7 +42,7 @@ func TestGoalCreate_InfraGoalContent(t *testing.T) {
 	output, err := server.GoalCreate(
 		"Implement Booking infrastructure: Doctrine mappings, repos, migration, integration tests",
 		acceptance, validate, ctx, "", "infrastructure", 0, nil, nil, nil, nil,
-		0,
+		0, "",
 	)
 
 	require.NoError(t, err)
@@ -110,7 +110,7 @@ func TestGoalCreate_ActionGoalContent(t *testing.T) {
 	output, err := server.GoalCreate(
 		"POST /api/bookings — Booking controller action",
 		acceptance, validate, ctx, "", "action", 0, nil, nil, nil, nil,
-		0,
+		0, "",
 	)
 
 	require.NoError(t, err)
@@ -167,7 +167,7 @@ func TestGoalCreate_ErrorHandlingGoalContent(t *testing.T) {
 	output, err := server.GoalCreate(
 		"Implement global error handling: exception listener, RFC 7807, status code mapping",
 		acceptance, validate, ctx, "", "cross-cutting", 0, nil, nil, nil, nil,
-		0,
+		0, "",
 	)
 
 	require.NoError(t, err)
@@ -234,7 +234,7 @@ func TestGoalCreate_DeptracFinalGateContent(t *testing.T) {
 	output, err := server.GoalCreate(
 		"Final gate: Deptrac full codebase layer dependency verification",
 		acceptance, validate, ctx, notInScope, "final", 5, nil, nil, nil, nil,
-		0,
+		0, "",
 	)
 
 	require.NoError(t, err)
@@ -304,7 +304,7 @@ func TestGoalCreate_E2EFinalGateContent(t *testing.T) {
 	output, err := server.GoalCreate(
 		"Final gate: Playwright E2E regression — all tests run together",
 		acceptance, validate, ctx, notInScope, "final", 5, nil, nil, nil, nil,
-		0,
+		0, "",
 	)
 
 	require.NoError(t, err)
@@ -383,7 +383,7 @@ func TestGoalCreate_QualityFinalGateContent(t *testing.T) {
 	output, err := server.GoalCreate(
 		"Final gate: PHPStan, ECS, test suites, coverage, schema, migrations",
 		acceptance, validate, ctx, notInScope, "final", 5, nil, nil, nil, nil,
-		0,
+		0, "",
 	)
 
 	require.NoError(t, err)
@@ -451,7 +451,7 @@ func TestGoalCreate_PlaywrightActionWithFlakeRetry(t *testing.T) {
 	output, err := server.GoalCreate(
 		"POST /api/bookings — Booking controller action",
 		acceptance, validate, ctx, "", "action", 0, nil, nil, nil, nil,
-		0,
+		0, "",
 	)
 
 	require.NoError(t, err)

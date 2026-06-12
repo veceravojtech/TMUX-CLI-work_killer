@@ -26,7 +26,7 @@ func TestWriteGoalMD_DockerWrapsInvestigatorCommands(t *testing.T) {
 		{Name: "Quality", Type: "quality-gate", Commands: []string{"vendor/bin/phpstan analyse"}, Pass: "p", Fail: "f"},
 		{Name: "Tests", Type: "test-execution", Commands: []string{"vendor/bin/phpunit"}, Pass: "p", Fail: "f"},
 	}
-	require.NoError(t, WriteGoalMD(goalDir, "G", "", []string{"AC"}, []string{"v"}, nil, "", "", invs))
+	require.NoError(t, WriteGoalMD(goalDir, "G", "", "", []string{"AC"}, []string{"v"}, nil, "", "", invs))
 	out, err := os.ReadFile(filepath.Join(goalDir, "goal.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "docker compose exec -T app sh -c 'vendor/bin/phpstan analyse'")
@@ -39,7 +39,7 @@ func TestWriteGoalMD_LocalLeavesCommandsBare(t *testing.T) {
 		{Name: "Quality", Type: "quality-gate", Commands: []string{"vendor/bin/phpstan analyse"}, Pass: "p", Fail: "f"},
 		{Name: "Tests", Type: "test-execution", Commands: []string{"vendor/bin/phpunit"}, Pass: "p", Fail: "f"},
 	}
-	require.NoError(t, WriteGoalMD(goalDir, "G", "", []string{"AC"}, []string{"v"}, nil, "", "", invs))
+	require.NoError(t, WriteGoalMD(goalDir, "G", "", "", []string{"AC"}, []string{"v"}, nil, "", "", invs))
 	out, err := os.ReadFile(filepath.Join(goalDir, "goal.md"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(out), "docker compose exec")

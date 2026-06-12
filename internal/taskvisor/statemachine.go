@@ -481,6 +481,11 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		// Code defect — the implementer must fix it. Charges CodeRetries only.
 		return d.handleFailedCycle(goal, goals, valSig.NextAction, "code-defect")
 	case verdict == VerdictBlocked && owner == "planner":
+		// G5: demote BEFORE applyStructuredCorrections so the zero-budget
+		// correction path still counts as a consumed first cycle for the lane.
+		if err := d.demoteSoloLane(goal, goals, "spec defect bounce"); err != nil {
+			return err
+		}
 		// B5b: before charging the single scarce SpecRetries on a planner bounce,
 		// try the mechanical-correction applier. When the failing findings carry a
 		// structured correction_edit CONFINED to spec artifacts (goal.md / dispatch
@@ -619,6 +624,9 @@ func (d *Daemon) checkProgressHeartbeat(rt *goalRuntime, windowName, poolPrefix 
 // re-dispatch loop of a perpetually-wedged supervisor: dispatchRetry resets
 // dispatchTime, so the 1h hard timeout alone cannot bound it.
 func (d *Daemon) handleStuckSupervisor(goal *Goal, goals *GoalsFile) error {
+	if err := d.demoteSoloLane(goal, goals, "stuck supervisor"); err != nil {
+		return err
+	}
 	mg := d.maxGoals()
 	log.Printf("%s: STUCK — supervisor made no pane progress for %v while still running; recovering (no code/spec budget charged)", goal.ID, d.progressTimeout)
 	if err := d.killWindowsByPrefix(executePrefix(goal.ID, mg)); err != nil {
@@ -656,6 +664,9 @@ func (d *Daemon) handleStuckSupervisor(goal *Goal, goals *GoalsFile) error {
 // charges ValidationRetries, sets FailedBy="validation-timeout", and calls
 // applyStructuredCorrections — none of which apply to a stuck recovery.
 func (d *Daemon) handleStuckValidator(goal *Goal, goals *GoalsFile) error {
+	if err := d.demoteSoloLane(goal, goals, "stuck validator"); err != nil {
+		return err
+	}
 	log.Printf("%s: STUCK — validator made no pane progress for %v while still running; recovering (no code/spec budget charged)", goal.ID, d.progressTimeout)
 	goal.StuckRetries--
 	if goal.StuckRetries <= 0 {
@@ -765,6 +776,9 @@ func (d *Daemon) salvageLateVerdicts(goals *GoalsFile) error {
 // watchdog has none and passes nil — the applier treats nil as "no structured
 // remedy" and the charging path runs unchanged.
 func (d *Daemon) rerunValidationOnly(goal *Goal, goals *GoalsFile, valSig *ValidatorSignal) error {
+	if err := d.demoteSoloLane(goal, goals, "validator error"); err != nil {
+		return err
+	}
 	// RC-C: BEFORE charging the scarce ValidationRetries (often 1 — the first
 	// infra/config error would be instantly terminal), try the B5b
 	// mechanical-correction applier, mirroring the blocked/planner call site. When
@@ -871,6 +885,79 @@ func equalSorted(a, b []string) bool {
 	return true
 }
 
+// demoteSoloLane enforces the one-way G5 lane demotion: any validation
+// failure, stuck recovery, or retry permanently flips a solo-lane goal to the
+// full lane. Strict no-op for full/lane-absent goals on the goals.yaml and
+// goal.md surfaces (lane-absent behavior is untouched, and a repeat call
+// performs no save and no MD write). Persists goals.yaml FIRST, then patches
+// the goal.md `## Lane` section, so both surfaces flip in the same call; both
+// errors propagate (crashRecovery's call site downgrades to log-and-continue).
+// The THIRD surface — the per-goal tasks.yaml top-level `lane:` key, which
+// wins supervisor step 3c's resolution precedence — is spliced to full on
+// EVERY call, including repeat calls on an already-full goal: dispatchRetry's
+// defensive funnel call is exactly such a repeat, and the unconditional guard
+// is what repairs a tasks.yaml left solo by a crash between SetGoalMDLane and
+// the splice. Called at the TOP of every failure-classification sink — BEFORE
+// the exhausted→fail branches — so a terminally-failed solo goal is already
+// full and a later ResetGoal re-pend cannot resurrect the solo discount
+// (ResetGoal does not clear Lane).
+func (d *Daemon) demoteSoloLane(goal *Goal, goals *GoalsFile, reason string) error {
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+	if goal.LaneOrFull() != LaneSolo {
+		return demoteTasksYamlLane(goalDir)
+	}
+	goal.Lane = LaneFull
+	log.Printf("%s: solo lane demoted to full (%s)", goal.ID, reason)
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+	if err := SetGoalMDLane(goalDir, LaneFull); err != nil {
+		return err
+	}
+	return demoteTasksYamlLane(goalDir)
+}
+
+// demoteTasksYamlLane splices the per-goal tasks.yaml top-level `lane:` key to
+// full when it currently reads solo, mirroring SetGoalMDLane's philosophy:
+// only the one matching line is rewritten, every other byte is carried through
+// verbatim (a yaml round-trip would reformat the whole file). An absent file
+// (pre-plan demotion) or absent key is a silent no-op and never creates the
+// file; a file whose key already reads full (or anything non-solo) is left
+// byte-untouched. Only a column-0 `lane:` line is top-level — an indented
+// task-entry field never matches — and only the FIRST such line is considered
+// (duplicate top-level keys are yaml-invalid anyway). Non-ENOENT read errors
+// propagate to the demoteSoloLane caller.
+func demoteTasksYamlLane(goalDir string) error {
+	path := filepath.Join(goalDir, "tasks.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if line == "" || line[0] == ' ' || line[0] == '\t' {
+			continue
+		}
+		key, rest, found := strings.Cut(line, ":")
+		if !found || strings.TrimRight(key, " \t") != "lane" {
+			continue
+		}
+		v := strings.TrimSpace(rest)
+		if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+			v = v[1 : len(v)-1]
+		}
+		if v != LaneSolo {
+			return nil
+		}
+		lines[i] = "lane: " + LaneFull
+		return atomicWrite(path, []byte(strings.Join(lines, "\n")), 0o644)
+	}
+	return nil
+}
+
 // handleFailedCycle is the code-defect route: the implementer must fix the
 // reported defect. It writes the correction file, decrements CodeRetries (the
 // REMAINING code-defect budget) toward zero, and either re-dispatches the
@@ -883,6 +970,9 @@ func equalSorted(a, b []string) bool {
 // it is retained as a distinct parameter (not collapsed into verdictClass) so
 // the correction file keeps the actionable remediation guidance.
 func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdictClass string) error {
+	if err := d.demoteSoloLane(goal, goals, "failed cycle"); err != nil {
+		return err
+	}
 	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
 	// Cycle number is the unified CurrentCycle(goal) (consumed per-class budget +
 	// 1) so the corrections file (cycle-N.md) and the per-cycle research dir
@@ -1133,6 +1223,9 @@ func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *Valida
 // is owned by §5 and is deliberately NOT started here; this branch only parks +
 // notifies and lets §5 resume the goal once the precondition clears.
 func (d *Daemon) haltBlockedEnv(goal *Goal, goals *GoalsFile, valSig *ValidatorSignal) error {
+	if err := d.demoteSoloLane(goal, goals, "blocked env/infra"); err != nil {
+		return err
+	}
 	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
 
 	remedy := valSig.Remedy

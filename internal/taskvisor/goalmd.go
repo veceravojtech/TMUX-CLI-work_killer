@@ -7,12 +7,19 @@ import (
 	"strings"
 )
 
-func WriteGoalMD(goalDir, description, phase string, acceptance, validate []string, preconditions []Precondition, context, notInScope string, investigators []Investigator) error {
+func WriteGoalMD(goalDir, description, phase, lane string, acceptance, validate []string, preconditions []Precondition, context, notInScope string, investigators []Investigator) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n", description)
 
 	if phase != "" {
 		fmt.Fprintf(&b, "\n## Phase\n\n%s\n", phase)
+	}
+
+	// Lane (G5): surfaced for XML readers; the body is exactly the bare lane
+	// string. An absent lane emits NO section — the zero-change contract for
+	// lane-absent goals.
+	if lane != "" {
+		fmt.Fprintf(&b, "\n## Lane\n\n%s\n", lane)
 	}
 
 	b.WriteString("\n## Acceptance Criteria\n\n")
@@ -227,6 +234,40 @@ func spliceInvestigationConfig(md, section string, malformedPresent bool) string
 		}
 	}
 	return joinSections(lines, section, nil)
+}
+
+// SetGoalMDLane splices the `## Lane` section of goalDir/goal.md so its body is
+// exactly the bare lane string, following the spliceInvestigationConfig pattern:
+// only the one section's byte range is touched, every other section is carried
+// through verbatim. When the section is absent (e.g. a hand-edited goal.md) it
+// is inserted before `## Acceptance Criteria` — the position WriteGoalMD emits
+// it at — else appended. The read error propagates: a demotion caller must not
+// silently leave goals.yaml and goal.md divergent.
+func SetGoalMDLane(goalDir, lane string) error {
+	mdPath := filepath.Join(goalDir, "goal.md")
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		return err
+	}
+	section := fmt.Sprintf("## Lane\n\n%s\n", lane)
+	lines := strings.Split(string(data), "\n")
+
+	var newMD string
+	if start := indexOfHeading(lines, "Lane"); start >= 0 {
+		end := len(lines)
+		for j := start + 1; j < len(lines); j++ {
+			if strings.HasPrefix(strings.TrimSpace(lines[j]), "## ") {
+				end = j
+				break
+			}
+		}
+		newMD = joinSections(lines[:start], section, lines[end:])
+	} else if at := indexOfHeading(lines, "Acceptance Criteria"); at >= 0 {
+		newMD = joinSections(lines[:at], section, lines[at:])
+	} else {
+		newMD = joinSections(lines, section, nil)
+	}
+	return atomicWrite(mdPath, []byte(newMD), 0o644)
 }
 
 // indexOfHeading returns the index of the first line that is the level-2 heading

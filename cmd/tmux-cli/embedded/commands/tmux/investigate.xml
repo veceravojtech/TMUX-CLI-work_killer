@@ -102,6 +102,8 @@
 
       <action>Also extract from goal.md: the goal description (first heading or first paragraph) and acceptance criteria (## Acceptance Criteria section) for worker context.</action>
 
+      <action>Also extract the OPTIONAL ## Lane section from goal.md into LANE: take the section's bare body, trimmed. LANE = "solo" ONLY on an exact match of `solo`; an absent section, empty body, `full`, or any malformed/unknown value → LANE = "full". The lane is decided upstream and is READ-ONLY here: goal.md's ## Lane is the ONLY lane source this orchestrator consults — never another file, and never its own evaluation of lane-gate criteria. LANE feeds the step 2g solo-lane gate; LANE=full keeps every step below byte-identical to the pre-lane flow.</action>
+
       <action>Build investigator tracking table:</action>
       <format>
 | INV_WID | Investigator Name | Status | Report Path | Spawn Time |
@@ -284,17 +286,47 @@
       <cmd>tmux-cli taskvisor inline-plan &lt;GOAL_ID&gt; --cycle &lt;CYCLE_N&gt; [--full] [--final]</cmd>
       <rule>CYCLE_N is the one-indexed cycle resolved in step 2a. In STANDALONE mode (CYCLE_N unset) pass --cycle 0. Pass --full / --final on the SAME conditions as step 2c so the RERUN set matches exactly.</rule>
       <rule>The command prints {"mode":"inline"|"fanout","rerun":[finding ids],"reason":"..."}. mode="inline" iff the RERUN set is non-empty AND every RERUN investigator is pure-command (type:command or a whitelisted exit-only check). Retry cycles are inline-eligible too: inline runs AFTER the C10 partition, so the RERUN set is already the minimized remainder on any cycle. The rerun array is the sorted RERUN set; reason is human-readable.</rule>
-      <rule critical="true">SAFE DEGENERATE: if the command errors, prints nothing, or yields mode!="inline" (including the empty-RERUN "no RERUN investigators" case), treat the decision as FAN-OUT — go to step 3 unchanged. NEVER block on a missing/garbled inline plan; the spawn path is always the safe fallback.</rule>
+      <rule critical="true">SAFE DEGENERATE: if the command errors, prints nothing, or its output is unparseable, the verdict is DEGENERATE — route to step 2g (solo-lane gate), whose own fallback is still step 3 fan-out. A WELL-FORMED verdict with mode!="inline" (e.g. "not pure-command", or the empty-RERUN "no RERUN investigators" case) is a substantive Go decision and is HONORED: go to step 3 unchanged — the lane never overrides it. NEVER block on a missing/garbled inline plan; the spawn path is always the safe fallback.</rule>
       <check condition="mode == &quot;inline&quot;">
         <action>Skip step 3 and step 4 ENTIRELY (no windows-spawn-worker, no investigator-* windows, no idle/collect). Go to step 3-inline.</action>
       </check>
-      <check condition="mode == &quot;fanout&quot; (or any error/degenerate)">
-        <action>Proceed to step 3 (normal spawn) unchanged.</action>
+      <check condition="well-formed mode == &quot;fanout&quot;">
+        <action>Proceed to step 3 (normal spawn) unchanged — a substantive fanout verdict is never overridden by the lane.</action>
+      </check>
+      <check condition="DEGENERATE outcome (command errored, printed nothing, or output unparseable)">
+        <action>Proceed to step 2g (solo-lane in-window validation gate). With LANE != solo it immediately falls through to step 3, preserving the old degenerate→fan-out behavior.</action>
       </check>
     </step>
 
     <!--
-      B9b inline execution branch. Taken ONLY when step 2f returned mode="inline".
+      Solo-lane in-window validation gate. Lane-pinned fallback route for the case
+      where step 2f's inline-plan CLI DEGRADES (stale/absent binary, garbled
+      output): with a healthy CLI every solo-eligible goal already inlines via 2f,
+      so this gate adds robustness plus the explicit data-driven lane contract —
+      a ROUTE, not an engine. On pass it reuses step 3-inline verbatim. It fires
+      ONLY on a degenerate 2f outcome; a well-formed 2f verdict (inline or fanout)
+      never reaches it. The lane is read ONLY from goal.md's ## Lane (step 2).
+    -->
+    <step n="2g" title="Solo-lane in-window validation gate" condition="step 2f outcome was DEGENERATE (error/empty/unparseable) AND LANE == solo">
+      <check condition="LANE != solo (full, absent, or malformed)">
+        <action>Proceed to step 3 (normal fan-out) unchanged — this gate is inert without an upstream-decided solo lane.</action>
+      </check>
+      <action>Evaluate ALL THREE checks below against the ACTIVE (post condition-skip) investigators:</action>
+      <rule>CHECK 1 — every ACTIVE investigator is command-type per this XML mirror of taskvisor.IsPureCommand (internal/taskvisor/investigator.go): the investigator has ≥1 Command AND (type == `command` OR (type ∈ {static-analysis, quality-gate, test-execution, architecture-check, environment-check, file-check} AND its Pass text is exit-only)). Pass text is exit-only iff it contains NO semantic marker ("matches expected", "review", "audit", "compliance", "correct", "present", "well-formed", "design") AND contains an exit marker ("exit 0", "exit code", "succeeds", "green", "no error", "no violation", "passes") — the semantic veto is evaluated FIRST and always wins; an empty Pass is NOT exit-only.</rule>
+      <rule>CHECK 2 — at least 2 DISTINCT trimmed command lines exist across the ACTIVE investigators (uniqueness on the trimmed command string — preserves the ≥2-distinct-checks floor).</rule>
+      <rule>CHECK 3 — the RERUN set from step 2c's partition is NON-EMPTY (an all-REUSE cycle has nothing to run in-window; the existing path already spawns nothing and aggregates the reuse as pass).</rule>
+      <check condition="ALL three checks hold">
+        <action>Log: "solo-lane route: 2f degenerate, LANE=solo, all active investigators command-type, ≥2 distinct commands, RERUN non-empty — running the RERUN set in-window via step 3-inline."</action>
+        <action>Go to step 3-inline. ALL-OR-NOTHING: the ENTIRE RERUN set runs in-window — never split some checks inline and some spawned.</action>
+      </check>
+      <check condition="ANY check misses">
+        <action>Log the specific miss (e.g. "solo-lane gate miss: investigator &lt;name&gt; is not command-type" / "fewer than 2 distinct command lines" / "RERUN set empty") and proceed to step 3 (full fan-out) for the WHOLE goal — no partial split.</action>
+      </check>
+    </step>
+
+    <!--
+      B9b inline execution branch. Taken when step 2f returned mode="inline" OR
+      step 2g's solo-lane gate passed.
       It replaces the spawn (step 3) + idle/collect (step 4) for THIS cycle with an
       in-window sequential command loop that mirrors investigate-worker.xml's
       execute+classify semantics verbatim, so classification (retry, failure_class,
@@ -304,7 +336,7 @@
       builds one ValidationFinding per RERUN investigator it falls through to step
       4c (convergence guard) → step 5 (aggregate) exactly like the spawned path.
     -->
-    <step n="3-inline" title="B9b run RERUN investigators inline (zero spawns)" condition="step 2f mode == inline">
+    <step n="3-inline" title="B9b run RERUN investigators inline (zero spawns)" condition="step 2f mode == inline OR step 2g solo-lane gate passed">
       <rule critical="true">ZERO windows-spawn-worker calls and ZERO investigator-* windows in this branch. If you are about to spawn, you are in the wrong branch — return to step 3. Inline execution is ALL-OR-NOTHING: every finding here comes from an inline command run, never a worker.</rule>
       <rule>Operate on the RERUN set ONLY (the inline-plan `rerun` array == the step 2c RERUN investigators). REUSE investigators are NOT executed here; they aggregate as pass in step 5 with reused_from_cycle/reused_fingerprint exactly as on the spawned path.</rule>
       <action>For EACH RERUN investigator, in the rerun-array order, do the following IN THIS WINDOW:</action>

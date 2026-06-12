@@ -38,9 +38,10 @@ The taskvisor daemon creates a "validator" window and invokes `/tmux:investigate
 1. **MCP check** — call windows-list to verify tmux-cli is available; read AGENTS.md/CLAUDE.md for project context.
 2. **Parse** — read goal.md at $ARGUMENTS, extract GOAL_ID, GOAL_DIR, and all investigator definitions from `## Investigation Config`.
 3. **Condition filter** — evaluate each investigator's Condition field against project state; skip investigators whose conditions are false. If all are skipped, call goal-validation-done with pass.
-4. **Spawn** — for each active investigator, call windows-spawn-worker with `prefix: "inv-"`. Never assemble spawn steps manually.
-5. **Collect** — idle and route incoming `[EXECUTE:DONE|NEED_INPUT|FAILED]` messages. Kill each worker after collecting its report. Timeout: 10 minutes per worker — kill and treat as fail.
-6. **Aggregate** — once all workers reach terminal state, merge findings. Write `corrections/cycle-N.md` if any failed. Call goal-validation-done exactly once.
+4. **Solo-lane gate** — when goal.md `## Lane` is exactly `solo`, the inline-plan CLI verdict was degenerate, every active investigator is command-type, and ≥2 distinct command lines exist, the solo-lane route runs the commands in-window (zero spawns); any non-command investigator or other miss → full fan-out for the whole goal.
+5. **Spawn** — for each active investigator, call windows-spawn-worker with `prefix: "inv-"`. Never assemble spawn steps manually.
+6. **Collect** — idle and route incoming `[EXECUTE:DONE|NEED_INPUT|FAILED]` messages. Kill each worker after collecting its report. Timeout: 10 minutes per worker — kill and treat as fail.
+7. **Aggregate** — once all workers reach terminal state, merge findings. Write `corrections/cycle-N.md` if any failed. Call goal-validation-done exactly once.
 
 ## Worker protocol
 
@@ -67,5 +68,6 @@ Workers use the standard `[EXECUTE:...]` tagged protocol. The orchestrator uses 
 - **Kill workers after collection** — windows-kill by NAME (e.g. "inv-1"), not @id.
 - **10-minute timeout** per worker — kill and treat as fail.
 - **Corrections max ~500 tokens** per investigator section to prevent context exhaustion.
+- **Solo-lane is read-only and all-or-nothing** — the lane comes ONLY from goal.md `## Lane` (exact `solo`; absent/other/malformed = full), never self-declared; on the solo-lane route either ALL command-type checks run in-window or the WHOLE goal fans out — never a partial split.
 
 Follow `.claude/commands/tmux/investigate.xml` EXACTLY as written. That file defines the complete investigation flow, all message routing, and hard constraints. Do not improvise beyond it.

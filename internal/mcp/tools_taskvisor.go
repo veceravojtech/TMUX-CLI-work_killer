@@ -83,6 +83,12 @@ type tvGoal struct {
 	// silently erases a non-default priority back to 0, and TestGoalTvGoalYamlTagParity
 	// fails the build the instant Goal gains the field with no twin here.
 	Priority int `yaml:"priority,omitempty"`
+	// Lane mirrors taskvisor.Goal.Lane (same yaml key) — the validation-lane
+	// marker ("solo"/"full") written by goal-create and the one-way G5
+	// demotion. DUAL-STRUCT (critical): without this mirror an MCP load-resave
+	// silently strips `lane:`, losing a solo goal's lane (or a demoted goal's
+	// permanent full pin) — guarded by TestGoalTvGoalYamlTagParity.
+	Lane string `yaml:"lane,omitempty"`
 	// EscalationCount mirrors taskvisor.Goal.EscalationCount (same yaml key). It is
 	// the durable escalation-prerequisite counter that GoalAddPrerequisite
 	// increments and caps. DUAL-STRUCT (critical): must stay in lock-step with
@@ -257,13 +263,20 @@ func validateInvestigators(invs []taskvisor.Investigator) error {
 // land in goals.yaml — F5/RC-A, with the derive-from-acceptance scope
 // fallback), and goal.md — is delegated to the shared authoring core
 // taskvisor.CreateGoal, converged with the `taskvisor goal add` CLI command.
-func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope, phase string, maxRetries int, dependsOn []string, preconditions []taskvisor.Precondition, investigators []taskvisor.Investigator, scope []string, priority int) (*GoalCreateOutput, error) {
+func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope, phase string, maxRetries int, dependsOn []string, preconditions []taskvisor.Precondition, investigators []taskvisor.Investigator, scope []string, priority int, lane string) (*GoalCreateOutput, error) {
 	if phase != "" && !allowedPhases[phase] {
 		names := make([]string, 0, len(allowedPhases))
 		for k := range allowedPhases {
 			names = append(names, k)
 		}
 		return nil, fmt.Errorf("%w: invalid phase %q; allowed: %s", ErrInvalidInput, phase, strings.Join(names, ","))
+	}
+
+	// Thin MCP enum check (mirrors the phase check above) for a typed
+	// ErrInvalidInput; the authoritative validation lives in the shared
+	// taskvisor.CreateGoal core, protecting any future CLI surface.
+	if lane != "" && lane != taskvisor.LaneSolo && lane != taskvisor.LaneFull {
+		return nil, fmt.Errorf("%w: invalid lane %q; allowed: %s,%s", ErrInvalidInput, lane, taskvisor.LaneSolo, taskvisor.LaneFull)
 	}
 
 	// Validate an explicit investigation_config before any filesystem side effect
@@ -288,6 +301,7 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, c
 		Investigators: investigators,
 		Scope:         scope,
 		Priority:      priority,
+		Lane:          lane,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err)

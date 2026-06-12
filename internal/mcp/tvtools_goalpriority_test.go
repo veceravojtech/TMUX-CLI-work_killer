@@ -62,7 +62,7 @@ func TestGoalPriority_Integration(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
 	// Create via MCP with a non-default priority.
-	out, err := server.GoalCreate("Round-trip goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 6)
+	out, err := server.GoalCreate("Round-trip goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 6, "")
 	require.NoError(t, err)
 
 	gf, err := taskvisor.LoadGoals(tmpDir)

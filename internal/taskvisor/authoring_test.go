@@ -109,7 +109,7 @@ func TestCreateGoal_WritesGoalMD(t *testing.T) {
 	refRoot := t.TempDir()
 	refGoalDir := filepath.Join(refRoot, ".tmux-cli", "goals", id)
 	require.NoError(t, os.MkdirAll(refGoalDir, 0o755))
-	require.NoError(t, WriteGoalMD(refGoalDir, "Build API endpoint", "domain",
+	require.NoError(t, WriteGoalMD(refGoalDir, "Build API endpoint", "domain", "",
 		[]string{"Returns 200 on success"}, []string{"go test ./..."}, nil,
 		"Legacy code", "Performance", nil))
 	want, err := os.ReadFile(filepath.Join(refGoalDir, "goal.md"))

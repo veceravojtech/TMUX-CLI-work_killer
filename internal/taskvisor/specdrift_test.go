@@ -66,7 +66,7 @@ func TestGoalMDDrift_Identical(t *testing.T) {
 	dir := t.TempDir()
 
 	validate := []string{"go test ./...", "curl -f http://localhost:8080/health"}
-	require.NoError(t, WriteGoalMD(dir, "Build API", "", []string{"Returns 200"}, validate, nil, "", "", nil))
+	require.NoError(t, WriteGoalMD(dir, "Build API", "", "", []string{"Returns 200"}, validate, nil, "", "", nil))
 
 	goal := &Goal{
 		ID:          "goal-002",
@@ -83,7 +83,7 @@ func TestGoalMDDrift_Identical(t *testing.T) {
 func TestGoalMDDrift_UnwritableGoalDir(t *testing.T) {
 	dir := t.TempDir()
 
-	require.NoError(t, WriteGoalMD(dir, "Test goal", "", []string{"AC1"}, []string{"original cmd"}, nil, "", "", nil))
+	require.NoError(t, WriteGoalMD(dir, "Test goal", "", "", []string{"AC1"}, []string{"original cmd"}, nil, "", "", nil))
 
 	goal := &Goal{
 		ID:       "goal-003",
@@ -154,7 +154,7 @@ func TestGoalMDDrift_EmptyValidate(t *testing.T) {
 	dir := t.TempDir()
 
 	// WriteGoalMD with empty validate produces "(none)".
-	require.NoError(t, WriteGoalMD(dir, "Empty goal", "", []string{"AC1"}, nil, nil, "", "", nil))
+	require.NoError(t, WriteGoalMD(dir, "Empty goal", "", "", []string{"AC1"}, nil, nil, "", "", nil))
 
 	goal := &Goal{
 		ID:         "goal-005",

@@ -178,6 +178,14 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 		}
 
 		log.Printf("crash recovery: re-dispatching %s (no live window, tasks not all done)", g.ID)
+		// G5: a crash re-dispatch is a failure event — demote a solo goal here
+		// because a re-pended goal with no tasks.yaml routes to fresh dispatch(),
+		// bypassing dispatchRetry's funnel. Log-and-continue on error: recovery
+		// must not abort the remaining goals. Pass 1 (resume in place) never
+		// demotes — nothing failed there.
+		if derr := d.demoteSoloLane(g, goals, "crash-recovery re-dispatch"); derr != nil {
+			log.Printf("crash recovery: %s: lane demotion failed: %v (continuing)", g.ID, derr)
+		}
 		action := "re-dispatch"
 		if g.Retries < g.MaxRetries {
 			g.Status = GoalPending

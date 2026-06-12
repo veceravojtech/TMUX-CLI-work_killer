@@ -32,6 +32,10 @@ type GoalSpec struct {
 	Investigators   []Investigator
 	Scope           []string
 	Priority        int
+	// Lane is the validation lane ("solo"/"full"); empty means full. Validated
+	// here (the shared authoring core) so every creation surface — the MCP
+	// goal-create tool and any future CLI flag — enforces the same enum.
+	Lane string
 }
 
 // validateGoalSpec enforces the core-owned authoring rules shared by every
@@ -55,6 +59,9 @@ func validateGoalSpec(spec GoalSpec) error {
 	}
 	if len(spec.Validate) == 0 {
 		return fmt.Errorf("at least one validation rule is required")
+	}
+	if spec.Lane != "" && spec.Lane != LaneSolo && spec.Lane != LaneFull {
+		return fmt.Errorf("invalid lane %q; allowed values: %s, %s", spec.Lane, LaneSolo, LaneFull)
 	}
 	return nil
 }
@@ -151,6 +158,7 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 			DependsOn:            spec.DependsOn,
 			Scope:                scope,
 			Priority:             spec.Priority,
+			Lane:                 spec.Lane,
 		})
 
 		return SaveGoals(workDir, gf)
@@ -162,7 +170,7 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 	if err != nil {
 		return "", false, fmt.Errorf("create goal directory: %w", err)
 	}
-	if err := WriteGoalMD(goalDir, spec.Description, spec.Phase, spec.Acceptance, spec.Validate, spec.Preconditions, spec.Context, spec.NotInScope, spec.Investigators); err != nil {
+	if err := WriteGoalMD(goalDir, spec.Description, spec.Phase, spec.Lane, spec.Acceptance, spec.Validate, spec.Preconditions, spec.Context, spec.NotInScope, spec.Investigators); err != nil {
 		return "", false, fmt.Errorf("write goal.md: %w", err)
 	}
 	if err := WriteValidateScript(goalDir, spec.Validate); err != nil {

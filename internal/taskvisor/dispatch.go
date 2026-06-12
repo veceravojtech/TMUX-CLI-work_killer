@@ -400,6 +400,13 @@ func (d *Daemon) tasksYamlExists(goalID string) bool {
 }
 
 func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
+	// G5 defensive funnel: demote FIRST, before resetTaskStatuses/
+	// injectCorrections, so even the fallback-to-dispatch() paths below run
+	// post-demotion. Idempotent — the failure sink that routed here usually
+	// already demoted.
+	if err := d.demoteSoloLane(goal, goals, "retry dispatch"); err != nil {
+		return err
+	}
 	if err := d.resetTaskStatuses(goal.ID); err != nil {
 		log.Printf("dispatchRetry: resetTaskStatuses failed, falling back to full dispatch: %v", err)
 		return d.dispatch(goal, goals)
