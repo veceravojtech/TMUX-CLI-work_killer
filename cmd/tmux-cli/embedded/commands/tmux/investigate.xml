@@ -344,9 +344,9 @@
       <substep>Run each safe command via Bash with a per-command timeout (wrap as `timeout &lt;T&gt;s &lt;command&gt;`). Bound T so the SUM of inline command timeouts stays under the daemon validate_timeout envelope — use the same 10-minute ceiling a single worker had: divide the per-worker 600s budget across the RERUN commands (e.g. ceil(600 / max(1, command_count)) s each), so a single hung command cannot blow the daemon budget.</substep>
       <substep>On a command failure that is a transient-prone probe, re-run it through step 2b's &lt;transient-retry-loop&gt; (same transient-detection-rules). A deterministic non-zero exit / assertion failure is NOT transient — do not retry it. Pass on first success.</substep>
       <substep>Classify the result using investigate-worker.xml's &lt;classification&gt; block VERBATIM: GREEN OBJECTIVE CHECK ⇒ status=pass; env/connectivity signature ⇒ blocked/env-config|infra-flake/ops; assertion-on-code-output ⇒ fail/code-defect/implementer; ambiguous/untestable ⇒ error/validator-error/ops; leaf-4 catch-all ⇒ a non-pass finding with no clear class is fail/code-defect/implementer. failure_class and owner are REQUIRED on every non-pass finding.</substep>
-      <substep>Build EXACTLY ONE ValidationFinding for this investigator (rule = investigator name, status, detail, correction-if-non-pass, failing_command + output_excerpt on failure, plus failure_class/owner on non-pass) and add it to the step-5 findings array.</substep>
+      <substep>Build EXACTLY ONE ValidationFinding for this investigator (rule = investigator name, status, detail, correction-if-non-pass, failing_command + output_excerpt on failure, plus failure_class/owner on non-pass, plus `validation_mode: "inline"` — REQUIRED on every inline-built finding; the B7 inline marker mirroring reused_from_cycle) and add it to the step-5 findings array.</substep>
       <action>OPTIONAL audit: write the raw command/output excerpts to &lt;CYCLE_DIR&gt;/inline-evidence.md (audit only — namespaced under the C7 CYCLE_DIR, never a flat or prior-cycle path). This file is evidence, not a verdict source; goal-validation-done is still the single report channel.</action>
-      <action>Surface the B7 instrumentation signal: emit a greppable line `inv_inlined=&lt;N&gt; inv_spawned=0` where N == the RERUN count just executed inline (0 spawns this cycle). This is what makes the saving measurable.</action>
+      <action>Surface the B7 instrumentation signal: emit a greppable line `inv_inlined=&lt;N&gt; inv_spawned=0` where N == the RERUN count just executed inline (0 spawns this cycle). This is what makes the saving measurable. The daemon's COUNTERS line derives inv_inlined from the `validation_mode: "inline"` tags on the findings, keeping the log and this evidence line consistent.</action>
       <rule>PRESERVE the other preflight findings: a C8 spec-defect (2d) and each C1a escalation (2e) finding still aggregate alongside the inline findings in step 5 — inline execution does NOT touch them, so an inline cycle can still roll up to verdict "blocked". C10 reuse (2c) and the C7 cycle-dir guard are untouched.</rule>
       <action>Proceed to step 4c (convergence guard) → step 5 (aggregate) exactly like the spawned path. Do NOT call windows-kill (no windows were created).</action>
     </step>
@@ -471,7 +471,7 @@ For each investigator:
       <params>
         - goal_id: GOAL_ID
         - verdict: "pass"
-        - findings: array of ValidationFinding (one per active investigator, all status="pass"; reused investigators carry reused_from_cycle + reused_fingerprint)
+        - findings: array of ValidationFinding (one per active investigator, all status="pass"; reused investigators carry reused_from_cycle + reused_fingerprint; inline-executed investigators carry validation_mode "inline")
         - next_action: ""
         - results: array of {id: investigator name, status: "pass", scope_files: the investigator's Paths, changed_files: files changed this cycle} — one per active investigator (RERUN and REUSE alike). The server computes each finding's input fingerprint and writes the orchestrator-owned results.json ledger for the NEXT cycle's reuse gate.
       </params>
@@ -527,7 +527,7 @@ Verdict: FAIL
       <params>
         - goal_id: GOAL_ID
         - verdict: the aggregated verdict from step 5 — "fail", "blocked", or "error" (NOT hardcoded; the daemon routes by it: fail/blocked re-dispatch the implementer/owner, error re-runs validation only)
-        - findings: array of ValidationFinding (one per active investigator, with status, detail, correction, and — for every non-pass finding — failure_class and owner; reused investigators carry reused_from_cycle + reused_fingerprint)
+        - findings: array of ValidationFinding (one per active investigator, with status, detail, correction, and — for every non-pass finding — failure_class and owner; reused investigators carry reused_from_cycle + reused_fingerprint; inline-executed investigators carry validation_mode "inline")
         - next_action: "re-dispatch with corrections"
         - results: array of {id: investigator name, status, scope_files: the investigator's Paths, changed_files: files changed this cycle} — one per active investigator (RERUN and REUSE alike), so the server refreshes the orchestrator-owned results.json ledger for the next cycle's reuse gate.
       </params>

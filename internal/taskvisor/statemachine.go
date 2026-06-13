@@ -460,8 +460,8 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 	// (counted at actual spawn — reused investigators are never re-launched).
 	// Side-effect-only: emits one COUNTERS line, never alters the verdict, owner,
 	// or the switch below.
-	sp, ru := countInvFindings(valSig.Findings)
-	d.logCounters(goal, verdict, sp, ru)
+	sp, ru, inl := countInvFindings(valSig.Findings)
+	d.logCounters(goal, verdict, sp, ru, inl)
 
 	// Each non-pass branch moves exactly one per-class budget counter (or none):
 	//   fail            -> implementer re-dispatch, dec CodeRetries

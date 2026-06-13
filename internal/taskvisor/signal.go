@@ -30,6 +30,12 @@ const (
 	VerdictError   = "error"
 )
 
+// ValidationModeInline marks a finding produced in-window by the B9b inline
+// route (investigate.xml step 3-inline) with no investigator spawn. The B7
+// counter partition (countInvFindings) counts such findings under inv_inlined
+// instead of inv_spawned.
+const ValidationModeInline = "inline"
+
 // ValidationFinding is one rule's outcome reported by the validator.
 //
 // SYNC: this struct is mirrored field-for-field (same json tags, same
@@ -58,6 +64,13 @@ type ValidationFinding struct {
 	InputFingerprint  string   `json:"input_fingerprint,omitempty" yaml:"input_fingerprint,omitempty"`
 	ReusedFromCycle   int      `json:"reused_from_cycle,omitempty" yaml:"reused_from_cycle,omitempty"`
 	ReusedFingerprint string   `json:"reused_fingerprint,omitempty" yaml:"reused_fingerprint,omitempty"`
+
+	// B7 inline marker mirroring ReusedFromCycle: set to ValidationModeInline
+	// ("inline") when the finding was produced in-window by the B9b inline route
+	// with no investigator spawn; empty otherwise. countInvFindings partitions
+	// such findings under inv_inlined. omitempty keeps legacy signal.json wire
+	// shapes byte-identical when unused.
+	ValidationMode string `json:"validation_mode,omitempty" yaml:"validation_mode,omitempty"`
 
 	// B5a structured correction. CorrectionEdits is an OPTIONAL, machine-applicable
 	// remedy a validator MAY emit alongside the REQUIRED free-text Correction: a

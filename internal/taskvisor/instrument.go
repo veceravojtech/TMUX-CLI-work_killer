@@ -25,26 +25,33 @@ import (
 // on '='). cycleWallS/goalWallS are emitted as integer seconds (%.0f) — sub-
 // second precision is noise for cost analysis and would only destabilise greps.
 func formatCounterLine(goalID string, cycle int, phase, event string,
-	consumedCode, consumedSpec, consumedVal, invSpawned, invReused int,
+	consumedCode, consumedSpec, consumedVal, invSpawned, invReused, invInlined int,
 	cycleWallS, goalWallS float64) string {
 	return fmt.Sprintf("COUNTERS goal=%s cycle=%d phase=%s event=%s "+
 		"retries_code=%d retries_spec=%d retries_val=%d "+
-		"inv_spawned=%d inv_reused=%d cycle_wall_s=%.0f goal_wall_s=%.0f",
+		"inv_spawned=%d inv_reused=%d inv_inlined=%d cycle_wall_s=%.0f goal_wall_s=%.0f",
 		goalID, cycle, phase, event, consumedCode, consumedSpec, consumedVal,
-		invSpawned, invReused, cycleWallS, goalWallS)
+		invSpawned, invReused, invInlined, cycleWallS, goalWallS)
 }
 
-// countInvFindings derives investigators-spawned vs investigators-reused from a
-// validator signal's findings. A finding carrying ReusedFromCycle != 0 was
-// served by C10's reuse gate (no investigator re-spawned), so it counts as
-// reused; everything else is counted as a fresh spawn. This reflects ACTUAL
-// spawns rather than the investigator-config count — a reused investigator is
-// never re-launched, so it must never be counted under inv_spawned.
-func countInvFindings(fs []ValidationFinding) (spawned, reused int) {
+// countInvFindings partitions a validator signal's findings three ways:
+// spawned, reused, inlined. A finding carrying ReusedFromCycle != 0 was served
+// by C10's reuse gate (no investigator re-spawned), so it counts as reused —
+// the reuse check runs FIRST so a malformed double tag (reuse marker + inline
+// marker) still counts as reused, keeping existing reuse cycles byte-identical.
+// A finding tagged ValidationMode == ValidationModeInline was produced
+// in-window by the B9b inline route (zero spawns), so it counts as inlined.
+// Everything else (untagged) is counted as a fresh spawn. This reflects ACTUAL
+// spawns rather than the investigator-config count — a reused or inlined
+// investigator is never launched, so it must never be counted under inv_spawned.
+func countInvFindings(fs []ValidationFinding) (spawned, reused, inlined int) {
 	for _, f := range fs {
-		if f.ReusedFromCycle != 0 {
+		switch {
+		case f.ReusedFromCycle != 0:
 			reused++
-		} else {
+		case f.ValidationMode == ValidationModeInline:
+			inlined++
+		default:
 			spawned++
 		}
 	}
@@ -78,7 +85,7 @@ func goalWallSeconds(g *Goal) float64 {
 // scheduling behaviour. Consumed retries-by-class are Max−remaining (the live
 // per-class counters hold the REMAINING budget). cycle_wall_s is guarded against
 // a zero dispatch clock (recovery edge) so it never reports a bogus huge value.
-func (d *Daemon) logCounters(g *Goal, event string, spawned, reused int) {
+func (d *Daemon) logCounters(g *Goal, event string, spawned, reused, inlined int) {
 	rt := d.runtime(g.ID)
 	cycleWall := 0.0
 	if !rt.dispatchTime.IsZero() {
@@ -89,5 +96,5 @@ func (d *Daemon) logCounters(g *Goal, event string, spawned, reused int) {
 		g.MaxCodeRetries-g.CodeRetries,
 		g.MaxSpecRetries-g.SpecRetries,
 		g.MaxValidationRetries-g.ValidationRetries,
-		spawned, reused, cycleWall, goalWallSeconds(g)))
+		spawned, reused, inlined, cycleWall, goalWallSeconds(g)))
 }

@@ -453,6 +453,11 @@ type ValidationFinding struct {
 	ReusedFromCycle   int      `json:"reused_from_cycle,omitempty" jsonschema:"Cycle a reused pass came from (reuse decision output)"`
 	ReusedFingerprint string   `json:"reused_fingerprint,omitempty" jsonschema:"Unchanged fingerprint echoed on reuse (reuse decision output)"`
 
+	// B7 inline marker mirrored from taskvisor.ValidationFinding.ValidationMode
+	// at the same ordinal slot (TestValidationFindingStructsInSync compares
+	// positionally). omitempty keeps the tool input shape unchanged when unused.
+	ValidationMode string `json:"validation_mode,omitempty" jsonschema:"Set to inline when the finding was produced in-window by the B9b inline route with no investigator spawn; empty otherwise"`
+
 	// B5a structured correction. OPTIONAL machine-applicable remedy mirrored from
 	// taskvisor.ValidationFinding.CorrectionEdits; advisory only and NEVER
 	// auto-applied. Appended LAST to preserve field-order parity with the taskvisor

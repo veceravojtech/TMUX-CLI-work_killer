@@ -374,7 +374,7 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	// B7: per-cycle cost record at the dispatch seam. Investigators are unknown
 	// pre-validation, so inv counts are zero here (the verdict-resolution line
 	// carries the real spawn/reuse split).
-	d.logCounters(goal, "dispatch", 0, 0)
+	d.logCounters(goal, "dispatch", 0, 0, 0)
 
 	// Successful dispatch ends the stall episode (watchdog reset).
 	d.idleTicks = 0
@@ -522,7 +522,7 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	}
 
 	// B7: per-cycle cost record at the re-dispatch seam (zero inv counts, see dispatch).
-	d.logCounters(goal, "redispatch", 0, 0)
+	d.logCounters(goal, "redispatch", 0, 0, 0)
 
 	// Successful re-dispatch ends the stall episode (watchdog reset).
 	d.idleTicks = 0

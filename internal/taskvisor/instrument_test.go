@@ -40,7 +40,7 @@ func countCounterLines(out string) int {
 	return n
 }
 
-const allCounterKeys = "goal cycle phase event retries_code retries_spec retries_val inv_spawned inv_reused cycle_wall_s goal_wall_s"
+const allCounterKeys = "goal cycle phase event retries_code retries_spec retries_val inv_spawned inv_reused inv_inlined cycle_wall_s goal_wall_s"
 
 // daemonWithRuntime builds a Daemon whose per-goal runtime for goalID is seeded
 // with the given phase and dispatch clock — the post-goalRuntime-extraction
@@ -57,7 +57,7 @@ func TestInstrumentation_EmitsOneLinePerCycle(t *testing.T) {
 	d := daemonWithRuntime("goal-020", phaseValidating, time.Now())
 	g := &Goal{ID: "goal-020", MaxCodeRetries: 3, CodeRetries: 3, MaxSpecRetries: 1, SpecRetries: 1, MaxValidationRetries: 2, ValidationRetries: 2}
 
-	out := captureLog(t, func() { d.logCounters(g, "fail", 3, 0) })
+	out := captureLog(t, func() { d.logCounters(g, "fail", 3, 0, 0) })
 
 	require.Equal(t, 1, countCounterLines(out), "exactly one COUNTERS line expected")
 	m, ok := parseCounterLine(out)
@@ -79,13 +79,49 @@ func TestInstrumentation_CountsInvSpawnedNotConfigured(t *testing.T) {
 		{Rule: "b", ReusedFromCycle: 2},
 		{Rule: "c", ReusedFromCycle: 0}, // freshly spawned this cycle
 	}
-	spawned, reused := countInvFindings(fs)
+	spawned, reused, inlined := countInvFindings(fs)
 	assert.Equal(t, 1, spawned, "only the non-reused finding counts as spawned")
 	assert.Equal(t, 2, reused, "two findings carried reuse markers")
+	assert.Equal(t, 0, inlined, "no finding carried the inline marker")
+}
+
+func TestCountInvFindings_InlinePartition(t *testing.T) {
+	fs := []ValidationFinding{
+		{Rule: "a", ValidationMode: ValidationModeInline},
+		{Rule: "b", ValidationMode: ValidationModeInline},
+		{Rule: "c", ReusedFromCycle: 1},
+		{Rule: "d"}, // untagged — freshly spawned
+	}
+	spawned, reused, inlined := countInvFindings(fs)
+	assert.Equal(t, 1, spawned, "only the untagged finding counts as spawned")
+	assert.Equal(t, 1, reused, "one finding carried a reuse marker")
+	assert.Equal(t, 2, inlined, "two findings carried the inline marker")
+}
+
+func TestCountInvFindings_UntaggedAllSpawned(t *testing.T) {
+	fs := []ValidationFinding{
+		{Rule: "a"},
+		{Rule: "b"},
+		{Rule: "c"},
+	}
+	spawned, reused, inlined := countInvFindings(fs)
+	assert.Equal(t, 3, spawned, "untagged findings keep counting as spawned")
+	assert.Equal(t, 0, reused)
+	assert.Equal(t, 0, inlined)
+}
+
+func TestCountInvFindings_ReuseWinsOverInlineTag(t *testing.T) {
+	fs := []ValidationFinding{
+		{Rule: "a", ReusedFromCycle: 1, ValidationMode: ValidationModeInline},
+	}
+	spawned, reused, inlined := countInvFindings(fs)
+	assert.Equal(t, 0, spawned)
+	assert.Equal(t, 1, reused, "reuse marker wins over a (malformed) double inline tag")
+	assert.Equal(t, 0, inlined, "double-tagged finding must not count as inlined")
 }
 
 func TestInstrumentation_LogLineParses(t *testing.T) {
-	line := formatCounterLine("goal-020", 2, "validating", "fail", 2, 1, 0, 3, 1, 733, 735)
+	line := formatCounterLine("goal-020", 2, "validating", "fail", 2, 1, 0, 3, 1, 2, 733, 735)
 	m := map[string]string{}
 	for _, tok := range strings.Fields(strings.TrimPrefix(line, "COUNTERS ")) {
 		kv := strings.SplitN(tok, "=", 2)
@@ -103,6 +139,7 @@ func TestInstrumentation_LogLineParses(t *testing.T) {
 		"retries_val":  "0",
 		"inv_spawned":  "3",
 		"inv_reused":   "1",
+		"inv_inlined":  "2",
 		"cycle_wall_s": "733",
 		"goal_wall_s":  "735",
 	}, m)
@@ -123,7 +160,7 @@ func TestInstrumentation_NoSchedulingBehaviorChange(t *testing.T) {
 	beforePhase := rt.phase
 	beforeClock := rt.dispatchTime
 
-	captureLog(t, func() { d.logCounters(g, "dispatch", 0, 0) })
+	captureLog(t, func() { d.logCounters(g, "dispatch", 0, 0, 0) })
 
 	assert.Equal(t, before, *g, "goal must be unchanged by logCounters")
 	assert.Equal(t, beforePhase, d.runtime("goal-020").phase, "daemon phase must be unchanged")
@@ -131,7 +168,7 @@ func TestInstrumentation_NoSchedulingBehaviorChange(t *testing.T) {
 }
 
 func TestInstrumentation_AllKeysPresent(t *testing.T) {
-	line := formatCounterLine("g1", 1, "supervising", "dispatch", 0, 0, 0, 0, 0, 0, 0)
+	line := formatCounterLine("g1", 1, "supervising", "dispatch", 0, 0, 0, 0, 0, 0, 0, 0)
 	for _, key := range strings.Fields(allCounterKeys) {
 		assert.Equal(t, 1, strings.Count(line, key+"="), "key %q must appear exactly once", key)
 	}
@@ -148,7 +185,7 @@ func TestInstrumentation_ConsumedRetriesPerClass(t *testing.T) {
 		MaxValidationRetries: 2,
 		ValidationRetries:    2, // consumed 0
 	}
-	out := captureLog(t, func() { d.logCounters(g, "fail", 0, 0) })
+	out := captureLog(t, func() { d.logCounters(g, "fail", 0, 0, 0) })
 	m, ok := parseCounterLine(out)
 	require.True(t, ok)
 	assert.Equal(t, "2", m["retries_code"], "Max-remaining = 3-1")
@@ -166,7 +203,7 @@ func TestInstrumentation_CycleNumberMatchesCurrentCycle(t *testing.T) {
 		SpecRetries:    1,
 	}
 	want := CurrentCycle(g)
-	out := captureLog(t, func() { d.logCounters(g, "fail", 0, 0) })
+	out := captureLog(t, func() { d.logCounters(g, "fail", 0, 0, 0) })
 	m, ok := parseCounterLine(out)
 	require.True(t, ok)
 	assert.Equal(t, "3", m["cycle"])
@@ -193,11 +230,12 @@ func TestInstrumentation_DispatchLineHasZeroInvCounts(t *testing.T) {
 	g := &Goal{ID: "goal-020", MaxCodeRetries: 3, CodeRetries: 3}
 
 	for _, event := range []string{"dispatch", "redispatch"} {
-		out := captureLog(t, func() { d.logCounters(g, event, 0, 0) })
+		out := captureLog(t, func() { d.logCounters(g, event, 0, 0, 0) })
 		m, ok := parseCounterLine(out)
 		require.True(t, ok)
 		assert.Equal(t, event, m["event"])
 		assert.Equal(t, "0", m["inv_spawned"], "investigators unknown pre-validation")
 		assert.Equal(t, "0", m["inv_reused"])
+		assert.Equal(t, "0", m["inv_inlined"])
 	}
 }
