@@ -179,5 +179,6 @@ age = humanized now − created_at (e.g. 3d, 5h).</template>
     <rule>Consume always ends with the daemon executing (or a named, actionable reason why not) — queued-but-idle is a failure of this spec</rule>
     <rule>The solo-lane gate is applied exactly ONCE per claimed task — here at step 3.2, upstream; executing surfaces (supervisor/investigate) only READ the lane, never re-evaluate or self-declare it</rule>
     <rule>Mis-created goal undo: tmux-cli taskvisor goal delete &lt;id&gt; — the sanctioned single-goal removal; goal-prune is nuclear (wipes ALL goal state) and never for single-goal removal</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
   </execution-rules>
 </task>
