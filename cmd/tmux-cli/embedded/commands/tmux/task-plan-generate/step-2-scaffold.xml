@@ -54,8 +54,10 @@
           <item id="SC-21" condition="FRONTEND_MODE == vue AND N_auth_flows>=1">playwright.config.ts defines a setup project (auth.setup.ts → playwright/.auth/*.json storageState) and an authenticated project with setup dependency (E2E-AUTH-STATE-CONV)</item>
           <item id="SC-23" condition="SIGNALS.has_mailer == yes">.env.test contains MAILER_DSN=null://null (Symfony recipe default, asserted by E2E-SIDEFX-CONV)</item>
           <item id="SC-24" condition="SIGNALS.has_messenger == yes">config/packages/test/messenger.yaml exists and routes transports to sync:// (E2E-SIDEFX-CONV)</item>
+          <item id="SC-25" condition="FRONTEND_MODE == vue">packages/ui component-library stub exists: packages/ui/package.json, src/index.ts barrel entry, and one sample SFC src/components/BaseButton.vue — the shared-component home the vue pack's reuse-existing-shared-component rule (scoped packages/ui/**) points at</item>
+          <item id="SC-26" condition="FRONTEND_MODE == twig">Twig templates tree exists: templates/base.html.twig base layout plus a templates/components/ partials subtree (e.g. templates/components/button.html.twig); NO packages/ui or playwright deliverable in twig mode</item>
         </criteria>
-        <rule>All 13 criteria (plus SC-17/SC-18 when HAS_DATABASE, SC-19 when Playwright available, SC-20 when FRONTEND_MODE == vue, SC-21 when FRONTEND_MODE == vue AND N_auth_flows>=1, SC-23 when SIGNALS.has_mailer == yes, SC-24 when SIGNALS.has_messenger == yes) must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+        <rule>All 13 criteria (plus SC-17/SC-18 when HAS_DATABASE, SC-19 when Playwright available, SC-20 when FRONTEND_MODE == vue, SC-21 when FRONTEND_MODE == vue AND N_auth_flows>=1, SC-23 when SIGNALS.has_mailer == yes, SC-24 when SIGNALS.has_messenger == yes, SC-25 when FRONTEND_MODE == vue, SC-26 when FRONTEND_MODE == twig) must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
       </substep>
 
       <substep n="2.4" title="Compose validation commands">
@@ -75,6 +77,10 @@
           <cmd source="SC-21" condition="FRONTEND_MODE == vue AND N_auth_flows>=1">grep -q 'auth.setup' playwright.config.ts</cmd>
           <cmd source="SC-23" condition="SIGNALS.has_mailer == yes">grep -q 'MAILER_DSN=null://null' .env.test</cmd>
           <cmd source="SC-24" condition="SIGNALS.has_messenger == yes">test -f config/packages/test/messenger.yaml</cmd>
+          <cmd source="SC-25" condition="FRONTEND_MODE == vue">test -f packages/ui/package.json</cmd>
+          <cmd source="SC-25" condition="FRONTEND_MODE == vue">test -f packages/ui/src/index.ts</cmd>
+          <cmd source="SC-26" condition="FRONTEND_MODE == twig">test -f templates/base.html.twig</cmd>
+          <cmd source="SC-26" condition="FRONTEND_MODE == twig">test -d templates/components</cmd>
         </commands>
         <rule>These commands are emitted BARE (CMD-CONV): in local mode the daemon runs them on the host (Gate 0 having verified host Composer); in docker mode the daemon wraps them into the {{APP_SVC}} container started by task-R, so no host PHP/Composer is required.</rule>
       </substep>
@@ -101,9 +107,9 @@ Test environment variables from docs/architecture/test-environment.md.
           </task>
 
           <task n="1" name="Monorepo directory skeleton">
-            <scope>Create the monorepo skeleton: per-context contexts/{BC}/src/{Domain,Application,Bundle} + contexts/{BC}/app, the contexts/previo shared kernel, deployable projects/{app}/src, and shared packages/</scope>
-            <criteria>SC-03, SC-04</criteria>
-            <owns>contexts/*/src/{Domain,Application,Bundle}/, contexts/*/app/, contexts/previo/src/, projects/*/src/, packages/*/</owns>
+            <scope>Create the monorepo skeleton: per-context contexts/{BC}/src/{Domain,Application,Bundle} + contexts/{BC}/app, the contexts/previo shared kernel, deployable projects/{app}/src, and shared packages/, plus the conditional frontend skeleton — the packages/ui component-library stub (packages/ui/package.json + src/index.ts barrel + sample SFC, FRONTEND_MODE == vue) OR the Twig templates tree (templates/base.html.twig + templates/components/ partials, FRONTEND_MODE == twig), never both</scope>
+            <criteria>SC-03, SC-04, SC-25 (conditional FRONTEND_MODE == vue), SC-26 (conditional FRONTEND_MODE == twig)</criteria>
+            <owns>contexts/*/src/{Domain,Application,Bundle}/, contexts/*/app/, contexts/previo/src/, projects/*/src/, packages/*/, packages/ui/** (npm package.json+src, FRONTEND_MODE==vue), templates/** (FRONTEND_MODE==twig)</owns>
             <depends_on>task-0 (needs autoloader from composer install)</depends_on>
           </task>
 
@@ -121,7 +127,7 @@ Test environment variables from docs/architecture/test-environment.md.
             <depends_on>task-0 (needs composer for bin/console)</depends_on>
           </task>
 
-          <rule>File-disjoint: task-0 owns every composer.json (root path-repositories + per-package), task-1 owns the contexts/projects/packages directory skeleton, task-2 owns config root files (incl. deptrac.yaml with its layer + package edges), task-3 owns bin/ensure-test-stack.sh. task-R (docker mode) owns docker-compose.yaml + the dev Dockerfile. Zero overlap.</rule>
+          <rule>File-disjoint: task-0 owns every composer.json (root path-repositories + per-package), task-1 owns the contexts/projects/packages directory skeleton plus the conditional frontend skeleton (packages/ui/** when FRONTEND_MODE == vue OR templates/** when FRONTEND_MODE == twig, never both — packages/ui is an npm package with NO composer.json, so it stays out of task-0's composer path-repo set), task-2 owns config root files (incl. deptrac.yaml with its layer + package edges), task-3 owns bin/ensure-test-stack.sh. task-R (docker mode) owns docker-compose.yaml + the dev Dockerfile. Zero overlap.</rule>
           <rule>SC-05 (bin/console boots) is verified after ALL tasks complete — it depends on both Composer packages and Symfony kernel config.</rule>
         </section>
 
@@ -169,8 +175,8 @@ Test environment variables from docs/architecture/test-environment.md.
         <action>Call the goal-create MCP tool with these parameters:</action>
         <params>
           <param name="description">Create bootable TDD-ready Symfony DDD-monorepo skeleton: path-repo composer, contexts/projects/packages, quality tools</param>
-          <param name="acceptance">ACCEPTANCE array from substep 2.3 (base 13 items SC-01..SC-13, +SC-17 when HAS_DATABASE, +SC-18 when HAS_DATABASE (G2), +SC-19 when Playwright available, +SC-20 when FRONTEND_MODE == vue, +SC-21 when FRONTEND_MODE == vue AND N_auth_flows>=1 (G6), +SC-23 when SIGNALS.has_mailer == yes (G7), +SC-24 when SIGNALS.has_messenger == yes (G7))</param>
-          <param name="validate">VALIDATE array from substep 2.4 (6 base commands + conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24 cmds)</param>
+          <param name="acceptance">ACCEPTANCE array from substep 2.3 (base 13 items SC-01..SC-13, +SC-17 when HAS_DATABASE, +SC-18 when HAS_DATABASE (G2), +SC-19 when Playwright available, +SC-20 when FRONTEND_MODE == vue, +SC-21 when FRONTEND_MODE == vue AND N_auth_flows>=1 (G6), +SC-23 when SIGNALS.has_mailer == yes (G7), +SC-24 when SIGNALS.has_messenger == yes (G7), +SC-25 when FRONTEND_MODE == vue, +SC-26 when FRONTEND_MODE == twig)</param>
+          <param name="validate">VALIDATE array from substep 2.4 (6 base commands + conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24/25/26 cmds)</param>
           <param name="context">CONTEXT string from substep 2.5 (purpose + fan-out hints)</param>
           <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 2.5's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
           <param name="not_in_scope">NOT_IN_SCOPE from substep 2.6</param>

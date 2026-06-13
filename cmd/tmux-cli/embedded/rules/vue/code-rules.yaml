@@ -17,3 +17,114 @@
     - "review: new Vue components are .vue SFCs under assets/ using <script setup>"
   validate_kind: review
   phase: frontend
+
+- id: VUE-REUSE-001
+  category: reuse
+  scope: generic
+  severity: should
+  title: "Reuse an existing shared component before authoring a new one"
+  rule: >
+    Before authoring a new component, reuse an existing shared component
+    (`reuse-existing-shared-component`) from `packages/ui/**` instead of
+    duplicating an equivalent one.
+  why: >
+    Reusing the shared component library keeps UI behaviour and styling
+    consistent and avoids divergent duplicates that drift apart over time.
+  applies_to:
+    - "packages/ui/**"
+  acceptance:
+    - "GIVEN a needed UI element WHEN an equivalent shared component exists THEN reuse it instead of duplicating it"
+  validate:
+    - "review: a new component duplicates an existing packages/ui/** shared component"
+  validate_kind: review
+  phase: frontend
+
+- id: VUE-DATE-001
+  category: consistency
+  scope: generic
+  severity: should
+  title: "Format and parse dates through a single shared date helper"
+  rule: >
+    Format and parse dates through one shared date helper rather than ad-hoc
+    inline formatting scattered across components.
+  why: >
+    A single date helper keeps locale, timezone, and format handling consistent
+    and makes a format change a one-line edit instead of a codebase sweep.
+  applies_to:
+    - "assets/**/*.vue"
+    - "packages/ui/**/*.vue"
+  acceptance:
+    - "GIVEN a date is rendered or parsed WHEN it is handled THEN it goes through the shared date helper, not inline formatting"
+  validate:
+    - "review: dates are formatted/parsed via the shared date helper, not inline"
+  validate_kind: review
+  phase: frontend
+
+- id: VUE-PROP-001
+  category: props
+  scope: generic
+  severity: should
+  title: "Boolean props are is-prefixed and default to false"
+  rule: >
+    Name boolean props with an is/has/can prefix and default them to false; a
+    literal :prop="true" or :prop="false" template binding is the violation —
+    bind a boolean expression or omit the attribute instead.
+  why: >
+    Predictable boolean prop names and a false default make component APIs
+    self-describing, and a literal true/false binding usually hides a prop that
+    should be a real expression or simply left at its default.
+  applies_to:
+    - "assets/**/*.vue"
+    - "packages/ui/**/*.vue"
+  acceptance:
+    - 'GIVEN a boolean prop WHEN it is bound in a template THEN it uses an expression, not a literal :prop="true"/"false"'
+  validate:
+    - 'grep -REn '':[A-Za-z-]+="(true|false)"'' packages/ui assets returns nothing'
+  validate_kind: automated
+  phase: frontend
+  signal: ':[\w-]+="(?:true|false)"'
+  examples:
+    bad: '<UserCard :is-active="true" />'
+    good: '<UserCard :is-active="isActive" />'
+
+- id: VUE-SFC-001
+  category: structure
+  scope: generic
+  severity: should
+  title: "Order <script setup> as props, then emits, then logic"
+  rule: >
+    Inside <script setup>, declare props first, then emits, then the rest of
+    the component logic, so every SFC reads in the same order.
+  why: >
+    A fixed declaration order makes a component's public contract (its props and
+    emits) immediately visible at the top and keeps SFCs scannable in review.
+  applies_to:
+    - "assets/**/*.vue"
+    - "packages/ui/**/*.vue"
+  acceptance:
+    - "GIVEN a <script setup> block THEN it declares props, then emits, then the remaining logic"
+  validate:
+    - "review: <script setup> declares props, then emits, then logic"
+  validate_kind: review
+  phase: frontend
+
+- id: VUE-CSS-001
+  category: styling
+  scope: generic
+  severity: should
+  title: "Style with design-token CSS variables, not hard-coded literals"
+  rule: >
+    Style components with design-token CSS variables rather than hard-coded
+    colour or size literals, so a token change propagates everywhere.
+  why: >
+    Design-token variables keep spacing and colour consistent across the UI and
+    make theming a single-source change instead of a find-and-replace.
+  applies_to:
+    - "assets/**/*.vue"
+    - "packages/ui/**/*.vue"
+  acceptance:
+    - "GIVEN a component style WHEN a colour or size is set THEN it references a design-token CSS variable, not a hard-coded literal"
+  validate:
+    - "review: styles use design-token CSS variables, not hard-coded colour/size literals"
+  validate_kind: review
+  phase: frontend
