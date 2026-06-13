@@ -1,5 +1,5 @@
 <task id="investigate" name="Parallel investigation orchestrator">
-  <objective>Read a goal's Investigation Config from goal.md, spawn 2-4 parallel read-only investigator-* workers via windows-spawn-worker, collect their verdicts with a 10-minute timeout, aggregate findings, write corrections/cycle-N.md on failure, and call goal-validation-done with the final pass/fail verdict.</objective>
+  <objective>Read a goal's Investigation Config from goal.md, then SPLIT its investigators (step 2f): run static-analysis / pure-command checks INLINE in this window and spawn parallel read-only investigator-* workers ONLY for advanced validation (code-review, E2E/Chrome, integration, debugging) via windows-spawn-worker; collect any worker verdicts with a 10-minute timeout, aggregate the inline + worker + reused findings, write corrections/cycle-N.md on failure, and call goal-validation-done with the final pass/fail verdict.</objective>
 
   <input>
     <arg name="$ARGUMENTS">Path to goal.md file (e.g. .tmux-cli/goals/goal-008/goal.md). Passed by the taskvisor daemon when creating the validator window.</arg>
@@ -102,7 +102,7 @@
 
       <action>Also extract from goal.md: the goal description (first heading or first paragraph) and acceptance criteria (## Acceptance Criteria section) for worker context.</action>
 
-      <action>Also extract the OPTIONAL ## Lane section from goal.md into LANE: take the section's bare body, trimmed. LANE = "solo" ONLY on an exact match of `solo`; an absent section, empty body, `full`, or any malformed/unknown value → LANE = "full". The lane is decided upstream and is READ-ONLY here: goal.md's ## Lane is the ONLY lane source this orchestrator consults — never another file, and never its own evaluation of lane-gate criteria. LANE feeds the step 2g solo-lane gate; LANE=full keeps every step below byte-identical to the pre-lane flow.</action>
+      <action>Also extract the OPTIONAL ## Lane section from goal.md into LANE: take the section's bare body, trimmed. LANE = "solo" ONLY on an exact match of `solo`; an absent section, empty body, `full`, or any malformed/unknown value → LANE = "full". The lane is decided upstream and is READ-ONLY here: goal.md's ## Lane is the ONLY lane source this orchestrator consults — never another file, and never its own evaluation of lane-gate criteria. LANE is recorded for audit only — the inline/spawn split (step 2f) keys off investigator TYPE and is lane-INDEPENDENT (B9b), so LANE never changes routing.</action>
 
       <action>Build investigator tracking table:</action>
       <format>
@@ -269,92 +269,78 @@
     </step>
 
     <!--
-      B9b inline validation fast-path decision gate. Sits AFTER the C10 (2c), C8
-      (2d) and C1a (2e) preflights and BEFORE step 3 (spawn). When EVERY active
-      RERUN investigator is a pure-command exit check (build/lint/test), the
-      validator runs them INLINE in this window (a faithful replica of
-      investigate-worker.xml's command loop) with ZERO investigator-* spawns — on ANY
-      cycle: inline sits after C10 partitioning, so a retry cycle's RERUN set is
-      already minimized and pure-command inline is as safe as on cycle 1.
-      The moment ANY active RERUN investigator needs reasoning, the whole set fans
-      out via step 3 (all-or-nothing; never partially inline). The decision itself
-      lives in Go (deterministic, test-covered taskvisor.InlinePlan) so this step
-      is a THIN branch on its JSON — identical rationale to C10's revalidation-plan.
+      Inline/spawn PARTITION gate — static analysis runs INLINE, advanced
+      validation SPAWNS agents. Sits AFTER the C10 (2c), C8 (2d) and C1a (2e)
+      preflights and BEFORE step 3 / 3-inline. Static analysis is a deterministic
+      exit-code check (build/lint/test/grep/vet/deptrac) that needs no semantic
+      judgment, so spawning a read-only worker for it is pure overhead (goal-061
+      post-mortem: a 2-command fan-out validation took ~17 min vs <1 min inline).
+      Parallel investigator-* agents are therefore RESERVED for advanced validation
+      that genuinely needs a reasoning worker — code-review, E2E with Chrome
+      (e2e-test), integration-test, debugging. This gate SPLITS the active RERUN set
+      PER-INVESTIGATOR: every pure-command (static-analysis) check goes INLINE in
+      this window; only the advanced checks spawn. It is NOT all-or-nothing — a goal
+      mixing static analysis with a code-review/e2e investigator runs the static
+      checks inline AND spawns agents for the advanced ones, concurrently. The
+      pure-command classification mirrors taskvisor.IsPureCommand
+      (internal/taskvisor/investigator.go) so inline eligibility matches the Go
+      predicate exactly. Lane-INDEPENDENT by design (B9b): the split keys off
+      investigator TYPE, never the goal's lane.
     -->
-    <step n="2f" title="B9b inline fast-path decision gate">
-      <action>Decide whether the active RERUN investigators can run inline by running the read-only CLI:</action>
-      <cmd>tmux-cli taskvisor inline-plan &lt;GOAL_ID&gt; --cycle &lt;CYCLE_N&gt; [--full] [--final]</cmd>
-      <rule>CYCLE_N is the one-indexed cycle resolved in step 2a. In STANDALONE mode (CYCLE_N unset) pass --cycle 0. Pass --full / --final on the SAME conditions as step 2c so the RERUN set matches exactly.</rule>
-      <rule>The command prints {"mode":"inline"|"fanout","rerun":[finding ids],"reason":"..."}. mode="inline" iff the RERUN set is non-empty AND every RERUN investigator is pure-command (type:command or a whitelisted exit-only check). Retry cycles are inline-eligible too: inline runs AFTER the C10 partition, so the RERUN set is already the minimized remainder on any cycle. The rerun array is the sorted RERUN set; reason is human-readable.</rule>
-      <rule critical="true">SAFE DEGENERATE: if the command errors, prints nothing, or its output is unparseable, the verdict is DEGENERATE — route to step 2g (solo-lane gate), whose own fallback is still step 3 fan-out. A WELL-FORMED verdict with mode!="inline" (e.g. "not pure-command", or the empty-RERUN "no RERUN investigators" case) is a substantive Go decision and is HONORED: go to step 3 unchanged — the lane never overrides it. NEVER block on a missing/garbled inline plan; the spawn path is always the safe fallback.</rule>
-      <check condition="mode == &quot;inline&quot;">
-        <action>Skip step 3 and step 4 ENTIRELY (no windows-spawn-worker, no investigator-* windows, no idle/collect). Go to step 3-inline.</action>
+    <step n="2f" title="Inline/spawn partition gate — static analysis inline, advanced spawned">
+      <action>Partition the ACTIVE RERUN investigators (the step 2c RERUN set; REUSE investigators are in NEITHER set — they carry forward as pass in step 5) into INLINE_SET and SPAWN_SET by classifying EACH with the pure-command predicate (this XML's mirror of taskvisor.IsPureCommand):</action>
+      <rule>PURE-COMMAND ⇒ INLINE_SET (run in-window, NEVER spawn an agent): the investigator has &gt;=1 Command AND (type == `command` OR (type ∈ {static-analysis, quality-gate, test-execution, architecture-check, environment-check, file-check} AND its Pass text is EXIT-ONLY)). Pass is EXIT-ONLY iff it contains an exit marker ("exit 0", "exit code", "succeeds", "green", "no error", "no violation", "no layer violation", "passes") AND NO semantic marker ("matches expected", "review", "audit", "compliance", "correct", "present", "well-formed", "design"). The semantic veto is evaluated FIRST and always wins; an empty Pass is NOT exit-only.</rule>
+      <rule>NON-PURE ⇒ SPAWN_SET (spawn a parallel investigator-* agent): everything else — reasoning/semantic types (code-review, convention-audit, implementation-check, integration-check), advanced/flaky-external types (e2e-test = Chrome/browser automation, integration-test), any investigator whose Pass carries a semantic marker, any unknown or missing type, and any deterministic-typed investigator with NO Command (nothing to run in-window). WHEN IN DOUBT, SPAWN — false-inlining a check that needs reasoning is the only unsafe direction; false-spawning a static check is merely slower.</rule>
+      <rule critical="true">This is a per-investigator SPLIT, NOT all-or-nothing. Static analysis NEVER spawns an agent. Parallel agents are spawned ONLY for the advanced SPAWN_SET (E2E/Chrome, code-review, debugging, integration). A single advanced investigator no longer drags the static-analysis checks into a fan-out.</rule>
+      <action>Route on the two sets:</action>
+      <check condition="INLINE_SET empty AND SPAWN_SET empty (all REUSE — nothing to run)">
+        <action>Skip steps 3, 3-inline and 4. Go straight to step 4c → step 5; the REUSE set aggregates as pass.</action>
       </check>
-      <check condition="well-formed mode == &quot;fanout&quot;">
-        <action>Proceed to step 3 (normal spawn) unchanged — a substantive fanout verdict is never overridden by the lane.</action>
+      <check condition="SPAWN_SET empty AND INLINE_SET non-empty (pure static-analysis goal)">
+        <action>NO agents at all. Skip step 3 and step 4 ENTIRELY (zero windows-spawn-worker, zero investigator-* windows). Go to step 3-inline (run the INLINE_SET in-window), then step 4c → step 5.</action>
       </check>
-      <check condition="DEGENERATE outcome (command errored, printed nothing, or output unparseable)">
-        <action>Proceed to step 2g (solo-lane in-window validation gate). With LANE != solo it immediately falls through to step 3, preserving the old degenerate→fan-out behavior.</action>
+      <check condition="INLINE_SET empty AND SPAWN_SET non-empty (pure advanced goal)">
+        <action>NO inline checks. Go to step 3 (spawn the SPAWN_SET) → step 4 (collect) → step 4c → step 5 — the legacy fan-out path, byte-identical to before for an all-advanced goal.</action>
+      </check>
+      <check condition="BOTH non-empty (the SPLIT — static inline + advanced spawned, concurrently)">
+        <action>FIRST run step 3 to spawn the SPAWN_SET (so the agents investigate concurrently), THEN run step 3-inline to execute the INLINE_SET in THIS window while the agents work, THEN run step 4 to collect the spawned reports, then step 4c → step 5. INLINE_SET inline-findings and SPAWN_SET worker-findings merge into the single step-5 findings array.</action>
       </check>
     </step>
 
     <!--
-      Solo-lane in-window validation gate. Lane-pinned fallback route for the case
-      where step 2f's inline-plan CLI DEGRADES (stale/absent binary, garbled
-      output): with a healthy CLI every solo-eligible goal already inlines via 2f,
-      so this gate adds robustness plus the explicit data-driven lane contract —
-      a ROUTE, not an engine. On pass it reuses step 3-inline verbatim. It fires
-      ONLY on a degenerate 2f outcome; a well-formed 2f verdict (inline or fanout)
-      never reaches it. The lane is read ONLY from goal.md's ## Lane (step 2).
+      Inline execution branch — runs the INLINE_SET (the pure-command/static-analysis
+      RERUN investigators the step 2f partition routed here). It replaces the spawn
+      (step 3) + idle/collect (step 4) FOR THE INLINE_SET with an in-window
+      sequential command loop that mirrors investigate-worker.xml's execute+classify
+      semantics verbatim, so classification (retry, failure_class, leaf-4 catch-all)
+      does not diverge. It runs ONLY the INLINE_SET; REUSE investigators (C10, step
+      2c) carry forward as pass in step 5, and the SPAWN_SET (advanced investigators)
+      runs CONCURRENTLY via step 3 — this branch never touches it. It is strictly
+      READ-ONLY w.r.t. project files (same mandate as a worker). After it builds one
+      ValidationFinding per INLINE_SET investigator it falls through to step 4 (only
+      when a SPAWN_SET was spawned this cycle) → step 4c (convergence guard) → step 5
+      (aggregate).
     -->
-    <step n="2g" title="Solo-lane in-window validation gate" condition="step 2f outcome was DEGENERATE (error/empty/unparseable) AND LANE == solo">
-      <check condition="LANE != solo (full, absent, or malformed)">
-        <action>Proceed to step 3 (normal fan-out) unchanged — this gate is inert without an upstream-decided solo lane.</action>
-      </check>
-      <action>Evaluate ALL THREE checks below against the ACTIVE (post condition-skip) investigators:</action>
-      <rule>CHECK 1 — every ACTIVE investigator is command-type per this XML mirror of taskvisor.IsPureCommand (internal/taskvisor/investigator.go): the investigator has ≥1 Command AND (type == `command` OR (type ∈ {static-analysis, quality-gate, test-execution, architecture-check, environment-check, file-check} AND its Pass text is exit-only)). Pass text is exit-only iff it contains NO semantic marker ("matches expected", "review", "audit", "compliance", "correct", "present", "well-formed", "design") AND contains an exit marker ("exit 0", "exit code", "succeeds", "green", "no error", "no violation", "passes") — the semantic veto is evaluated FIRST and always wins; an empty Pass is NOT exit-only.</rule>
-      <rule>CHECK 2 — at least 2 DISTINCT trimmed command lines exist across the ACTIVE investigators (uniqueness on the trimmed command string — preserves the ≥2-distinct-checks floor).</rule>
-      <rule>CHECK 3 — the RERUN set from step 2c's partition is NON-EMPTY (an all-REUSE cycle has nothing to run in-window; the existing path already spawns nothing and aggregates the reuse as pass).</rule>
-      <check condition="ALL three checks hold">
-        <action>Log: "solo-lane route: 2f degenerate, LANE=solo, all active investigators command-type, ≥2 distinct commands, RERUN non-empty — running the RERUN set in-window via step 3-inline."</action>
-        <action>Go to step 3-inline. ALL-OR-NOTHING: the ENTIRE RERUN set runs in-window — never split some checks inline and some spawned.</action>
-      </check>
-      <check condition="ANY check misses">
-        <action>Log the specific miss (e.g. "solo-lane gate miss: investigator &lt;name&gt; is not command-type" / "fewer than 2 distinct command lines" / "RERUN set empty") and proceed to step 3 (full fan-out) for the WHOLE goal — no partial split.</action>
-      </check>
-    </step>
-
-    <!--
-      B9b inline execution branch. Taken when step 2f returned mode="inline" OR
-      step 2g's solo-lane gate passed.
-      It replaces the spawn (step 3) + idle/collect (step 4) for THIS cycle with an
-      in-window sequential command loop that mirrors investigate-worker.xml's
-      execute+classify semantics verbatim, so classification (retry, failure_class,
-      leaf-4 catch-all) does not diverge. It runs ONLY the RERUN set; REUSE
-      investigators (C10, step 2c) still carry forward as pass in step 5. It is
-      strictly READ-ONLY w.r.t. project files (same mandate as a worker). After it
-      builds one ValidationFinding per RERUN investigator it falls through to step
-      4c (convergence guard) → step 5 (aggregate) exactly like the spawned path.
-    -->
-    <step n="3-inline" title="B9b run RERUN investigators inline (zero spawns)" condition="step 2f mode == inline OR step 2g solo-lane gate passed">
-      <rule critical="true">ZERO windows-spawn-worker calls and ZERO investigator-* windows in this branch. If you are about to spawn, you are in the wrong branch — return to step 3. Inline execution is ALL-OR-NOTHING: every finding here comes from an inline command run, never a worker.</rule>
-      <rule>Operate on the RERUN set ONLY (the inline-plan `rerun` array == the step 2c RERUN investigators). REUSE investigators are NOT executed here; they aggregate as pass in step 5 with reused_from_cycle/reused_fingerprint exactly as on the spawned path.</rule>
-      <action>For EACH RERUN investigator, in the rerun-array order, do the following IN THIS WINDOW:</action>
+    <step n="3-inline" title="Run the INLINE_SET (static analysis) inline — zero spawns for these checks" condition="step 2f routed the INLINE_SET here (SPAWN_SET-empty pure-inline goal, or the BOTH-non-empty split)">
+      <rule critical="true">This branch runs the INLINE_SET ONLY. Issue ZERO windows-spawn-worker calls for INLINE_SET members — every INLINE_SET finding comes from an in-window command run, never a worker. The SPAWN_SET (advanced investigators) is spawned SEPARATELY in step 3 and runs concurrently; do NOT re-run or collect it here.</rule>
+      <rule>Operate on the INLINE_SET ONLY (the pure-command subset of the step 2c RERUN set, per the step 2f partition). REUSE investigators are NOT executed here; they aggregate as pass in step 5 with reused_from_cycle/reused_fingerprint exactly as on the spawned path.</rule>
+      <action>For EACH INLINE_SET investigator, in order, do the following IN THIS WINDOW:</action>
       <substep>Validate each command against the blocklist (rm, mv, cp, tee, chmod, chown, touch, sed -i, kill, mkfs, dd, &gt;, &gt;&gt;) BEFORE running. Skip any destructive command with finding "command skipped: destructive operation forbidden".</substep>
-      <substep>Run each safe command via Bash with a per-command timeout (wrap as `timeout &lt;T&gt;s &lt;command&gt;`). Bound T so the SUM of inline command timeouts stays under the daemon validate_timeout envelope — use the same 10-minute ceiling a single worker had: divide the per-worker 600s budget across the RERUN commands (e.g. ceil(600 / max(1, command_count)) s each), so a single hung command cannot blow the daemon budget.</substep>
+      <substep>Run each safe command via Bash with a per-command timeout (wrap as `timeout &lt;T&gt;s &lt;command&gt;`). Bound T so the SUM of inline command timeouts stays under the daemon validate_timeout envelope — use the same 10-minute ceiling a single worker had: divide the per-worker 600s budget across the INLINE_SET commands (e.g. ceil(600 / max(1, command_count)) s each), so a single hung command cannot blow the daemon budget.</substep>
       <substep>On a command failure that is a transient-prone probe, re-run it through step 2b's &lt;transient-retry-loop&gt; (same transient-detection-rules). A deterministic non-zero exit / assertion failure is NOT transient — do not retry it. Pass on first success.</substep>
       <substep>Classify the result using investigate-worker.xml's &lt;classification&gt; block VERBATIM: GREEN OBJECTIVE CHECK ⇒ status=pass; env/connectivity signature ⇒ blocked/env-config|infra-flake/ops; assertion-on-code-output ⇒ fail/code-defect/implementer; ambiguous/untestable ⇒ error/validator-error/ops; leaf-4 catch-all ⇒ a non-pass finding with no clear class is fail/code-defect/implementer. failure_class and owner are REQUIRED on every non-pass finding.</substep>
       <substep>Build EXACTLY ONE ValidationFinding for this investigator (rule = investigator name, status, detail, correction-if-non-pass, failing_command + output_excerpt on failure, plus failure_class/owner on non-pass, plus `validation_mode: "inline"` — REQUIRED on every inline-built finding; the B7 inline marker mirroring reused_from_cycle) and add it to the step-5 findings array.</substep>
       <action>OPTIONAL audit: write the raw command/output excerpts to &lt;CYCLE_DIR&gt;/inline-evidence.md (audit only — namespaced under the C7 CYCLE_DIR, never a flat or prior-cycle path). This file is evidence, not a verdict source; goal-validation-done is still the single report channel.</action>
-      <action>Surface the B7 instrumentation signal: emit a greppable line `inv_inlined=&lt;N&gt; inv_spawned=0` where N == the RERUN count just executed inline (0 spawns this cycle). This is what makes the saving measurable. The daemon's COUNTERS line derives inv_inlined from the `validation_mode: "inline"` tags on the findings, keeping the log and this evidence line consistent.</action>
+      <action>Surface the B7 instrumentation signal: emit a greppable line `inv_inlined=&lt;N&gt; inv_spawned=&lt;M&gt;` where N == the INLINE_SET count just executed inline and M == the SPAWN_SET count spawned in step 3 this cycle (M=0 on a pure-inline goal). This is what makes the saving measurable. The daemon's COUNTERS line derives inv_inlined from the `validation_mode: "inline"` tags on the findings, keeping the log and this evidence line consistent.</action>
       <rule>PRESERVE the other preflight findings: a C8 spec-defect (2d) and each C1a escalation (2e) finding still aggregate alongside the inline findings in step 5 — inline execution does NOT touch them, so an inline cycle can still roll up to verdict "blocked". C10 reuse (2c) and the C7 cycle-dir guard are untouched.</rule>
-      <action>Proceed to step 4c (convergence guard) → step 5 (aggregate) exactly like the spawned path. Do NOT call windows-kill (no windows were created).</action>
+      <action>If a SPAWN_SET was spawned in step 3 this cycle (the BOTH-non-empty split), proceed to step 4 to collect the spawned reports, then step 4c → step 5. Otherwise (pure-inline goal, zero spawns) proceed directly to step 4c (convergence guard) → step 5 (aggregate). Do NOT windows-kill anything for the INLINE_SET (no windows were created for inline checks); step 4 kills the spawned SPAWN_SET workers.</action>
     </step>
 
-    <step n="3" title="Spawn investigator-* workers">
-      <rule>C8: an investigator short-circuited to a spec-defect in step 2d is NOT spawned (its blocked finding is already recorded for step-5 aggregation). Worker count excludes both REUSE and spec-defect investigators.</rule>
-      <rule>C10: spawn a worker ONLY for investigators whose step 2c action is RERUN. REUSE investigators are NOT spawned — they carry forward their prior-cycle pass. Worker count == RERUN count.</rule>
-      <action>For each RERUN investigator, call windows-spawn-worker with:</action>
+    <step n="3" title="Spawn investigator-* workers (SPAWN_SET — advanced investigators only)">
+      <rule critical="true">SPLIT: spawn a worker ONLY for SPAWN_SET investigators — the advanced/reasoning checks the step 2f partition selected (code-review, e2e-test = Chrome/browser, integration-test, semantic-Pass, unknown/missing type, or a deterministic type with no command). INLINE_SET (static-analysis / pure-command) investigators are NEVER spawned — they run in-window via step 3-inline. Worker count == SPAWN_SET count.</rule>
+      <rule>C8: an investigator short-circuited to a spec-defect in step 2d is NOT spawned (its blocked finding is already recorded for step-5 aggregation). Worker count excludes REUSE, INLINE_SET, and spec-defect investigators.</rule>
+      <rule>C10: a SPAWN_SET investigator is by construction in the step 2c RERUN set. REUSE investigators are NOT spawned — they carry forward their prior-cycle pass.</rule>
+      <action>For each SPAWN_SET investigator, call windows-spawn-worker with:</action>
       <params>
         - supervisorWid: VALIDATOR_WID (i.e. "validator")
         - subtask: "Investigate: &lt;investigator name&gt;"
@@ -441,7 +427,7 @@
       <rule>C1a: each concrete worker-escalation (step 2e) contributes a status="blocked", failure_class="spec-defect", owner="planner" ValidationFinding (rule "escalation: &lt;need&gt;", correction "Create prerequisite goal: &lt;need&gt;") WITHOUT having spawned a worker. It forces the overall verdict to "blocked" — an unconsumed out-of-scope prerequisite can never roll up to pass.</rule>
       <rule>C10: REUSE investigators (step 2c) contribute a status="pass" ValidationFinding WITHOUT having spawned a worker — carry reused_from_cycle and reused_fingerprint on the finding. They never affect the verdict adversely (a reused pass is still a pass).</rule>
       <rule>C4-cont: a transient-retry exhaustion (step 2b &lt;transient-retry-loop&gt;) contributes a status="blocked", failure_class="infra-flake", owner="ops" ValidationFinding WITHOUT a worker verdict. It rolls up to verdict "blocked"; ClassifyVerdict's owner-priority (planner&gt;ops) leaves owner=ops UNCHANGED unless a co-occurring spec-defect (planner) finding outranks it. The emitter's owner is never overwritten.</rule>
-      <action>Merge all worker results AND the reuse set into a findings array (one ValidationFinding per investigator):</action>
+      <action>Merge the INLINE_SET inline findings (step 3-inline, each tagged validation_mode "inline"), all SPAWN_SET worker results (step 4), AND the reuse set into a single findings array (one ValidationFinding per investigator):</action>
       <format>
 For each investigator:
   - rule: investigator name (e.g. "Investigator 1: DDD compliance")
