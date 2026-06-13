@@ -432,6 +432,7 @@ tasks:
 
     <step n="8b" title="Coverage verification">
       <condition>All tasks status=done — either all workers completed (step 8 produced no new workers), or a direct jump from step 3c (full cache hit) / step 3d (SELF_SPEC accepted), or a re-entry from step 11b (audit replan — fresh coverage-pass budget; gates return to 11b's re-finalize, not step 9).</condition>
+      <action>First entry only (coverage-pass not yet set): Initialize coverage-pass = 1 — mirror the AUDIT_PASS first-entry pattern at step 11a. On loop-backs from the &lt;2 branch below do NOT re-initialize — coverage-pass keeps its incremented value. Exception: a step 11b re-entry starts a FRESH coverage-pass budget (per step 11b) — treat coverage-pass as not yet set and initialize to 1 again.</action>
       <action>Re-read the original input ($ARGUMENTS — plan file or inline description).</action>
       <action>Extract all identifiable requirements, goals, or deliverables. Number them as a checklist.</action>
       <action>For each requirement, check whether at least one accepted spec's ## Intent addresses it. Build mapping: requirement → spec file(s).</action>
@@ -440,7 +441,7 @@ tasks:
       </check>
       <check condition="uncovered requirements exist AND coverage-pass &lt; 2">
         <action>For each gap: create research-task context file, add to tasks.yaml, spawn new spec worker.</action>
-        <action>Loop back to step 5 (idle and route). After new workers complete, re-run step 8b.</action>
+        <action>Increment coverage-pass, then loop back to step 5 (idle and route). After new workers complete, re-enter step 8b BELOW the first-entry initialization action (re-entry does NOT re-initialize — coverage-pass keeps its incremented value).</action>
       </check>
       <check condition="uncovered requirements exist AND coverage-pass = 2">
         <action>Log remaining gaps for step 9 summary. Proceed to step 8c.</action>
