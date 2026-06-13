@@ -174,11 +174,10 @@
           <action>Build CONTEXT string with these sections:</action>
 
           <section name="purpose">
-Domain layer for {{BC}}: implements aggregate roots, value objects, domain events, repository interfaces, and unit tests following DDD patterns.
+Domain layer for {{BC}}: implements aggregate roots, value objects, domain events, repository interfaces, and unit tests.
 All domain model details come from docs/architecture/domain-model.md ({{BC}} section).
 Cross-BC dependencies from docs/architecture/context-mapping.md.
-DDD patterns from resolved domain template ({{DOMAIN_TEMPLATE tier}}).
-ACL patterns from resolved context-mapping template ({{CONTEXT_MAP_TEMPLATE tier}}).
+DDD aggregate/VO/event/repository-interface contract is catalogue-owned: read code-rules php-symfony/ddd-conventions.md §Domain (+ §Shared, §Cross-BC); the resolved domain template ({{DOMAIN_TEMPLATE tier}}) and context-mapping/ACL template ({{CONTEXT_MAP_TEMPLATE tier}}) carry the project-specific overlay. Do not restate the contract inline.
           </section>
 
           <section name="fan-out-hints">

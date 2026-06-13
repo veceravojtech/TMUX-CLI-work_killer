@@ -52,10 +52,10 @@
           <item id="SC-19" condition="Playwright available">Playwright Chromium browser binary installed — npx playwright install --with-deps chromium exits 0</item>
           <item id="SC-20" condition="HAS_FRONTEND">playwright.config.ts exists with trace retain-on-failure, screenshot only-on-failure, reporter [['list'],['html',{open:'never'}]], outputDir test-results, retries: 0, and test-results/ in .gitignore</item>
           <item id="SC-21" condition="HAS_FRONTEND AND N_auth_flows>=1">playwright.config.ts defines a setup project (auth.setup.ts → playwright/.auth/*.json storageState) and an authenticated project with setup dependency (E2E-AUTH-STATE-CONV)</item>
-          <item id="SC-23" condition="symfony/mailer in composer.json">.env.test contains MAILER_DSN=null://null (Symfony recipe default, asserted by E2E-SIDEFX-CONV)</item>
-          <item id="SC-24" condition="symfony/messenger in composer.json">config/packages/test/messenger.yaml exists and routes transports to sync:// (E2E-SIDEFX-CONV)</item>
+          <item id="SC-23" condition="SIGNALS.has_mailer == yes">.env.test contains MAILER_DSN=null://null (Symfony recipe default, asserted by E2E-SIDEFX-CONV)</item>
+          <item id="SC-24" condition="SIGNALS.has_messenger == yes">config/packages/test/messenger.yaml exists and routes transports to sync:// (E2E-SIDEFX-CONV)</item>
         </criteria>
-        <rule>All 13 criteria (plus SC-17/SC-18 when HAS_DATABASE, SC-19 when Playwright available, SC-20 when HAS_FRONTEND, SC-21 when HAS_FRONTEND AND N_auth_flows>=1, SC-23 when symfony/mailer present, SC-24 when symfony/messenger present) must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+        <rule>All 13 criteria (plus SC-17/SC-18 when HAS_DATABASE, SC-19 when Playwright available, SC-20 when HAS_FRONTEND, SC-21 when HAS_FRONTEND AND N_auth_flows>=1, SC-23 when SIGNALS.has_mailer == yes, SC-24 when SIGNALS.has_messenger == yes) must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
       </substep>
 
       <substep n="2.4" title="Compose validation commands">
@@ -73,8 +73,8 @@
           <cmd source="SC-19" condition="Playwright available">npx playwright install --with-deps chromium</cmd>
           <cmd source="SC-20" condition="HAS_FRONTEND">test -f playwright.config.ts</cmd>
           <cmd source="SC-21" condition="HAS_FRONTEND AND N_auth_flows>=1">grep -q 'auth.setup' playwright.config.ts</cmd>
-          <cmd source="SC-23" condition="symfony/mailer in composer.json">grep -q 'MAILER_DSN=null://null' .env.test</cmd>
-          <cmd source="SC-24" condition="symfony/messenger in composer.json">test -f config/packages/test/messenger.yaml</cmd>
+          <cmd source="SC-23" condition="SIGNALS.has_mailer == yes">grep -q 'MAILER_DSN=null://null' .env.test</cmd>
+          <cmd source="SC-24" condition="SIGNALS.has_messenger == yes">test -f config/packages/test/messenger.yaml</cmd>
         </commands>
         <rule>These commands are emitted BARE (CMD-CONV): in local mode the daemon runs them on the host (Gate 0 having verified host Composer); in docker mode the daemon wraps them into the {{APP_SVC}} container started by task-R, so no host PHP/Composer is required.</rule>
       </substep>
@@ -108,7 +108,7 @@ Test environment variables from docs/architecture/test-environment.md.
           </task>
 
           <task n="2" name="Config files and quality tools">
-            <scope>phpunit.xml, phpstan.neon, ecs.php, deptrac.yaml, .env.test, APP_ENV=test pinning in Compose spec or .env.test (conditional on HAS_DATABASE, E2E-ENV-CONV SC-18), Playwright browser provisioning (conditional on Playwright available), playwright.config.ts + .gitignore test-results/ entry (conditional on HAS_FRONTEND), playwright.config.ts setup project + authenticated project + playwright/.auth/ gitignore (conditional on HAS_FRONTEND AND N_auth_flows>=1, E2E-AUTH-STATE-CONV SC-21), config/packages/test/messenger.yaml (conditional on symfony/messenger, E2E-SIDEFX-CONV SC-24)</scope>
+            <scope>phpunit.xml, phpstan.neon, ecs.php, deptrac.yaml, .env.test, APP_ENV=test pinning in Compose spec or .env.test (conditional on HAS_DATABASE, E2E-ENV-CONV SC-18), Playwright browser provisioning (conditional on Playwright available), playwright.config.ts + .gitignore test-results/ entry (conditional on HAS_FRONTEND), playwright.config.ts setup project + authenticated project + playwright/.auth/ gitignore (conditional on HAS_FRONTEND AND N_auth_flows>=1, E2E-AUTH-STATE-CONV SC-21), config/packages/test/messenger.yaml (conditional on SIGNALS.has_messenger == yes, E2E-SIDEFX-CONV SC-24)</scope>
             <criteria>SC-06, SC-07, SC-08, SC-09, SC-10, SC-11, SC-12, SC-13, SC-18 (conditional), SC-19 (conditional), SC-20 (conditional), SC-21 (conditional), SC-23 (conditional), SC-24 (conditional)</criteria>
             <owns>phpunit.xml, phpstan.neon, ecs.php, deptrac.yaml, .env.test, playwright.config.ts (conditional), .gitignore (conditional)</owns>
             <depends_on>task-0 (needs vendor/bin/* from composer install)</depends_on>
@@ -169,7 +169,7 @@ Test environment variables from docs/architecture/test-environment.md.
         <action>Call the goal-create MCP tool with these parameters:</action>
         <params>
           <param name="description">Create bootable TDD-ready Symfony skeleton with DDD structure, quality tools, and Share namespace</param>
-          <param name="acceptance">ACCEPTANCE array from substep 2.3 (base 13 items SC-01..SC-13, +SC-17 when HAS_DATABASE, +SC-18 when HAS_DATABASE (G2), +SC-19 when Playwright available, +SC-20 when HAS_FRONTEND, +SC-21 when HAS_FRONTEND AND N_auth_flows>=1 (G6), +SC-23 when symfony/mailer present (G7), +SC-24 when symfony/messenger present (G7))</param>
+          <param name="acceptance">ACCEPTANCE array from substep 2.3 (base 13 items SC-01..SC-13, +SC-17 when HAS_DATABASE, +SC-18 when HAS_DATABASE (G2), +SC-19 when Playwright available, +SC-20 when HAS_FRONTEND, +SC-21 when HAS_FRONTEND AND N_auth_flows>=1 (G6), +SC-23 when SIGNALS.has_mailer == yes (G7), +SC-24 when SIGNALS.has_messenger == yes (G7))</param>
           <param name="validate">VALIDATE array from substep 2.4 (6 base commands + conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24 cmds)</param>
           <param name="context">CONTEXT string from substep 2.5 (purpose + fan-out hints)</param>
           <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 2.5's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>

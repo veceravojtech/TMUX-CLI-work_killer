@@ -87,10 +87,11 @@
 
           <action>Build CONTEXT string with Investigation Config:</action>
           <section name="purpose">
-Infrastructure goal for {BC}: Doctrine XML mappings, repository implementations (write with flush-then-dispatch, read with query interface), migrations, custom DBAL types, ACL adapters, and integration tests with real DB.
+Infrastructure goal for {BC}: Doctrine XML mappings, repository implementations, migrations, custom DBAL types, ACL adapters, and integration tests with real DB.
 Aggregates: {aggregate_list}. Entities: {entity_list}.
 VOs needing DBAL types: {vo_type_list} (or "none").
 Cross-BC dependencies (ACL adapters needed): {acl_list} (or "none — single-BC or no inbound deps").
+Persistence shape — flush-then-dispatch write repos, write-vs-read-query repository split, custom DBAL types, and "no Doctrine in Domain/Application" — is catalogue-owned: read code-rules php-symfony/ddd-conventions.md §Infrastructure (+ §Domain repository contract); enforced by PHP-PERS-001/002/003/004. Do not restate it inline.
 See docs/architecture/test-environment.md for DB config. Fixtures reset via doctrine:fixtures:load --group=test.
 Infrastructure template: .tmux-cli/templates/_base/infrastructure.md.
 ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messenger query bus).

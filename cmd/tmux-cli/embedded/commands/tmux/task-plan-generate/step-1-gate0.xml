@@ -19,18 +19,21 @@
       </substep>
 
       <substep n="1.2" title="Read project state for conditional checks">
-        <action>Read docs/architecture/test-environment.md. Determine:</action>
-        <check name="is_docker">test-environment.md "Run Target" == docker → set RUN_TARGET=docker, else RUN_TARGET=local.</check>
-        <check name="services_external">test-environment.md "DB/services location" == external → set SERVICES_EXTERNAL=true (default false in docker mode).</check>
-        <check name="has_database">test-environment.md defines DB connection fields (host, port, user, password, db_name). If yes, set HAS_DATABASE=true.</check>
-        <check name="has_frontend">test-environment.md Playwright status is "installed" or "needs". If yes, set HAS_FRONTEND=true.</check>
+        <action>FIRST capture the single signal-dump authority: run `tmux-cli rules resolve --signals` and store the JSON as SIGNALS. Go derives the stack/capability facts ONCE here (it parses test-environment.md + cross-cutting.md internally); downstream conditional checks read `SIGNALS.&lt;field&gt;` instead of re-parsing those docs per step.</action>
+        <check name="is_docker">RUN_TARGET = SIGNALS.run_target ("docker" | "local"); when blank/unknown, default RUN_TARGET=local.</check>
+        <check name="has_database">HAS_DATABASE = (SIGNALS.has_database == "yes").</check>
+        <check name="has_frontend">HAS_FRONTEND = (SIGNALS.has_frontend == "yes").</check>
+        <check name="n_auth_flows">N_AUTH_FLOWS = SIGNALS.n_auth_flows (-1 = unknown); downstream auth-flow conditions read this rather than re-counting cross-cutting.md.</check>
+
+        <action>Read docs/architecture/test-environment.md for the one Class A fact the dump does NOT carry:</action>
+        <check name="services_external">test-environment.md "DB/services location" == external → set SERVICES_EXTERNAL=true (default false in docker mode). Not a dump field — stays a doc read.</check>
 
         <action>Scan docs/architecture/adrs/ directory. Determine:</action>
         <check name="has_redis">Any ADR selects Redis or Memcached as a caching/session backend. If yes, set HAS_REDIS=true.</check>
         <check name="has_rabbitmq">Any ADR selects RabbitMQ or async Messenger transport. If yes, set HAS_RABBITMQ=true.</check>
         <action>Set HAS_SERVICES = HAS_REDIS OR HAS_RABBITMQ.</action>
 
-        <action>Read composer.json to extract PHP version constraint from require.php and any ext-* requirements beyond the template defaults (pdo_pgsql, intl, mbstring).</action>
+        <action>Read composer.json to extract PHP version constraint from require.php and any ext-* requirements beyond the template defaults (pdo_pgsql, intl, mbstring). Class B real-inventory — stays a composer.json read, not a dump field.</action>
       </substep>
 
       <substep n="1.3" title="Compose acceptance criteria from GE-01..GE-13">

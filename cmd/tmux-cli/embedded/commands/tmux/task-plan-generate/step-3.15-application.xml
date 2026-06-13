@@ -86,9 +86,7 @@ Application layer for {{BC_NAME}}: command/query handlers orchestrate domain ope
 Use cases from docs/architecture/api-endpoints.md ({{BC_NAME}} section).
 Handler injection patterns from {{SERVICE_CONTRACTS_TEMPLATE_TIER}} template (service-contracts.md).
 Domain interfaces (ports) defined in own BC's domain goal deliverables.
-Command handlers: receive Command DTO, invoke aggregate via repository interface, return void/scalar ID.
-Query handlers: receive Query DTO, invoke read model interface, return DTO (never entity/aggregate).
-Application layer does NOT dispatch domain events — that is infrastructure's flush-then-dispatch responsibility.
+Layer shape — command/query handler contract, CQRS-lite read/write split, repository-port dependency inversion, and "no domain-event dispatch in this layer" — is catalogue-owned: read code-rules php-symfony/ddd-conventions.md §Application; enforced by PHP-ARCH-002/003/004. Do not restate it inline.
           </section>
 
           <section name="deliverables">

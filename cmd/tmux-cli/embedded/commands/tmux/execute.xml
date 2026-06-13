@@ -79,6 +79,7 @@ WHY: &lt;one line&gt;
     <step n="5" title="Report completion">
       <action>Save a full report to the path specified in RESPONSE PROTOCOL</action>
       <rule>The saved report MAY include an optional `RULES:` line summarizing `must`-rule adherence and any `should` apply/skip + justification (§8.2 — no waivers file). The tmux message stays DONE-tag-only — the `RULES:` line lives in the report file, never inline in the windows-message.</rule>
+      <action optional="true">OPTIONAL self-check (advisory, NOT required — §8.3): if your work changed code AND a rules tree exists (`.tmux-cli/rules/`), you MAY run `tmux-cli rules check --json` over your diff and fold any `violated:true` rules into the report's `RULES:` line. This never gates completion — an empty, non-zero, or skipped result is not a failure, and you still report [EXECUTE:DONE] as normal.</action>
       <action>windows-message to SUPERVISOR_WID with ONLY the DONE tag and file path:</action>
       <template>
 [EXECUTE:DONE wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt; file=&lt;abs-path-to-report&gt;]

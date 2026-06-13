@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/console/tmux-cli/internal/rules"
@@ -22,6 +23,12 @@ var (
 	rulesMatchPhase   string
 	rulesMatchJSON    bool
 	rulesMatchProject string
+
+	rulesCheckFiles   []string
+	rulesCheckDiff    string
+	rulesCheckPhase   string
+	rulesCheckJSON    bool
+	rulesCheckProject string
 
 	rulesLintProject  string
 	rulesLintJSON     bool
@@ -167,6 +174,65 @@ runnable signal. A rule whose signal cannot run is dropped with a warning.`,
 	},
 }
 
+var rulesCheckCmd = &cobra.Command{
+	Use:   "check",
+	Short: "Gate a diff: report which resolved code-rules apply and which are violated",
+	Long: `The brownfield diff gate (the previo:code-rules:goals analog). Derives the
+changed files (working tree vs HEAD by default; --diff <range> or an explicit
+--files list override), resolves the applicable code-rules catalogue, and runs
+each rule's automated signal against the changed footprint.
+
+A rule whose applies_to matches no changed file is omitted. For a matched rule:
+if it carries a runnable signal, VIOLATED means the anti-pattern is FOUND in the
+diff (grep exit 0 — the inverse of the fail-closed 'match' validate_cmd; the
+signal is never negated). A non-runnable signal is dropped with a warning.
+A signal-less or review/mixed rule carries agent_review:true — Go never
+auto-fails it; the agent judges it from the JSON (determinism boundary §6.4).
+Greenfield (no rules tree) yields an empty result, exit 0.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectRoot := rulesCheckProject
+		if projectRoot == "" {
+			var err error
+			projectRoot, err = os.Getwd()
+			if err != nil {
+				return err
+			}
+		}
+
+		files, err := changedFiles(projectRoot, rulesCheckDiff, rulesCheckFiles)
+		if err != nil {
+			return err
+		}
+
+		sig := rules.Detect(projectRoot)
+
+		// No rules tree (greenfield): emit an empty result, never error.
+		manifest, err := rules.LoadManifest(projectRoot)
+		if err != nil {
+			return printCheckResult(cmd, rules.CheckResult{
+				Rules:    []rules.CheckRulePayload{},
+				Warnings: []string{fmt.Sprintf("rules manifest unavailable: %v", err)},
+			}, rulesCheckJSON)
+		}
+
+		resolved, resolveWarnings, err := rules.Resolve(projectRoot, manifest, sig)
+		if err != nil {
+			return err
+		}
+
+		codeRules, err := rules.LoadCodeRules(projectRoot, resolved)
+		if err != nil {
+			return err
+		}
+
+		result := rules.Check(codeRules, files, rulesCheckPhase, projectRoot)
+		// Surface conservative-inclusion warnings from resolution alongside the
+		// check-time warnings (dropped rules, bad globs, grep errors).
+		result.Warnings = append(append([]string{}, resolveWarnings...), result.Warnings...)
+		return printCheckResult(cmd, result, rulesCheckJSON)
+	},
+}
+
 var rulesLintCmd = &cobra.Command{
 	Use:   "lint",
 	Short: "Lint project-local code-rules against the falsifiability contract",
@@ -258,6 +324,109 @@ func printMatchResult(cmd *cobra.Command, result rules.MatchResult, asJSON bool)
 	return nil
 }
 
+// printCheckResult renders a CheckResult as indented JSON (--json) or a
+// human-readable summary (warnings to stderr, one block per applicable rule
+// tagged APPLICABLE or VIOLATED, with the matched files and an agent-review
+// note). Parallel to printMatchResult.
+func printCheckResult(cmd *cobra.Command, result rules.CheckResult, asJSON bool) error {
+	if asJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(result)
+	}
+	for _, w := range result.Warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
+	}
+	if len(result.Rules) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "no code rules apply to the changed files")
+		return nil
+	}
+	for _, r := range result.Rules {
+		status := "APPLICABLE"
+		if r.Violated {
+			status = "VIOLATED"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s [%s/%s] phase=%s %s\n", r.ID, r.Severity, r.ValidateKind, r.Phase, status)
+		if len(r.Matched) > 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "  matched:      %s\n", strings.Join(r.Matched, ", "))
+		}
+		if r.AgentReview {
+			fmt.Fprintln(cmd.OutOrStdout(), "  agent-review: yes (judge from the rule, not auto-failed)")
+		}
+		if len(r.Paths) > 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "  source:       %s\n", strings.Join(r.Paths, ", "))
+		}
+	}
+	return nil
+}
+
+// changedFiles derives the changed-file list the diff gate runs against. An
+// explicit list (--files) short-circuits git entirely (deterministic, scripting
+// parity with `match`). Otherwise it unions `git diff --name-only <range>`
+// (range defaults to HEAD = working tree vs HEAD) with untracked files
+// (`git ls-files --others --exclude-standard`); untracked are included only for
+// the default working-tree gate, not for an explicit --diff range. Results are
+// de-duplicated, preserving first-seen order. A git failure (e.g. not a repo) is
+// surfaced as an actionable error, never a silent empty diff.
+func changedFiles(projectRoot, diffRange string, explicit []string) ([]string, error) {
+	if len(explicit) > 0 {
+		return explicit, nil
+	}
+
+	rangeArg := diffRange
+	if rangeArg == "" {
+		rangeArg = "HEAD"
+	}
+
+	seen := map[string]bool{}
+	var files []string
+	add := func(line string) {
+		s := strings.TrimSpace(line)
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		files = append(files, s)
+	}
+
+	out, err := runGit(projectRoot, "diff", "--name-only", rangeArg)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		add(line)
+	}
+
+	// Untracked files only when no explicit range was given (the working-tree
+	// gate); a commit range has no working-tree-only files to add.
+	if diffRange == "" {
+		un, err := runGit(projectRoot, "ls-files", "--others", "--exclude-standard")
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range strings.Split(un, "\n") {
+			add(line)
+		}
+	}
+
+	return files, nil
+}
+
+// runGit runs a git subcommand in projectRoot and returns its stdout, or an
+// actionable error that includes git's stderr (e.g. "not a git repository").
+func runGit(projectRoot string, args ...string) (string, error) {
+	full := append([]string{"-C", projectRoot}, args...)
+	cmd := exec.Command("git", full...)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(ee.Stderr)))
+		}
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	return string(out), nil
+}
+
 func init() {
 	rulesResolveCmd.Flags().StringVar(&rulesResolveKind, "kind", "",
 		"filter by file kind: convention | code-rules (default: both)")
@@ -283,6 +452,18 @@ func init() {
 		"project root (default: current directory)")
 	_ = rulesMatchCmd.MarkFlagRequired("files")
 	rulesCmd.AddCommand(rulesMatchCmd)
+
+	rulesCheckCmd.Flags().StringVar(&rulesCheckDiff, "diff", "",
+		"git range to derive changed files from (default: working tree vs HEAD)")
+	rulesCheckCmd.Flags().StringSliceVar(&rulesCheckFiles, "files", nil,
+		"explicit changed file paths (skips git derivation; repeatable/comma-separated)")
+	rulesCheckCmd.Flags().StringVar(&rulesCheckPhase, "phase", "",
+		"only check rules whose phase equals this value")
+	rulesCheckCmd.Flags().BoolVar(&rulesCheckJSON, "json", false,
+		"emit the CheckResult as JSON instead of a human-readable summary")
+	rulesCheckCmd.Flags().StringVar(&rulesCheckProject, "project", "",
+		"project root (default: current directory)")
+	rulesCmd.AddCommand(rulesCheckCmd)
 
 	rulesLintCmd.Flags().StringVar(&rulesLintProject, "project", "",
 		"project root (default: current directory)")
