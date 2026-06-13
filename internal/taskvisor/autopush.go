@@ -23,10 +23,17 @@ func (d *Daemon) autoPushOnCompletion() {
 	if !d.autoPush {
 		return
 	}
-	_, stderr, code, err := d.autoCommitGit("-C", d.workDir, "push")
+	out, stderr, code, err := d.autoCommitGit("-C", d.workDir, "push")
 	if code != 0 || err != nil {
 		log.Printf("warning: auto-push: git push failed (exit %d, err %v): %s", code, err, strings.TrimSpace(stderr))
 		return
 	}
-	log.Printf("auto-pushed run commits to remote")
+	// No-op honesty: real `git push` reports "Everything up-to-date" on stderr,
+	// so scan both streams. An unresolvable upstream is NOT a no-op — it exits
+	// non-zero above and routes to the warn-only path, never here.
+	if strings.Contains(out+"\n"+stderr, "Everything up-to-date") {
+		log.Printf("nothing to push")
+	} else {
+		log.Printf("auto-pushed run commits to remote")
+	}
 }

@@ -18,10 +18,12 @@ import (
 //
 // Contract: warn-only. The goal IS done (SaveGoals already persisted it), so a
 // failure here must never alter goal status, burn retries, or block teardown —
-// every error path logs a warning and returns. The step never pushes, never
-// creates/switches branches, and never stages paths outside the goal's scope:
-// an empty scope falls back to the files named in the goal's section of the
-// completion report, or skips silently — it NEVER means "stage everything".
+// every error path logs a warning and returns. The step never pushes and never
+// creates/switches branches. Staging follows a three-tier fallback: the goal's
+// scope pathspecs, else the files named in the goal's completion-report section,
+// else — when both are empty — the whole working tree (`git add -A`, mirroring
+// mergeWorktreeBack) gated on a non-empty UNSCOPED porcelain so a clean tree
+// still skips. When scope IS present, only in-scope paths are ever staged.
 
 // backendTaskRe extracts the backend task number from an acceptance entry like
 // "Backend task 45 is satisfied: ...".
@@ -43,7 +45,35 @@ func (d *Daemon) autoCommitGoal(g *Goal) {
 		pathspecs = completionReportFiles(d.workDir, g.ID)
 	}
 	if len(pathspecs) == 0 {
-		log.Printf("%s: auto-commit skipped — no scope and no completion-report files", g.ID)
+		// Third fallback tier (reached only when scope AND completion-report
+		// files are both empty): stage the whole working tree, mirroring
+		// mergeWorktreeBack's add -A (worktree.go:373). In serial mode goals run
+		// one at a time, so at goal-done the dirty tree IS this goal's output.
+		// The probe is UNSCOPED (no `--`/pathspecs) and gates the commit: a clean
+		// tree skips rather than making an empty commit.
+		out, stderr, code, err := d.autoCommitGit("-C", d.workDir, "status", "--porcelain")
+		if code != 0 || err != nil {
+			log.Printf("warning: auto-commit %s: git status failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
+			return
+		}
+		if strings.TrimSpace(out) == "" {
+			log.Printf("%s: auto-commit skipped — clean working tree", g.ID)
+			return
+		}
+
+		_, stderr, code, err = d.autoCommitGit("-C", d.workDir, "add", "-A")
+		if code != 0 || err != nil {
+			log.Printf("warning: auto-commit %s: git add failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
+			return
+		}
+
+		msg := goalCommitMessage(g)
+		_, stderr, code, err = d.autoCommitGit("-C", d.workDir, "commit", "-m", msg)
+		if code != 0 || err != nil {
+			log.Printf("warning: auto-commit %s: git commit failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
+			return
+		}
+		log.Printf("%s: auto-committed whole working tree to the current branch (%q)", g.ID, msg)
 		return
 	}
 

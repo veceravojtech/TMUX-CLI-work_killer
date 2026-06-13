@@ -33,6 +33,25 @@ func TestAutoPush_EnabledPushesExactlyOnce(t *testing.T) {
 	assert.Len(t, fake.calls, 1, "enabled auto-push must make exactly one git call (plain push, no extra args)")
 }
 
+func TestAutoPush_NoOpPushLogsNothingToPush(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitRunner{
+		respond: func(args []string) (string, int) {
+			if argsContain(args, "push") {
+				return "Everything up-to-date\n", 0
+			}
+			return "", 0
+		},
+	}
+	d := autoPushDaemon(t, dir, fake)
+	d.autoPush = true
+
+	d.autoPushOnCompletion()
+
+	assert.Equal(t, 1, fake.count("push"), "no-op push still emits exactly one git push")
+	assert.Len(t, fake.calls, 1, "no-op detection must add no extra git calls (single plain push)")
+}
+
 func TestAutoPush_DisabledMakesNoGitCalls(t *testing.T) {
 	dir := t.TempDir()
 	fake := &fakeGitRunner{}

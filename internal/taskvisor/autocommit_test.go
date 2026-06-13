@@ -126,6 +126,30 @@ func TestAutoCommit_UnrelatedChangesSurviveUnstaged(t *testing.T) {
 	assert.Empty(t, runGitCmd(t, dir, "diff", "--cached", "--name-only"), "nothing may be left staged after the commit")
 }
 
+// TestAutoCommit_ScopelessStagesWholeTreeRealRepo exercises the third fallback
+// tier end-to-end: a goal with no scope and no completion report over a real
+// dirty repo must `git add -A` and commit the WHOLE tree (both the in-scope and
+// the out-of-scope file land in the single commit), with goalCommitMessage(g) as
+// the subject and the branch unchanged.
+func TestAutoCommit_ScopelessStagesWholeTreeRealRepo(t *testing.T) {
+	dir := mkRealGitRepo(t)
+	branchBefore := runGitCmd(t, dir, "rev-parse", "--abbrev-ref", "HEAD")
+
+	d := New(dir, new(testutil.MockTmuxExecutor))
+	require.True(t, d.autoCommit, "New() must seed auto-commit ON")
+	g := scopedGoal()
+	g.Scope = nil
+	d.autoCommitGoal(g)
+
+	assert.Equal(t, "2", runGitCmd(t, dir, "rev-list", "--count", "HEAD"), "exactly one new commit on top of initial")
+	assert.Equal(t, branchBefore, runGitCmd(t, dir, "rev-parse", "--abbrev-ref", "HEAD"), "branch must be unchanged")
+	assert.Equal(t, goalCommitMessage(g), runGitCmd(t, dir, "log", "-1", "--pretty=%s"))
+
+	files := runGitCmd(t, dir, "show", "--name-only", "--pretty=format:", "HEAD")
+	assert.Contains(t, files, "internal/taskvisor/x.go", "in-scope path must be committed")
+	assert.Contains(t, files, "README.md", "out-of-scope path must ALSO be committed (whole-tree fallback)")
+}
+
 // --- recording-fake tests ----------------------------------------------------
 
 func TestAutoCommit_EmptyDiffSkips(t *testing.T) {
@@ -221,7 +245,7 @@ func TestAutoCommit_ScopeAbsentFallsBackToReportFiles(t *testing.T) {
 	assert.Equal(t, 1, fake.count("commit"))
 }
 
-func TestAutoCommit_ScopeAbsentNoReportSkips(t *testing.T) {
+func TestAutoCommit_ScopeAbsentDirtyStagesWholeTree(t *testing.T) {
 	fake := &fakeGitRunner{respond: dirtyScopeResponse}
 	d := autoCommitDaemon(t, t.TempDir(), fake)
 
@@ -229,7 +253,27 @@ func TestAutoCommit_ScopeAbsentNoReportSkips(t *testing.T) {
 	g.Scope = nil
 	d.autoCommitGoal(g)
 
-	assert.Empty(t, fake.calls, "no scope and no report must invoke zero git commands")
+	assert.Equal(t, 1, fake.count("status", "--porcelain"), "exactly one porcelain probe")
+	assert.Equal(t, 0, fake.count("--porcelain", "--"), "the fallback probe is UNSCOPED — no `--` pathspec separator")
+	assert.Equal(t, 1, fake.count("add", "-A"), "scopeless dirty tree must stage the whole tree with add -A")
+	assert.Equal(t, 1, fake.count("commit"), "scopeless dirty tree must commit once")
+
+	msgs := commitMessages(fake)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, goalCommitMessage(g), msgs[0], "scopeless commit subject must be goalCommitMessage(g)")
+}
+
+func TestAutoCommit_ScopeAbsentCleanTreeSkips(t *testing.T) {
+	fake := &fakeGitRunner{} // status --porcelain returns "" by default
+	d := autoCommitDaemon(t, t.TempDir(), fake)
+
+	g := scopedGoal()
+	g.Scope = nil
+	d.autoCommitGoal(g)
+
+	assert.Equal(t, 1, fake.count("status", "--porcelain"), "clean tree still probes porcelain exactly once")
+	assert.Equal(t, 0, fake.count("add"), "clean tree must not stage")
+	assert.Equal(t, 0, fake.count("commit"), "clean tree must not commit")
 }
 
 func TestAutoCommit_NeverPushesOrBranches(t *testing.T) {
