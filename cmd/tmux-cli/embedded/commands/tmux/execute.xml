@@ -76,6 +76,18 @@ WHY: &lt;one line&gt;
       <action>Idle until the supervisor responds (it writes the escalation marker and kills your window, or REMINDs you for a concrete prerequisite).</action>
     </step>
 
+    <step n="4c" title="Mandatory pre-DONE validation gate" critical="true">
+      <rule critical="true">Before emitting [EXECUTE:DONE], you MUST run the goal's `## Validation Rules` deterministic commands in your worktree and confirm each exits 0. This gate is NON-OPTIONAL and distinct from the self-check at step 5 (execute.xml line 82).</rule>
+      <action>Locate the goal's `## Validation Rules` (present at runtime in the goal's dispatch.md / goal.md; the supervisor SCOPE/CONTEXT points at it). If the task carries NO `## Validation Rules` section, this gate is vacuously satisfied — proceed to step 5.</action>
+      <action>For each rule that is a bare deterministic command (grep / test / build / `go test` / `stat`), run it in your worktree under a per-command timeout. SKIP semantic / judgment rules — only deterministic commands gate DONE. The gate is read-only outside goal scope: run the commands, never mutate state just to make them pass.</action>
+      <check condition="any deterministic Validation Rules command exits non-zero (or times out)">
+        <action>Do NOT emit [EXECUTE:DONE]. Keep working: fix the code so the failing command exits 0, then re-run the FULL gate. Only when EVERY deterministic Validation Rules command exits 0 may you proceed to step 5.</action>
+      </check>
+      <check condition="all deterministic Validation Rules commands exit 0">
+        <action>Gate passed — proceed to step 5 (Report completion).</action>
+      </check>
+    </step>
+
     <step n="5" title="Report completion">
       <action>Save a full report to the path specified in RESPONSE PROTOCOL</action>
       <rule>The saved report MAY include an optional `RULES:` line summarizing `must`-rule adherence and any `should` apply/skip + justification (§8.2 — no waivers file). The tmux message stays DONE-tag-only — the `RULES:` line lives in the report file, never inline in the windows-message.</rule>
@@ -144,6 +156,7 @@ PARTIAL: &lt;what you have, or "none"&gt;
       • Decidable forks are auto-resolved per the quality-in-scope policy (highest-quality option that keeps SCOPE; record rationale) — reserve NEED_INPUT for user-only facts (credentials/business-intent/out-of-band)
       • ESCALATE only when blocked by an out-of-SCOPE, separately-buildable prerequisite (routes to re-planning); for an in-scope blocker use FAILED; for a missing fact use NEED_INPUT. NEVER call goal-create — generation owns prerequisite-goal creation
       • ALWAYS read AGENTS.md or CLAUDE.md before starting work — project conventions are mandatory context
+      • Before emitting [EXECUTE:DONE], run the goal's `## Validation Rules` deterministic commands and confirm each exits 0 (step 4c) — this gate is mandatory, not the optional step-5 self-check
       • One tagged message per reply; untagged output gets REMIND from the supervisor
     </critical-rules>
   </llm>
