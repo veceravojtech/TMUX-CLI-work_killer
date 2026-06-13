@@ -1,13 +1,17 @@
-# Pack: php-symfony — Symfony DDD code rules.
+# Pack: php-symfony — Symfony DDD monorepo code rules.
 # Audience: spec/implementation/review agents (kind: code-rules). Loaded on
 # top of the php pack when FRAMEWORK == symfony. See ../SCHEMA.md for the
-# schema; see ddd-conventions.md (same pack) for the layer contract these
-# rules enforce point-wise.
+# schema; see monorepo-layout.md, context-layers.md, shared-kernel.md, and
+# app-layer.md (same pack) for the layer contract these rules enforce
+# point-wise.
 #
 # Adapted from a production house-rules catalogue grown out of real MR review
 # feedback (adapted_from records the source rule ID); provenance identifiers
-# are intentionally not embedded. Path globs target the generated DDD skeleton
-# (src/<BC>/<Layer>/...).
+# are intentionally not embedded. Path globs target the P2 monorepo topology:
+# contexts/<bc>/src/{Domain,Application,Bundle} (the bounded-context library;
+# Bundle is the infrastructure layer), contexts/<bc>/app (framework layer),
+# contexts/previo/src (shared kernel), projects/<app>/src (deployable apps),
+# and packages/<pkg> (shared libraries).
 
 - id: PHP-ARCH-001
   category: architecture
@@ -23,7 +27,8 @@
   adapted_from: "PHP-ARCH-001"
   applies_to:
     - "templates/**/*.twig"
-    - "src/**/View/**/*.php"
+    - "contexts/*/src/**/View/**/*.php"
+    - "projects/*/src/**/View/**/*.php"
   detect:
     - "conditional business rules computed inside a template"
   fix: >
@@ -42,19 +47,20 @@
   severity: must
   title: "Handlers live in the Application layer; handler method is `handle`"
   rule: >
-    Command/query handlers belong in src/<BC>/Application/; the handler entry
-    method is named handle().
+    Command/query handlers belong in contexts/<bc>/src/Application/; the handler
+    entry method is named handle().
   why: >
     Consistent placement and naming is how the wiring (and readers) find
     handlers; it keeps Domain free of orchestration.
   adapted_from: "PHP-ARCH-002"
   applies_to:
-    - "src/**/*Handler.php"
+    - "contexts/*/src/**/*Handler.php"
   detect:
     - "a *Handler class outside */Application/*"
     - "handler entry method not named handle"
   fix: >
-    Move the handler under src/<BC>/Application/ and rename its method to handle.
+    Move the handler under contexts/<bc>/src/Application/ and rename its method
+    to handle.
   autofix: structural
   acceptance:
     - "GIVEN a handler THEN it lives in the Application layer and exposes handle()"
@@ -77,7 +83,7 @@
     from the domain strands them.
   adapted_from: "PHP-ARCH-003"
   applies_to:
-    - "src/**/Domain/**/*.php"
+    - "contexts/*/src/Domain/**/*.php"
   detect:
     - "a Domain repository method typed to return a *DTO"
   fix: >
@@ -103,7 +109,8 @@
     One seam to change how data is stored; callers stay storage-agnostic.
   adapted_from: "PHP-ARCH-004"
   applies_to:
-    - "src/**/*.php"
+    - "contexts/*/src/**/*.php"
+    - "projects/*/src/**/*.php"
   detect:
     - "EntityManager/persist/flush called from a controller or handler"
   fix: >
@@ -130,7 +137,7 @@
     Needless indirection adds files and cognitive load with no benefit.
   adapted_from: "PHP-ARCH-005"
   applies_to:
-    - "src/**/*.php"
+    - "contexts/*/src/**/*.php"
   detect:
     - "a new interface with exactly one implementation and no test double need"
     - "a message dispatched async where the caller awaits the outcome"
@@ -158,9 +165,9 @@
     tangles unrelated concerns.
   adapted_from: "PHP-ARCH-006"
   applies_to:
-    - "src/**/*Controller.php"
-    - "src/**/*Request.php"
-    - "src/**/*Response.php"
+    - "projects/*/src/*/*Controller.php"
+    - "projects/*/src/*/*Request.php"
+    - "projects/*/src/*/*Response.php"
   detect:
     - "Request/Response/Command DTOs loose in a module root"
     - "one controller exposing actions for two distinct resources"
@@ -190,7 +197,8 @@
     typos.
   adapted_from: "PHP-PERS-001"
   applies_to:
-    - "src/**/Infrastructure/**/*.php"
+    - "contexts/*/src/Bundle/**/*.php"
+    - "projects/*/src/**/*Repository.php"
   detect:
     - "repositories returning/accepting associative arrays for domain state"
   fix: >
@@ -218,8 +226,9 @@
   depends_on_rules:
     - "PHP-PERS-001"
   applies_to:
-    - "src/**/Infrastructure/**/*.php"
-    - "src/**/Domain/**/*.php"
+    - "contexts/*/src/Bundle/**/*.php"
+    - "contexts/*/src/Domain/**/*.php"
+    - "projects/*/src/**/Entity/**/*.php"
   detect:
     - "ORM column type string/varchar holding UUIDs"
   fix: >
@@ -248,8 +257,8 @@
   depends_on_rules:
     - "PHP-PERS-001"
   applies_to:
-    - "src/**/Domain/**/*.php"
-    - "src/**/Infrastructure/**/*.php"
+    - "contexts/*/src/Domain/**/*.php"
+    - "contexts/*/src/Bundle/**/*.php"
   detect:
     - "json ORM column holding an array of structured records"
   fix: >
@@ -277,7 +286,7 @@
   depends_on_rules:
     - "PHP-PERS-001"
   applies_to:
-    - "src/**/Infrastructure/**/*.php"
+    - "contexts/*/src/Bundle/**/*.php"
   detect:
     - "string columns + manual from()/value conversions around enum fields"
   fix: >
@@ -336,7 +345,8 @@
     exceptions keep the boundary uniform.
   adapted_from: "PHP-I18N-001"
   applies_to:
-    - "src/**/*.php"
+    - "contexts/*/src/**/*.php"
+    - "projects/*/src/**/*.php"
     - "templates/**/*.twig"
   detect:
     - "literal user-facing strings in controllers/templates"
@@ -351,3 +361,164 @@
     - "review: no hardcoded user-facing strings or sprintf'd user-facing exceptions in the diff"
   validate_kind: review
   phase: cross-cutting
+
+# PHP-TYPE-003 is the Symfony-monorepo AUTOMATED counterpart of the generic
+# php-pack PHP-TYPE-001 (review): same UUID-type intent, but enforced with a
+# falsifiable grep signal. It carries a distinct id because the falsifiability
+# selftest (go test ./cmd/tmux-cli) enforces GLOBAL id-uniqueness across every
+# pack, and the php pack already owns PHP-TYPE-001/002.
+- id: PHP-TYPE-003
+  category: types
+  scope: generic
+  severity: should
+  title: "Use real UUID types end-to-end (automated) — no asserted UUID strings"
+  rule: >
+    Where a value is a UUID, type it as a UUID value object (e.g. UuidInterface)
+    rather than a string guarded by an assert. Apply it consistently: the getter,
+    the actions that consume it, and (where applicable) the frontend.
+  why: >
+    A UUID type makes the contract explicit, removes scattered asserts, and pairs
+    with Doctrine's binary UUID mapping (see PHP-PERS-002).
+  adapted_from: "PHP-TYPE-001"
+  applies_to:
+    - "contexts/*/src/**/*.php"
+    - "contexts/*/app/src/**/*.php"
+    - "projects/*/src/**/*.php"
+  detect:
+    - "Assert::uuid(...) or the attribute #[Assert\\Uuid] guarding a value then typed/passed as a string"
+    - "a *Id/*Uuid property or param holding a UUID but typed string instead of a UUID value object"
+  fix: >
+    Replace the asserted string with the project UUID value object across the
+    getter, the consuming actions, and the frontend type.
+  autofix: structural
+  acceptance:
+    - "GIVEN a UUID value THEN it is typed as a UUID value object, not an asserted string"
+  validate:
+    - "No `Assert\\Uuid` / `Assert::uuid` remains where a UUID type fits on the changed UUID paths — grep returns nothing"
+  validate_kind: automated
+  phase: domain
+  signal: 'Assert\\Uuid|Assert::uuid'
+  examples:
+    bad: '#[Assert\Uuid] public readonly string $threadId;'
+    good: 'public readonly UuidInterface $threadId;'
+
+- id: PHP-ARCH-007
+  category: architecture
+  scope: generic
+  severity: must
+  title: "Respect package/context boundaries — no upward-layer or cross-context-internal dependency"
+  rule: >
+    A package depends only in the allowed direction. Within a context the layers
+    go Domain ← Application ← Bundle ← app (a lower layer never imports a higher
+    one); across packages a context never reaches into another context's internal
+    Domain/Application — only its shared-kernel contracts. deptrac enforces both
+    the layer direction and the package edges.
+  why: >
+    The package/layer graph is the architecture; an upward or cross-internal edge
+    couples what must stay independently buildable and deployable.
+  applies_to:
+    - "contexts/*/src/**/*.php"
+    - "packages/*/src/**/*.php"
+    - "projects/*/src/**/*.php"
+  detect:
+    - "a lower layer importing a higher layer (Domain using Application/Bundle)"
+    - "a package importing another package's internal namespace, not its contract"
+  fix: >
+    Invert the dependency (inject an interface owned by the lower layer) or route
+    the cross-package call through a shared-kernel contract; rerun deptrac.
+  autofix: structural
+  acceptance:
+    - "GIVEN the changed packages THEN deptrac reports no layer or package-boundary violation"
+  validate:
+    - "vendor/bin/deptrac analyse"
+    - "review: changed code respects package/context boundaries (no upward layer or cross-context-internal dependency)"
+  validate_kind: mixed
+  phase: architecture
+
+- id: PHP-ARCH-008
+  category: architecture
+  scope: generic
+  severity: must
+  title: "No import or injection of another context's concrete Domain/Application class"
+  rule: >
+    A context never imports, injects, or instantiates another context's concrete
+    Domain or Application class. Cross-context collaboration goes through a
+    published contract from the shared kernel (see PHP-ARCH-009), so the foreign
+    context's internals stay private and replaceable.
+  why: >
+    A concrete cross-context import welds two contexts together; the next refactor
+    in one breaks the other, defeating the bounded-context split.
+  applies_to:
+    - "contexts/*/src/**/*.php"
+  detect:
+    - "a use/import of another context's concrete Domain/Application namespace"
+    - "constructor injection typed to a foreign context's concrete service"
+  fix: >
+    Depend on the foreign context's shared-kernel contract interface and inject
+    that instead of the concrete class.
+  autofix: structural
+  acceptance:
+    - "GIVEN a cross-context dependency THEN it targets a shared contract, not a foreign concrete class"
+  validate:
+    - "vendor/bin/deptrac analyse"
+    - "review: no import/inject of another context's concrete Domain/Application class"
+  validate_kind: mixed
+  phase: architecture
+
+- id: PHP-ARCH-009
+  category: architecture
+  scope: generic
+  severity: should
+  title: "Cross-context reads go through a published query contract, not a foreign service"
+  rule: >
+    When one context needs another context's data, it consumes a published
+    XxxQueryContract/XxxContract from the shared kernel (contexts/previo/src) and
+    receives contract-typed result objects — never a foreign concrete query
+    service or DTO.
+  why: >
+    Reading through the contract keeps the consumer decoupled from the producer's
+    internal shape; the producer can change its query service without a ripple.
+  applies_to:
+    - "contexts/*/src/**/*.php"
+  detect:
+    - "a consumer context typing against a foreign concrete query service or result DTO"
+  fix: >
+    Inject the shared XxxQueryContract; type results as the XxxContract interface.
+  autofix: structural
+  acceptance:
+    - "GIVEN a cross-context read THEN it flows through a published query contract, not a foreign service"
+  validate:
+    - "review: cross-context reads go through a published XxxQueryContract/XxxContract, not a foreign concrete service"
+  validate_kind: review
+  phase: architecture
+
+- id: PHP-PERS-005
+  category: persistence
+  scope: generic
+  severity: should
+  title: "DAO references a foreign aggregate by typed Id + #[PersistentReference], not a concrete entity"
+  rule: >
+    An AggregateData DAO that needs another aggregate holds that aggregate's typed
+    Id and a #[PersistentReference] back-reference — it never maps a concrete
+    foreign entity association. Child collections of the same aggregate stay as a
+    mapped Collection<> on the DAO.
+  why: >
+    A direct foreign-entity association leaks one aggregate's persistence into
+    another and breaks aggregate boundaries; the typed Id + #[PersistentReference]
+    seam keeps each aggregate independently loadable.
+  applies_to:
+    - "contexts/*/src/**/*Data.php"
+    - "contexts/*/src/Domain/**/*.php"
+  detect:
+    - "an AggregateData DAO mapping a concrete foreign aggregate entity association"
+    - "a back-reference to a parent aggregate without #[PersistentReference]"
+  fix: >
+    Replace the foreign-entity association with the aggregate's typed Id and a
+    #[PersistentReference] back-reference.
+  autofix: structural
+  acceptance:
+    - "GIVEN an AggregateData DAO THEN foreign aggregates are referenced by typed Id + #[PersistentReference], not concrete entities"
+  validate:
+    - "review: an AggregateData DAO references a foreign aggregate by its typed Id + #[PersistentReference], not a concrete foreign entity"
+  validate_kind: review
+  phase: domain
