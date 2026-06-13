@@ -151,9 +151,7 @@ func (d *Daemon) deactivateOnCompletion(goals *GoalsFile) error {
 	d.idleTicks = 0
 	d.stallReported = false
 	d.mode = modeIdle
-	if err := d.renderDashboard(os.Stdout); err != nil {
-		log.Printf("dashboard render error: %v", err)
-	}
+	d.renderBoard()
 	return nil
 }
 

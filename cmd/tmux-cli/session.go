@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"syscall"
 
@@ -324,6 +325,22 @@ var taskvisorInlinePlanCmd = &cobra.Command{
 	RunE:  runTaskvisorInlinePlan,
 }
 
+// dashboardDefaultWatchInterval is the bare `--watch` cadence; NoOptDefVal is
+// derived from it (.String()) so the bare-flag value and the defensive helper
+// default in resolveDashboardWatch never diverge.
+const dashboardDefaultWatchInterval = 5 * time.Second
+
+var taskvisorDashboardCmd = &cobra.Command{
+	Use:   "dashboard",
+	Short: "Render the taskvisor status board (read-only); --watch to auto-refresh",
+	RunE:  runTaskvisorDashboard,
+}
+
+// taskvisorDashboardWatch backs the dashboard `--watch[=Ns]` flag. Use
+// cmd.Flags().Changed("watch") — not this value — to distinguish an omitted
+// flag from a bare `--watch`.
+var taskvisorDashboardWatch time.Duration
+
 var (
 	windowName      string
 	windowIDFlag    string
@@ -436,6 +453,12 @@ func init() {
 	taskvisorInlinePlanCmd.Flags().BoolVar(&revalFinalCycle, "final", false, "Final cycle before overall pass — re-run all checks for end-to-end verification")
 	taskvisorInlinePlanCmd.Flags().StringArrayVar(&revalChangedFiles, "changed-file", nil, "A file changed this cycle (repeatable); defaults to git diff --name-only HEAD")
 	taskvisorCmd.AddCommand(taskvisorInlinePlanCmd)
+
+	taskvisorDashboardCmd.Flags().DurationVar(&taskvisorDashboardWatch, "watch", 0, "Auto-refresh the board on an interval (e.g. --watch=10s); bare --watch = 5s; omit for a single static snapshot")
+	// NoOptDefVal makes a bare `--watch` (no =value) resolve to 5s; it MUST be set
+	// after DurationVar and derived from the const so the two never drift.
+	taskvisorDashboardCmd.Flags().Lookup("watch").NoOptDefVal = dashboardDefaultWatchInterval.String()
+	taskvisorCmd.AddCommand(taskvisorDashboardCmd)
 
 	// Project init flags
 	projectInitCmd.Flags().Bool("no-attach", false, "Don't attach to the session after creation")
@@ -1222,6 +1245,50 @@ func runTaskvisorStart(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Taskvisor start signal written — daemon will activate on next poll")
 	return nil
+}
+
+// runTaskvisorDashboard is the thin CLI shell for the taskvisor status board. It
+// resolves the project root + tmux executor and delegates ALL render/watch logic
+// to internal/taskvisor (RenderBoard / WatchBoard). Session discovery is INTERNAL
+// to the renderer, so — unlike runTaskvisorDaemon — this runner does NOT resolve
+// or require a tmux session: a missing session degrades gracefully to a
+// "no tmux session" census rather than erroring.
+func runTaskvisorDashboard(cmd *cobra.Command, args []string) error {
+	cwd, err := taskvisorProjectRoot()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	executor := tmux.NewTmuxExecutor()
+
+	watch, interval := resolveDashboardWatch(cmd.Flags().Changed("watch"), taskvisorDashboardWatch)
+	if !watch {
+		return taskvisor.RenderBoard(os.Stdout, cwd, executor)
+	}
+
+	// Watch mode: SIGINT (Ctrl-C) / SIGTERM cancels ctx → WatchBoard returns. Map
+	// context.Canceled to nil so an interrupt is a clean exit 0, not a surfaced error.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := taskvisor.WatchBoard(ctx, os.Stdout, cwd, executor, interval); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
+}
+
+// resolveDashboardWatch maps the parsed --watch flag state to (watch, interval).
+// It keys off `changed` FIRST because pflag cannot distinguish an omitted flag
+// from a bare `--watch` by value alone: absent ⇒ render once; bare/non-positive
+// ⇒ the 5s default (defensive — NoOptDefVal already yields 5s for a bare flag);
+// otherwise the explicit value.
+func resolveDashboardWatch(changed bool, val time.Duration) (watch bool, interval time.Duration) {
+	if !changed {
+		return false, 0
+	}
+	if val <= 0 {
+		return true, dashboardDefaultWatchInterval
+	}
+	return true, val
 }
 
 // runTaskvisorRevalidationPlan is the read-only read-side seam of C10

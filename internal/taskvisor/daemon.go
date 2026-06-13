@@ -409,9 +409,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			if err := d.poll(d.ctx); err != nil {
 				log.Printf("poll error: %v", err)
 			}
-			if err := d.renderDashboard(os.Stdout); err != nil {
-				log.Printf("dashboard render error: %v", err)
-			}
+			d.renderBoard()
 		}
 	}
 }
@@ -642,9 +640,7 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 		}
 	}
 	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:STATE from=idle to=active goals=%d]", pendingCount))
-	if err := d.renderDashboard(os.Stdout); err != nil {
-		log.Printf("dashboard render error: %v", err)
-	}
+	d.renderBoard()
 	return nil
 }
 
@@ -691,9 +687,7 @@ func (d *Daemon) deactivate() error {
 	d.runtimes = nil
 	d.mode = modeIdle
 	d.notifySupervisor("[TASKVISOR:STATE from=active to=idle]")
-	if err := d.renderDashboard(os.Stdout); err != nil {
-		log.Printf("dashboard render error: %v", err)
-	}
+	d.renderBoard()
 	return nil
 }
 

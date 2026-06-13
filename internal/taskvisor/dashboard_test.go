@@ -2,12 +2,18 @@ package taskvisor
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/console/tmux-cli/internal/testutil"
+	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -413,4 +419,279 @@ func TestDashboardOmitsStackGateSkipsWhenZero(t *testing.T) {
 	require.NoError(t, d.renderDashboard(&buf))
 	out := buf.String()
 	assert.NotContains(t, out, "stack-gated")
+}
+
+// ── Board renderer (RenderBoard/WatchBoard) tests ──────────────────────────────
+//
+// All five sections are daemon-independent and read-only. Every case below runs
+// with NO live tmux server: the census source is an injected MockTmuxExecutor (or
+// nil). Tests use t.TempDir() so the queue cache write (the ONLY permitted write)
+// is isolated.
+
+// syncBuffer is a mutex-guarded io.Writer so the WatchBoard goroutine and the test
+// reader never race on the underlying bytes.Buffer (-race clean).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// writeBoardLog writes content to .tmux-cli/logs/taskvisor.log under dir.
+func writeBoardLog(t *testing.T, dir, content string) {
+	t.Helper()
+	logDir := filepath.Join(dir, ".tmux-cli", "logs")
+	require.NoError(t, os.MkdirAll(logDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "taskvisor.log"), []byte(content), 0o644))
+}
+
+func TestTaskvisorDashboardRenderBoard_Populated(t *testing.T) {
+	dir := t.TempDir()
+
+	start := time.Now().Add(-7 * time.Minute).UTC().Format(time.RFC3339)
+	doneStart := time.Date(2026, 5, 20, 15, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	doneFinish := time.Date(2026, 5, 20, 15, 4, 0, 0, time.UTC).Format(time.RFC3339)
+	gf := &GoalsFile{
+		CurrentGoal: "goal-025",
+		Goals: []Goal{
+			{ID: "goal-025", Description: "Implement the taskvisor dashboard board renderer end to end",
+				Status: GoalRunning, Phase: "supervising", Lane: LaneSolo, StartedAt: start, MaxRetries: 5},
+			{ID: "goal-026", Description: "Done goal", Status: GoalDone,
+				StartedAt: doneStart, FinishedAt: doneFinish, MaxRetries: 5},
+			{ID: "goal-027", Description: "Pending goal", Status: GoalPending, MaxRetries: 5},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	tgf := &TaskGoalsFile{Mappings: []TaskGoalMapping{
+		{TaskID: "task-42", GoalID: "goal-025", Title: "Dashboard renderer", ClaimedAt: start},
+	}}
+	require.NoError(t, SaveTaskGoals(dir, tgf))
+
+	writeBoardLog(t, dir, strings.Join([]string{
+		"2026/06/13 10:00:00 daemon started",
+		"2026/06/13 10:00:01 COUNTERS goal=goal-025 cycle=2 phase=validating event=transition retries_code=4 retries_spec=3 retries_val=2 inv_spawned=1 inv_reused=0 inv_inlined=0 cycle_wall_s=10 goal_wall_s=20",
+		"2026/06/13 10:00:02 goal-025: phase supervising -> validating",
+	}, "\n")+"\n")
+
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return("sess", nil)
+	mockExec.On("ListWindows", "sess").Return([]tmux.WindowInfo{
+		{Name: "supervisor"},     // bare window-0 — NOT a goal worker
+		{Name: "supervisor-025"}, // goal supervisor
+		{Name: "execute-025-1"},
+		{Name: "validator-025"},
+		{Name: "investigator-025-1"},
+	}, nil)
+
+	var buf bytes.Buffer
+	require.NoError(t, RenderBoard(&buf, dir, mockExec))
+	out := buf.String()
+
+	// Section 1 — goals table.
+	assert.Contains(t, out, "goal-025")
+	assert.Contains(t, out, "goal-026")
+	assert.Contains(t, out, "goal-027")
+	assert.Contains(t, out, "Implement the", "description prefix should render")
+	assert.Contains(t, out, "...", "long description should be truncated")
+	assert.Contains(t, out, "supervisor-025", "bound supervisor window column")
+	assert.Contains(t, out, "c/s/v", "retries-remaining header")
+	// goal-025 (MaxRetries 5) seeds live remaining budget to MigrateRetries(5) =
+	// Code 5 / Spec 3 / Val 2 via LoadGoals.
+	assert.Contains(t, out, "5/3/2", "goal-025 c/s/v remaining budget")
+
+	// Section 2 — mappings.
+	assert.Contains(t, out, "task-42")
+
+	// Section 4 — census (bare supervisor excluded).
+	assert.Contains(t, out, "supervisor 1")
+	assert.Contains(t, out, "execute 1")
+	assert.Contains(t, out, "validator 1")
+	assert.Contains(t, out, "investigator 1")
+
+	// Section 5 — log tail (last COUNTERS + last transition).
+	assert.Contains(t, out, "COUNTERS goal=goal-025")
+	assert.Contains(t, out, "supervising -> validating")
+
+	// Section 3 — api disabled (no setting.yaml).
+	assert.Contains(t, out, "api disabled")
+
+	mockExec.AssertExpectations(t)
+}
+
+func TestTaskvisorDashboardRenderBoard_DaemonDownMissingGoals(t *testing.T) {
+	dir := t.TempDir()
+
+	var buf bytes.Buffer
+	require.NotPanics(t, func() {
+		require.NoError(t, RenderBoard(&buf, dir, nil))
+	})
+	out := buf.String()
+
+	// All five section headers present.
+	assert.Contains(t, out, "GOALS")
+	assert.Contains(t, out, "MAPPINGS")
+	assert.Contains(t, out, "QUEUE")
+	assert.Contains(t, out, "WORKER WINDOWS")
+	assert.Contains(t, out, "RECENT ACTIVITY")
+
+	// Every missing source degrades to its placeholder.
+	assert.Contains(t, out, "(no goals.yaml")
+	assert.Contains(t, out, "(no in-flight task")
+	assert.Contains(t, out, "api disabled")
+	assert.Contains(t, out, "(no tmux session")
+	assert.Contains(t, out, "(no taskvisor.log")
+}
+
+func TestTaskvisorDashboardRenderBoard_EmptyGoals(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, SaveGoals(dir, &GoalsFile{Goals: nil}))
+
+	var buf bytes.Buffer
+	require.NoError(t, RenderBoard(&buf, dir, nil))
+	out := buf.String()
+
+	assert.Contains(t, out, "GOALS")
+	assert.Contains(t, out, "(no goals)")
+}
+
+func TestTaskvisorDashboardRenderBoard_APIDisabled(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".tmux-cli", "setting.yaml"),
+		[]byte("apiEnabled: false\n"), 0o644))
+
+	var buf bytes.Buffer
+	require.NoError(t, RenderBoard(&buf, dir, nil))
+	out := buf.String()
+
+	assert.Contains(t, out, "BACKEND QUEUE")
+	assert.Contains(t, out, "api disabled")
+	// No cache file was written for the disabled path.
+	_, err := os.Stat(filepath.Join(dir, ".tmux-cli", "dashboard-queue-cache.json"))
+	assert.True(t, os.IsNotExist(err), "disabled api must make no network call and write no cache")
+}
+
+func TestTaskvisorDashboardWindowCensus_Classification(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"supervisor", ""}, // bare window-0, not a goal worker
+		{"supervisor-025", "supervisor"},
+		{"execute-025-1", "execute"},
+		{"validator", ""}, // bare fallback, not counted
+		{"validator-025", "validator"},
+		{"investigator-025-2", "investigator"},
+		{"plan-audit-025", "plan-audit"},
+		{"bash", ""},
+		{"claude", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, classifyWindow(tc.name))
+		})
+	}
+}
+
+func TestTaskvisorDashboardLogTail_LastCountersAndTransition(t *testing.T) {
+	dir := t.TempDir()
+	writeBoardLog(t, dir, strings.Join([]string{
+		"COUNTERS goal=goal-025 cycle=1 phase=supervising event=dispatch retries_code=5 retries_spec=3 retries_val=2 inv_spawned=0 inv_reused=0 inv_inlined=0 cycle_wall_s=0 goal_wall_s=0",
+		"goal-025: phase supervising -> validating",
+		"COUNTERS goal=goal-025 cycle=2 phase=validating event=transition retries_code=4 retries_spec=3 retries_val=2 inv_spawned=2 inv_reused=0 inv_inlined=0 cycle_wall_s=30 goal_wall_s=60",
+		"goal-025: phase validating -> supervising",
+	}, "\n")+"\n")
+
+	lastTransition, lastCounters, cycleByGoal := tailLog(dir)
+	assert.Equal(t, "goal-025: phase validating -> supervising", lastTransition)
+	assert.Contains(t, lastCounters, "cycle=2")
+
+	tokens := parseCounters(lastCounters)
+	assert.Equal(t, "2", tokens["cycle"])
+	assert.Equal(t, "validating", tokens["phase"])
+	assert.Equal(t, "2", tokens["inv_spawned"])
+
+	require.NotNil(t, cycleByGoal)
+	assert.Equal(t, "2", cycleByGoal["goal-025"])
+}
+
+func TestTaskvisorDashboardLogTail_MissingLog(t *testing.T) {
+	dir := t.TempDir()
+
+	lastTransition, lastCounters, cycleByGoal := tailLog(dir)
+	assert.Equal(t, "", lastTransition)
+	assert.Equal(t, "", lastCounters)
+	assert.Nil(t, cycleByGoal)
+
+	var buf bytes.Buffer
+	require.NoError(t, RenderBoard(&buf, dir, nil))
+	assert.Contains(t, buf.String(), "(no taskvisor.log)")
+}
+
+func TestTaskvisorDashboardQueueCache_Fallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli"), 0o755))
+
+	cached := &queueCounts{
+		Total:      7,
+		ByStatus:   map[string]int{"new": 4, "claimed": 3},
+		BySeverity: map[string]int{"high": 2, "low": 5},
+		Sampled:    7,
+		SampledAt:  time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(cached)
+	require.NoError(t, err)
+	cachePath := filepath.Join(dir, ".tmux-cli", "dashboard-queue-cache.json")
+	require.NoError(t, os.WriteFile(cachePath, data, 0o644))
+
+	// api disabled (no setting.yaml) ⇒ render from cache.
+	var buf bytes.Buffer
+	require.NoError(t, RenderBoard(&buf, dir, nil))
+	out := buf.String()
+
+	assert.Contains(t, out, "(cached", "cache age annotation")
+	assert.Contains(t, out, "new 4", "cached by-status counts rendered")
+	assert.Contains(t, out, "claimed 3")
+
+	// The disabled path must NOT rewrite the cache.
+	after, err := os.ReadFile(cachePath)
+	require.NoError(t, err)
+	assert.Equal(t, data, after, "cache file must be unchanged on the read-only fallback path")
+}
+
+func TestTaskvisorDashboardWatchBoard_CancelStops(t *testing.T) {
+	dir := t.TempDir()
+	sb := &syncBuffer{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- WatchBoard(ctx, sb, dir, nil, 10*time.Millisecond)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err, "WatchBoard returns nil on ctx cancellation")
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchBoard did not return after ctx cancel")
+	}
+
+	out := sb.String()
+	assert.Contains(t, out, ansiClearScreen, "WatchBoard paints clear+board at least once")
+	assert.Contains(t, out, "GOALS", "a section header proves a full board was painted")
 }
