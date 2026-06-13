@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
-	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/console/tmux-cli/internal/rules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -107,113 +107,30 @@ func TestRulesCatalogue_ManifestIntegrity(t *testing.T) {
 	}
 }
 
-// codeRule mirrors the schema in embedded/rules/SCHEMA.md.
-type codeRule struct {
-	ID           string   `yaml:"id"`
-	Category     string   `yaml:"category"`
-	Scope        string   `yaml:"scope"`
-	Severity     string   `yaml:"severity"`
-	Title        string   `yaml:"title"`
-	Rule         string   `yaml:"rule"`
-	Why          string   `yaml:"why"`
-	AppliesTo    []string `yaml:"applies_to"`
-	Acceptance   []string `yaml:"acceptance"`
-	Validate     []string `yaml:"validate"`
-	ValidateKind string   `yaml:"validate_kind"`
-	Phase        string   `yaml:"phase"`
-	Signal       string   `yaml:"signal"`
-	Examples     struct {
-		Bad  string `yaml:"bad"`
-		Good string `yaml:"good"`
-	} `yaml:"examples"`
-}
-
-// weakOnly matches validate lines that may not be a rule's SOLE machine check
-// (a green build the rule doesn't earn).
-var weakOnly = regexp.MustCompile(`^\s*(vendor/bin/phpstan|make\s+stan|eslint)\b`)
-
-// TestRulesCatalogue_Falsifiability ports the catalogue selftest: a validate
-// that can never go red manufactures false confidence (the vacuous-gate
-// lesson), so every rule's checking contract is enforced at build time.
+// TestRulesCatalogue_Falsifiability ports the catalogue selftest to the shared
+// rules.LintRuleSets contract: a validate that can never go red manufactures
+// false confidence (the vacuous-gate lesson), so every embedded rule's checking
+// contract is enforced at build time. The contract now lives in
+// internal/rules/lint.go and is shared verbatim with `tmux-cli rules lint`;
+// this test parses the embedded catalogue (bare-list YAML per file, skipping the
+// manifest) and asserts the shared checker finds zero violations — so the guard
+// stays exactly as strong and any embedded breach still fails here.
 func TestRulesCatalogue_Falsifiability(t *testing.T) {
 	files := readEmbeddedRules(t)
-	seen := map[string]string{}
 
+	var sets []rules.RuleSet
 	for name, content := range files {
 		if !strings.HasSuffix(name, ".yaml") || name == "manifest.yaml" {
 			continue
 		}
-		var ruleSet []codeRule
+		var ruleSet []rules.CodeRule
 		require.NoError(t, yaml.Unmarshal([]byte(content), &ruleSet), "%s must parse", name)
 		require.NotEmpty(t, ruleSet, "%s must contain rules", name)
-
-		for _, r := range ruleSet {
-			label := name + "/" + r.ID
-			assert.NotEmpty(t, r.ID, "%s: rule missing id", name)
-			if prev, dup := seen[r.ID]; dup {
-				// The php-symfony pack stacks ON TOP of php — ids must stay
-				// globally unique so goal references are unambiguous.
-				t.Errorf("%s: id %s already defined in %s", name, r.ID, prev)
-			}
-			seen[r.ID] = name
-
-			assert.NotEmpty(t, r.Category, "%s: missing category", label)
-			assert.Contains(t, []string{"generic", "project"}, r.Scope, "%s: bad scope", label)
-			assert.Contains(t, []string{"must", "should"}, r.Severity, "%s: bad severity", label)
-			assert.NotEmpty(t, r.Title, "%s: missing title", label)
-			assert.NotEmpty(t, r.Rule, "%s: missing rule", label)
-			assert.NotEmpty(t, r.Why, "%s: missing why", label)
-			assert.NotEmpty(t, r.AppliesTo, "%s: missing applies_to", label)
-			assert.NotEmpty(t, r.Acceptance, "%s: missing acceptance", label)
-			assert.NotEmpty(t, r.Validate, "%s: missing validate", label)
-			assert.NotEmpty(t, r.Phase, "%s: missing phase", label)
-			require.Contains(t, []string{"automated", "review", "mixed"}, r.ValidateKind,
-				"%s: validate_kind must be automated|review|mixed", label)
-
-			switch r.ValidateKind {
-			case "review":
-				for _, v := range r.Validate {
-					assert.True(t, strings.HasPrefix(strings.TrimSpace(v), "review:"),
-						"%s: review rule validate line must start with 'review:' (got %q)", label, v)
-				}
-			case "automated":
-				require.NotEmpty(t, r.Signal, "%s: automated rule must carry signal", label)
-				require.NotEmpty(t, r.Examples.Bad, "%s: automated rule must carry examples.bad", label)
-				require.NotEmpty(t, r.Examples.Good, "%s: automated rule must carry examples.good", label)
-			case "mixed":
-				hasReview := false
-				for _, v := range r.Validate {
-					if strings.HasPrefix(strings.TrimSpace(v), "review:") {
-						hasReview = true
-					}
-				}
-				hasSignal := r.Signal != ""
-				assert.True(t, hasReview || hasSignal,
-					"%s: mixed rule needs review: lines or a signal", label)
-			}
-
-			if r.ValidateKind != "review" {
-				allWeak := true
-				for _, v := range r.Validate {
-					if !weakOnly.MatchString(v) {
-						allWeak = false
-					}
-				}
-				assert.False(t, allWeak,
-					"%s: machine-checked rule must not borrow a bare stan/eslint run as its only check", label)
-			}
-
-			if r.Signal != "" {
-				re, err := regexp.Compile(r.Signal)
-				require.NoError(t, err, "%s: signal must compile", label)
-				require.NotEmpty(t, r.Examples.Bad, "%s: signal requires examples.bad", label)
-				require.NotEmpty(t, r.Examples.Good, "%s: signal requires examples.good", label)
-				assert.True(t, re.MatchString(r.Examples.Bad),
-					"%s: signal must match its own bad example — the check cannot detect the violation it describes", label)
-				assert.False(t, re.MatchString(r.Examples.Good),
-					"%s: signal must NOT match the good example — it fires on compliant code", label)
-			}
-		}
+		sets = append(sets, rules.RuleSet{Source: name, Rules: ruleSet})
 	}
-	require.NotEmpty(t, seen, "catalogue must contain at least one code rule")
+	require.NotEmpty(t, sets, "catalogue must contain at least one code rule")
+
+	findings := rules.LintRuleSets(sets)
+	assert.Empty(t, findings,
+		"embedded catalogue must satisfy the falsifiability contract: %v", findings)
 }

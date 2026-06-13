@@ -1,0 +1,69 @@
+<task id="rules-add" name="/tmux:rules:add — distill feedback into a falsifiable project-local code rule">
+  <objective>The /tmux:rules:add skill turns review feedback (a GitLab MR note, a cited bad snippet, or an interactive description) into ONE schema-valid project-local code rule under .tmux-cli/rules/local/code-rules/, then HARD-GATES its acceptance on `tmux-cli rules lint`. The rule is accepted only when lint is clean.</objective>
+
+  <requirements critical="true">
+    <bin>tmux-cli on PATH (provides `tmux-cli rules lint`)</bin>
+    <schema>.tmux-cli/rules/SCHEMA.md — the code-rules YAML schema and falsifiability contract (the authority this skill distills toward)</schema>
+  </requirements>
+
+  <llm critical="true">
+    <mandate>NEVER edit embedded packs in place — project-local rules live ONLY under .tmux-cli/rules/local/code-rules/. Embedded packs are clean-slated on every setup; an in-place edit is lost.</mandate>
+    <mandate>NEVER accept a rule that `tmux-cli rules lint` rejects — lint is a HARD gate, not advisory. Fix every finding and re-lint until it exits 0.</mandate>
+    <mandate>NEVER hand-wave a signal: for an automated or mixed rule the signal regexp MUST match examples.bad and MUST NOT match examples.good. A check that cannot go red on its own bad example manufactures false confidence and is rejected.</mandate>
+    <mandate>NEVER weaken a rule (drop the signal, downgrade severity, vacuous validate) just to pass lint — fix the rule, not the gate.</mandate>
+    <mandate>Write the rule as a BARE YAML list (the on-disk schema), NOT a `rules:` wrapper.</mandate>
+  </llm>
+
+  <flow>
+    <step n="1" title="Resolve the input">
+      <action>If the argument names a GitLab MR (an iid or URL), pull the review note via the gitlab MCP — the comment text is a ready-made examples.bad fixture and its reference becomes `origin:`.</action>
+      <action>If the argument is a free-form description or a file:line citation, read the cited code and use it as the bad example.</action>
+      <action>If the argument is empty, interactively gather: the rule intent, one concrete BAD snippet, one compliant GOOD snippet, the file globs it applies to, and whether the violation is machine-checkable.</action>
+    </step>
+
+    <step n="2" title="Read the schema">
+      <action>Read .tmux-cli/rules/SCHEMA.md and internalize the required fields and the falsifiability contract BEFORE authoring — the lint gate enforces exactly this contract.</action>
+    </step>
+
+    <step n="3" title="Distill into one rule">
+      <rule>Required fields: id, category, scope (generic|project), severity (must|should — must cannot be waived), title, rule, why, applies_to (path globs), acceptance (Given/When/Then list), validate (list), validate_kind (automated|review|mixed), phase.</rule>
+      <rule>Pick validate_kind honestly: automated when a grep-able signal proves the violation; review when only a human can judge (every validate line prefixed `review:`); mixed when some validate lines are real commands and some are `review:` lines.</rule>
+      <rule>For an automated or mixed rule carrying a signal: author signal (a regexp), examples.bad (the signal MUST match it), and examples.good (the signal MUST NOT match it). Derive examples.bad from the cited bad code so the check provably fires on the real violation.</rule>
+      <rule>A machine-checked rule must not borrow a bare phpstan/eslint run as its only validate line — that green build is not earned by the rule.</rule>
+      <rule>Set origin: to the feedback source (MR note URL or iid, ticket, or a one-line description of where the rule came from).</rule>
+      <rule>Give the rule a globally-unique id — it must not collide with an embedded id UNLESS you deliberately intend a local override of that rule.</rule>
+    </step>
+
+    <step n="4" title="Write the local rule file">
+      <action>Ensure the directory exists: mkdir -p .tmux-cli/rules/local/code-rules</action>
+      <action>Append the rule to an existing .tmux-cli/rules/local/code-rules/&lt;slug&gt;.yaml or create a new file with a descriptive kebab-case &lt;slug&gt;. The file is a BARE list of rule mappings (top-level `- id: ...`).</action>
+    </step>
+
+    <step n="5" title="HARD GATE — lint">
+      <action>Run: tmux-cli rules lint</action>
+      <check condition="exit non-zero (findings printed as `source ruleId: message`)">
+        <action>Read each finding, fix the offending field in the YAML (or the signal/examples so the regexp matches bad and not good), and re-run `tmux-cli rules lint`. Repeat until it exits 0.</action>
+      </check>
+      <rule critical="true">Do NOT report success while lint is red. The rule is accepted ONLY when `tmux-cli rules lint` prints `ok: N rule(s) lint clean` and exits 0.</rule>
+    </step>
+
+    <step n="6" title="Report">
+      <action>Report the new rule id, the file path written, the recorded origin, and the lint verdict (clean). Note that the rule resolves into plans from the next planning cycle on (local/ is always included by `tmux-cli rules resolve`).</action>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>One rule per invocation — keep scope tight; ingest more feedback with more invocations.</rule>
+    <rule>`tmux-cli rules lint` is the acceptance gate — exit 0 is required before reporting success.</rule>
+    <rule>Local rules only: .tmux-cli/rules/local/code-rules/ — never touch embedded packs.</rule>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      • Distill feedback into ONE schema-valid rule, write it to .tmux-cli/rules/local/code-rules/ as a bare list, set origin:
+      • For automated/mixed rules the signal MUST match examples.bad and MUST NOT match examples.good
+      • HARD-GATE on `tmux-cli rules lint` — fix findings and re-lint until exit 0; never report success on red
+      • Never edit embedded packs; never weaken a rule to pass the gate
+    </critical-rules>
+  </llm>
+</task>

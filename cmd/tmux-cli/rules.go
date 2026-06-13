@@ -22,6 +22,10 @@ var (
 	rulesMatchPhase   string
 	rulesMatchJSON    bool
 	rulesMatchProject string
+
+	rulesLintProject  string
+	rulesLintJSON     bool
+	rulesLintEmbedded bool
 )
 
 var rulesCmd = &cobra.Command{
@@ -163,6 +167,67 @@ runnable signal. A rule whose signal cannot run is dropped with a warning.`,
 	},
 }
 
+var rulesLintCmd = &cobra.Command{
+	Use:   "lint",
+	Short: "Lint project-local code-rules against the falsifiability contract",
+	Long: `Lints .tmux-cli/rules/local/code-rules/*.yaml against the same
+falsifiability contract the embedded catalogue selftest enforces (schema
+completeness, global id-uniqueness, validate_kind dispatch, and — for rules
+carrying a signal — that the signal compiles, matches its own examples.bad, and
+does NOT match examples.good). A check that cannot go red on its own bad example
+manufactures false confidence and is rejected.
+
+Exits 0 when clean (including an absent local tree) and NON-ZERO on any finding,
+so /tmux:rules:add can use it as a hard gate. --embedded also lints the
+materialized pack rules (excluding manifest.yaml and the local/ subtree).`,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectRoot := rulesLintProject
+		if projectRoot == "" {
+			var err error
+			projectRoot, err = os.Getwd()
+			if err != nil {
+				return err
+			}
+		}
+
+		sets, loadFindings := rules.LoadLocalRuleSets(projectRoot, rulesLintEmbedded)
+		findings := append(loadFindings, rules.LintRuleSets(sets)...)
+
+		ruleCount := 0
+		for _, s := range sets {
+			ruleCount += len(s.Rules)
+		}
+
+		if rulesLintJSON {
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			if findings == nil {
+				findings = []rules.LintFinding{}
+			}
+			if err := enc.Encode(struct {
+				Findings []rules.LintFinding `json:"findings"`
+				Clean    bool                `json:"clean"`
+			}{Findings: findings, Clean: len(findings) == 0}); err != nil {
+				return err
+			}
+		} else {
+			for _, f := range findings {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s %s: %s\n", f.Source, f.RuleID, f.Message)
+			}
+		}
+
+		if len(findings) > 0 {
+			return fmt.Errorf("rules lint: %d finding(s)", len(findings))
+		}
+		if !rulesLintJSON {
+			fmt.Fprintf(cmd.OutOrStdout(), "ok: %d rule(s) lint clean\n", ruleCount)
+		}
+		return nil
+	},
+}
+
 // printMatchResult renders a MatchResult as indented JSON (--json) or a
 // human-readable summary (warnings to stderr, one block per matched rule).
 func printMatchResult(cmd *cobra.Command, result rules.MatchResult, asJSON bool) error {
@@ -218,6 +283,14 @@ func init() {
 		"project root (default: current directory)")
 	_ = rulesMatchCmd.MarkFlagRequired("files")
 	rulesCmd.AddCommand(rulesMatchCmd)
+
+	rulesLintCmd.Flags().StringVar(&rulesLintProject, "project", "",
+		"project root (default: current directory)")
+	rulesLintCmd.Flags().BoolVar(&rulesLintJSON, "json", false,
+		"emit {findings, clean} as JSON instead of one line per finding")
+	rulesLintCmd.Flags().BoolVar(&rulesLintEmbedded, "embedded", false,
+		"also lint materialized pack rules (excludes manifest.yaml and the local/ subtree)")
+	rulesCmd.AddCommand(rulesLintCmd)
 
 	rootCmd.AddCommand(rulesCmd)
 }
