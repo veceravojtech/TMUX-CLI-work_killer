@@ -275,22 +275,26 @@
       exit-code check (build/lint/test/grep/vet/deptrac) that needs no semantic
       judgment, so spawning a read-only worker for it is pure overhead (goal-061
       post-mortem: a 2-command fan-out validation took ~17 min vs <1 min inline).
-      Parallel investigator-* agents are therefore RESERVED for advanced validation
-      that genuinely needs a reasoning worker — code-review, E2E with Chrome
-      (e2e-test), integration-test, debugging. This gate SPLITS the active RERUN set
-      PER-INVESTIGATOR: every pure-command (static-analysis) check goes INLINE in
-      this window; only the advanced checks spawn. It is NOT all-or-nothing — a goal
-      mixing static analysis with a code-review/e2e investigator runs the static
-      checks inline AND spawns agents for the advanced ones, concurrently. The
-      pure-command classification mirrors taskvisor.IsPureCommand
-      (internal/taskvisor/investigator.go) so inline eligibility matches the Go
-      predicate exactly. Lane-INDEPENDENT by design (B9b): the split keys off
-      investigator TYPE, never the goal's lane.
+      Parallel investigator-* agents are RESERVED for advanced validation that
+      genuinely needs a reasoning worker — code-review, E2E with Chrome (e2e-test),
+      integration-test, debugging.
+      DECISION SEAM: the split is computed in Go (deterministic, test-covered
+      taskvisor.InlinePlan, exposed by `tmux-cli taskvisor inline-plan`) and this
+      step BRANCHES on its {inline,spawn} JSON — identical rationale to C10's
+      revalidation-plan, so the rule lives in ONE place (the Go predicate) and the
+      XML never re-derives it. The CLI is AUTHORITATIVE; a stale/absent binary (the
+      old {mode,rerun} shape, an error, or empty output) DEGRADES to the in-XML
+      pure-command predicate so the split keeps working with no rebuild. Either way
+      it is a per-investigator SPLIT, NOT all-or-nothing, and lane-INDEPENDENT (B9b):
+      it keys off investigator TYPE, never the goal's lane.
     -->
     <step n="2f" title="Inline/spawn partition gate — static analysis inline, advanced spawned">
-      <action>Partition the ACTIVE RERUN investigators (the step 2c RERUN set; REUSE investigators are in NEITHER set — they carry forward as pass in step 5) into INLINE_SET and SPAWN_SET by classifying EACH with the pure-command predicate (this XML's mirror of taskvisor.IsPureCommand):</action>
-      <rule>PURE-COMMAND ⇒ INLINE_SET (run in-window, NEVER spawn an agent): the investigator has &gt;=1 Command AND (type == `command` OR (type ∈ {static-analysis, quality-gate, test-execution, architecture-check, environment-check, file-check} AND its Pass text is EXIT-ONLY)). Pass is EXIT-ONLY iff it contains an exit marker ("exit 0", "exit code", "succeeds", "green", "no error", "no violation", "no layer violation", "passes") AND NO semantic marker ("matches expected", "review", "audit", "compliance", "correct", "present", "well-formed", "design"). The semantic veto is evaluated FIRST and always wins; an empty Pass is NOT exit-only.</rule>
-      <rule>NON-PURE ⇒ SPAWN_SET (spawn a parallel investigator-* agent): everything else — reasoning/semantic types (code-review, convention-audit, implementation-check, integration-check), advanced/flaky-external types (e2e-test = Chrome/browser automation, integration-test), any investigator whose Pass carries a semantic marker, any unknown or missing type, and any deterministic-typed investigator with NO Command (nothing to run in-window). WHEN IN DOUBT, SPAWN — false-inlining a check that needs reasoning is the only unsafe direction; false-spawning a static check is merely slower.</rule>
+      <action>Derive INLINE_SET and SPAWN_SET (each a subset of the step 2c RERUN set; REUSE investigators are in NEITHER set — they carry forward as pass in step 5). PRIMARY source is the read-only CLI; the in-XML predicate is the safe fallback. Run:</action>
+      <cmd>tmux-cli taskvisor inline-plan &lt;GOAL_ID&gt; --cycle &lt;CYCLE_N&gt; [--full] [--final]</cmd>
+      <rule>CYCLE_N is the one-indexed cycle resolved in step 2a. In STANDALONE mode (CYCLE_N unset) pass --cycle 0. Pass --full / --final on the SAME conditions as step 2c so the RERUN set matches exactly.</rule>
+      <rule>The command prints {"inline":[finding ids],"spawn":[finding ids],"reason":"..."}: `inline` = the RERUN investigators that run in-window (pure-command / static analysis), `spawn` = the RERUN investigators that need a reasoning worker. WELL-FORMED output (a JSON object carrying BOTH an `inline` array AND a `spawn` array) is AUTHORITATIVE: set INLINE_SET = `inline`, SPAWN_SET = `spawn`, skip the fallback, and go straight to routing. This mirrors taskvisor.InlinePlan (internal/taskvisor/inline.go) — the Go seam owns the split rule; this step only branches on its JSON.</rule>
+      <rule critical="true">SAFE DEGENERATE: if the command errors, prints nothing, prints unparseable output, OR its JSON lacks BOTH the `inline` and `spawn` keys (e.g. a stale binary still printing the old {"mode","rerun"} shape), DO NOT block — fall back to the IN-XML predicate below to partition the ACTIVE RERUN investigators yourself. The in-XML split is binary-independent and always a safe fallback; never block on a missing/garbled plan.</rule>
+      <rule>IN-XML FALLBACK (used ONLY on a degenerate CLI outcome; mirror of taskvisor.IsPureCommand): classify EACH active RERUN investigator. PURE-COMMAND ⇒ INLINE_SET (run in-window, NEVER spawn) — has &gt;=1 Command AND (type == `command` OR (type ∈ {static-analysis, quality-gate, test-execution, architecture-check, environment-check, file-check} AND its Pass text is EXIT-ONLY)). Pass is EXIT-ONLY iff it contains an exit marker ("exit 0", "exit code", "succeeds", "green", "no error", "no violation", "no layer violation", "passes") AND NO semantic marker ("matches expected", "review", "audit", "compliance", "correct", "present", "well-formed", "design"); the semantic veto wins, an empty Pass is NOT exit-only. EVERYTHING ELSE ⇒ SPAWN_SET — reasoning/semantic types (code-review, convention-audit, implementation-check, integration-check), advanced/flaky-external types (e2e-test = Chrome/browser, integration-test), a semantic Pass, an unknown/missing type, or a deterministic type with NO Command. WHEN IN DOUBT, SPAWN.</rule>
       <rule critical="true">This is a per-investigator SPLIT, NOT all-or-nothing. Static analysis NEVER spawns an agent. Parallel agents are spawned ONLY for the advanced SPAWN_SET (E2E/Chrome, code-review, debugging, integration). A single advanced investigator no longer drags the static-analysis checks into a fan-out.</rule>
       <action>Route on the two sets:</action>
       <check condition="INLINE_SET empty AND SPAWN_SET empty (all REUSE — nothing to run)">
