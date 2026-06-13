@@ -32,7 +32,7 @@
     <term name="FRESH mode">No usable tasks.yaml exists — derive everything from scratch.</term>
     <term name="INCREMENTAL mode">tasks.yaml exists with status: planning — preserve existing tasks, append new spec tasks. Inherited in_progress tasks whose worker window is dead are reset to pending by the step 0c recovery so step 4 respawns them.</term>
     <term name="ranking heuristic">Priority ordering for decomposition: (1) closest to user-facing surface or critical path, (2) closest to impact target, (3) smallest budget before completion, (4) overturns prior assumption if confirmed. Break ties by lowest budget.</term>
-    <term name="pushback catalogue">The S1–S9 taxonomy in step 6 used to gate spec quality before acceptance.</term>
+    <term name="pushback catalogue">The S0–S9 taxonomy used in step 6 to gate spec quality before acceptance. S0 (Intent) is tool-checked by spec-validate; a tool-reported S0 finding maps to a well-formed [EXECUTE:PUSHBACK n=1 gap=S0] message.</term>
   </glossary>
 
   <message-tags>
@@ -41,7 +41,7 @@
     <tag name="[EXECUTE:NEED_INPUT wid=... sup=... &lt;short reason&gt;]" from="worker">Worker cannot proceed without a fact. Reason ≤ 200 chars inline. Planning supervisor answers via windows-message, or replies [SUPERVISOR:NARROW-SCOPE].</tag>
     <tag name="[EXECUTE:FAILED wid=... sup=... reason=&lt;short&gt;]" from="worker">Worker hit terminal failure. Reason ≤ 200 chars inline. Planning supervisor respawns with narrowed scope (first attempt) or escalates (second).</tag>
     <tag name="[SUPERVISOR:REMIND &lt;what to do&gt;]" from="plan-supervisor">Protocol reminder to worker. Does not advance state.</tag>
-    <tag name="[EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S9&gt;]" from="plan-supervisor">Spec quality gap per pushback catalogue. Worker updates the SAME .md and re-tags DONE.</tag>
+    <tag name="[EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S0..S9&gt;]" from="plan-supervisor">Spec quality gap per pushback catalogue. Worker updates the SAME .md and re-tags DONE.</tag>
     <tag name="[SUPERVISOR:AMEND &lt;new scope&gt;]" from="plan-supervisor">Amend a running worker's scope mid-run.</tag>
     <tag name="[SUPERVISOR:AMEND-PROTOCOL &lt;new rule&gt;]" from="plan-supervisor">Amend response protocol mid-run.</tag>
     <tag name="[SUPERVISOR:KILL]" from="plan-supervisor">Instruct worker to exit cleanly — scope now pointless.</tag>
@@ -404,7 +404,7 @@ tasks:
       <gap id="S9">Modified files in Code Map lack current-state annotations (CURRENT/CHANGE/PRESERVE) — implementation worker needs to know what exists before changing it</gap>
       <note>ID collision: spec-validate can ALSO emit an "S9" gap, but with a different meaning — subjective validation gates (gate objectivity, fires only on Validation Rules / Investigation Config sections, which worker tech-specs lack). If the tool ever returns S9, push back using the tool's message text, not the manual S9 definition above.</note>
       <rule>Pushback at most 3x per worker. Each pushback MUST cite exactly one gap.</rule>
-      <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S1..S9&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
+      <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S0..S9&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
       <check condition="spec-validate returns valid=true AND S5/S6/S9 manual checks pass">
         <action>Accept. Proceed to step 7.</action>
       </check>
