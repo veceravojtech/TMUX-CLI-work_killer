@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -279,6 +280,19 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, c
 		return nil, fmt.Errorf("%w: invalid lane %q; allowed: %s,%s", ErrInvalidInput, lane, taskvisor.LaneSolo, taskvisor.LaneFull)
 	}
 
+	// Solo-lane creation cross-checks (task 47): cheap machine proxies for the
+	// lane gate's G2/G3 at the creation seam. The G2 proxy rejects BEFORE the
+	// shared core's generic empty-validate error so the message names the
+	// cross-check; the G3 proxy warn-logs only (scope spans are heuristic).
+	if lane == taskvisor.LaneSolo {
+		if len(validate) == 0 {
+			return nil, fmt.Errorf("%w: lane=solo requires a non-empty validate list (solo-lane creation cross-check, G2 proxy: solo presumes deterministic validate commands)", ErrInvalidInput)
+		}
+		if dirs := scopeTopLevelDirs(scope); len(dirs) > 1 {
+			log.Printf("warning: lane=solo goal scope spans %d top-level directories (%s) — solo-lane creation cross-check, G3 proxy: solo presumes a localized edit", len(dirs), strings.Join(dirs, ", "))
+		}
+	}
+
 	// Validate an explicit investigation_config before any filesystem side effect
 	// (no goal ID burned, no dir created). Omission (nil/empty) is valid and lets
 	// M1's deriveInvestigators fallback run in WriteGoalMD.
@@ -308,6 +322,28 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, c
 	}
 
 	return &GoalCreateOutput{ID: goalID}, nil
+}
+
+// scopeTopLevelDirs returns the sorted distinct first path segments of the
+// explicit scope entries. Empty, "." and "..."-style wildcard segments are
+// skipped — a "./..." glob expresses breadth, not a directory — so only
+// concrete top-level paths count toward the solo-lane G3 span proxy.
+func scopeTopLevelDirs(scope []string) []string {
+	seen := make(map[string]bool, len(scope))
+	for _, entry := range scope {
+		entry = strings.TrimPrefix(strings.TrimSpace(entry), "./")
+		seg, _, _ := strings.Cut(entry, "/")
+		if seg == "" || seg == "." || seg == "..." {
+			continue
+		}
+		seen[seg] = true
+	}
+	dirs := make([]string, 0, len(seen))
+	for d := range seen {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 // escalationCap bounds the number of escalation-driven prerequisites that may be

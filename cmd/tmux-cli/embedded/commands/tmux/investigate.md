@@ -69,5 +69,6 @@ Workers use the standard `[EXECUTE:...]` tagged protocol. The orchestrator uses 
 - **10-minute timeout** per worker — kill and treat as fail.
 - **Corrections max ~500 tokens** per investigator section to prevent context exhaustion.
 - **Solo-lane is read-only and all-or-nothing** — the lane comes ONLY from goal.md `## Lane` (exact `solo`; absent/other/malformed = full), never self-declared; on the solo-lane route either ALL command-type checks run in-window or the WHOLE goal fans out — never a partial split.
+- **B9b lane-independence** — the step 2f inline fast-path is lane-independent by design (B9b): any all-pure-command RERUN set runs inline, full lane included (goal-061 post-mortem, internal/taskvisor/inline.go). inv_spawned=0 on a full-lane goal with all-pure-command investigators is expected behavior, not a lane leak. Creation-seam lane enforcement is enum-only plus two named cross-checks in goal-create: reject solo+empty-validate (G2 proxy); warn-log a solo scope spanning >1 top-level directory (G3 proxy).
 
 Follow `.claude/commands/tmux/investigate.xml` EXACTLY as written. That file defines the complete investigation flow, all message routing, and hard constraints. Do not improvise beyond it.
