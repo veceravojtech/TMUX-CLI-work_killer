@@ -117,6 +117,22 @@
     </step>
   </flow>
 
+  <error-reporting>
+    <intent>SHARED PROCEDURE — single source of truth. Authored EXACTLY ONCE here; every orchestration command (`execute`, `supervisor`, `plan`, `investigate`, `investigate-worker`, `task-plan-generate`, `task-plan-discover`, `rules/add`) carries only a short by-name `&lt;error-reporting&gt;` reference into its `&lt;execution-rules&gt;` and follows THIS block. When a referencing command hits a genuine harness/infra/spec defect, it autonomously composes + submits a task-report by following this procedure — no human re-run of `/tmux:task-report` required. Mirror of the `[CODE-RULE-INJECTION]` shared-procedure pattern in `task-plan-generate.xml`: define the mechanic once, reference it everywhere.</intent>
+
+    <part name="TRIGGER">Fire ONLY on a genuine harness/infra/spec defect: (a) an MCP tool (e.g. windows-spawn-worker) or a `tmux-cli` command that ACTUALLY errored AFTER its own retries; (b) a contradictory or under-specified goal spec (spec defect); (c) a validator-error-class condition. NEVER fire on EXPECTED work failures — a red validate cycle, S1–S9 / supervisor pushback, NEED_INPUT, or a test red merely because the code is not yet written. Expected work failures flow through the normal protocol (PUSHBACK/FAILED/NEED_INPUT), not through a report.</part>
+
+    <part name="DELEGATION">To compose and submit, follow THIS file's Step 3 six-field derivation tables for ALL six fields (category, severity, title, description, proposed_fix, expected_green_state) and Step 5 to submit via the task-report MCP tool. Do NOT restate or re-spec the field rules here — the Step 3 tables are the one definition.</part>
+
+    <part name="MODE-AWARENESS">In GOAL_MODE the taskvisor daemon ALREADY auto-reports goal-level failure edges (`internal/taskvisor/reporting.go` reportFailure/reportBreakerTrip, `recovery.go` reportWorkerCrash) — so the prompt path reports ONLY harness/infra errors the daemon CANNOT observe and DEFERS every goal-level failure to the daemon (no duplicate report). In standalone/prompt mode (no daemon present) the same harness/infra/spec defects are reported here.</part>
+
+    <part name="DEDUP">Dedup key = `category + title + goal_id`. Skip submission when an identical report was already sent this run (same key) — one report per distinct defect, never a duplicate.</part>
+
+    <part name="RECURSION">Recursion guard: NEVER auto-report a failure of `task-report` itself (a submit error follows this file's Step 5 outbox branch, it does not re-enter this procedure), and NEVER report a transient `windows-*` error that was already retried and recovered.</part>
+
+    <part name="GATE">Respect `api.enabled` — inherited from this file's Step 0 (flat `apiEnabled` wins, else nested `api.enabled`). Reporting disabled ⇒ no-op: compose nothing, submit nothing.</part>
+  </error-reporting>
+
   <execution-rules>
     <rule>Local validation mirrors the MCP tool exactly: six non-empty fields, no stub proposed_fix, closed category/severity sets — a wire rejection means this spec was not followed</rule>
     <rule>Evidence verbatim, bounded excerpts, sources named</rule>

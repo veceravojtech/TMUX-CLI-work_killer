@@ -56,6 +56,7 @@
     <rule>One rule per invocation — keep scope tight; ingest more feedback with more invocations.</rule>
     <rule>`tmux-cli rules lint` is the acceptance gate — exit 0 is required before reporting success.</rule>
     <rule>Local rules only: .tmux-cli/rules/local/code-rules/ — never touch embedded packs.</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
   </execution-rules>
 
   <llm final="true">

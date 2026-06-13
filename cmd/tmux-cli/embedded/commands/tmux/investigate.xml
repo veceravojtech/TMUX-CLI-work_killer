@@ -553,6 +553,7 @@ DELIVERABLE (write these sections INSIDE the report .md; do NOT paste them into 
     <rule>Always Read the file cited in a DONE before extracting verdict; never rely on inline body</rule>
     <rule>If a worker sends DONE without file=, REMIND once; do not accept inline-body DONE</rule>
     <rule>Corrections file is the ONLY file investigate.xml writes (besides goal-validation-done signal)</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
   </execution-rules>
 
   <llm final="true">
