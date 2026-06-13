@@ -58,6 +58,9 @@ packs:
     conventions:
       - e2e-auth-state.md
 
+  # vue pack: a Vue SPA front-end. conventions (SFC structure, naming) PLUS an
+  # automated code_rules catalogue — e.g. VUE-PROP-001 (is/has/can-prefixed
+  # boolean props, default false). Gated on frontend_mode: vue.
   - id: vue
     when: { frontend_mode: vue }
     conventions:
@@ -65,6 +68,8 @@ packs:
     code_rules:
       - code-rules.yaml
 
+  # twig pack: a server-rendered Twig front-end. conventions-ONLY (no code_rules)
+  # — there is no SPA build/test surface to lint. Gated on frontend_mode: twig.
   - id: twig
     when: { frontend_mode: twig }
     conventions:
@@ -75,6 +80,16 @@ packs:
     code_rules:
       - code-rules.yaml
 
+  # php-symfony pack: a P2 multi-package DDD monorepo (contexts/**, projects/**,
+  # packages/**), NOT a flat src/<BC> skeleton. The conventions describe the layout:
+  #   monorepo-layout — contexts/<bc>/src/{Domain,Application}; Bundle/ IS the
+  #     infrastructure layer (the only layer touching Doctrine/MySQL); app/ is the
+  #     framework entry-point (controllers/CLI/processors).
+  #   context-layers  — the Domain <- Application <- Bundle <- app dependency chain.
+  #   shared-kernel   — contexts/previo/src: the only legal cross-context contract.
+  #   app-layer       — contexts/<bc>/app: thin framework adapters, no business logic.
+  # code_rules glob onto contexts/** / projects/** / packages/** (e.g. PHP-TYPE-003,
+  # the automated Assert\Uuid|Assert::uuid UUID-type check).
   - id: php-symfony
     when: { lang: php, framework: symfony }
     conventions:

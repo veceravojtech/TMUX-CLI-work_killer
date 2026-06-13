@@ -17,10 +17,10 @@ func TestGoalCreate_InfraGoalContent(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 	acceptance := []string{
 		"Doctrine XML mapping exists for every aggregate root and entity",
-		"XML mapping lives in src/{BC}/Infrastructure/Persistence/Doctrine/Mapping/",
+		"XML mapping lives in contexts/{bc}/src/Bundle/Domain/Persistence/Doctrine/Mapping/",
 		"No Doctrine annotations/attributes anywhere in Domain or Application layers",
 		"Repository implementation implements Domain repository interface",
-		"Repository implementation lives in src/{BC}/Infrastructure/Persistence/",
+		"Repository implementation lives in contexts/{bc}/src/Bundle/Domain/Persistence/",
 		"Write repository dispatches domain events after flush (flush-then-dispatch pattern)",
 		"Read model repository implements Application read model interface",
 		"Custom DBAL types created for value objects that need DB storage",
@@ -101,9 +101,9 @@ func TestGoalCreate_ActionGoalContent(t *testing.T) {
 		"npx playwright test tests/E2E/Booking/CreateBookingTest.ts",
 	}
 	ctx := `Deliverables per GM-12:
-- Request DTO: src/Booking/Infrastructure/Http/Dto/CreateBookingRequest.php
-- Response DTO: src/Booking/Infrastructure/Http/Dto/CreateBookingResponse.php
-- Controller: src/Booking/Infrastructure/Http/Action/CreateBookingAction.php
+- Request DTO: contexts/booking/app/src/Dto/CreateBookingRequest.php
+- Response DTO: contexts/booking/app/src/Dto/CreateBookingResponse.php
+- Controller: contexts/booking/app/src/Action/CreateBookingAction.php
 - Route: POST /api/bookings
 - E2E test: tests/E2E/Booking/CreateBookingTest.ts`
 
@@ -226,7 +226,7 @@ func TestGoalCreate_DeptracFinalGateContent(t *testing.T) {
 
 ### Investigator 2: Cross-BC Boundary Checker
 - Type: architecture-check
-- Commands: grep -rn 'use App\\' src/*/Domain/ | grep -v 'use App\\Share\\' | grep -v "$(basename $(dirname $f))" (per-BC), vendor/bin/deptrac analyse --filter=cross-bc
+- Commands: grep -rn 'use App\\' contexts/*/src/Domain/ | grep -v 'use App\\Share\\' | grep -v "$(basename $(dirname $f))" (per-BC), vendor/bin/deptrac analyse --filter=cross-bc
 - Pass: Zero cross-BC imports in Domain/Application layers; only ACL adapters in Infrastructure cross BC boundaries
 - Fail: Direct cross-BC import found outside ACL adapter`
 	notInScope := "PHPStan, ECS, unit/integration tests, Playwright E2E, coverage, console boot, schema validation, migrations"
@@ -347,12 +347,12 @@ func TestGoalCreate_QualityFinalGateContent(t *testing.T) {
 		"FG-18: All migrations applied cleanly — doctrine:migrations:status shows no pending",
 	}
 	validate := []string{
-		"vendor/bin/phpstan analyse src/ --level=9",
-		"vendor/bin/ecs check src/",
+		"vendor/bin/phpstan analyse contexts/*/src --level=9",
+		"vendor/bin/ecs check contexts/*/src",
 		"vendor/bin/phpunit --testsuite=unit",
 		"vendor/bin/phpunit --testsuite=integration",
 		"vendor/bin/phpunit --coverage-text",
-		"grep -rn 'TODO\\|FIXME\\|HACK' src/ | wc -l",
+		"grep -rn 'TODO\\|FIXME\\|HACK' contexts/*/src | wc -l",
 		"bin/console",
 		"bin/console doctrine:schema:validate",
 		"bin/console doctrine:migrations:status",
@@ -363,7 +363,7 @@ func TestGoalCreate_QualityFinalGateContent(t *testing.T) {
 
 ### Investigator 1: Static Analysis Verifier
 - Type: quality-gate
-- Commands: vendor/bin/phpstan analyse src/ --level=9, vendor/bin/ecs check src/
+- Commands: vendor/bin/phpstan analyse contexts/*/src --level=9, vendor/bin/ecs check contexts/*/src
 - Pass: Both exit 0 — zero PHPStan errors at level 9, zero ECS violations
 - Fail: Any static analysis error or coding standard violation
 
@@ -375,7 +375,7 @@ func TestGoalCreate_QualityFinalGateContent(t *testing.T) {
 
 ### Investigator 3: Runtime Health Checker
 - Type: environment-check
-- Commands: bin/console, bin/console doctrine:schema:validate, bin/console doctrine:migrations:status, grep -rn 'TODO\|FIXME\|HACK' src/ | wc -l
+- Commands: bin/console, bin/console doctrine:schema:validate, bin/console doctrine:migrations:status, grep -rn 'TODO\|FIXME\|HACK' contexts/*/src | wc -l
 - Pass: Console boots, schema valid, no pending migrations, zero stale comment markers
 - Fail: Boot failure, schema mismatch, pending migrations, or stale comments found`
 	notInScope := "Deptrac analysis, Playwright E2E, new feature code, refactoring"
@@ -403,8 +403,8 @@ func TestGoalCreate_QualityFinalGateContent(t *testing.T) {
 		assert.Contains(t, mdContent, "- "+ac, "acceptance criterion missing: %s", ac)
 	}
 
-	assert.Contains(t, mdContent, "- vendor/bin/phpstan analyse src/ --level=9")
-	assert.Contains(t, mdContent, "- vendor/bin/ecs check src/")
+	assert.Contains(t, mdContent, "- vendor/bin/phpstan analyse contexts/*/src --level=9")
+	assert.Contains(t, mdContent, "- vendor/bin/ecs check contexts/*/src")
 	assert.Contains(t, mdContent, "- vendor/bin/phpunit --testsuite=unit")
 	assert.Contains(t, mdContent, "- vendor/bin/phpunit --testsuite=integration")
 	assert.Contains(t, mdContent, "- vendor/bin/phpunit --coverage-text")

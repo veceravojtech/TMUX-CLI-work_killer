@@ -24,6 +24,48 @@ Unknown capability signals (missing/unparseable discovery docs) load their
 packs conservatively with a warning. Unknown stack signals load nothing
 stack-specific: wrong-stack rules misdirect rather than protect.
 
+## Frontend modes & stack packs
+
+Two axes select packs beyond the always-on `_base`: the **frontend mode** and
+the **language/framework stack**. Both are *stack-style* signals — they must be
+KNOWN to match (an unknown signal loads nothing rather than guessing wrong; see
+the matching-asymmetry note in `manifest.yaml`).
+
+**`frontend_mode: vue | twig | none`** is the per-frontend-mode signal
+(goal-034). It gates the frontend convention packs and the framework-specific
+front-end code rules:
+
+- **`vue`** — a Vue SPA front-end. Loads the `frontend` / `frontend-auth`
+  convention packs (node tooling, e2e artifacts, auth-state reuse) **and** the
+  `vue` pack, which carries both `conventions` *and* an automated `code_rules`
+  catalogue — e.g. VUE-PROP-001 requires boolean props to be `is`/`has`/`can`-prefixed
+  and default to `false` (an `automated` signal with `examples.{bad,good}`).
+- **`twig`** — a server-rendered Twig front-end. Loads the `twig` pack, which is
+  **conventions-only** (no `code_rules`): there is no SPA build/test surface to
+  lint, so it ships binding planner conventions and nothing more.
+- **`none`** — no front-end packs load.
+
+**`lang: php` + `framework: symfony`** selects the `php-symfony` pack, which
+targets a **P2 multi-package DDD monorepo** (not a flat `src/<BC>` skeleton). Its
+conventions — `monorepo-layout`, `context-layers`, `shared-kernel`, `app-layer`
+— describe the layout the planner emits:
+
+- `contexts/<bc>/src/{Domain,Application}` — the bounded-context library
+  (framework-free), with `contexts/<bc>/src/Bundle/{Domain,Application}` as the
+  **infrastructure layer** (the only layer touching Doctrine/MySQL — there is no
+  `Infrastructure/` directory) and `contexts/<bc>/app/` as the framework
+  entry-point (controllers/CLI/processors).
+- `contexts/previo/src` — the **shared kernel** context (published language +
+  contracts), the only legal cross-context touchpoint.
+- `projects/<app>/` — deployables composing one or more contexts; `packages/<pkg>`
+  — shared libraries with no domain ownership.
+
+The `php-symfony` code rules glob onto `contexts/**`, `projects/**`, and
+`packages/**` (e.g. PHP-TYPE-003's automated `Assert\Uuid|Assert::uuid` UUID
+check over `contexts/*/src/**` and `contexts/*/app/src/**`), so an illegal
+cross-context import or a layering breach is an analysis-time failure, not a
+review guess.
+
 ## code-rules YAML schema (per rule)
 
 Required: `id`, `category`, `scope` (generic | project), `severity`
