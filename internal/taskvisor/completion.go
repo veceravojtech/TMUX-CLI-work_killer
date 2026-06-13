@@ -126,6 +126,12 @@ func (d *Daemon) deactivateOnCompletion(goals *GoalsFile) error {
 		log.Printf("warning: completion report: %v", err)
 	}
 
+	// auto_push (taskvisor.auto_push): publish the finished run's local commits
+	// once, here — after every per-goal auto-commit has landed and before the
+	// teardown tail. Gated + warn-only: a no-op when disabled, and a push failure
+	// never affects goal status, retries, or teardown.
+	d.autoPushOnCompletion()
+
 	d.notifyCompletion(goals)
 
 	// All goals are resolved here; CurrentGoal names the goal that just finished.

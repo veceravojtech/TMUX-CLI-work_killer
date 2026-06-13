@@ -127,6 +127,44 @@ func TestGoalCreate_LaneSoloMultiTopDirScope_WarnsButCreates(t *testing.T) {
 	assert.Contains(t, logged, "internal", "warning must name the offending top-level directories")
 }
 
+// TestGoalCreate_AutoDerivesSoloViaMCP confirms the converged auto-derive rule
+// inside taskvisor.CreateGoal is inherited by the MCP goal-create surface: a
+// no-lane localized pure-command spec yields lane: solo, and a no-lane multi-dir
+// spec stays lane-absent (G3 fails closed). The rule lives once in the core — no
+// MCP-layer duplication — so this exercises the same converged path the CLI uses.
+func TestGoalCreate_AutoDerivesSoloViaMCP(t *testing.T) {
+	// Localized, pure-command, no explicit lane ⇒ auto-solo.
+	soloDir := t.TempDir()
+	server := newTestServer(new(testutil.MockTmuxExecutor), soloDir)
+	out, err := server.GoalCreate("Localized goal", []string{"edits internal/foo/bar.go"}, []string{"grep -rq X internal/foo"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	require.NoError(t, err)
+
+	canonical, err := taskvisor.LoadGoals(soloDir)
+	require.NoError(t, err)
+	g, ok := canonical.GoalByID(out.ID)
+	require.True(t, ok)
+	assert.Equal(t, taskvisor.LaneSolo, g.Lane, "no-lane localized pure-command spec must auto-derive solo via MCP")
+	raw, err := os.ReadFile(tvGoalsFilePath(soloDir))
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "lane: solo")
+
+	// Multi-dir, no explicit lane ⇒ stays full (G3 fails closed), no lane: key.
+	fullDir := t.TempDir()
+	server2 := newTestServer(new(testutil.MockTmuxExecutor), fullDir)
+	out2, err := server2.GoalCreate("Multi-dir goal", []string{"edits internal/a/x.go", "edits cmd/b/y.go"}, []string{"go build ./..."}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	require.NoError(t, err)
+
+	canonical2, err := taskvisor.LoadGoals(fullDir)
+	require.NoError(t, err)
+	g2, ok := canonical2.GoalByID(out2.ID)
+	require.True(t, ok)
+	assert.Equal(t, "", g2.Lane, "no-lane multi-dir spec must stay lane-absent")
+	assert.Equal(t, taskvisor.LaneFull, g2.LaneOrFull())
+	raw2, err := os.ReadFile(tvGoalsFilePath(fullDir))
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw2), "lane:", "no lane: key for an auto-derived full goal")
+}
+
 // No t.Parallel(): log.SetOutput mutates global logger state.
 func TestGoalCreate_LaneSoloSingleTopDirScope_NoWarn(t *testing.T) {
 	tmpDir := t.TempDir()

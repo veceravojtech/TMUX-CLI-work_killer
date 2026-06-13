@@ -164,6 +164,12 @@ type Daemon struct {
 	// taskvisor.auto_commit (AutoCommitEnabled) in Run(); warn-only by contract —
 	// a commit failure never alters goal status or daemon flow.
 	autoCommit bool
+	// autoPush gates the completion-time auto-push step (autoPushOnCompletion):
+	// when a run finishes, the daemon runs one plain `git push` once to publish
+	// the run's local commits. Default-OFF — the zero value is correct, so New()
+	// does NOT seed it; Run() overrides it from taskvisor.auto_push. Warn-only by
+	// contract — a push failure never alters goal status or daemon flow.
+	autoPush bool
 	// autoResumeInterval paces resumeDownstreamLoop, the §5 background poll that
 	// re-evaluates precondition-blocked goals. Independent of pollInterval; seeded
 	// from taskvisor.auto_resume_interval_sec (default 30s) at construction/Run.
@@ -349,6 +355,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.haltOnStaleBinary = settings.Taskvisor.HaltOnStaleBinary
 		d.restartOnStaleBinary = settings.Taskvisor.RestartOnStaleBinary
 		d.autoCommit = settings.Taskvisor.AutoCommitEnabled()
+		d.autoPush = settings.Taskvisor.AutoPush
 	}
 
 	// Backend failure reporting (goal-008/009). Config is read independently of

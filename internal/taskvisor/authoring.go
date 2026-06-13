@@ -112,6 +112,18 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 		}
 	}
 
+	// Lane auto-derivation (task 70): a caller that passed NO explicit lane gets
+	// the lane classified here, in the shared core, so the MCP goal-create tool
+	// and the `taskvisor goal add` CLI both inherit it. An explicit spec.Lane is
+	// never touched. The derivation runs AFTER validateGoalSpec (guarantees >=1
+	// validate for G2's deriveInvestigators) and AFTER the scope block, so it
+	// consumes the SAME effective scope the goal persists — no second derivation.
+	// A non-solo result stays "" (LaneOrFull → full): omitempty zero-change.
+	lane := spec.Lane
+	if lane == "" {
+		lane = AutoDeriveLane(workDir, spec, scope)
+	}
+
 	var id string
 	if err := WithGoalsLock(workDir, func() error {
 		gf, err := LoadGoals(workDir)
@@ -158,7 +170,7 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 			DependsOn:            spec.DependsOn,
 			Scope:                scope,
 			Priority:             spec.Priority,
-			Lane:                 spec.Lane,
+			Lane:                 lane,
 		})
 
 		return SaveGoals(workDir, gf)
@@ -170,7 +182,7 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 	if err != nil {
 		return "", false, fmt.Errorf("create goal directory: %w", err)
 	}
-	if err := WriteGoalMD(goalDir, spec.Description, spec.Phase, spec.Lane, spec.Acceptance, spec.Validate, spec.Preconditions, spec.Context, spec.NotInScope, spec.Investigators); err != nil {
+	if err := WriteGoalMD(goalDir, spec.Description, spec.Phase, lane, spec.Acceptance, spec.Validate, spec.Preconditions, spec.Context, spec.NotInScope, spec.Investigators); err != nil {
 		return "", false, fmt.Errorf("write goal.md: %w", err)
 	}
 	if err := WriteValidateScript(goalDir, spec.Validate); err != nil {
@@ -196,4 +208,106 @@ func WriteValidateScript(goalDir string, rules []string) error {
 		b.WriteByte('\n')
 	}
 	return os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte(b.String()), 0o755)
+}
+
+// criticalPriorityTier is the priority floor (G4) above which a goal is treated
+// as critical and is NEVER auto-assigned the cheaper solo lane. A goal with
+// Priority >= this tier always validates on the full multi-investigator lane.
+// The threshold mirrors the dispatch / lane-gate evaluation-source definition of
+// "critical" as priority < 10. Named const, not a bare literal (spec Boundaries).
+const criticalPriorityTier = 10
+
+// AutoDeriveLane decides the validation lane for a goal whose caller passed NO
+// explicit lane. It returns LaneSolo only when the conservative solo gate holds
+// (see autoDeriveSoloLane), otherwise "" — which LaneOrFull resolves to full, so
+// an auto-derived full goal stays lane-absent (omitempty zero-change). The rule
+// lives here in the shared authoring core, so the MCP goal-create tool and the
+// `taskvisor goal add` CLI both inherit it without duplication. CreateGoal calls
+// this AFTER validateGoalSpec and the scope block, so the derivation consumes the
+// SAME effective scope the goal persists.
+func AutoDeriveLane(projectRoot string, spec GoalSpec, scope []string) string {
+	if autoDeriveSoloLane(projectRoot, spec, scope) {
+		return LaneSolo
+	}
+	return ""
+}
+
+// autoDeriveSoloLane is the conservative predicate behind AutoDeriveLane. It
+// biases HARD toward full — a false-solo runs inline (supervisor step 3c) with
+// no recovery on the implementation side — so it returns true (⇒ solo) ONLY when
+// EVERY gate holds:
+//   - G4: spec.Priority < criticalPriorityTier (not a critical goal).
+//   - G2: deriveInvestigators yields >=1 investigator AND every one is a pure
+//     command (a semantic validate like `bin/console`/`db-validate` ⇒ full).
+//   - G3: the effective scope is a single top-level dir AND no new-artifact
+//     marker (new file / new public API / schema / migration) is present —
+//     fails closed (zero or >1 top-level dirs ⇒ NOT solo).
+//
+// (G1 — exactly one CreateGoal call — is implicit at this call site.)
+func autoDeriveSoloLane(projectRoot string, spec GoalSpec, scope []string) bool {
+	if spec.Priority >= criticalPriorityTier { // G4
+		return false
+	}
+	invs := deriveInvestigators(projectRoot, spec.Validate, scope) // G2
+	if len(invs) == 0 {
+		return false
+	}
+	for _, inv := range invs {
+		if !IsPureCommand(inv) {
+			return false
+		}
+	}
+	if !laneScopeSingleTopLevelDir(scope) { // G3 span (fails closed)
+		return false
+	}
+	if hasNewArtifactMarker(spec.Acceptance, spec.Context) { // G3 artifact
+		return false
+	}
+	return true
+}
+
+// laneScopeSingleTopLevelDir reports whether scope resolves to EXACTLY ONE
+// distinct top-level directory. It mirrors internal/mcp's scopeTopLevelDirs
+// (trim a leading "./", take the first segment via strings.Cut, skip
+// ""/"."/"..." wildcard segments). Fails closed for G3: zero OR more than one
+// distinct top-level dir ⇒ false (not solo).
+func laneScopeSingleTopLevelDir(scope []string) bool {
+	seen := make(map[string]bool, len(scope))
+	for _, entry := range scope {
+		entry = strings.TrimPrefix(strings.TrimSpace(entry), "./")
+		seg, _, _ := strings.Cut(entry, "/")
+		if seg == "" || seg == "." || seg == "..." {
+			continue
+		}
+		seen[seg] = true
+	}
+	return len(seen) == 1
+}
+
+// hasNewArtifactMarker reports whether the acceptance lines or context prose
+// signal a NEW artifact whose creation argues for the full lane: a new file, a
+// new public API/interface/class, or a schema/migration. The scan is
+// case-insensitive over acceptance + context, and CONSERVATIVE — any single hit
+// ⇒ true (⇒ full).
+func hasNewArtifactMarker(acceptance []string, context string) bool {
+	var b strings.Builder
+	for _, line := range acceptance {
+		b.WriteString(strings.ToLower(line))
+		b.WriteByte('\n')
+	}
+	b.WriteString(strings.ToLower(context))
+	low := b.String()
+	if strings.Contains(low, "new file") ||
+		strings.Contains(low, "new public") ||
+		strings.Contains(low, "public api") ||
+		strings.Contains(low, "schema") ||
+		strings.Contains(low, "migration") {
+		return true
+	}
+	// "create … interface/class" — a new public type, not an edit to one.
+	if strings.Contains(low, "create ") &&
+		(strings.Contains(low, "interface") || strings.Contains(low, "class")) {
+		return true
+	}
+	return false
 }

@@ -537,6 +537,12 @@ func TestDefaultSettings_RequirePlanApproval_False(t *testing.T) {
 		"RequirePlanApproval must default to false (Go zero value, no backfill)")
 }
 
+func TestDefaultSettings_AutoPush_False(t *testing.T) {
+	s := DefaultSettings()
+	assert.False(t, s.Taskvisor.AutoPush,
+		"AutoPush must default to false (Go zero value, no backfill) — pushing is outward-facing")
+}
+
 func TestSaveSettings_RequirePlanApprovalRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	original := DefaultSettings()
