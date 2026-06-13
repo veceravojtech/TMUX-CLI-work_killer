@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 30)
+	assert.Len(t, m.items, 31)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -59,6 +59,9 @@ commands:
 	assert.Equal(t, "plan.audit", m.items[29].key)
 	assert.Equal(t, "bool", m.items[29].kind)
 	assert.True(t, m.items[29].value)
+	assert.Equal(t, "taskvisor.auto_push", m.items[30].key)
+	assert.Equal(t, "bool", m.items[30].kind)
+	assert.False(t, m.items[30].value)
 	assert.Equal(t, 0, m.cursor)
 }
 
@@ -178,24 +181,24 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 23, m.cursor)
 
-	// Step down through the remaining items to the last one (30 items → max index 29)
-	for want := 24; want <= 29; want++ {
+	// Step down through the remaining items to the last one (31 items → max index 30)
+	for want := 24; want <= 30; want++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 		assert.Equal(t, want, m.cursor)
 	}
 
-	// Can't go past last item (30 items → max index 29)
+	// Can't go past last item (31 items → max index 30)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 29, m.cursor)
+	assert.Equal(t, 30, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 28, m.cursor)
+	assert.Equal(t, 29, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 29; i++ {
+	for i := 0; i < 30; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -951,7 +954,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 30)
+	assert.Len(t, m.items, 31)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -1001,7 +1004,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 30)
+	assert.Len(t, m.items, 31)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {

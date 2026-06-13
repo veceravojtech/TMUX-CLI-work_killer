@@ -126,6 +126,13 @@ type TaskvisorSettings struct {
 	RequirePlanApproval  bool   `yaml:"require_plan_approval"`
 	HaltOnStaleBinary    bool   `yaml:"halt_on_stale_binary"`
 	RestartOnStaleBinary bool   `yaml:"restart_on_stale_binary"`
+	// AutoPush gates the completion-time auto-push step (autoPushOnCompletion):
+	// when a run finishes, the daemon runs one plain `git push` once to publish
+	// the whole run's local commits. A plain bool (not the *bool+accessor idiom
+	// of AutoCommit) because the default is OFF — pushing is outward-facing — so
+	// the Go zero value (false) is exactly right and a legacy setting.yaml that
+	// predates the key reads false. Mirrors HaltOnStaleBinary.
+	AutoPush bool `yaml:"auto_push"`
 	// AutoCommit gates the completion-time auto-commit step: when a goal
 	// transitions to done, the daemon commits the goal's scope-matched changeset
 	// to the currently checked-out branch (one commit boundary per goal). A
