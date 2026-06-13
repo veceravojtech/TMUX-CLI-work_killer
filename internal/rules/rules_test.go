@@ -391,6 +391,117 @@ func TestDetect_NBoundedContextsCounts(t *testing.T) {
 	}
 }
 
+func TestDetect_FrontendModeExplicitLine(t *testing.T) {
+	// An explicit **Frontend:** line is authoritative for each accepted mode.
+	for _, mode := range []string{"vue", "twig", "none"} {
+		root := t.TempDir()
+		writeProjectFile(t, root, "docs/architecture/test-environment.md",
+			"# Test Environment\n**Stack:** php-symfony\n**Frontend:** "+mode+"\n**Run Target:** local\n")
+		if sig := Detect(root); sig.FrontendMode != mode {
+			t.Fatalf("explicit **Frontend:** %s → FrontendMode=%q, want %q", mode, sig.FrontendMode, mode)
+		}
+	}
+}
+
+func TestParseFrontendMode_DerivesFromHasFrontend(t *testing.T) {
+	// No explicit line: derive from frontend presence (parseHasFrontend).
+	// Present + no "twig" mention → generic-Vue default.
+	if got := parseFrontendMode("**Playwright Status:** installed and configured\n"); got != "vue" {
+		t.Fatalf("present frontend, no twig → %q, want vue", got)
+	}
+	// Present AND body mentions twig → twig.
+	if got := parseFrontendMode("**Playwright Status:** installed\nServer-rendered Twig templates.\n"); got != "twig" {
+		t.Fatalf("present frontend, twig mention → %q, want twig", got)
+	}
+	// Absent frontend → none.
+	if got := parseFrontendMode("**Playwright Status:** not applicable (API-only)\n"); got != "none" {
+		t.Fatalf("absent frontend → %q, want none", got)
+	}
+	// No Playwright line, no explicit line → unknown.
+	if got := parseFrontendMode("**Run Target:** local\n"); got != "" {
+		t.Fatalf("no frontend signal → %q, want empty", got)
+	}
+}
+
+func TestParseFrontendMode_JunkValueFallsThrough(t *testing.T) {
+	// An unrecognized explicit value is ignored; with no frontend signal the
+	// derivation yields unknown (empty).
+	if got := parseFrontendMode("**Frontend:** angular\n"); got != "" {
+		t.Fatalf("junk value → %q, want empty (line ignored, derivation unknown)", got)
+	}
+}
+
+func TestResolve_FrontendModeConditionMatches(t *testing.T) {
+	const manifest = `
+version: 1
+packs:
+  - id: _base
+    conventions: [a.md]
+  - id: frontend-vue
+    when: { frontend_mode: vue }
+    conventions: [fe-vue.md]
+`
+	files := []string{"_base/a.md", "frontend-vue/fe-vue.md"}
+	resolve := func(sig Signals) (packs, warns []string) {
+		root := t.TempDir()
+		writeRulesTree(t, root, manifest, files)
+		m, err := LoadManifest(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rfiles, w, err := Resolve(root, m, sig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[string]bool{}
+		for _, f := range rfiles {
+			if !seen[f.Pack] {
+				seen[f.Pack] = true
+				packs = append(packs, f.Pack)
+			}
+		}
+		return packs, w
+	}
+
+	// Known match (vue) includes the pack with NO conservative warning.
+	packs, warns := resolve(Signals{FrontendMode: "vue"})
+	assertPacks(t, packs, []string{"_base", "frontend-vue"})
+	if len(warns) != 0 {
+		t.Fatalf("known stack-signal match must not warn, got %v", warns)
+	}
+	// Mismatched mode (twig) excludes the pack, NO warning.
+	packs, warns = resolve(Signals{FrontendMode: "twig"})
+	assertPacks(t, packs, []string{"_base"})
+	if len(warns) != 0 {
+		t.Fatalf("mismatched stack signal must exclude with no warning, got %v", warns)
+	}
+	// Unknown mode ("") excludes the pack with NO conservative warning
+	// (stack-style, not capability-style include-with-warning).
+	packs, warns = resolve(Signals{FrontendMode: ""})
+	assertPacks(t, packs, []string{"_base"})
+	if len(warns) != 0 {
+		t.Fatalf("unknown frontend_mode must exclude with NO conservative warning, got %v", warns)
+	}
+}
+
+func TestSignals_MarshalJSON_FrontendModeKey(t *testing.T) {
+	data, err := json.Marshal(Signals{FrontendMode: "vue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"frontend_mode":"vue"`) {
+		t.Fatalf("marshaled signals %s missing \"frontend_mode\":\"vue\"", data)
+	}
+	// An empty mode must still marshal the key (zero value = unknown).
+	empty, err := json.Marshal(Signals{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(empty), `"frontend_mode":""`) {
+		t.Fatalf("empty frontend_mode must marshal the key, got %s", empty)
+	}
+}
+
 func TestSignals_MarshalJSON_UsesJWTKeyAndTriStrings(t *testing.T) {
 	sig := Signals{UsesJWT: TriUnknown, HasDatabase: TriYes, HasFrontend: TriNo, NAuthFlows: -1, NBoundedContexts: -1}
 	data, err := json.Marshal(sig)

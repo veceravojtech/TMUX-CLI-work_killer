@@ -197,9 +197,20 @@ Should I save this to `docs/architecture/product-brief.md`, or would you like to
         <action>For each shared type, confirm with the user whether it should be a single shared definition or duplicated per BC.</action>
       </substep>
 
+      <substep n="3.6" title="Deployables &amp; Packages Inventory" interactive="true">
+        <action>Map the discovered bounded contexts onto the P2 monorepo layout — a DOCUMENT-only inventory (no scaffolding, no code generation; per the step-732 documents-only rule). Capture three lists:</action>
+        <inventory>
+          <item kind="contexts">Which BCs become domain libraries under `contexts/&lt;bc&gt;/` — DEFAULT: every BC from substep 3.1 is a `contexts/` library.</item>
+          <item kind="projects">Which `projects/&lt;app&gt;` deployables compose those contexts — DEFAULT: a single `projects/api` wiring ALL contexts. Only add more (e.g. a separate `projects/admin`, `projects/worker`) when discovery surfaced a distinct deployable; otherwise keep the one-api default.</item>
+          <item kind="packages">Which shared value objects / types (from substep 3.5's share namespace) become reusable `packages/&lt;name&gt;/` — DEFAULT: none unless 3.5 named cross-BC shared types.</item>
+        </inventory>
+        <action>Confirm the mapping with the user (present the three lists; offer the defaults so a single-deployable project is a one-keystroke confirm).</action>
+        <action>Persist the result as a `## Deployables &amp; Packages Inventory` section appended to `docs/architecture/bounded-contexts.md` — a table of `contexts/`, `projects/`, and `packages/` entries with the BC(s) each composes. Do NOT create any source directories or files; this records the intended layout for later P2-monorepo generator phases only.</action>
+      </substep>
+
       <output>
         <file path="docs/architecture/domain-model.md" condition="always">Per-BC aggregate roots with entities, value objects, invariants, domain events with triggers, and domain services, share namespace. Uses _base/domain-model.md template as skeleton.</file>
-        <file path="docs/architecture/bounded-contexts.md" condition="always">BC inventory with relationships, ACL boundaries, share namespace, and dependency rules. Uses _base/bounded-contexts.md template as skeleton.</file>
+        <file path="docs/architecture/bounded-contexts.md" condition="always">BC inventory with relationships, ACL boundaries, share namespace, dependency rules, AND a `## Deployables &amp; Packages Inventory` section mapping BCs onto `contexts/`/`projects/`/`packages/` (default: one `projects/api` wiring all contexts). Uses _base/bounded-contexts.md template as skeleton.</file>
         <file path="docs/architecture/context-map.md" condition="not is_single_bc">Translation strategies, boundary error handling, event choreography, and consistency patterns between BCs. Uses _base/context-mapping.md template as skeleton. Not generated for single-BC projects.</file>
       </output>
 
@@ -343,6 +354,8 @@ Does this project have a frontend? If so, what kind?
 - Something else?
         </template>
         <action>Wait for user response. Set frontend_type from their answer.</action>
+
+        <action>Derive the discrete FRONTEND_MODE (exactly one of `vue` | `twig` | `none`) from frontend_type — this drives the `**Frontend:**` line written in substep 7.3 and later P2-monorepo generator phases: SPA / Single-page / Vue / client-rendered ⇒ `vue`; Server-rendered / SSR / Twig / templates ⇒ `twig`; API-only / no frontend ⇒ `none`. (Mobile-only or "something else" with no web frontend ⇒ `none`.) Record FRONTEND_MODE for substep 7.3.</action>
 
         <branch condition="frontend_type is API-only">
           <action>Record frontend_type = "API-only" and skip remaining frontend questions (framework, protocol, shared contracts).</action>
@@ -564,6 +577,7 @@ Here's the test environment configuration I've captured:
 
 **Base URL:** {{test_base_url}}
 **Stack:** {{LANG}}-{{FRAMEWORK}}
+**Frontend:** {{FRONTEND_MODE}}
 **Run Target:** {{run_target}}
 {{#if is_docker}}**DB/services location:** {{services_location}}
 {{#if services_compose}}**Published Ports:**

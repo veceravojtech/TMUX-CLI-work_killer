@@ -58,7 +58,8 @@ type Signals struct {
 	RunTarget        string `json:"run_target"` // "docker" | "local" | "" (unknown)
 	HasDatabase      Tri    `json:"has_database"`
 	HasFrontend      Tri    `json:"has_frontend"`
-	NAuthFlows       int    `json:"n_auth_flows"` // -1 = unknown
+	FrontendMode     string `json:"frontend_mode"` // "vue" | "twig" | "none" | "" (unknown); a stack-style signal
+	NAuthFlows       int    `json:"n_auth_flows"`  // -1 = unknown
 	UsesJWT          Tri    `json:"uses_jwt"`
 	HasMailer        Tri    `json:"has_mailer"`
 	HasMessenger     Tri    `json:"has_messenger"`
@@ -69,12 +70,13 @@ type Signals struct {
 // Condition is a pack's structured `when` clause. All set fields must hold
 // (AND). A nil Condition always holds.
 type Condition struct {
-	RunTarget    string `yaml:"run_target"`
-	HasDatabase  *bool  `yaml:"has_database"`
-	HasFrontend  *bool  `yaml:"has_frontend"`
-	MinAuthFlows *int   `yaml:"min_auth_flows"`
-	Lang         string `yaml:"lang"`
-	Framework    string `yaml:"framework"`
+	RunTarget    string  `yaml:"run_target"`
+	HasDatabase  *bool   `yaml:"has_database"`
+	HasFrontend  *bool   `yaml:"has_frontend"`
+	MinAuthFlows *int    `yaml:"min_auth_flows"`
+	Lang         string  `yaml:"lang"`
+	Framework    string  `yaml:"framework"`
+	FrontendMode *string `yaml:"frontend_mode"` // stack-style: must be KNOWN to match
 }
 
 // Pack is one manifest entry. Conventions are planner-binding rule files;
@@ -225,6 +227,13 @@ func matches(c *Condition, sig Signals) (bool, string) {
 	if c.Framework != "" && !strings.EqualFold(sig.Framework, c.Framework) {
 		return false, ""
 	}
+	// FrontendMode is a stack signal: an unknown mode must NOT match (no
+	// conservative include-with-warning) — a wrong frontend rule misdirects.
+	if c.FrontendMode != nil {
+		if sig.FrontendMode == "" || !strings.EqualFold(sig.FrontendMode, *c.FrontendMode) {
+			return false, ""
+		}
+	}
 
 	if len(conservative) > 0 {
 		return true, "included conservatively (" + strings.Join(conservative, ", ") + ")"
@@ -290,6 +299,7 @@ func Detect(projectRoot string) Signals {
 		sig.RunTarget = parseRunTarget(testEnv)
 		sig.HasDatabase = parseHasDatabase(testEnv)
 		sig.HasFrontend = parseHasFrontend(testEnv)
+		sig.FrontendMode = parseFrontendMode(testEnv)
 		if !stackFound && sig.Framework == "" && strings.Contains(strings.ToLower(testEnv), "symfony") {
 			sig.Lang, sig.Framework = "php", "symfony"
 		}
@@ -571,6 +581,40 @@ func parseHasFrontend(body string) Tri {
 		}
 	}
 	return TriUnknown
+}
+
+// parseFrontendMode resolves the discrete frontend mode (vue|twig|none, or ""
+// for unknown). An explicit "**Frontend:** <mode>" line (mirroring the
+// parseStackLine idiom) is authoritative when it names one of the accepted
+// modes; any other value is ignored and the mode is DERIVED from frontend
+// presence via parseHasFrontend (so the two signals never disagree): a present
+// frontend defaults to the generic "vue" unless the body names "twig", an
+// absent frontend is "none", and an undetectable one stays "".
+func parseFrontendMode(body string) string {
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimLeft(raw, "*# \t")
+		if !strings.HasPrefix(strings.ToLower(line), "frontend:") {
+			continue
+		}
+		val := strings.ToLower(strings.TrimSpace(strings.Trim(strings.TrimSpace(line[len("frontend:"):]), "*_` ")))
+		switch val {
+		case "vue", "twig", "none":
+			return val
+		}
+		// Unrecognized value: ignore this line and keep scanning, then fall
+		// through to derivation (mirrors parseStackLine skipping unusable lines).
+	}
+	switch parseHasFrontend(body) {
+	case TriYes:
+		if strings.Contains(strings.ToLower(body), "twig") {
+			return "twig"
+		}
+		return "vue"
+	case TriNo:
+		return "none"
+	default:
+		return ""
+	}
 }
 
 // parseAuthFlowCount counts list items under the "## Auth Flows" heading of
