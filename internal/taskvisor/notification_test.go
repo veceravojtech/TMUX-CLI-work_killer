@@ -178,6 +178,46 @@ func TestDeactivateOnCompletion_AllCompleteNotification(t *testing.T) {
 	assert.Contains(t, allCompleteMsg, "wall=30m0s")
 }
 
+func TestDeactivateOnCompletion_AllCompleteWall_ZeroActivatedAt_NoOverflow(t *testing.T) {
+	// Regression: an exec-replace restart resets the in-memory d.activatedAt to the
+	// zero time (resume never re-stamps it). now.Sub(zero) then overflows
+	// time.Duration to math.MaxInt64 and printed the ~292-year garbage
+	// "wall=2562047h47m16.854775807s". With a zero epoch and no taskvisor-active
+	// marker to recover from, the wall must read "unknown", never the overflow.
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	fixedNow := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	d.clock = func() time.Time { return fixedNow }
+	d.activatedAt = time.Time{} // lost across exec-replace restart
+
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{
+		{ID: "goal-001", Description: "done goal", Status: GoalDone,
+			StartedAt: "2026-06-07T11:00:00Z", FinishedAt: "2026-06-07T11:15:00Z"},
+	}}
+	writeGoals(t, dir, gf)
+
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
+
+	require.NoError(t, d.deactivateOnCompletion(gf))
+
+	var allCompleteMsg string
+	for _, call := range exec.Calls {
+		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
+			msg := call.Arguments.String(2)
+			if strings.Contains(msg, "[TASKVISOR:ALL-COMPLETE") {
+				allCompleteMsg = msg
+			}
+		}
+	}
+	require.NotEmpty(t, allCompleteMsg, "must send ALL-COMPLETE")
+	assert.Contains(t, allCompleteMsg, "wall=unknown", "zero activatedAt with no marker must read wall=unknown")
+	assert.NotContains(t, allCompleteMsg, "2562047h", "must never emit the math.MaxInt64 duration overflow")
+}
+
 func TestDeactivateOnCompletion_AllCompleteAfterGoalDone(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession

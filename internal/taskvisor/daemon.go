@@ -786,9 +786,20 @@ func (d *Daemon) notifyCompletion(goals *GoalsFile) {
 			blockedN++
 		}
 	}
-	wall := d.now().Sub(d.activatedAt).Round(time.Second)
+	// d.activatedAt is the in-memory global run epoch; an exec-replace restart
+	// resets it to zero (resume never re-stamps it), and now.Sub(zero) overflows
+	// time.Duration to math.MaxInt64 — the ~292-year "wall=2562047h47m16.854775807s"
+	// garbage. Guard it: recover the epoch from the persisted taskvisor-active
+	// marker (still present here — cleanRuntimeMarkers runs after notifyCompletion),
+	// else report "unknown" rather than the overflow value.
+	wallStr := "unknown"
+	if !d.activatedAt.IsZero() {
+		wallStr = d.now().Sub(d.activatedAt).Round(time.Second).String()
+	} else if info, statErr := os.Stat(filepath.Join(d.workDir, ".tmux-cli", "taskvisor-active")); statErr == nil {
+		wallStr = d.now().Sub(info.ModTime()).Round(time.Second).String()
+	}
 	if err := d.executor.SendMessageWithDelay(d.session, win.TmuxWindowID, fmt.Sprintf("[TASKVISOR:ALL-COMPLETE done=%d failed=%d blocked=%d wall=%s]",
-		doneN, failedN, blockedN, wall)); err != nil {
+		doneN, failedN, blockedN, wallStr)); err != nil {
 		log.Printf("notify: failed to send ALL-COMPLETE: %v", err)
 	}
 }
