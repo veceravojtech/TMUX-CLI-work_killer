@@ -563,6 +563,7 @@ You chose to seed a default admin, but the environment-variable NAME for the **{
 Here's the test environment configuration I've captured:
 
 **Base URL:** {{test_base_url}}
+**Stack:** {{LANG}}-{{FRAMEWORK}}
 **Run Target:** {{run_target}}
 {{#if is_docker}}**DB/services location:** {{services_location}}
 {{#if services_compose}}**Published Ports:**

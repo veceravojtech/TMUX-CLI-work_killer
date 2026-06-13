@@ -132,6 +132,12 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
         </section>
       </substep>
 
+      <substep n="3.19.4b" title="Inject code rules per auth flow (apply [CODE-RULE-INJECTION])">
+        <action>For EACH auth-flow goal (the per-flow loop in 3.19.5), bind RULE_FILES = the comma-joined deliverable paths for THIS flow (substep 3.19.4 deliverables: controller, request DTO, response DTO, route config, e2e test — drop the playwright e2e path when Playwright is N/A). Bind RULE_PHASE = `auth` (this goal's phase token — pass it VERBATIM).</action>
+        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into this flow's ACCEPTANCE array (3.19.3); copy each `automated`/`mixed` `validate_cmd` into the `validate` param array composed in 3.19.5; fold `review` `validate_cmd`s into ONE convention-audit investigator (ADD; base is 2–3 from 3.19.4, so the 4th slot is free — no drop); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to this flow's CONTEXT (3.19.4). Empty `rules` ⇒ inject nothing.</action>
+        <rule>Copy pre-rendered payload fields VERBATIM — no agent-side glob/severity logic. PRESERVE the per-flow implementation-check + quality-gate (+ conditional Playwright E2E) investigators and the Playwright-availability gate; never emit an `npx playwright` command when Playwright is N/A.</rule>
+      </substep>
+
       <substep n="3.19.5" title="Generate one goal per auth flow via goal-create">
         <action>For each AUTH_FLOW in AUTH_FLOWS, call goal-create MCP tool:</action>
 

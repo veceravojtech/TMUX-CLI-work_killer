@@ -1400,10 +1400,11 @@ func runTaskvisorInlinePlan(cmd *cobra.Command, args []string) error {
 
 // parseGoalInvestigators extracts the full ## Investigation Config investigator
 // configs from goal.md — name, type, commands, and Pass — the fields
-// taskvisor.IsPureCommand needs to classify a check as pure-command. It mirrors
-// parseGoalFindings' section/heading scan but captures the investigator body. An
-// absent goal.md returns an empty slice (no error) so the caller degrades to
-// fanout.
+// taskvisor.IsPureCommand needs to classify a check as pure-command. It reads the
+// file (an absent goal.md returns (nil,nil) so the caller degrades to fanout) and
+// delegates the markdown scan to taskvisor.ParseInvestigators — the single,
+// in-package inverse of renderInvestigationConfig, guarded by
+// TestInvestigatorConfigParity so the renderer and reader can never drift.
 func parseGoalInvestigators(goalMDPath string) ([]taskvisor.Investigator, error) {
 	data, err := os.ReadFile(goalMDPath)
 	if err != nil {
@@ -1412,55 +1413,7 @@ func parseGoalInvestigators(goalMDPath string) ([]taskvisor.Investigator, error)
 		}
 		return nil, err
 	}
-	lines := strings.Split(string(data), "\n")
-
-	var invs []taskvisor.Investigator
-	section := ""
-	for i := 0; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "## ") {
-			section = strings.TrimSpace(strings.TrimPrefix(line, "## "))
-			continue
-		}
-		if section != "Investigation Config" || !strings.HasPrefix(line, "### ") {
-			continue
-		}
-		name := strings.TrimSpace(strings.TrimPrefix(line, "### "))
-		if colon := strings.IndexByte(name, ':'); colon >= 0 && strings.HasPrefix(name, "Investigator") {
-			name = strings.TrimSpace(name[colon+1:])
-		}
-		inv := taskvisor.Investigator{Name: name}
-		// Scan this investigator's body until the next heading.
-		for j := i + 1; j < len(lines); j++ {
-			b := strings.TrimSpace(lines[j])
-			if strings.HasPrefix(b, "### ") || strings.HasPrefix(b, "## ") {
-				break
-			}
-			stripped := strings.TrimLeft(b, "-* ")
-			low := strings.ToLower(stripped)
-			switch {
-			case strings.HasPrefix(low, "type:"):
-				inv.Type = strings.TrimSpace(stripped[strings.IndexByte(stripped, ':')+1:])
-			case strings.HasPrefix(low, "command:"):
-				if c := strings.TrimSpace(stripped[strings.IndexByte(stripped, ':')+1:]); c != "" {
-					inv.Commands = append(inv.Commands, c)
-				}
-			case strings.HasPrefix(low, "pass:"):
-				inv.Pass = strings.TrimSpace(stripped[strings.IndexByte(stripped, ':')+1:])
-			case strings.HasPrefix(low, "fail:"):
-				inv.Fail = strings.TrimSpace(stripped[strings.IndexByte(stripped, ':')+1:])
-			case strings.HasPrefix(low, "paths:") || strings.HasPrefix(low, "path:"):
-				val := stripped[strings.IndexByte(stripped, ':')+1:]
-				for _, p := range strings.FieldsFunc(val, func(r rune) bool { return r == ',' || r == ' ' }) {
-					if p = strings.TrimSpace(p); p != "" {
-						inv.Paths = append(inv.Paths, p)
-					}
-				}
-			}
-		}
-		invs = append(invs, inv)
-	}
-	return invs, nil
+	return taskvisor.ParseInvestigators(string(data)), nil
 }
 
 // parseGoalFindings extracts the current cycle's findings from goal.md: one

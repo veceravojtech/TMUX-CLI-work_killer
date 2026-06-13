@@ -130,6 +130,12 @@ When auth_required is true, the E2E test file MUST use the authenticated Playwri
         <value>Domain logic (aggregate roots, value objects, domain events, repository interfaces — built by domain goals). Application handlers and command/query buses (built by application goals). Infrastructure persistence (Doctrine mappings, migrations — built by infrastructure goals). Auth endpoints (handled by auth goals). Fixtures and seed data (built by fixtures goal). Error handling middleware (built by error handling goal).</value>
       </substep>
 
+      <substep n="3.18.6b" title="Inject code rules per action (apply [CODE-RULE-INJECTION])">
+        <action>For EACH action goal (the per-action loop in 3.18.7), bind RULE_FILES = the comma-joined 5 deliverable paths for THIS action (substep 3.18.5 deliverables: request DTO, response DTO, controller, route, e2e test — drop the e2e path when Playwright is N/A). Bind RULE_PHASE = `action` (this goal's phase token — pass it VERBATIM).</action>
+        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into this action's ACCEPTANCE array (3.18.3); copy each `automated`/`mixed` `validate_cmd` into this action's VALIDATE array (3.18.4); fold `review` `validate_cmd`s into ONE convention-audit investigator (ADD; base is 2–3 from 3.18.5, so the 4th slot is free — no drop); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to this action's CONTEXT (3.18.5). Empty `rules` ⇒ inject nothing.</action>
+        <rule>Copy pre-rendered payload fields VERBATIM — no agent-side glob/severity logic. PRESERVE the per-action file-check + quality-gate (+ conditional Playwright E2E) investigators and the GM-08 2-min floor.</rule>
+      </substep>
+
       <substep n="3.18.7" title="Iterate and call goal-create for each action">
         <action>For each action in ACTION_LIST, call goal-create MCP with:</action>
         <params>

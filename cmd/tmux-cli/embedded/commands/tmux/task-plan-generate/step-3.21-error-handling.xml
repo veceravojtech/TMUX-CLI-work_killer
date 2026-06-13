@@ -105,6 +105,12 @@ Depends on fixtures goal: {{FIXTURES_GOAL_ID}} — integration tests need seeded
         <value>Domain exception class definitions (built by domain goals), controller actions (handled by action goals), auth flows (handled by auth goals), fixtures (handled by fixtures goal), application-level validation logic (handled by application goals) — error handling goal covers only the cross-cutting exception listener, response factory, and status code mapping infrastructure.</value>
       </substep>
 
+      <substep n="3.21.7b" title="Inject code rules (apply [CODE-RULE-INJECTION])">
+        <action>Bind RULE_FILES = the comma-joined error-handling deliverable paths (src/Share/Infrastructure/ErrorHandling/** — listener, RFC 7807 response factory, status-code map, and their tests). Bind RULE_PHASE = `error_handling` (this goal's phase token — pass it VERBATIM; do NOT remap it).</action>
+        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.21.4); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (3.21.5); fold `review` `validate_cmd`s into ONE convention-audit investigator (ADD; base is 3 from 3.21.6, so the 4th slot is free — no drop); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.21.6). Empty `rules` ⇒ inject nothing.</action>
+        <rule>The phase token `error_handling` is NOT in the Go `allowedPhases` enum — `rules match` returns an empty set, so this goal UNDER-injects (fail-safe: under-enforce, never wrong-enforce). This is a recorded known risk; do NOT "fix" the enum here. PRESERVE the 3 existing investigators.</rule>
+      </substep>
+
       <substep n="3.21.8" title="Call goal-create MCP and record ID">
         <action>Call the goal-create MCP tool with these parameters:</action>
         <params>

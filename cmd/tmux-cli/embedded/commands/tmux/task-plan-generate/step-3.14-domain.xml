@@ -235,6 +235,13 @@ ACL patterns from resolved context-mapping template ({{CONTEXT_MAP_TEMPLATE tier
           <value>Doctrine XML mappings, infrastructure repository implementations, command/query handlers, controllers, API endpoints, database migrations, fixtures, E2E tests, Messenger transport config, ACL adapters (Infrastructure layer) — all handled by subsequent Application/Infrastructure goals.</value>
         </substep>
 
+        <substep n="3.14.4h2" title="Inject code rules (apply [CODE-RULE-INJECTION])">
+          <action>Bind RULE_FILES = the comma-joined DELIVERABLES paths for this BC (substep 3.14.4c). Bind RULE_PHASE = `domain` (this goal's phase token — pass it VERBATIM).</action>
+          <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.14.4e); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (3.14.4f); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.14.4g). Empty `rules` ⇒ inject nothing.</action>
+          <action>MERGE review rules into the EXISTING DDD convention-audit investigator (3.14.4g investigator n=4): append the `review` `validate_cmd`s to its Commands and extend its Fail with "any cited must code-rule violated; should violations reported as findings". Do NOT add a second convention-audit. If investigator n=4 is absent for this BC (its `AGGREGATE_COUNT &gt; 1 or cross-BC deps` condition is false) AND review rules apply, ADD ONE convention-audit — but only within the 2–4 cap; with the 3 mandatory investigators present the ADD lands a 4th slot (legal, no drop needed).</action>
+          <rule>Copy pre-rendered payload fields VERBATIM — no agent-side glob/severity logic. PRESERVE the existing DDD convention-audit grep Commands and the n=4 condition; the merged Commands are ADDED, never replacing the DDD greps.</rule>
+        </substep>
+
         <substep n="3.14.4i" title="Call goal-create MCP">
           <action>Call the goal-create MCP tool with these parameters:</action>
           <params>

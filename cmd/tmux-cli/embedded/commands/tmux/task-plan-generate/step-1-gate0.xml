@@ -247,6 +247,12 @@ Correction ordering protocol (E-13): when multiple failures are detected, apply 
         </branch>
       </substep>
 
+      <substep n="1.66b" title="Inject code rules (apply [CODE-RULE-INJECTION])">
+        <action>Bind RULE_FILES = the comma-joined deliverable file paths this Gate-0 goal writes (AGENTS.md at project root, plus any repo-root skeleton files referenced by substeps 1.4/1.5). Bind RULE_PHASE = `gate` (this goal's phase token — pass it VERBATIM).</action>
+        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (substep 1.3); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (substep 1.4); fold `review` `validate_cmd`s into ONE convention-audit investigator (merge-or-add under the 2–4 cap against substep 1.5's investigators); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (substep 1.5). Empty `rules` ⇒ inject nothing.</action>
+        <rule>Copy pre-rendered payload fields VERBATIM — no agent-side glob/severity logic. PRESERVE substep 1.5's run-target investigator floor (GM-08: local = Core Runtime + PHP Extensions; docker = Docker Engine + Compose) and never drop below 2 or above 4.</rule>
+      </substep>
+
       <substep n="1.7" title="Call goal-create MCP">
         <action>Call the goal-create MCP tool with these parameters:</action>
         <params>

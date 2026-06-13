@@ -148,6 +148,13 @@ If BC has list/search use cases:
           <value>Doctrine mappings, database migrations, HTTP controllers, routes, domain logic, event dispatching, infrastructure implementations, Symfony service configuration — all handled by domain or infrastructure goals.</value>
         </substep>
 
+        <substep n="3.15.4d2" title="Inject code rules (apply [CODE-RULE-INJECTION])">
+          <action>Bind RULE_FILES = the comma-joined deliverable paths for this BC's application layer (substep 3.15.4c deliverables section — the Command/Query/ReadModel handler+DTO paths). Bind RULE_PHASE = `application` (this goal's phase token — pass it VERBATIM).</action>
+          <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.15.4a); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (3.15.4b); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.15.4c) and to the goal.md written in 3.15.4f. Empty `rules` ⇒ inject nothing.</action>
+          <action>If `review` `validate_cmd`s exist, ADD ONE convention-audit investigator carrying ALL of them (3.15.4c emits exactly 3 base investigators: test-execution / static-analysis / architecture-check, so the ADD lands the 4th slot — legal, no drop). If none, emit no investigator.</action>
+          <rule>Copy pre-rendered payload fields VERBATIM — no agent-side glob/severity logic. PRESERVE the 3 existing investigators; the convention-audit is additive only.</rule>
+        </substep>
+
         <substep n="3.15.4e" title="Call goal-create MCP">
           <action>Call the goal-create MCP tool with these parameters:</action>
           <params>

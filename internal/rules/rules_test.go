@@ -1,10 +1,24 @@
 package rules
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// writeProjectFile materializes one file (creating parent dirs) under root.
+func writeProjectFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	p := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // writeRulesTree materializes a minimal on-disk catalogue so Resolve's
 // existence checks pass.
@@ -255,5 +269,148 @@ func TestDetect_PlaywrightNotApplicable(t *testing.T) {
 	sig := Detect(root)
 	if sig.RunTarget != "local" || sig.HasDatabase != TriNo || sig.HasFrontend != TriNo {
 		t.Fatalf("unexpected signals: %+v", sig)
+	}
+}
+
+func TestDetect_StackLineOverridesManifest(t *testing.T) {
+	// An explicit **Stack:** line beats project-manifest detection: a php
+	// composer.json present, but the doc declares go-gin.
+	root := t.TempDir()
+	writeProjectFile(t, root, "composer.json", `{"require":{"symfony/framework-bundle":"^7.0"}}`)
+	writeProjectFile(t, root, "docs/architecture/test-environment.md",
+		"# Test Environment\n**Stack:** go-gin\n**Run Target:** local\n")
+	sig := Detect(root)
+	if sig.Lang != "go" || sig.Framework != "gin" {
+		t.Fatalf("Stack line must win: got %s/%s, want go/gin", sig.Lang, sig.Framework)
+	}
+}
+
+func TestDetect_StackLineParsesLangFramework(t *testing.T) {
+	// Split on the FIRST hyphen.
+	root := t.TempDir()
+	writeProjectFile(t, root, "docs/architecture/test-environment.md", "**Stack:** php-symfony\n")
+	if sig := Detect(root); sig.Lang != "php" || sig.Framework != "symfony" {
+		t.Fatalf("got %s/%s, want php/symfony", sig.Lang, sig.Framework)
+	}
+	// No hyphen → framework empty.
+	root2 := t.TempDir()
+	writeProjectFile(t, root2, "docs/architecture/test-environment.md", "**Stack:** go\n")
+	if sig := Detect(root2); sig.Lang != "go" || sig.Framework != "" {
+		t.Fatalf("got %s/%s, want go/<empty>", sig.Lang, sig.Framework)
+	}
+}
+
+func TestDetect_StackLineAbsentFallsThroughToDetectStack(t *testing.T) {
+	// No Stack line: manifest detection drives lang/framework.
+	root := t.TempDir()
+	writeProjectFile(t, root, "go.mod", "module example.com/x\n\ngo 1.25\n")
+	writeProjectFile(t, root, "docs/architecture/test-environment.md", "**Run Target:** local\n")
+	if sig := Detect(root); sig.Lang != "go" {
+		t.Fatalf("manifest fall-through failed: got lang=%q, want go", sig.Lang)
+	}
+	// No Stack line, no manifest, but a symfony mention: the last-tier
+	// symfony fallback stays intact.
+	root2 := t.TempDir()
+	writeProjectFile(t, root2, "docs/architecture/test-environment.md",
+		"**Run Target:** local\n\n**Symfony-specific:**\n- PHPUnit config: phpunit.xml.dist\n")
+	if sig := Detect(root2); sig.Lang != "php" || sig.Framework != "symfony" {
+		t.Fatalf("symfony fallback broken: got %s/%s, want php/symfony", sig.Lang, sig.Framework)
+	}
+}
+
+func TestDetect_UsesJWTFromComposerLexikOrFirebase(t *testing.T) {
+	for _, pkg := range []string{"lexik/jwt-authentication-bundle", "firebase/php-jwt"} {
+		root := t.TempDir()
+		writeProjectFile(t, root, "composer.json", `{"require":{"`+pkg+`":"^2.0"}}`)
+		if sig := Detect(root); sig.UsesJWT != TriYes {
+			t.Fatalf("composer %s must set UsesJWT=yes, got %v", pkg, sig.UsesJWT)
+		}
+	}
+}
+
+func TestDetect_UsesJWTFromCrossCuttingSecurity(t *testing.T) {
+	// Security section names JWT → yes.
+	root := t.TempDir()
+	writeProjectFile(t, root, "docs/architecture/cross-cutting.md",
+		"## Security\n- Auth via JWT bearer tokens\n")
+	if sig := Detect(root); sig.UsesJWT != TriYes {
+		t.Fatalf("JWT in security section must set yes, got %v", sig.UsesJWT)
+	}
+	// Security section present without JWT → no.
+	root2 := t.TempDir()
+	writeProjectFile(t, root2, "docs/architecture/cross-cutting.md",
+		"## Security\n- Session cookies only, no tokens\n")
+	if sig := Detect(root2); sig.UsesJWT != TriNo {
+		t.Fatalf("security section without JWT must set no, got %v", sig.UsesJWT)
+	}
+	// Neither composer nor security section → unknown.
+	root3 := t.TempDir()
+	writeProjectFile(t, root3, "docs/architecture/cross-cutting.md",
+		"## Auth Flows\n- Login\n- Logout\n")
+	if sig := Detect(root3); sig.UsesJWT != TriUnknown {
+		t.Fatalf("no JWT signal must stay unknown, got %v", sig.UsesJWT)
+	}
+}
+
+func TestDetect_HasMailerMessengerHTTPClientFromComposer(t *testing.T) {
+	// All three present → yes.
+	root := t.TempDir()
+	writeProjectFile(t, root, "composer.json",
+		`{"require":{"symfony/mailer":"^7","symfony/messenger":"^7","symfony/http-client":"^7"}}`)
+	sig := Detect(root)
+	if sig.HasMailer != TriYes || sig.HasMessenger != TriYes || sig.HasHTTPClient != TriYes {
+		t.Fatalf("want all yes, got mailer=%v messenger=%v http=%v", sig.HasMailer, sig.HasMessenger, sig.HasHTTPClient)
+	}
+	// composer present without the keys → no.
+	root2 := t.TempDir()
+	writeProjectFile(t, root2, "composer.json", `{"require":{"symfony/framework-bundle":"^7"}}`)
+	sig2 := Detect(root2)
+	if sig2.HasMailer != TriNo || sig2.HasMessenger != TriNo || sig2.HasHTTPClient != TriNo {
+		t.Fatalf("want all no, got mailer=%v messenger=%v http=%v", sig2.HasMailer, sig2.HasMessenger, sig2.HasHTTPClient)
+	}
+	// no composer → unknown.
+	root3 := t.TempDir()
+	writeProjectFile(t, root3, "go.mod", "module example.com/x\n")
+	sig3 := Detect(root3)
+	if sig3.HasMailer != TriUnknown || sig3.HasMessenger != TriUnknown || sig3.HasHTTPClient != TriUnknown {
+		t.Fatalf("want all unknown, got mailer=%v messenger=%v http=%v", sig3.HasMailer, sig3.HasMessenger, sig3.HasHTTPClient)
+	}
+}
+
+func TestDetect_NBoundedContextsCounts(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "docs/architecture/bounded-contexts.md",
+		"# Bounded Contexts\n## Bounded Context Inventory\n### Booking\nblah\n### Billing\nblah\n### Guest\nblah\n## Relationships\n### Booking -> Billing\n")
+	if sig := Detect(root); sig.NBoundedContexts != 3 {
+		t.Fatalf("NBoundedContexts = %d, want 3", sig.NBoundedContexts)
+	}
+	// Absent file → -1 (unknown).
+	root2 := t.TempDir()
+	if sig := Detect(root2); sig.NBoundedContexts != -1 {
+		t.Fatalf("absent bounded-contexts.md must be -1, got %d", sig.NBoundedContexts)
+	}
+}
+
+func TestSignals_MarshalJSON_UsesJWTKeyAndTriStrings(t *testing.T) {
+	sig := Signals{UsesJWT: TriUnknown, HasDatabase: TriYes, HasFrontend: TriNo, NAuthFlows: -1, NBoundedContexts: -1}
+	data, err := json.Marshal(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{`"uses_jwt":"unknown"`, `"has_database":"yes"`, `"has_frontend":"no"`} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("marshaled signals %s missing %s", s, want)
+		}
+	}
+	// Unknown must stay distinguishable from No.
+	u, _ := TriUnknown.MarshalJSON()
+	n, _ := TriNo.MarshalJSON()
+	y, _ := TriYes.MarshalJSON()
+	if string(u) != `"unknown"` || string(n) != `"no"` || string(y) != `"yes"` {
+		t.Fatalf("Tri JSON forms wrong: %s/%s/%s", u, n, y)
+	}
+	if string(u) == string(n) {
+		t.Fatal("unknown and no must not marshal identically")
 	}
 }

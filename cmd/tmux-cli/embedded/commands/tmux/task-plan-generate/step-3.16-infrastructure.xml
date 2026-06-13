@@ -154,6 +154,13 @@ ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messeng
           <action>Set NOT_IN_SCOPE:</action>
           <value>HTTP controllers, domain model changes, Application layer changes, E2E tests, Messenger transport config, fixtures (separate goal), hand-written migrations.</value>
 
+          <inject-code-rules title="Inject code rules (apply [CODE-RULE-INJECTION])">
+            <action>Bind RULE_FILES = the comma-joined deliverable paths for this BC's infrastructure layer (Persistence/mapping/repo/ACL/migration paths owned by this goal). Bind RULE_PHASE = `infrastructure` (this goal's phase token — pass it VERBATIM).</action>
+            <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array; copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array; add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT. Empty `rules` ⇒ inject nothing.</action>
+            <action>If `review` `validate_cmd`s exist, ADD ONE convention-audit investigator carrying ALL of them. Base set is 3 (Schema + Annotations + Tests), OR 4 when the conditional ACL file-check (investigator n=4, acl_list non-empty) is present. When base is already 4, apply the spine's 2–4 cap BEFORE adding: only when a `must` review rule applies, DROP the lowest keep-priority base investigator (drop order static-analysis → architecture-check → quality-gate → test-execution; the ACL `file-check` and `environment-check`/`quality-gate`/`test-execution` floor follow that order — never drop below 2); else do not add the investigator (review rules ride the goal.md line + spec citation).</action>
+            <rule>Copy pre-rendered payload fields VERBATIM — no agent-side glob/severity logic. PRESERVE the Schema/Annotations/Tests investigators and the ACL file-check condition; final investigation_config length stays within [2,4].</rule>
+          </inject-code-rules>
+
           <action>Call goal-create MCP tool:</action>
           <params>
             <param name="description">Implement {BC} infrastructure: Doctrine XML mappings, repos, migration, integration tests</param>

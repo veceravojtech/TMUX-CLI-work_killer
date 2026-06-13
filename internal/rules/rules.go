@@ -34,15 +34,36 @@ const (
 	TriNo
 )
 
+// MarshalJSON renders a Tri as a legible string ("unknown"/"yes"/"no") so the
+// `rules resolve --signals` dump is readable by the planner XML rather than
+// leaking the 0/1/2 integers. Unknown stays distinct from No.
+func (t Tri) MarshalJSON() ([]byte, error) {
+	switch t {
+	case TriYes:
+		return []byte(`"yes"`), nil
+	case TriNo:
+		return []byte(`"no"`), nil
+	default:
+		return []byte(`"unknown"`), nil
+	}
+}
+
 // Signals are the per-project facts pack conditions are evaluated against.
-// Zero values mean unknown: empty Lang/Framework/RunTarget, NAuthFlows < 0.
+// Zero values mean unknown: empty Lang/Framework/RunTarget, Tri fields
+// TriUnknown, NAuthFlows < 0, NBoundedContexts < 0. The json tags are the
+// authority for the `rules resolve --signals` dump.
 type Signals struct {
-	Lang        string
-	Framework   string
-	RunTarget   string // "docker" | "local" | "" (unknown)
-	HasDatabase Tri
-	HasFrontend Tri
-	NAuthFlows  int // -1 = unknown
+	Lang             string `json:"lang"`
+	Framework        string `json:"framework"`
+	RunTarget        string `json:"run_target"` // "docker" | "local" | "" (unknown)
+	HasDatabase      Tri    `json:"has_database"`
+	HasFrontend      Tri    `json:"has_frontend"`
+	NAuthFlows       int    `json:"n_auth_flows"` // -1 = unknown
+	UsesJWT          Tri    `json:"uses_jwt"`
+	HasMailer        Tri    `json:"has_mailer"`
+	HasMessenger     Tri    `json:"has_messenger"`
+	HasHTTPClient    Tri    `json:"has_http_client"`
+	NBoundedContexts int    `json:"n_bounded_contexts"` // -1 = unknown
 }
 
 // Condition is a pack's structured `when` clause. All set fields must hold
@@ -247,22 +268,216 @@ func localFiles(projectRoot string) ([]ResolvedFile, error) {
 // independent: this package serves resolve-time pack selection, taskvisor
 // serves dispatch-time command wrapping, and the two must not entangle.
 func Detect(projectRoot string) Signals {
-	sig := Signals{NAuthFlows: -1}
-	sig.Lang, sig.Framework = detectStack(projectRoot)
+	sig := Signals{NAuthFlows: -1, NBoundedContexts: -1}
 
+	var testEnv string
 	if body, err := os.ReadFile(filepath.Join(projectRoot, "docs", "architecture", "test-environment.md")); err == nil {
-		s := string(body)
-		sig.RunTarget = parseRunTarget(s)
-		sig.HasDatabase = parseHasDatabase(s)
-		sig.HasFrontend = parseHasFrontend(s)
-		if sig.Framework == "" && strings.Contains(strings.ToLower(s), "symfony") {
+		testEnv = string(body)
+	}
+
+	// Stack resolution tiers, in priority order:
+	//   1. an explicit **Stack:** line in test-environment.md (authoritative);
+	//   2. project-manifest detection (detectStack);
+	//   3. a symfony mention in test-environment.md (last-resort greenfield).
+	stackFound := false
+	if lang, framework, ok := parseStackLine(testEnv); ok {
+		sig.Lang, sig.Framework, stackFound = lang, framework, true
+	} else {
+		sig.Lang, sig.Framework = detectStack(projectRoot)
+	}
+
+	if testEnv != "" {
+		sig.RunTarget = parseRunTarget(testEnv)
+		sig.HasDatabase = parseHasDatabase(testEnv)
+		sig.HasFrontend = parseHasFrontend(testEnv)
+		if !stackFound && sig.Framework == "" && strings.Contains(strings.ToLower(testEnv), "symfony") {
 			sig.Lang, sig.Framework = "php", "symfony"
 		}
 	}
+
+	var crossCutting string
 	if body, err := os.ReadFile(filepath.Join(projectRoot, "docs", "architecture", "cross-cutting.md")); err == nil {
-		sig.NAuthFlows = parseAuthFlowCount(string(body))
+		crossCutting = string(body)
+		sig.NAuthFlows = parseAuthFlowCount(crossCutting)
 	}
+
+	// Capability signals: composer require keys are authoritative; UsesJWT also
+	// consults the cross-cutting security section.
+	sig.UsesJWT = parseUsesJWT(projectRoot, crossCutting)
+	sig.HasMailer = parseHasCapability(projectRoot, "mailer")
+	sig.HasMessenger = parseHasCapability(projectRoot, "messenger")
+	sig.HasHTTPClient = parseHasCapability(projectRoot, "http-client")
+	sig.NBoundedContexts = parseBoundedContextCount(projectRoot)
+
 	return sig
+}
+
+// parseStackLine extracts lang/framework from an explicit "**Stack:** <lang>-<framework>"
+// line (split on the FIRST hyphen; no hyphen → framework empty). ok is false
+// when no usable Stack line exists, so Detect falls through to manifest
+// detection. An empty lang is treated as no line.
+func parseStackLine(body string) (lang, framework string, ok bool) {
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimLeft(raw, "*# \t")
+		if !strings.HasPrefix(strings.ToLower(line), "stack:") {
+			continue
+		}
+		val := strings.TrimSpace(line[len("stack:"):])
+		val = strings.ToLower(strings.TrimSpace(strings.Trim(val, "*_` ")))
+		if val == "" {
+			continue
+		}
+		if dash := strings.Index(val, "-"); dash >= 0 {
+			lang = strings.TrimSpace(val[:dash])
+			framework = strings.TrimSpace(val[dash+1:])
+		} else {
+			lang = val
+		}
+		if lang == "" {
+			continue
+		}
+		return lang, framework, true
+	}
+	return "", "", false
+}
+
+// composerRequires reads composer.json's `require` map. found is false when
+// composer.json is absent or unparseable — the caller distinguishes "no
+// composer" (unknown) from "composer present without the key" (no).
+func composerRequires(projectRoot string) (require map[string]string, found bool) {
+	data, err := os.ReadFile(filepath.Join(projectRoot, "composer.json"))
+	if err != nil {
+		return nil, false
+	}
+	var manifest struct {
+		Require map[string]string `json:"require"`
+	}
+	if json.Unmarshal(data, &manifest) != nil {
+		return nil, false
+	}
+	return manifest.Require, true
+}
+
+// parseHasCapability returns TriYes when any composer require key contains
+// needle, TriNo when composer.json is present without it, TriUnknown when no
+// composer.json exists. Capability presence is conservative: composer is the
+// authority for a Symfony component being installed.
+func parseHasCapability(projectRoot, needle string) Tri {
+	req, ok := composerRequires(projectRoot)
+	if !ok {
+		return TriUnknown
+	}
+	for pkg := range req {
+		if strings.Contains(strings.ToLower(pkg), needle) {
+			return TriYes
+		}
+	}
+	return TriNo
+}
+
+// parseUsesJWT resolves JWT usage from two sources: a JWT library in composer
+// (lexik/..., firebase/php-jwt) is an authoritative yes; otherwise the
+// cross-cutting security section decides (JWT mention → yes, section present
+// without it → no). Unknown only when neither composer nor a security section
+// speaks to it.
+func parseUsesJWT(projectRoot, crossCutting string) Tri {
+	composerSeen := false
+	if req, ok := composerRequires(projectRoot); ok {
+		composerSeen = true
+		for pkg := range req {
+			if strings.Contains(strings.ToLower(pkg), "jwt") {
+				return TriYes
+			}
+		}
+	}
+	if sec, found := sectionBody(crossCutting, "security"); found {
+		if strings.Contains(strings.ToLower(sec), "jwt") {
+			return TriYes
+		}
+		return TriNo
+	}
+	if composerSeen {
+		return TriNo
+	}
+	return TriUnknown
+}
+
+// parseBoundedContextCount counts the level-3 (BC) headings under the
+// "## Bounded Context Inventory" H2 of bounded-contexts.md (the format
+// task-plan-discover writes and task-plan-generate reads). When that H2 is
+// absent it falls back to counting all `### ` headings. -1 when the file is
+// absent (unknown).
+func parseBoundedContextCount(projectRoot string) int {
+	body, err := os.ReadFile(filepath.Join(projectRoot, "docs", "architecture", "bounded-contexts.md"))
+	if err != nil {
+		return -1
+	}
+	lines := strings.Split(string(body), "\n")
+	inInventory, sawInventory, count := false, false, 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") { // an H2 boundary
+			low := strings.ToLower(trimmed)
+			inInventory = strings.Contains(low, "inventory") || strings.Contains(low, "bounded context")
+			if inInventory {
+				sawInventory = true
+			}
+			continue
+		}
+		if inInventory && strings.HasPrefix(trimmed, "### ") {
+			count++
+		}
+	}
+	if !sawInventory {
+		for _, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "### ") {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// sectionBody returns the lines under the first markdown heading whose text
+// contains needle (case-insensitive), up to the next heading of the same or
+// shallower level (deeper sub-headings are kept). found reports whether such a
+// section exists.
+func sectionBody(body, needle string) (string, bool) {
+	var out []string
+	inSection, found, level := false, false, 0
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if lvl := headingLevel(trimmed); lvl > 0 {
+			if inSection && lvl <= level {
+				break
+			}
+			if !inSection && strings.Contains(strings.ToLower(trimmed), needle) {
+				inSection, found, level = true, true, lvl
+				continue
+			}
+			if inSection {
+				out = append(out, line)
+			}
+			continue
+		}
+		if inSection {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n"), found
+}
+
+// headingLevel returns the markdown heading level (number of leading '#'
+// followed by a space), or 0 when the line is not a heading.
+func headingLevel(trimmed string) int {
+	n := 0
+	for n < len(trimmed) && trimmed[n] == '#' {
+		n++
+	}
+	if n > 0 && n < len(trimmed) && trimmed[n] == ' ' {
+		return n
+	}
+	return 0
 }
 
 func detectStack(projectRoot string) (lang, framework string) {

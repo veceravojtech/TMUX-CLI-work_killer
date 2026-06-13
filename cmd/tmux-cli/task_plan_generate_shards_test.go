@@ -151,6 +151,46 @@ func TestShards_NoLeftoverStepBodies(t *testing.T) {
 	}
 }
 
+// TestSpine_RulesMatchInjectionPresent guards Phase 2b: the SPINE
+// task-plan-generate.xml must carry the literal `rules match` (the exact string
+// the hard validation `grep -q 'rules match' …task-plan-generate.xml` targets)
+// AND the shared [CODE-RULE-INJECTION] token that every goal-emitting shard
+// references. Keeping both in the spine (not only a shard) is the determinism
+// boundary: Go owns rule routing, the spine owns the single authored procedure.
+func TestSpine_RulesMatchInjectionPresent(t *testing.T) {
+	spineBytes, err := embeddedCommands.ReadFile("embedded/commands/tmux/task-plan-generate.xml")
+	require.NoError(t, err, "spine must be readable")
+	spine := string(spineBytes)
+
+	assert.Contains(t, spine, "rules match",
+		"spine must carry the literal `rules match` (the hard validation grep target)")
+	assert.Contains(t, spine, "[CODE-RULE-INJECTION]",
+		"spine must define the shared [CODE-RULE-INJECTION] procedure")
+}
+
+// TestShards_ReferenceCodeRuleInjection asserts each of the 8 goal-emitting
+// shards invokes the shared [CODE-RULE-INJECTION] procedure (one inject substep
+// above its goal-create call). A shard that emits goals but omits the reference
+// would create goals with un-enforced code rules — the exact gap Phase 2b closes.
+func TestShards_ReferenceCodeRuleInjection(t *testing.T) {
+	goalEmittingShards := []string{
+		"step-1-gate0.xml",
+		"step-3.14-domain.xml",
+		"step-3.15-application.xml",
+		"step-3.16-infrastructure.xml",
+		"step-3.18-controller-actions.xml",
+		"step-3.19-auth-flows.xml",
+		"step-3.21-error-handling.xml",
+		"step-3.29-final-gates.xml",
+	}
+	for _, name := range goalEmittingShards {
+		data, err := embeddedCommands.ReadFile(path.Join(shardDir, name))
+		require.NoError(t, err, "goal-emitting shard %s must exist in embed FS", name)
+		assert.Contains(t, string(data), "[CODE-RULE-INJECTION]",
+			"goal-emitting shard %s must reference the [CODE-RULE-INJECTION] procedure", name)
+	}
+}
+
 func TestShards_NoMdInShardDir(t *testing.T) {
 	var mdFiles []string
 	err := fs.WalkDir(embeddedCommands, shardDir, func(p string, d fs.DirEntry, err error) error {

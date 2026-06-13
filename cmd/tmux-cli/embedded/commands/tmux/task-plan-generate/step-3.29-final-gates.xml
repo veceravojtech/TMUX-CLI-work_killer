@@ -10,6 +10,12 @@
         <rule>ALL_GOAL_IDS must be dynamically collected from goals.yaml, never hardcoded — the exact count varies per project.</rule>
       </substep>
 
+      <substep n="3.29.1b" title="Inject code rules into each final gate (apply [CODE-RULE-INJECTION])">
+        <action>For EACH of the 3 final-gate goals composed inline below (3.29.2 Deptrac, 3.29.3 E2E, 3.29.4 Quality), BEFORE composing that gate's goal-create call: bind RULE_FILES = that gate's deliverable/validation footprint (Deptrac → ["src/"]; Quality → ["src/"]; E2E → ["tests/"]) and RULE_PHASE = `final_gate` (the phase token each gate already passes — VERBATIM).</action>
+        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into that gate's inline `acceptance` array; copy each `automated`/`mixed` `validate_cmd` into that gate's inline `validate` array; fold `review` `validate_cmd`s into ONE convention-audit investigator MERGED into that gate's inline `investigation_config` (each gate has 2–3 inline investigators, so an ADD lands within the 2–4 cap; if a gate already had 4 you would apply the spine drop order, but these gates have ≤3); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to that gate's inline `context`. Empty `rules` ⇒ inject nothing.</action>
+        <rule>The phase token `final_gate` is NOT in the Go `allowedPhases` enum — `rules match` returns an empty set, so the final gates UNDER-inject (fail-safe: under-enforce, never wrong-enforce). This is a recorded known risk; do NOT "fix" the enum here. PRESERVE each gate's existing inline deptrac/e2e/quality investigators, acceptance (FG-01..FG-18), validate arrays, and the G-08 ordering.</rule>
+      </substep>
+
       <substep n="3.29.2" title="Generate Deptrac Full Analysis goal (goal-T+3)">
         <action>Call the goal-create MCP tool with these parameters:</action>
         <params>
