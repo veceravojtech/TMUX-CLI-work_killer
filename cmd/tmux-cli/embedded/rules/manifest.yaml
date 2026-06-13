@@ -10,6 +10,8 @@
 #   run_target: docker|local      — from test-environment.md "Run Target"
 #   has_database: true|false      — from test-environment.md "Test Database"
 #   has_frontend: true|false      — from test-environment.md "Playwright Status"
+#   frontend_mode: vue|twig|none  — derived per-frontend-mode signal (goal-034);
+#                                   stack-style: must be KNOWN to match
 #   min_auth_flows: N             — from cross-cutting.md "## Auth Flows"
 #   lang / framework: slug        — --lang/--framework flags (discovery state),
 #                                   else project manifests (composer.json, go.mod, ...)
@@ -46,15 +48,27 @@ packs:
       - e2e-data-isolation.md
 
   - id: frontend
-    when: { has_frontend: true }
+    when: { frontend_mode: vue }
     conventions:
       - node-tooling.md
       - e2e-artifacts.md
 
   - id: frontend-auth
-    when: { has_frontend: true, min_auth_flows: 1 }
+    when: { frontend_mode: vue, min_auth_flows: 1 }
     conventions:
       - e2e-auth-state.md
+
+  - id: vue
+    when: { frontend_mode: vue }
+    conventions:
+      - conventions.md
+    code_rules:
+      - code-rules.yaml
+
+  - id: twig
+    when: { frontend_mode: twig }
+    conventions:
+      - conventions.md
 
   - id: php
     when: { lang: php }
@@ -63,6 +77,10 @@ packs:
 
   - id: php-symfony
     when: { lang: php, framework: symfony }
+    conventions:
+      - monorepo-layout.md
+      - context-layers.md
+      - shared-kernel.md
+      - app-layer.md
     code_rules:
       - code-rules.yaml
-      - ddd-conventions.md

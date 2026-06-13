@@ -1,0 +1,19 @@
+- id: VUE-CONV-001
+  category: structure
+  scope: generic
+  severity: should
+  title: "Vue UI lives in .vue SFCs under assets/ with <script setup>"
+  rule: >
+    Author Vue UI as Single-File Components (.vue) under assets/ using
+    <script setup> + the Composition API; keep component logic out of Twig.
+  why: >
+    A consistent SFC location and Composition-API style keeps the Vue surface
+    discoverable and reviewable and stops logic leaking into server templates.
+  applies_to:
+    - "assets/**/*.vue"
+  acceptance:
+    - "GIVEN a Vue component THEN it is a .vue SFC under assets/ using <script setup>"
+  validate:
+    - "review: new Vue components are .vue SFCs under assets/ using <script setup>"
+  validate_kind: review
+  phase: frontend
