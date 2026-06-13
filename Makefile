@@ -24,7 +24,7 @@ GOVET=$(GOCMD) vet
 INSTALL_PATH=$(HOME)/.local/bin
 
 # Build flags
-LDFLAGS=-ldflags "-s -w"
+LDFLAGS=-ldflags "-s -w -X main.version=$(shell git describe --tags --match 'v*' --always --dirty)"
 
 ## help: Display this help message
 help:
