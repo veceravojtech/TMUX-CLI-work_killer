@@ -426,7 +426,15 @@ func inferInvestigatorType(rule string) (typ, pass string) {
 		strings.Contains(low, "eslint"), strings.Contains(low, "lint"),
 		strings.Contains(low, "jsf"):
 		return "quality-gate", "exit 0, no violations"
-	case strings.Contains(low, "debug:router"), strings.Contains(low, "grep"),
+	case strings.Contains(low, "grep"):
+		// A `grep`/`grep -q` rule is a pure exit-code check (match → exit 0), not a
+		// semantic comparison. Emitting the exit-only Pass "command succeeds (exit 0)"
+		// (the literal MUST live in this file — a validate rule greps it here) lets
+		// IsPureCommand classify it pure so the inline fast-path can run it in-process.
+		// Placed AFTER the phpstan/phpunit/deptrac/ecs cases so a piped rule like
+		// `phpstan analyse | grep error` still types quality-gate (precedence preserved).
+		return "static-analysis", "command succeeds (exit 0)"
+	case strings.Contains(low, "debug:router"),
 		strings.Contains(low, "db-validate"), strings.Contains(low, "console"):
 		return "static-analysis", "matches expected"
 	default:

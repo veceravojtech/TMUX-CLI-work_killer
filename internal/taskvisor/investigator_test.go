@@ -126,13 +126,13 @@ func TestIsPureCommand_DerivedExitInvestigatorsAreClassified(t *testing.T) {
 	}
 }
 
-func TestIsPureCommand_DerivedGrepInvestigatorNotPure(t *testing.T) {
+func TestIsPureCommand_DerivedGrepInvestigatorIsPure(t *testing.T) {
 	derived := deriveInvestigators(t.TempDir(), []string{"grep -r Foo src/"}, nil)
 	require.NotEmpty(t, derived)
 	grep := derived[0]
 	require.Equal(t, "static-analysis", grep.Type)
-	require.Equal(t, "matches expected", grep.Pass)
-	assert.False(t, IsPureCommand(grep))
+	require.Equal(t, "command succeeds (exit 0)", grep.Pass)
+	assert.True(t, IsPureCommand(grep))
 }
 
 func TestIsExitOnlyPass_MarkerTable(t *testing.T) {
@@ -142,6 +142,7 @@ func TestIsExitOnlyPass_MarkerTable(t *testing.T) {
 	}{
 		{"exit 0", true},
 		{"command succeeds", true},
+		{"command succeeds (exit 0)", true},
 		{"matches expected", false},
 		{"", false},
 		{"review passes", false},
