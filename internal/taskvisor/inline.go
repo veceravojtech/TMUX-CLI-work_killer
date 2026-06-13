@@ -5,66 +5,72 @@ import (
 	"sort"
 )
 
-// Inline-plan modes returned by InlinePlan.
-const (
-	InlineModeInline = "inline"
-	InlineModeFanout = "fanout"
-)
-
-// InlinePlan is the read-only decision seam of the B9b inline validation
-// fast-path. It mirrors C10's PlanRevalidation pattern: a deterministic,
-// unit-testable Go function so investigate.xml only branches on its JSON output.
+// InlinePlan is the read-only decision seam of the inline/spawn validation
+// SPLIT. It mirrors C10's PlanRevalidation pattern: a deterministic,
+// unit-testable Go function so the `tmux-cli taskvisor inline-plan` CLI (and
+// investigate.xml, which applies the same type-based split per-investigator) can
+// branch on its JSON output without re-deriving the rule.
 //
 // It first derives the RERUN set via PlanRevalidation (so the C10 reuse gate is
-// honoured, never bypassed), then returns mode="inline" iff ALL of:
-//   - the RERUN set is non-empty (an all-REUSE set spawns nothing already), and
-//   - every RERUN investigator satisfies IsPureCommand (B9a) — all-or-nothing;
-//     a single reasoning investigator fans the whole set out.
+// honoured, never bypassed), then PARTITIONS that RERUN set per-investigator:
+//   - inline = the RERUN investigators that satisfy IsPureCommand — static
+//     analysis / pure exit-code checks (build/lint/test/grep/vet/deptrac). These
+//     run in-window, with NO worker spawn.
+//   - spawn  = every other RERUN investigator — a reasoning/advanced check
+//     (code-review, e2e-test/Chrome, integration-test), an investigator with a
+//     semantic Pass, an unknown/missing config (cannot be proven pure-command),
+//     or a deterministic type with no command. These need a reasoning worker.
 //
-// Otherwise it returns mode="fanout" with a human-readable reason. The rerun
-// slice is the sorted set of RERUN finding ids in every branch, so the output is
-// byte-stable for identical input. REUSE investigators (C10) are intentionally
-// absent from rerun — they carry forward as pass without execution.
-func InlinePlan(investigators []Investigator, prev *Results, findings []ValidationFinding, changedFiles []string, cycleN int, forceFull, finalCycle bool) (mode string, rerun []string, reason string) {
+// This is a SPLIT, NOT all-or-nothing: a goal mixing static analysis with a
+// code-review/e2e investigator returns the static checks in `inline` AND the
+// advanced ones in `spawn` — they run concurrently. REUSE investigators (C10)
+// are in NEITHER set; they carry forward as pass without execution. Both slices
+// are sorted, so the output is byte-stable for identical input.
+//
+// No cycle gate: the partition runs AFTER C10 partitioning, so on retry cycles
+// the RERUN set is the already-minimized remainder — inlining its pure-command
+// members is exactly as safe as on cycle 1 and avoids the worker-spawn overhead
+// that can blow the daemon's validate envelope (goal-061 post-mortem: a
+// 2-command retry validation forced through fan-out took ~17 min vs <1 min
+// inline). cycleN is informational only (it annotates the reason string).
+func InlinePlan(investigators []Investigator, prev *Results, findings []ValidationFinding, changedFiles []string, cycleN int, forceFull, finalCycle bool) (inline []string, spawn []string, reason string) {
 	plans := PlanRevalidation(prev, findings, changedFiles, forceFull, finalCycle)
 
-	rerun = make([]string, 0, len(plans))
-	for _, p := range plans {
-		if p.Action == ActionRerun {
-			rerun = append(rerun, p.FindingID)
-		}
-	}
-	sort.Strings(rerun)
-
-	// Empty RERUN set (all REUSE): the existing flow spawns nothing and the
-	// aggregation carries REUSE forward as pass. Nothing to inline.
-	if len(rerun) == 0 {
-		return InlineModeFanout, rerun, "no RERUN investigators"
-	}
-
-	// No cycle gate: inline runs AFTER C10 partitioning, so on retry cycles the
-	// RERUN set is the already-minimized remainder — when it is all pure-command,
-	// in-window execution is exactly as safe as on cycle 1 and avoids the worker
-	// spawn overhead that can blow the daemon's validate envelope (goal-061
-	// post-mortem: a 2-command retry validation forced through fan-out took ~17 min
-	// vs <1 min inline).
-
-	// All-or-nothing pure-command gate. A missing investigator config for a RERUN
-	// finding (e.g. a rule-based finding seeded from the prior ledger) cannot be
-	// proven pure-command, so it conservatively forces fan-out.
 	byName := make(map[string]Investigator, len(investigators))
 	for _, inv := range investigators {
 		byName[inv.Name] = inv
 	}
-	for _, id := range rerun {
-		inv, ok := byName[id]
-		if !ok {
-			return InlineModeFanout, rerun, fmt.Sprintf("RERUN finding %q has no investigator config — cannot prove pure-command", id)
+
+	inline = make([]string, 0, len(plans))
+	spawn = make([]string, 0, len(plans))
+	for _, p := range plans {
+		if p.Action != ActionRerun {
+			continue // REUSE investigators are in neither set (carry forward as pass).
 		}
-		if !IsPureCommand(inv) {
-			return InlineModeFanout, rerun, fmt.Sprintf("RERUN investigator %q is not pure-command (type=%q) — needs a reasoning worker", id, inv.Type)
+		// A RERUN finding whose investigator config is present AND pure-command
+		// runs inline. Everything else spawns: a reasoning/advanced type, a
+		// semantic Pass, OR a finding with no investigator config (e.g. seeded
+		// from the prior ledger) which cannot be proven pure-command —
+		// false-inlining a check that needs reasoning is the only unsafe
+		// direction, so the partition fails toward spawn.
+		if inv, ok := byName[p.FindingID]; ok && IsPureCommand(inv) {
+			inline = append(inline, p.FindingID)
+		} else {
+			spawn = append(spawn, p.FindingID)
 		}
 	}
+	sort.Strings(inline)
+	sort.Strings(spawn)
 
-	return InlineModeInline, rerun, fmt.Sprintf("all %d RERUN investigators are pure-command (cycle %d)", len(rerun), cycleN)
+	switch {
+	case len(inline) == 0 && len(spawn) == 0:
+		reason = "no RERUN investigators"
+	case len(spawn) == 0:
+		reason = fmt.Sprintf("all %d RERUN investigator(s) pure-command — run inline (cycle %d)", len(inline), cycleN)
+	case len(inline) == 0:
+		reason = fmt.Sprintf("all %d RERUN investigator(s) need a reasoning worker — spawn (cycle %d)", len(spawn), cycleN)
+	default:
+		reason = fmt.Sprintf("split: %d pure-command inline, %d reasoning/advanced spawned (cycle %d)", len(inline), len(spawn), cycleN)
+	}
+	return inline, spawn, reason
 }

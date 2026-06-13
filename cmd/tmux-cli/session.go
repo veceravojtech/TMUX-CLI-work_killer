@@ -320,7 +320,7 @@ var taskvisorRevalidationPlanCmd = &cobra.Command{
 
 var taskvisorInlinePlanCmd = &cobra.Command{
 	Use:   "inline-plan [goal-id]",
-	Short: "Decide whether pure-command validators can run inline (no inv-* spawns) — prints {mode,rerun,reason} JSON, read-only",
+	Short: "Partition the RERUN validators into inline (pure-command/static analysis) vs spawn (reasoning/advanced) — prints {inline,spawn,reason} JSON, read-only",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTaskvisorInlinePlan,
 }
@@ -448,7 +448,7 @@ func init() {
 	taskvisorRevalidationPlanCmd.Flags().StringArrayVar(&revalChangedFiles, "changed-file", nil, "A file changed this cycle (repeatable); defaults to git diff --name-only HEAD")
 	taskvisorCmd.AddCommand(taskvisorRevalidationPlanCmd)
 
-	taskvisorInlinePlanCmd.Flags().IntVar(&inlineCycleN, "cycle", 0, "Current validation cycle (informational; inline eligibility is per-RERUN-set pure-command, any cycle)")
+	taskvisorInlinePlanCmd.Flags().IntVar(&inlineCycleN, "cycle", 0, "Current validation cycle (informational; the inline/spawn split is per-investigator pure-command, any cycle)")
 	taskvisorInlinePlanCmd.Flags().BoolVar(&revalForceFull, "full", false, "Force full re-validation — every check RERUN regardless of fingerprint")
 	taskvisorInlinePlanCmd.Flags().BoolVar(&revalFinalCycle, "final", false, "Final cycle before overall pass — re-run all checks for end-to-end verification")
 	taskvisorInlinePlanCmd.Flags().StringArrayVar(&revalChangedFiles, "changed-file", nil, "A file changed this cycle (repeatable); defaults to git diff --name-only HEAD")
@@ -1337,20 +1337,24 @@ func runTaskvisorRevalidationPlan(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// inlinePlanOutput is the JSON shape investigate.xml step 2e branches on.
+// inlinePlanOutput is the JSON shape of the inline/spawn partition. investigate.xml
+// applies the same type-based split per-investigator; this CLI is the
+// deterministic, test-covered mirror of that decision.
 type inlinePlanOutput struct {
-	Mode   string   `json:"mode"`
-	Rerun  []string `json:"rerun"`
+	Inline []string `json:"inline"`
+	Spawn  []string `json:"spawn"`
 	Reason string   `json:"reason"`
 }
 
-// runTaskvisorInlinePlan is the read-only read-side seam of B9b's inline
-// validation fast-path. It loads the same inputs as revalidation-plan (the
+// runTaskvisorInlinePlan is the read-only read-side seam of the inline/spawn
+// validation split. It loads the same inputs as revalidation-plan (the
 // results.json ledger + goal.md findings), additionally parses the full
 // investigator configs (type/commands/pass) needed by IsPureCommand, and prints
-// the taskvisor.InlinePlan decision as {"mode","rerun","reason"} JSON. It writes
-// nothing. When goal.md exposes no investigators, the decision degrades to
-// fanout (the safe spawn path), never inline.
+// the taskvisor.InlinePlan partition as {"inline","spawn","reason"} JSON — the
+// RERUN investigators that run in-window (pure-command / static analysis) vs.
+// those that spawn a reasoning worker (code-review, e2e/Chrome, etc.). It writes
+// nothing. When goal.md exposes no investigators, a RERUN finding cannot be
+// proven pure-command and falls to the `spawn` set (the safe path), never inline.
 func runTaskvisorInlinePlan(cmd *cobra.Command, args []string) error {
 	cwd, err := taskvisorProjectRoot()
 	if err != nil {
@@ -1386,11 +1390,14 @@ func runTaskvisorInlinePlan(cmd *cobra.Command, args []string) error {
 		changed = gitChangedFiles(cwd)
 	}
 
-	mode, rerun, reason := taskvisor.InlinePlan(investigators, prev, findings, changed, inlineCycleN, revalForceFull, revalFinalCycle)
-	if rerun == nil {
-		rerun = []string{}
+	inline, spawn, reason := taskvisor.InlinePlan(investigators, prev, findings, changed, inlineCycleN, revalForceFull, revalFinalCycle)
+	if inline == nil {
+		inline = []string{}
 	}
-	out, err := json.MarshalIndent(inlinePlanOutput{Mode: mode, Rerun: rerun, Reason: reason}, "", "  ")
+	if spawn == nil {
+		spawn = []string{}
+	}
+	out, err := json.MarshalIndent(inlinePlanOutput{Inline: inline, Spawn: spawn, Reason: reason}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal inline plan: %w", err)
 	}

@@ -10,6 +10,12 @@ func cmdInv(name string) Investigator {
 	return Investigator{Name: name, Type: "command", Commands: []string{"true"}, Pass: "exit 0"}
 }
 
+// reasoningInv builds a non-pure investigator (code-review with a semantic Pass)
+// that must land in the spawn set.
+func reasoningInv(name string) Investigator {
+	return Investigator{Name: name, Type: "code-review", Pass: "matches expected"}
+}
+
 // findingFor mirrors the CLI's parseGoalFindings mapping: finding.Rule == inv.Name.
 func findingFor(inv Investigator) ValidationFinding {
 	return ValidationFinding{Rule: inv.Name}
@@ -23,74 +29,73 @@ func findingsFor(invs ...Investigator) []ValidationFinding {
 	return out
 }
 
-func TestInlinePlan_AllCommandFirstCycle_Inline(t *testing.T) {
+func joined(s []string) string { return strings.Join(s, ",") }
+
+func TestInlinePlan_AllCommand_AllInline(t *testing.T) {
 	invs := []Investigator{cmdInv("build"), cmdInv("lint"), cmdInv("unit")}
-	mode, rerun, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 1, false, false)
+	inline, spawn, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 1, false, false)
 
-	if mode != "inline" {
-		t.Fatalf("mode = %q, want inline (reason=%q)", mode, reason)
+	if joined(inline) != "build,lint,unit" { // sorted
+		t.Fatalf("inline = %v, want [build lint unit] (reason=%q)", inline, reason)
 	}
-	want := []string{"build", "lint", "unit"} // sorted
-	if strings.Join(rerun, ",") != strings.Join(want, ",") {
-		t.Fatalf("rerun = %v, want %v", rerun, want)
-	}
-}
-
-func TestInlinePlan_MixedTypes_Fanout(t *testing.T) {
-	review := Investigator{Name: "review", Type: "code-review", Pass: "matches expected"}
-	invs := []Investigator{cmdInv("build"), review}
-	mode, _, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 1, false, false)
-
-	if mode != "fanout" {
-		t.Fatalf("mode = %q, want fanout", mode)
-	}
-	if !strings.Contains(reason, "review") {
-		t.Fatalf("reason %q should cite the non-command investigator %q", reason, "review")
+	if len(spawn) != 0 {
+		t.Fatalf("spawn = %v, want empty", spawn)
 	}
 }
 
-func TestInlinePlan_RetryCycle_AllCommand_Inline(t *testing.T) {
-	// Retry cycles are inline-eligible: inline runs AFTER C10 partitioning, so
-	// the RERUN set on cycle 2 is the already-minimized remainder — pure-command
-	// is exactly as safe as on cycle 1 (goal-061 post-mortem).
+func TestInlinePlan_MixedTypes_Split(t *testing.T) {
+	// Core of the new behavior: a static check + a reasoning check no longer fan
+	// out together. build runs inline; review spawns.
+	invs := []Investigator{cmdInv("build"), reasoningInv("review")}
+	inline, spawn, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 1, false, false)
+
+	if joined(inline) != "build" {
+		t.Fatalf("inline = %v, want [build] (reason=%q)", inline, reason)
+	}
+	if joined(spawn) != "review" {
+		t.Fatalf("spawn = %v, want [review] (reason=%q)", spawn, reason)
+	}
+	if !strings.Contains(reason, "split") {
+		t.Fatalf("reason %q should describe a split", reason)
+	}
+}
+
+func TestInlinePlan_AllReasoning_AllSpawn(t *testing.T) {
+	// An e2e-test (Chrome) has a command and an exit-only Pass but its TYPE is not
+	// pure-command, so it spawns — alongside the code-review.
+	e2e := Investigator{Name: "e2e", Type: "e2e-test", Commands: []string{"npx playwright test"}, Pass: "all green (exit 0)"}
+	invs := []Investigator{reasoningInv("review"), e2e}
+	inline, spawn, _ := InlinePlan(invs, nil, findingsFor(invs...), nil, 1, false, false)
+
+	if len(inline) != 0 {
+		t.Fatalf("inline = %v, want empty (no pure-command checks)", inline)
+	}
+	if joined(spawn) != "e2e,review" { // sorted
+		t.Fatalf("spawn = %v, want [e2e review]", spawn)
+	}
+}
+
+func TestInlinePlan_RetryCycle_Split(t *testing.T) {
+	// Retry cycles partition identically — there is no cycle gate (the RERUN set
+	// is already the minimized remainder after C10 partitioning).
+	invs := []Investigator{cmdInv("build"), reasoningInv("review")}
+	inline, spawn, _ := InlinePlan(invs, nil, findingsFor(invs...), nil, 2, false, false)
+
+	if joined(inline) != "build" || joined(spawn) != "review" {
+		t.Fatalf("cycle-2 partition: inline=%v spawn=%v, want [build]/[review]", inline, spawn)
+	}
+}
+
+func TestInlinePlan_StandaloneNoCycle_AllInline(t *testing.T) {
 	invs := []Investigator{cmdInv("build"), cmdInv("lint")}
-	mode, rerun, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 2, false, false)
+	inline, spawn, _ := InlinePlan(invs, nil, findingsFor(invs...), nil, 0, false, false)
 
-	if mode != "inline" {
-		t.Fatalf("mode = %q, want inline on cycle 2 for pure-command RERUN set (reason=%q)", mode, reason)
-	}
-	want := []string{"build", "lint"} // sorted
-	if strings.Join(rerun, ",") != strings.Join(want, ",") {
-		t.Fatalf("rerun = %v, want %v", rerun, want)
+	if joined(inline) != "build,lint" || len(spawn) != 0 {
+		t.Fatalf("standalone (cycleN<=0): inline=%v spawn=%v, want all inline", inline, spawn)
 	}
 }
 
-func TestInlinePlan_RetryCycle_MixedTypes_Fanout(t *testing.T) {
-	// A reasoning investigator in the retry-cycle RERUN set still fans the whole
-	// set out (all-or-nothing) — removing the cycle gate does not weaken the
-	// pure-command gate.
-	review := Investigator{Name: "review", Type: "code-review", Pass: "matches expected"}
-	invs := []Investigator{cmdInv("build"), review}
-	mode, _, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 2, false, false)
-
-	if mode != "fanout" {
-		t.Fatalf("mode = %q, want fanout on cycle 2 with a reasoning investigator", mode)
-	}
-	if !strings.Contains(reason, "review") {
-		t.Fatalf("reason %q should cite the reasoning investigator %q", reason, "review")
-	}
-}
-
-func TestInlinePlan_StandaloneNoCycle_Inline(t *testing.T) {
-	invs := []Investigator{cmdInv("build"), cmdInv("lint")}
-	mode, _, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 0, false, false)
-
-	if mode != "inline" {
-		t.Fatalf("mode = %q, want inline for standalone (cycleN<=0) (reason=%q)", mode, reason)
-	}
-}
-
-func TestInlinePlan_EmptyRerun_Fanout(t *testing.T) {
+func TestInlinePlan_EmptyRerun_BothEmpty(t *testing.T) {
 	// Every investigator REUSE: prior ledger all pass with matching fingerprints.
 	invs := []Investigator{cmdInv("build"), cmdInv("lint")}
 	findings := findingsFor(invs...)
@@ -105,50 +110,57 @@ func TestInlinePlan_EmptyRerun_Fanout(t *testing.T) {
 		}
 	}
 
-	mode, rerun, reason := InlinePlan(invs, prev, findings, nil, 1, false, false)
+	inline, spawn, reason := InlinePlan(invs, prev, findings, nil, 1, false, false)
 
-	if mode != "fanout" {
-		t.Fatalf("mode = %q, want fanout when nothing to rerun", mode)
-	}
-	if len(rerun) != 0 {
-		t.Fatalf("rerun = %v, want empty", rerun)
+	if len(inline) != 0 || len(spawn) != 0 {
+		t.Fatalf("all-REUSE: inline=%v spawn=%v, want both empty", inline, spawn)
 	}
 	if reason != "no RERUN investigators" {
 		t.Fatalf("reason = %q, want %q", reason, "no RERUN investigators")
 	}
 }
 
-func TestInlinePlan_SpecDefectRemovedRemainderCommand_Inline(t *testing.T) {
+func TestInlinePlan_MissingConfig_Spawns(t *testing.T) {
+	// A RERUN finding with no investigator config cannot be proven pure-command,
+	// so it falls to the spawn set (conservative).
+	findings := []ValidationFinding{{Rule: "orphan"}}
+	inline, spawn, _ := InlinePlan(nil, nil, findings, nil, 1, false, false)
+
+	if len(inline) != 0 || joined(spawn) != "orphan" {
+		t.Fatalf("orphan finding: inline=%v spawn=%v, want spawn=[orphan]", inline, spawn)
+	}
+}
+
+func TestInlinePlan_SpecDefectRemovedRemainderCommand_AllInline(t *testing.T) {
 	// C8 already stripped the spec-defect investigator upstream; InlinePlan only
 	// sees the remaining active set, which is all pure-command.
 	invs := []Investigator{cmdInv("build"), cmdInv("phpstan")}
-	mode, rerun, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 1, false, false)
+	inline, spawn, reason := InlinePlan(invs, nil, findingsFor(invs...), nil, 1, false, false)
 
-	if mode != "inline" {
-		t.Fatalf("mode = %q, want inline for post-C8 all-command remainder (reason=%q)", mode, reason)
-	}
-	if len(rerun) != 2 {
-		t.Fatalf("rerun = %v, want 2 entries", rerun)
+	if joined(inline) != "build,phpstan" || len(spawn) != 0 {
+		t.Fatalf("post-C8 all-command remainder: inline=%v spawn=%v (reason=%q)", inline, spawn, reason)
 	}
 }
 
-func TestInlinePlan_DeterministicSortedRerun(t *testing.T) {
-	invs := []Investigator{cmdInv("zeta"), cmdInv("alpha"), cmdInv("mike")}
+func TestInlinePlan_DeterministicSorted(t *testing.T) {
+	invs := []Investigator{cmdInv("zeta"), cmdInv("alpha"), reasoningInv("mike"), reasoningInv("bravo")}
 	findings := findingsFor(invs...)
 
-	_, r1, _ := InlinePlan(invs, nil, findings, nil, 1, false, false)
-	_, r2, _ := InlinePlan(invs, nil, findings, nil, 1, false, false)
+	i1, s1, _ := InlinePlan(invs, nil, findings, nil, 1, false, false)
+	i2, s2, _ := InlinePlan(invs, nil, findings, nil, 1, false, false)
 
-	if strings.Join(r1, ",") != strings.Join(r2, ",") {
-		t.Fatalf("non-deterministic rerun: %v vs %v", r1, r2)
+	if joined(i1) != joined(i2) || joined(s1) != joined(s2) {
+		t.Fatalf("non-deterministic: inline %v/%v spawn %v/%v", i1, i2, s1, s2)
 	}
-	want := []string{"alpha", "mike", "zeta"}
-	if strings.Join(r1, ",") != strings.Join(want, ",") {
-		t.Fatalf("rerun = %v, want sorted %v", r1, want)
+	if joined(i1) != "alpha,zeta" {
+		t.Fatalf("inline = %v, want sorted [alpha zeta]", i1)
+	}
+	if joined(s1) != "bravo,mike" {
+		t.Fatalf("spawn = %v, want sorted [bravo mike]", s1)
 	}
 }
 
-func TestInlinePlan_ForceFull_AllCommand_Inline(t *testing.T) {
+func TestInlinePlan_ForceFull_AllCommand_AllInline(t *testing.T) {
 	// forceFull forces every check to RERUN even when a prior pass exists; all are
 	// command, so the full set inlines.
 	invs := []Investigator{cmdInv("build"), cmdInv("lint")}
@@ -164,12 +176,9 @@ func TestInlinePlan_ForceFull_AllCommand_Inline(t *testing.T) {
 		}
 	}
 
-	mode, rerun, reason := InlinePlan(invs, prev, findings, nil, 1, true /*forceFull*/, false)
+	inline, spawn, _ := InlinePlan(invs, prev, findings, nil, 1, true /*forceFull*/, false)
 
-	if mode != "inline" {
-		t.Fatalf("mode = %q, want inline under forceFull (reason=%q)", mode, reason)
-	}
-	if len(rerun) != 2 {
-		t.Fatalf("rerun = %v, want full set of 2", rerun)
+	if joined(inline) != "build,lint" || len(spawn) != 0 {
+		t.Fatalf("forceFull: inline=%v spawn=%v, want all inline", inline, spawn)
 	}
 }
