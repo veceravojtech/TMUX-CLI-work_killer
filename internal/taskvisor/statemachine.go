@@ -479,6 +479,10 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		// After the successful SaveGoals so a commit only happens for a durably
 		// recorded done; warn-only — never alters the verdict flow.
 		d.autoCommitGoal(goal)
+		// Sibling of autoCommitGoal (goal-032): push the mapped backend task to
+		// resolved on this durable done. Independent + warn-only — one failing must
+		// not skip the other, and neither short-circuits the return.
+		d.resolveTaskOnTerminal(goal, "resolved", doneResolution(goal, valSig))
 		return d.advanceToNextGoal(goals, goal.ID, true)
 	case verdict == VerdictFail:
 		// Code defect — the implementer must fix it. Charges CodeRetries only.
@@ -1057,6 +1061,10 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdict
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		// goal-032: push the mapped backend task to failed on the breaker halt
+		// (reason derives from goal.BlockedBy). Warn-only, never propagates — the
+		// breaker report ordering above is preserved and the return stays last.
+		d.resolveTaskOnTerminal(goal, "failed", failResolution(goal, ""))
 		return d.advanceToNextGoal(goals, goal.ID, false)
 	}
 
@@ -1081,6 +1089,10 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdict
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		// goal-032: push the mapped backend task to failed after the durable
+		// SaveGoals. Warn-only, never propagates — the cascade/save ordering above
+		// is preserved and the return stays last.
+		d.resolveTaskOnTerminal(goal, "failed", failResolution(goal, verdictClass))
 		return d.advanceToNextGoal(goals, goal.ID, false)
 	}
 
@@ -1160,6 +1172,10 @@ func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *Valida
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		// goal-032: push the mapped backend task to failed on the spec breaker halt
+		// (reason derives from goal.BlockedBy). Warn-only, never propagates — the
+		// bounce ordering above is preserved and the return stays last.
+		d.resolveTaskOnTerminal(goal, "failed", failResolution(goal, ""))
 		return d.advanceToNextGoal(goals, goal.ID, false)
 	}
 

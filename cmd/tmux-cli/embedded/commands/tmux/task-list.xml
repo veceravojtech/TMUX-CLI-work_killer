@@ -41,6 +41,7 @@
     </step>
 
     <step n="1" title="Reconcile (always runs, before listing)">
+      <note>FALLBACK actor: the taskvisor daemon now PUSH-resolves a mapped backend task at the moment its goal reaches a durable terminal state (goal→done ⇒ resolved, goal→failed / blocked_by=convergence-circuit-breaker ⇒ failed) and atomically drops the entry from MAPPING_FILE. Reconcile here is the FALLBACK that settles everything the push did not — offline/API-down runs, daemon crashes, and cascade-failed downstream goals — so it must keep reading the same `{task_id, goal_id, title, claimed_at}` ledger shape the daemon writes. Both actors are idempotent: a push that already resolved a task simply leaves no mapping for reconcile to see.</note>
       <action>Read MAPPING_FILE. Absent or empty → skip to step 2.</action>
       <action>Read GOALS_FILE once (read-only).</action>
       <action>For each mapping entry, find its goal_id in GOALS_FILE and decide:</action>
