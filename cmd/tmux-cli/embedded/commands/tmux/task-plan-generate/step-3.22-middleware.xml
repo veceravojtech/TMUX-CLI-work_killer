@@ -54,7 +54,7 @@ HTTP middleware goal: configure and test selected middleware features ({{SELECTE
 See docs/architecture/cross-cutting.md for middleware selection decisions and configuration details.
 Middleware registration order matters — CORS before rate limiting before logging is typical Symfony priority ordering.
 All middleware registered via Symfony kernel event subscribers or framework config (e.g. nelmio/cors-bundle for CORS).
-Middleware files live in src/Share/Infrastructure/Http/Middleware/ (cross-cutting, not per-BC).
+Middleware files live in projects/{app}/src/Http/Middleware/ (cross-cutting, not per-BC).
         </section>
 
         <section name="investigation-config">
@@ -76,7 +76,7 @@ Middleware files live in src/Share/Infrastructure/Http/Middleware/ (cross-cuttin
 
           <investigator n="3" name="Quality gates">
             <type>quality-gate</type>
-            <commands>vendor/bin/phpstan analyse src/Share/Infrastructure/Http/Middleware/ --level=9 &amp;&amp; vendor/bin/ecs check src/Share/Infrastructure/Http/Middleware/</commands>
+            <commands>vendor/bin/phpstan analyse projects/{app}/src/Http/Middleware/ --level=9 &amp;&amp; vendor/bin/ecs check projects/{app}/src/Http/Middleware/</commands>
             <pass>PHPStan and ECS both exit 0 — zero errors</pass>
             <fail>Type errors or code style violations in middleware files</fail>
           </investigator>

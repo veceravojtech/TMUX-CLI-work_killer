@@ -23,7 +23,7 @@
         <action>Read the auth method from docs/architecture/cross-cutting.md security section and the discovery `uses_jwt` flag (php-symfony/discovery.md §10a security, php-symfony/libraries.md `{{#uses_jwt}}`).</action>
         <action>If uses_jwt is true → JWT identity provider via lexik/jwt-authentication-bundle + keypair generation. If false → Symfony session/form-login authenticator.</action>
         <rule>The library is resolvable by convention (`lexik/jwt-authentication-bundle` gated on uses_jwt, else `symfony/security-bundle`) — do not escalate unless the JWT choice is genuinely unknowable from project context.</rule>
-        <action>Resolve the User entity placement: the identity/auth BC named in discovery. If no dedicated identity BC exists, default to src/Share/ (Share-ownership convention) — do not invent a new BC.</action>
+        <action>Resolve the User entity placement: the identity/auth BC named in discovery (contexts/{IdentityBC}/src/Domain/Model/User.php). If no dedicated identity BC exists, default to the contexts/previo shared-kernel context (contexts/previo/src/Domain/Model/User.php) — do not invent a new BC.</action>
       </substep>
 
       <substep n="3.16a.4" title="Compose acceptance criteria">
@@ -32,9 +32,9 @@
           <item id="AU-08">Security configuration uses Symfony security bundle properly (firewall, provider, authenticator in config/packages/security.yaml)</item>
           <item id="AU-09">User entity has proper password hashing (bcrypt/argon2) and implements the security user interface</item>
           <item id="AB-JWT" condition="uses_jwt">JWT keypair generated via bin/console lexik:jwt:generate-keypair and lexik config present at config/packages/lexik_jwt_authentication.yaml</item>
-          <item id="AU-11" condition="HAS_FRONTEND">playwright/auth.setup.ts logs in as admin and regular user using seeded credentials (env-var names from test-environment.md) and writes storageState JSON to playwright/.auth/admin.json and playwright/.auth/user.json (E2E-AUTH-STATE-CONV)</item>
+          <item id="AU-11" condition="FRONTEND_MODE == vue">playwright/auth.setup.ts logs in as admin and regular user using seeded credentials (env-var names from test-environment.md) and writes storageState JSON to playwright/.auth/admin.json and playwright/.auth/user.json (E2E-AUTH-STATE-CONV)</item>
         </criteria>
-        <rule>Include AB-JWT only when uses_jwt is true. Include AU-11 only when HAS_FRONTEND is true. AU-08/AU-09 are always present.</rule>
+        <rule>Include AB-JWT only when uses_jwt is true. Include AU-11 only when FRONTEND_MODE == vue (Playwright/E2E deliverables gate on the vue FrontendMode, not the binary HAS_FRONTEND). AU-08/AU-09 are always present.</rule>
       </substep>
 
       <substep n="3.16a.5" title="Compose context with deliverables and Investigation Config">
@@ -48,9 +48,9 @@ See docs/architecture/cross-cutting.md for auth method decisions. See docs/archi
 
         <section name="deliverables">
           <deliverable>Security config: config/packages/security.yaml (firewall, provider, authenticator)</deliverable>
-          <deliverable>User entity with password hashing: src/{IdentityBC|Share}/Domain/Model/User.php</deliverable>
+          <deliverable>User entity with password hashing: contexts/{IdentityBC}/src/Domain/Model/User.php (defaults to contexts/previo/src/Domain/Model/User.php when no dedicated identity BC exists)</deliverable>
           <deliverable condition="uses_jwt">JWT config: config/packages/lexik_jwt_authentication.yaml + keypair via bin/console lexik:jwt:generate-keypair</deliverable>
-          <deliverable condition="HAS_FRONTEND">Playwright auth setup: playwright/auth.setup.ts — logs in as admin and regular user using seeded credentials (env-var names from docs/architecture/test-environment.md, GM-05), writes storageState JSON to playwright/.auth/admin.json and playwright/.auth/user.json (E2E-AUTH-STATE-CONV)</deliverable>
+          <deliverable condition="FRONTEND_MODE == vue">Playwright auth setup: playwright/auth.setup.ts — logs in as admin and regular user using seeded credentials (env-var names from docs/architecture/test-environment.md, GM-05), writes storageState JSON to playwright/.auth/admin.json and playwright/.auth/user.json (E2E-AUTH-STATE-CONV)</deliverable>
         </section>
 
         <section name="investigation-config">
@@ -58,7 +58,7 @@ See docs/architecture/cross-cutting.md for auth method decisions. See docs/archi
 
           <investigator n="1" name="Security config presence">
             <type>file-check</type>
-            <files>config/packages/security.yaml, src/{IdentityBC|Share}/Domain/Model/User.php</files>
+            <files>config/packages/security.yaml, contexts/{IdentityBC}/src/Domain/Model/User.php</files>
             <commands>test -f config/packages/security.yaml &amp;&amp; grep -c 'firewall\|provider' config/packages/security.yaml</commands>
             <pass>security.yaml and User entity exist; firewall/provider grep returns >= 1</pass>
             <fail>Missing security.yaml, missing User entity, or no firewall/provider config</fail>
@@ -73,7 +73,7 @@ See docs/architecture/cross-cutting.md for auth method decisions. See docs/archi
 
           <investigator n="3" name="Quality gates">
             <type>quality-gate</type>
-            <commands>vendor/bin/phpstan analyse src/ --level=9 &amp;&amp; vendor/bin/ecs check src/ &amp;&amp; vendor/bin/deptrac analyse</commands>
+            <commands>vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9 &amp;&amp; vendor/bin/ecs check contexts/ projects/ packages/ &amp;&amp; vendor/bin/deptrac analyse</commands>
             <pass>PHPStan, ECS, and Deptrac all exit 0</pass>
             <fail>Any tool reports errors or violations</fail>
           </investigator>
@@ -92,8 +92,8 @@ See docs/architecture/cross-cutting.md for auth method decisions. See docs/archi
           <param name="acceptance">ACCEPTANCE array from substep 3.16a.4 (AU-08, AU-09, + AB-JWT when uses_jwt)</param>
           <param name="validate">[
             "test -f config/packages/security.yaml",
-            "vendor/bin/phpstan analyse src/ --level=9",
-            "vendor/bin/ecs check src/",
+            "vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9",
+            "vendor/bin/ecs check contexts/ projects/ packages/",
             "vendor/bin/deptrac analyse"
           ]{{#uses_jwt}} plus "bin/console lexik:jwt:check-config"{{/uses_jwt}}</param>
           <param name="context">CONTEXT string from substep 3.16a.5 (purpose + deliverables)</param>

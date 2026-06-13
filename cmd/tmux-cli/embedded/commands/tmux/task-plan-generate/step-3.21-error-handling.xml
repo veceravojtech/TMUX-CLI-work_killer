@@ -50,8 +50,8 @@
         <commands>
           <cmd source="EH-01">bin/console debug:event-dispatcher | grep ExceptionListener</cmd>
           <cmd source="EH-03..EH-07">vendor/bin/phpunit --filter=ErrorHandling</cmd>
-          <cmd source="EH-08">vendor/bin/phpstan analyse src/Share/Infrastructure/ErrorHandling/ --level=9</cmd>
-          <cmd source="EH-08">vendor/bin/ecs check src/Share/Infrastructure/ErrorHandling/</cmd>
+          <cmd source="EH-08">vendor/bin/phpstan analyse projects/{app}/src/Http/ErrorHandling/ --level=9</cmd>
+          <cmd source="EH-08">vendor/bin/ecs check projects/{app}/src/Http/ErrorHandling/</cmd>
         </commands>
         <rule>4 validation commands covering listener registration (EH-01), integration tests (EH-03..EH-07), and static analysis (EH-08).</rule>
       </substep>
@@ -64,7 +64,7 @@ Error handling goal: implement global exception listener, RFC 7807 Problem Detai
 Exception types from docs/architecture/domain-model.md: {{DOMAIN_EXCEPTIONS}}.
 Error handling decisions from docs/architecture/cross-cutting.md: {{EH_DECISIONS}}.
 Error handling patterns from {{ERROR_HANDLING_TEMPLATE}} (exception listener, response factory, status code map).
-All error handling files live in src/Share/Infrastructure/ErrorHandling/ (cross-cutting, not per-BC).
+All error handling files live in projects/{app}/src/Http/ErrorHandling/ (cross-cutting, not per-BC).
 Depends on fixtures goal: {{FIXTURES_GOAL_ID}} — integration tests need seeded data to trigger exception scenarios.
         </section>
 
@@ -84,7 +84,7 @@ Depends on fixtures goal: {{FIXTURES_GOAL_ID}} — integration tests need seeded
 
           <investigator n="2" name="Quality gate">
             <type>quality-gate</type>
-            <commands>vendor/bin/phpstan analyse src/Share/Infrastructure/ErrorHandling/ --level=9 &amp;&amp; vendor/bin/ecs check src/Share/Infrastructure/ErrorHandling/</commands>
+            <commands>vendor/bin/phpstan analyse projects/{app}/src/Http/ErrorHandling/ --level=9 &amp;&amp; vendor/bin/ecs check projects/{app}/src/Http/ErrorHandling/</commands>
             <pass>PHPStan and ECS both exit 0 — zero errors on error handling files</pass>
             <fail>Type errors or code style violations in error handling files</fail>
           </investigator>
@@ -106,7 +106,7 @@ Depends on fixtures goal: {{FIXTURES_GOAL_ID}} — integration tests need seeded
       </substep>
 
       <substep n="3.21.7b" title="Inject code rules (apply [CODE-RULE-INJECTION])">
-        <action>Bind RULE_FILES = the comma-joined error-handling deliverable paths (src/Share/Infrastructure/ErrorHandling/** — listener, RFC 7807 response factory, status-code map, and their tests). Bind RULE_PHASE = `error_handling` (this goal's phase token — pass it VERBATIM; do NOT remap it).</action>
+        <action>Bind RULE_FILES = the comma-joined error-handling deliverable paths (projects/{app}/src/Http/ErrorHandling/** — listener, RFC 7807 response factory, status-code map, and their tests). Bind RULE_PHASE = `error_handling` (this goal's phase token — pass it VERBATIM; do NOT remap it).</action>
         <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.21.4); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (3.21.5); fold `review` `validate_cmd`s into ONE convention-audit investigator (ADD; base is 3 from 3.21.6, so the 4th slot is free — no drop); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.21.6). Empty `rules` ⇒ inject nothing.</action>
         <rule>The phase token `error_handling` is NOT in the Go `allowedPhases` enum — `rules match` returns an empty set, so this goal UNDER-injects (fail-safe: under-enforce, never wrong-enforce). This is a recorded known risk; do NOT "fix" the enum here. PRESERVE the 3 existing investigators.</rule>
       </substep>

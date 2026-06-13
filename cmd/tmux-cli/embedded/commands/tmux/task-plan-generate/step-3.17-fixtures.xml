@@ -14,7 +14,7 @@
 
       <substep n="3.17.2" title="Build entity inventory from domain model">
         <action>Read docs/architecture/domain-model.md. Extract all aggregate/entity names across all BCs from AGGREGATE_MAP (built in Step 0).</action>
-        <action>For each entity, build fixture class path: src/{BC}/Infrastructure/DataFixtures/{Entity}Fixtures.php</action>
+        <action>For each entity, build fixture class path: contexts/{BC}/src/Bundle/DataFixtures/{Entity}Fixtures.php</action>
         <action>Additionally include UserFixtures (requires UserPasswordHasherInterface injection) — one per BC that has auth-related entities, or a shared UserFixtures if auth is centralized.</action>
         <action>Read docs/architecture/api-endpoints.md to identify which entities have list/search endpoints — these need page_size+1 records for pagination testing (FX-04).</action>
       </substep>
@@ -85,7 +85,7 @@ Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide Doctri
 
           <investigator n="3" name="Fixture class coverage">
             <type>file-check</type>
-            <commands>For every entity in docs/architecture/domain-model.md, verify src/{BC}/Infrastructure/DataFixtures/{Entity}Fixtures.php exists</commands>
+            <commands>For every entity in docs/architecture/domain-model.md, verify contexts/{BC}/src/Bundle/DataFixtures/{Entity}Fixtures.php exists</commands>
             <pass>All fixture files present — one per testable entity</pass>
             <fail>Missing fixture class for one or more entities</fail>
           </investigator>

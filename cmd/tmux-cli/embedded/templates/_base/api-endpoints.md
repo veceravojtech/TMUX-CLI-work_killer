@@ -43,7 +43,7 @@
 
 #### Fan-Out (per-action deliverables)
 
-- Controller: {{handler_path}} <!-- canonical shape: src/{{bc_name}}/Infrastructure/Http/Controller/{{action_name}}Controller.php -->
+- Controller: {{handler_path}} <!-- canonical shape: contexts/{{bc_name}}/app/src/Http/Controller/{{action_name}}Controller.php -->
 - Request DTO: {{request_dto_path}}
 - Response DTO: {{response_dto_path}}
 - Route: {{route_definition_path}}

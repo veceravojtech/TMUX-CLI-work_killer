@@ -11,7 +11,7 @@
       </substep>
 
       <substep n="3.29.1b" title="Inject code rules into each final gate (apply [CODE-RULE-INJECTION])">
-        <action>For EACH of the 3 final-gate goals composed inline below (3.29.2 Deptrac, 3.29.3 E2E, 3.29.4 Quality), BEFORE composing that gate's goal-create call: bind RULE_FILES = that gate's deliverable/validation footprint (Deptrac → ["src/"]; Quality → ["src/"]; E2E → ["tests/"]) and RULE_PHASE = `final_gate` (the phase token each gate already passes — VERBATIM).</action>
+        <action>For EACH of the 3 final-gate goals composed inline below (3.29.2 Deptrac, 3.29.3 E2E, 3.29.4 Quality), BEFORE composing that gate's goal-create call: bind RULE_FILES = that gate's deliverable/validation footprint (Deptrac → ["contexts/","projects/","packages/"]; Quality → ["contexts/","projects/","packages/"]; E2E → ["tests/"]) and RULE_PHASE = `final_gate` (the phase token each gate already passes — VERBATIM).</action>
         <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into that gate's inline `acceptance` array; copy each `automated`/`mixed` `validate_cmd` into that gate's inline `validate` array; fold `review` `validate_cmd`s into ONE convention-audit investigator MERGED into that gate's inline `investigation_config` (each gate has 2–3 inline investigators, so an ADD lands within the 2–4 cap; if a gate already had 4 you would apply the spine drop order, but these gates have ≤3); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to that gate's inline `context`. Empty `rules` ⇒ inject nothing.</action>
         <rule>The phase token `final_gate` is NOT in the Go `allowedPhases` enum — `rules match` returns an empty set, so the final gates UNDER-inject (fail-safe: under-enforce, never wrong-enforce). This is a recorded known risk; do NOT "fix" the enum here. PRESERVE each gate's existing inline deptrac/e2e/quality investigators, acceptance (FG-01..FG-18), validate arrays, and the G-08 ordering.</rule>
       </substep>
@@ -34,8 +34,8 @@
 Final gate: validates that the entire codebase passes Deptrac layer dependency analysis after all BC goals, fixtures, actions, auth, and cross-cutting goals are complete.
           </param>
           <param name="investigation_config">[
-            {name: "Layer Structure Verifier", type: "architecture-check", paths: ["src/"], commands: ["vendor/bin/deptrac analyse", "vendor/bin/deptrac analyse --formatter=json"], pass: "Exit 0, zero violations — all 4 DDD layers (Domain, Application, Infrastructure, Share) respect dependency rules", fail: "Any layer violation detected — dependency flows upward or crosses BC boundary"},
-            {name: "Cross-BC Boundary Checker", type: "architecture-check", paths: ["src/"], commands: ["vendor/bin/deptrac analyse --filter=cross-bc", "per-BC grep for cross-BC use-imports inside each Domain layer, excluding Share and the same BC namespace"], pass: "Zero cross-BC imports in Domain/Application layers; only ACL adapters in Infrastructure cross BC boundaries", fail: "Direct cross-BC import found outside ACL adapter"}
+            {name: "Layer Structure Verifier", type: "architecture-check", paths: ["contexts/", "projects/", "packages/"], commands: ["vendor/bin/deptrac analyse", "vendor/bin/deptrac analyse --formatter=json"], pass: "Exit 0, zero violations — all 4 DDD layers (Domain, Application, Infrastructure, Share) respect dependency rules", fail: "Any layer violation detected — dependency flows upward or crosses BC boundary"},
+            {name: "Cross-BC Boundary Checker", type: "architecture-check", paths: ["contexts/", "projects/", "packages/"], commands: ["vendor/bin/deptrac analyse --filter=cross-bc", "per-BC grep for cross-BC use-imports inside each Domain layer, excluding Share and the same BC namespace"], pass: "Zero cross-BC imports in Domain/Application layers; only ACL adapters in Infrastructure cross BC boundaries", fail: "Direct cross-BC import found outside ACL adapter"}
           ]</param>
           <param name="not_in_scope">PHPStan, ECS, unit/integration tests, Playwright E2E, coverage, console boot, schema validation, migrations</param>
           <param name="depends_on">ALL_GOAL_IDS</param>
@@ -47,7 +47,7 @@ Final gate: validates that the entire codebase passes Deptrac layer dependency a
       </substep>
 
       <substep n="3.29.3" title="Generate E2E Regression goal (goal-T+4)">
-        <branch condition="HAS_FRONTEND==true">
+        <branch condition="FRONTEND_MODE == vue">
           <action>Call the goal-create MCP tool with these parameters:</action>
           <params>
             <param name="description">Final gate: Playwright E2E regression — all tests run together</param>
@@ -72,8 +72,8 @@ Final gate: validates that all Playwright E2E tests pass when run together as a 
           <rule>Description is 59 chars — well within the 120-char limit.</rule>
           <rule>3 acceptance criteria (FG-08, FG-09, G-08).</rule>
         </branch>
-        <branch condition="HAS_FRONTEND==false">
-          <action>Print warning: "HAS_FRONTEND=false — skipping E2E Regression final gate goal (3.29.3). No Playwright tests to regress."</action>
+        <branch condition="FRONTEND_MODE != vue">
+          <action>Print warning: "FRONTEND_MODE != vue — skipping E2E Regression final gate goal (3.29.3). Playwright/E2E deliverables exist only for the vue FrontendMode; twig and none emit no Playwright suite to regress."</action>
           <action>Do NOT call goal-create. Record that E2E final gate was skipped — adjust G-08 compliance check in 3.29.6 to expect 2 final gates (Deptrac + Quality) instead of 3.</action>
         </branch>
       </substep>
@@ -94,12 +94,12 @@ Final gate: validates that all Playwright E2E tests pass when run together as a 
             "FG-18: All migrations applied cleanly — doctrine:migrations:status shows no pending"
           ]</param>
           <param name="validate">[
-            "vendor/bin/phpstan analyse src/ --level=9",
-            "vendor/bin/ecs check src/",
+            "vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9",
+            "vendor/bin/ecs check contexts/ projects/ packages/",
             "vendor/bin/phpunit --testsuite=unit",
             "vendor/bin/phpunit --testsuite=integration",
             "vendor/bin/phpunit --coverage-text",
-            "grep -rn 'TODO\\|FIXME\\|HACK' src/ | wc -l",
+            "grep -rn 'TODO\\|FIXME\\|HACK' contexts/ projects/ packages/ | wc -l",
             "bin/console",
             "bin/console doctrine:schema:validate",
             "bin/console doctrine:migrations:status"
@@ -108,9 +108,9 @@ Final gate: validates that all Playwright E2E tests pass when run together as a 
 Final gate: validates full codebase quality — PHPStan, ECS, all test suites, coverage threshold, and Doctrine schema/migration health after all goals complete.
           </param>
           <param name="investigation_config">[
-            {name: "Static Analysis Verifier", type: "quality-gate", paths: ["src/"], commands: ["vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/"], pass: "Both exit 0 — zero PHPStan errors at level 9, zero ECS violations", fail: "Any static analysis error or coding standard violation"},
+            {name: "Static Analysis Verifier", type: "quality-gate", paths: ["contexts/", "projects/", "packages/"], commands: ["vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9", "vendor/bin/ecs check contexts/ projects/ packages/"], pass: "Both exit 0 — zero PHPStan errors at level 9, zero ECS violations", fail: "Any static analysis error or coding standard violation"},
             {name: "Test Suite Runner", type: "test-execution", paths: ["tests/"], commands: ["vendor/bin/phpunit --testsuite=unit", "vendor/bin/phpunit --testsuite=integration", "vendor/bin/phpunit --coverage-text"], pass: "All suites green, coverage meets threshold (default 80%)", fail: "Test failure or coverage below threshold"},
-            {name: "Runtime Health Checker", type: "environment-check", paths: ["src/"], commands: ["bin/console", "bin/console doctrine:schema:validate", "bin/console doctrine:migrations:status", "grep for TODO/FIXME/HACK comments in src/ (expect zero)"], pass: "Console boots, schema valid, no pending migrations, zero TODO/FIXME/HACK", fail: "Boot failure, schema mismatch, pending migrations, or stale comments found"}
+            {name: "Runtime Health Checker", type: "environment-check", paths: ["contexts/", "projects/", "packages/"], commands: ["bin/console", "bin/console doctrine:schema:validate", "bin/console doctrine:migrations:status", "grep for TODO/FIXME/HACK comments in contexts/ projects/ packages/ (expect zero)"], pass: "Console boots, schema valid, no pending migrations, zero TODO/FIXME/HACK", fail: "Boot failure, schema mismatch, pending migrations, or stale comments found"}
           ]</param>
           <param name="not_in_scope">Deptrac analysis, Playwright E2E, new feature code, refactoring</param>
           <param name="depends_on">ALL_GOAL_IDS</param>

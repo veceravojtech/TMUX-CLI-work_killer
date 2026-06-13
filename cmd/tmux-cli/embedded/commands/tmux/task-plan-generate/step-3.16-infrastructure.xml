@@ -58,10 +58,10 @@
           <action>Build ACCEPTANCE array parameterized for this BC:</action>
           <criteria>
             <item id="PI-01">Doctrine XML mapping exists for every aggregate root and entity: {entity_list}</item>
-            <item id="PI-02">XML mappings live in src/{BC}/Infrastructure/Persistence/Doctrine/Mapping/</item>
-            <item id="PI-03">No Doctrine annotations/attributes anywhere in src/{BC}/Domain/ or src/{BC}/Application/</item>
+            <item id="PI-02">XML mappings live in contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/</item>
+            <item id="PI-03">No Doctrine annotations/attributes anywhere in contexts/{BC}/src/Domain/ or contexts/{BC}/src/Application/</item>
             <item id="PI-04">Write repository implements {RepoInterface} from Domain layer</item>
-            <item id="PI-05">Write repository lives in src/{BC}/Infrastructure/Persistence/</item>
+            <item id="PI-05">Write repository lives in contexts/{BC}/src/Bundle/Domain/Persistence/</item>
             <item id="PI-06">Write repository dispatches domain events after flush (flush-then-dispatch pattern)</item>
             <item id="PI-07">Read model repository implements Application read model interface</item>
             <item id="PI-08" condition="vo_type_list non-empty">Custom DBAL types created for: {vo_type_list}, registered in Doctrine config</item>
@@ -70,24 +70,24 @@
             <item id="PI-11">Integration tests use real test database, no mock() calls on repositories</item>
             <item id="PI-12">Integration tests reset DB state via doctrine:fixtures:load --group=test before each test</item>
             <item id="PI-13">Integration tests cover: persist + retrieve aggregate, query methods, edge cases</item>
-            <item id="PI-14">Integration tests run green: vendor/bin/phpunit --filter={BC}\\Infrastructure passes</item>
-            <item id="PI-15">services.yaml (or DI extension) binds interfaces to implementations</item>
-            <item id="PI-16" condition="acl_list non-empty">ACL adapters exist for cross-BC dependencies: {acl_list} in src/{BC}/Infrastructure/ACL/</item>
+            <item id="PI-14">Integration tests run green: vendor/bin/phpunit --filter={BC}\\Bundle passes</item>
+            <item id="PI-15">contexts/{BC}/config/services.yaml (or DI extension) binds interfaces to implementations</item>
+            <item id="PI-16" condition="acl_list non-empty">ACL adapters exist for cross-BC dependencies: {acl_list} in contexts/{BC}/src/Bundle/Application/Acl/</item>
           </criteria>
           <rule>Include PI-08 only when vo_type_list is non-empty. Include PI-16 only when acl_list is non-empty. All other criteria are always present.</rule>
 
           <action>Build VALIDATE array:</action>
           <commands>
             <cmd source="PI-09">bin/console doctrine:schema:validate</cmd>
-            <cmd source="PI-14">vendor/bin/phpunit --filter={BC}\\Infrastructure</cmd>
-            <cmd source="PI-03">grep -r '@ORM\|@Entity\|#\[ORM' src/{BC}/Domain src/{BC}/Application | wc -l</cmd>
-            <cmd source="PI-01">test -d src/{BC}/Infrastructure/Persistence/Doctrine/Mapping/ &amp;&amp; ls src/{BC}/Infrastructure/Persistence/Doctrine/Mapping/*.xml | wc -l</cmd>
+            <cmd source="PI-14">vendor/bin/phpunit --filter={BC}\\Bundle</cmd>
+            <cmd source="PI-03">grep -r '@ORM\|@Entity\|#\[ORM' contexts/{BC}/src/Domain contexts/{BC}/src/Application | wc -l</cmd>
+            <cmd source="PI-01">test -d contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/ &amp;&amp; ls contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/*.xml | wc -l</cmd>
           </commands>
           <rule>Validate command for PI-03 must return 0 (zero annotation leaks). All other commands must exit 0.</rule>
 
           <action>Build CONTEXT string with Investigation Config:</action>
           <section name="purpose">
-Infrastructure goal for {BC}: Doctrine XML mappings, repository implementations, migrations, custom DBAL types, ACL adapters, and integration tests with real DB.
+Infrastructure (Bundle layer) goal for {BC}: Doctrine XML mappings, repository implementations, migrations, custom DBAL types, ACL adapters, and integration tests with real DB. Concrete persistence lives under contexts/{BC}/src/Bundle/{Domain,Application}; per-context wiring in contexts/{BC}/config; migrations under contexts/{BC}/migrations.
 Aggregates: {aggregate_list}. Entities: {entity_list}.
 VOs needing DBAL types: {vo_type_list} (or "none").
 Cross-BC dependencies (ACL adapters needed): {acl_list} (or "none — single-BC or no inbound deps").
@@ -101,19 +101,19 @@ ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messeng
             <task n="0" name="Shared infrastructure" prerequisite="true">
               <scope>services.yaml interface bindings, base DBAL types (if any), shared config</scope>
               <criteria>PI-15, PI-08</criteria>
-              <owns>config/services.yaml (BC section), src/{BC}/Infrastructure/Persistence/Type/</owns>
+              <owns>contexts/{BC}/config/services.yaml, contexts/{BC}/src/Bundle/Domain/Persistence/Type/</owns>
               <depends_on>none (first task)</depends_on>
             </task>
             <task n="1..N" name="Per-aggregate" parallel="true">
               <scope>XML mapping + write repo + read repo + integration tests for one aggregate</scope>
               <criteria>PI-01, PI-02, PI-04, PI-05, PI-06, PI-07, PI-11..PI-14</criteria>
-              <owns>src/{BC}/Infrastructure/Persistence/Doctrine/Mapping/{Aggregate}.orm.xml, src/{BC}/Infrastructure/Persistence/{Aggregate}Repository.php, tests/Integration/{BC}/Infrastructure/</owns>
+              <owns>contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/{Aggregate}.orm.xml, contexts/{BC}/src/Bundle/Domain/Persistence/{Aggregate}Repository.php, contexts/{BC}/tests/Integration/</owns>
               <depends_on>task-0</depends_on>
             </task>
             <task n="last" name="Migration + ACL" depends-on-all="true">
               <scope>Generate migration from all mappings, ACL adapters (if any)</scope>
               <criteria>PI-09, PI-10, PI-16</criteria>
-              <owns>migrations/, src/{BC}/Infrastructure/ACL/</owns>
+              <owns>contexts/{BC}/migrations/, contexts/{BC}/src/Bundle/Application/Acl/</owns>
               <depends_on>all per-aggregate tasks (needs all mappings before diff)</depends_on>
             </task>
             <rule>File-disjoint: task-0 owns config/types, task-1..N own per-aggregate files, task-last owns migrations+ACL. Zero overlap.</rule>
@@ -129,14 +129,14 @@ ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messeng
 
             <investigator n="2" name="No annotation leak">
               <type>quality-gate</type>
-              <commands>grep -r '@ORM\|@Entity\|#\[ORM' src/{BC}/Domain src/{BC}/Application | wc -l</commands>
-              <pass>Count is 0 — no Doctrine annotations outside Infrastructure</pass>
+              <commands>grep -r '@ORM\|@Entity\|#\[ORM' contexts/{BC}/src/Domain contexts/{BC}/src/Application | wc -l</commands>
+              <pass>Count is 0 — no Doctrine annotations outside the Bundle (infrastructure) layer</pass>
               <fail>Non-zero count — annotations found in Domain or Application layer</fail>
             </investigator>
 
             <investigator n="3" name="Integration tests">
               <type>test-execution</type>
-              <commands>vendor/bin/phpunit --filter={BC}\\Infrastructure</commands>
+              <commands>vendor/bin/phpunit --filter={BC}\\Bundle</commands>
               <pass>Exit 0 AND run is non-empty (test count present, NOT "No tests executed!"), all tests green</pass>
               <fail>Test failures or errors</fail>
             </investigator>
@@ -144,7 +144,7 @@ ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messeng
             <investigator n="4" type="conditional" condition="acl_list non-empty">
               <name>ACL adapter presence</name>
               <type>file-check</type>
-              <commands>test -d src/{BC}/Infrastructure/ACL/ &amp;&amp; ls src/{BC}/Infrastructure/ACL/*ACLAdapter.php | wc -l</commands>
+              <commands>test -d contexts/{BC}/src/Bundle/Application/Acl/ &amp;&amp; ls contexts/{BC}/src/Bundle/Application/Acl/*ACLAdapter.php | wc -l</commands>
               <pass>File count matches number of cross-BC dependencies</pass>
               <fail>Missing ACL adapter for one or more dependencies</fail>
             </investigator>
@@ -171,7 +171,7 @@ ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messeng
             <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from this goal's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
             <param name="not_in_scope">NOT_IN_SCOPE</param>
             <param name="max_retries">3</param>
-            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in the spine &lt;conventions&gt; block. Derive from this BC's infrastructure Deliverables: emit ["src/{BC}/Infrastructure/**"] plus any distinct mapping/migration dirs the deliverables touch. Single-BC infrastructure footprint ⇒ disjoint from other BCs ⇒ co-schedulable under MaxGoals&gt;1.</param>
+            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in the spine &lt;conventions&gt; block. Derive from this BC's infrastructure Deliverables: emit ["contexts/{BC}/src/Bundle/**","contexts/{BC}/config/**","contexts/{BC}/migrations/**"] plus any distinct mapping/migration dirs the deliverables touch. Single-BC infrastructure footprint ⇒ disjoint from other BCs ⇒ co-schedulable under MaxGoals&gt;1.</param>
           </params>
           <rule>Description is parameterized with BC name — must stay under 120 chars (MaxGoalDescriptionLength).</rule>
           <rule>max_retries=3 — infrastructure goals have focused scope per BC.</rule>

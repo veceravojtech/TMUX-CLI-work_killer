@@ -54,16 +54,16 @@
           <criteria>
             <item id="PA-01">Each use case from api-endpoints.md has exactly one handler class ({{HANDLER_COUNT}} handlers for {{BC_NAME}})</item>
             <item id="PA-02">Handlers inject repository interfaces (ports), not implementations — constructor params use {{Aggregate}}RepositoryInterface type hints</item>
-            <item id="PA-03">Zero imports from Infrastructure namespace in src/{{BC_NAME}}/Application/ files</item>
-            <item id="PA-04">Zero imports from HTTP/Controller namespace in src/{{BC_NAME}}/Application/ files</item>
+            <item id="PA-03">Zero imports from the Bundle (infrastructure) namespace in contexts/{{BC_NAME}}/src/Application/ files</item>
+            <item id="PA-04">Zero imports from HTTP/Controller namespace in contexts/{{BC_NAME}}/src/Application/ files</item>
             <item id="PA-05">Command DTOs have no business logic — only public properties or constructor, no methods with domain operations</item>
             <item id="PA-06">Command handlers __invoke() returns void or scalar ID type</item>
             <item id="PA-07">Query handlers __invoke() returns DTO objects, never entities or aggregate roots</item>
             <item id="PA-08">Unit tests mock repository/read-model interfaces, not Doctrine implementations</item>
             <item id="PA-09">Unit tests cover: happy path, validation failure, domain exception propagation per handler</item>
             <item id="PA-10">vendor/bin/phpunit --filter={{BC_NAME}}\\Application passes (exit 0, all green)</item>
-            <item id="PA-11">vendor/bin/phpstan analyse src/{{BC_NAME}}/Application/ --level=9 passes (exit 0, zero errors)</item>
-            <item id="PA-12">vendor/bin/deptrac analyse --filter={{BC_NAME}} passes — Application depends only on Domain + Share</item>
+            <item id="PA-11">vendor/bin/phpstan analyse contexts/{{BC_NAME}}/src/Application/ --level=9 passes (exit 0, zero errors)</item>
+            <item id="PA-12">vendor/bin/deptrac analyse --filter={{BC_NAME}} passes — Application depends only on Domain + shared kernel (contexts/previo)</item>
           </criteria>
           <rule>All 12 criteria must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
         </substep>
@@ -72,7 +72,7 @@
           <action>Build VALIDATE array with 3 CLI commands scoped to this BC's Application namespace:</action>
           <commands>
             <cmd source="PA-10">vendor/bin/phpunit --filter={{BC_NAME}}\\Application</cmd>
-            <cmd source="PA-11">vendor/bin/phpstan analyse src/{{BC_NAME}}/Application/ --level=9</cmd>
+            <cmd source="PA-11">vendor/bin/phpstan analyse contexts/{{BC_NAME}}/src/Application/ --level=9</cmd>
             <cmd source="PA-12">vendor/bin/deptrac analyse --filter={{BC_NAME}}</cmd>
           </commands>
           <rule>Validation commands are BC-scoped — not project-wide. Each command verifies one of PA-10, PA-11, PA-12.</rule>
@@ -93,19 +93,19 @@ Layer shape — command/query handler contract, CQRS-lite read/write split, repo
             <action>List concrete file paths per handler based on USE_CASE_MAP for this BC:</action>
             <template>
 For each command use case:
-- src/{{BC_NAME}}/Application/Command/{{UseCaseName}}/{{UseCaseName}}Command.php (DTO)
-- src/{{BC_NAME}}/Application/Command/{{UseCaseName}}/{{UseCaseName}}Handler.php
-- tests/Unit/{{BC_NAME}}/Application/Command/{{UseCaseName}}/{{UseCaseName}}HandlerTest.php
+- contexts/{{BC_NAME}}/src/Application/Command/{{UseCaseName}}/{{UseCaseName}}Command.php (DTO)
+- contexts/{{BC_NAME}}/src/Application/Command/{{UseCaseName}}/{{UseCaseName}}Handler.php
+- contexts/{{BC_NAME}}/tests/Unit/Application/Command/{{UseCaseName}}/{{UseCaseName}}HandlerTest.php
 
 For each query use case:
-- src/{{BC_NAME}}/Application/Query/{{UseCaseName}}/{{UseCaseName}}Query.php (DTO)
-- src/{{BC_NAME}}/Application/Query/{{UseCaseName}}/{{UseCaseName}}Handler.php
-- tests/Unit/{{BC_NAME}}/Application/Query/{{UseCaseName}}/{{UseCaseName}}HandlerTest.php
+- contexts/{{BC_NAME}}/src/Application/Query/{{UseCaseName}}/{{UseCaseName}}Query.php (DTO)
+- contexts/{{BC_NAME}}/src/Application/Query/{{UseCaseName}}/{{UseCaseName}}Handler.php
+- contexts/{{BC_NAME}}/tests/Unit/Application/Query/{{UseCaseName}}/{{UseCaseName}}HandlerTest.php
 
 If BC has list/search use cases:
-- src/{{BC_NAME}}/Application/ReadModel/{{ReadModel}}ReadModelInterface.php
-- src/{{BC_NAME}}/Application/ReadModel/{{ReadModel}}DTO.php
-- src/{{BC_NAME}}/Application/ReadModel/{{ReadModel}}Criteria.php
+- contexts/{{BC_NAME}}/src/Application/ReadModel/{{ReadModel}}ReadModelInterface.php
+- contexts/{{BC_NAME}}/src/Application/ReadModel/{{ReadModel}}DTO.php
+- contexts/{{BC_NAME}}/src/Application/ReadModel/{{ReadModel}}Criteria.php
             </template>
           </section>
 
@@ -125,7 +125,7 @@ If BC has list/search use cases:
 
             <investigator n="2" name="PHPStan">
               <type>static-analysis</type>
-              <commands>vendor/bin/phpstan analyse src/{{BC_NAME}}/Application/ --level=9</commands>
+              <commands>vendor/bin/phpstan analyse contexts/{{BC_NAME}}/src/Application/ --level=9</commands>
               <pass>Exit 0, zero errors — all type hints resolve, interface contracts satisfied</pass>
               <fail>Type errors, missing return types, or unresolved interface references</fail>
             </investigator>
@@ -133,8 +133,8 @@ If BC has list/search use cases:
             <investigator n="3" name="Deptrac">
               <type>architecture-check</type>
               <commands>vendor/bin/deptrac analyse --filter={{BC_NAME}}</commands>
-              <pass>Exit 0 — Application layer depends only on Domain + Share, zero Infrastructure/Controller imports</pass>
-              <fail>Dependency violation: Application importing from Infrastructure or Controller namespace</fail>
+              <pass>Exit 0 — Application layer depends only on Domain + shared kernel, zero Bundle (infrastructure) or app/controller imports</pass>
+              <fail>Dependency violation: Application importing from the Bundle (infrastructure) or app/controller namespace</fail>
             </investigator>
 
             <rule>Exactly 3 investigators per application goal (GM-08). Each has type, commands, pass/fail criteria (GM-09).</rule>
@@ -164,7 +164,7 @@ If BC has list/search use cases:
             <param name="not_in_scope">NOT_IN_SCOPE from substep 3.15.4d</param>
             <param name="depends_on">APP_DEPENDS_ON[bc_name] — own BC's domain goal ID from goals.yaml</param>
             <param name="max_retries">3</param>
-            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in the spine &lt;conventions&gt; block. Derive from this BC's application Deliverables (substep 3.15.4c): emit ["src/{{BC_NAME}}/Application/**"] (plus any extra distinct deliverable dirs). Single-BC application namespace ⇒ disjoint from other BCs ⇒ co-schedulable under MaxGoals&gt;1.</param>
+            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in the spine &lt;conventions&gt; block. Derive from this BC's application Deliverables (substep 3.15.4c): emit ["contexts/{{BC_NAME}}/src/Application/**"] (plus any extra distinct deliverable dirs). Single-BC application namespace ⇒ disjoint from other BCs ⇒ co-schedulable under MaxGoals&gt;1.</param>
           </params>
           <rule>Description pattern "Implement {BC} application layer: command/query handlers and DTOs" stays under 120 chars for BC names up to ~40 chars.</rule>
           <rule>max_retries=3 — application goals have focused scope (single BC namespace).</rule>

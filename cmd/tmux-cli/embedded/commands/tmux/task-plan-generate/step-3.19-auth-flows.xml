@@ -76,8 +76,8 @@
           <item id="PC-16">ECS passes on all new files</item>
           <item id="PC-17">Deptrac passes — controller imports Application layer only</item>
         </criteria-reference>
-        <branch condition="HAS_FRONTEND==false OR Playwright status in test-environment.md is 'not installed' / 'not applicable'">
-          <action>Exclude PC-07..PC-14 (all Playwright E2E criteria) from this auth goal's acceptance — IDENTICAL reduction to step 3.18's HAS_FRONTEND==false branch. Keep the AU criteria + PC-01..PC-06, PC-15..PC-17.</action>
+        <branch condition="FRONTEND_MODE != vue OR Playwright status in test-environment.md is 'not installed' / 'not applicable'">
+          <action>Exclude PC-07..PC-14 (all Playwright E2E criteria) from this auth goal's acceptance — IDENTICAL reduction to step 3.18's FRONTEND_MODE != vue branch. Keep the AU criteria + PC-01..PC-06, PC-15..PC-17.</action>
           <action>Also drop, for this goal: the Playwright E2E investigator (3.19.4 investigator n=3), the `npx playwright ...` validate command (3.19.5), and the "Playwright E2E: tests/E2E/..." deliverable (3.19.4). The goal then validates via the route check + quality gates only. Print: "API-only / Playwright N/A — auth goal E2E criteria PC-07..PC-14 and the playwright command excluded for {{flow_name}}."</action>
         </branch>
         <rule critical="true">PC-07..PC-14, the E2E investigator, the playwright validate command, and the Playwright deliverable are ALL conditional on Playwright availability from test-environment.md — the SAME gate step 3.18 uses. When Playwright is unavailable they are omitted TOGETHER; never emit an `npx playwright` command in a project where Playwright is not applicable (it cannot pass and the docker app container has no Node/Playwright).</rule>
@@ -95,8 +95,8 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
 
         <section name="deliverables">
           <deliverable>Controller: RESOLVE_CONTROLLER_PATH({BC}, {AuthAction}) (3.17.0)</deliverable>
-          <deliverable>Request DTO: src/{BC}/Infrastructure/Http/Request/{AuthAction}Request.php</deliverable>
-          <deliverable>Response DTO: src/{BC}/Infrastructure/Http/Response/{AuthAction}Response.php</deliverable>
+          <deliverable>Request DTO: contexts/{BC}/app/src/Http/Request/{AuthAction}Request.php</deliverable>
+          <deliverable>Response DTO: contexts/{BC}/app/src/Http/Response/{AuthAction}Response.php</deliverable>
           <deliverable>Route config: config/routes/{bc}.yaml or PHP attributes</deliverable>
           <deliverable>Playwright E2E: tests/E2E/{BC}/{AuthAction}Test.{ext}</deliverable>
           <note>Security config (config/packages/security.yaml) + User entity are NOT deliverables here — they are provided by the auth-bootstrap dependency (AUTH_BOOTSTRAP_GOAL_ID, step 3.16a). This goal consumes them, it does not create them.</note>
@@ -116,12 +116,12 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
 
           <investigator n="2" name="Quality gates">
             <type>quality-gate</type>
-            <commands>vendor/bin/phpstan analyse --level=9 &amp;&amp; vendor/bin/ecs check src/ &amp;&amp; vendor/bin/deptrac analyse</commands>
+            <commands>vendor/bin/phpstan analyse --level=9 &amp;&amp; vendor/bin/ecs check contexts/ projects/ packages/ &amp;&amp; vendor/bin/deptrac analyse</commands>
             <pass>All three commands exit 0 — zero errors, zero violations</pass>
             <fail>Any tool reports errors or violations</fail>
           </investigator>
 
-          <investigator n="3" name="E2E test" condition="Playwright available in test-environment.md (HAS_FRONTEND==true AND Playwright installed)">
+          <investigator n="3" name="E2E test" condition="Playwright available in test-environment.md (FRONTEND_MODE == vue AND Playwright installed)">
             <type>test-execution</type>
             <commands>npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}</commands>
             <pass>Test passes — correct status codes, token/session handling, error responses verified</pass>
@@ -151,7 +151,7 @@ See docs/architecture/cross-cutting.md for auth method decisions and flow detail
             - "Auth: implement password reset flow with email verification"
           </param>
           <param name="acceptance">Combined AU + PC criteria from substep 3.19.3 for this specific flow. Each criterion is a separate string in the array.</param>
-          <param name="validate">Emit BARE (CMD-CONV; the daemon wraps each into its runtime). When Playwright is available AND HAS_DATABASE: ["bash bin/ensure-test-stack.sh", "npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}", "vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/", "vendor/bin/deptrac analyse"]. When Playwright is available but NOT HAS_DATABASE: ["npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}", "vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/", "vendor/bin/deptrac analyse"]. When Playwright is N/A / not installed (API-only): OMIT the playwright entry → ["vendor/bin/phpstan analyse src/ --level=9", "vendor/bin/ecs check src/", "vendor/bin/deptrac analyse"]. ENSURE-STACK-CONV: bash bin/ensure-test-stack.sh is a separate validate line immediately before the E2E probe. The daemon routes the playwright entry to {{NODE_SVC}} and the PHP entries to {{APP_SVC}}; in local mode it runs them on the host.</param>
+          <param name="validate">Emit BARE (CMD-CONV; the daemon wraps each into its runtime). When Playwright is available AND HAS_DATABASE: ["bash bin/ensure-test-stack.sh", "npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}", "vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9", "vendor/bin/ecs check contexts/ projects/ packages/", "vendor/bin/deptrac analyse"]. When Playwright is available but NOT HAS_DATABASE: ["npx playwright test tests/E2E/{BC}/{AuthAction}Test.{ext}", "vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9", "vendor/bin/ecs check contexts/ projects/ packages/", "vendor/bin/deptrac analyse"]. When Playwright is N/A / not installed (API-only): OMIT the playwright entry → ["vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9", "vendor/bin/ecs check contexts/ projects/ packages/", "vendor/bin/deptrac analyse"]. ENSURE-STACK-CONV: bash bin/ensure-test-stack.sh is a separate validate line immediately before the E2E probe. The daemon routes the playwright entry to {{NODE_SVC}} and the PHP entries to {{APP_SVC}}; in local mode it runs them on the host.</param>
           <param name="context">CONTEXT string from substep 3.19.4 (purpose + deliverables)</param>
           <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.19.4's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
           <param name="not_in_scope">Other auth flows not covered by this goal, business logic beyond authentication/authorization, frontend UI, non-auth controller actions, database migrations.</param>

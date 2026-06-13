@@ -76,8 +76,8 @@
           <param name="acceptance">ACCEPTANCE array from substep 3.23.3 (AD-01..AD-04 — 4 items)</param>
           <param name="validate">[
             "curl -sf {base_url}/api/doc.json | python3 -m json.tool",
-            "vendor/bin/phpstan analyse src/ --level=9",
-            "vendor/bin/ecs check src/",
+            "vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9",
+            "vendor/bin/ecs check contexts/ projects/ packages/",
             "vendor/bin/deptrac analyse"
           ]</param>
           <param name="context">CONTEXT string from substep 3.23.4 (purpose + deliverables)</param>

@@ -84,8 +84,8 @@ func TestTemplate_E2EArtifactConvScaffoldSC20(t *testing.T) {
 	scaffold := sliceBetween(t, content, `n="2"`, `n="3.14"`)
 	assert.Contains(t, scaffold, "SC-20",
 		"scaffold section must contain SC-20 identifier")
-	assert.Contains(t, scaffold, `condition="HAS_FRONTEND"`,
-		"SC-20 must be conditioned on HAS_FRONTEND")
+	assert.Contains(t, scaffold, `condition="FRONTEND_MODE == vue"`,
+		"SC-20 (Playwright config) must be gated on FRONTEND_MODE == vue — the P2 FrontendMode gate, not binary HAS_FRONTEND")
 }
 
 func TestTemplate_E2EArtifactConvInvestigatorFailCriteria(t *testing.T) {

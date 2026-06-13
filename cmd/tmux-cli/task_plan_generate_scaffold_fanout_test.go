@@ -8,6 +8,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestScaffoldEmitsMonorepoSkeleton machine-checks acceptance criterion 4 of the
+// P2-monorepo phase-4 migration: the scaffold goal lays down the DDD-monorepo
+// skeleton (root composer.json with PATH REPOSITORIES + per-package composer.json,
+// deptrac with LAYER and PACKAGE edges, contexts/ + projects/ + packages/) and never
+// the retired flat src/<BC> skeleton. It scopes its assertions to the scaffold step
+// region so a monorepo path elsewhere can't mask a flat scaffold path.
+func TestScaffoldEmitsMonorepoSkeleton(t *testing.T) {
+	content := readGenerateBundle(t)
+	scaffold := sliceBetween(t, content, `n="2" title="Generate Scaffold goal`, `</step>`)
+
+	// Root composer.json declares path repositories (source of the `path repositor`
+	// grep token) and per-package composer.json exists.
+	assert.Contains(t, strings.ToLower(scaffold), "path repositories",
+		"scaffold acceptance must declare a root composer.json with path repositories")
+
+	// deptrac gains a second axis: package boundary edges, not only layer direction.
+	assert.Contains(t, strings.ToLower(scaffold), "package boundary edges",
+		"scaffold must include a deptrac package-edges acceptance criterion (not layer-only)")
+
+	// The monorepo topology tokens are present.
+	assert.Contains(t, scaffold, "contexts/",
+		"scaffold skeleton must target the contexts/ topology")
+	assert.Contains(t, scaffold, "projects/",
+		"scaffold skeleton must target the deployable projects/ topology")
+	assert.Contains(t, scaffold, "packages/",
+		"scaffold skeleton must target shared packages/")
+	assert.Contains(t, scaffold, "contexts/previo/src/",
+		"scaffold must lay down the contexts/previo shared-kernel context")
+
+	// The retired flat skeleton must be gone from the scaffold step.
+	assert.NotContains(t, scaffold, "src/{BC}/",
+		"scaffold must not emit a flat src/{BC}/ deliverable path")
+	assert.NotContains(t, scaffold, "src/Share/",
+		"scaffold must not emit the retired flat src/Share/ namespace")
+}
+
 func TestTemplate_Sc18InFanoutTask2(t *testing.T) {
 	content := readGenerateBundle(t)
 	task2 := sliceBetween(t, content, `n="2" name="Config files and quality tools"`, `n="3" name="Ensure-stack script"`)

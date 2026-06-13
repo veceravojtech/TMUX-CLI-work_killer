@@ -50,12 +50,12 @@
           <item id="PC-16">ECS passes on all new files</item>
           <item id="PC-17">Deptrac passes — controller imports Application layer only</item>
         </criteria>
-        <branch condition="HAS_FRONTEND==false">
+        <branch condition="FRONTEND_MODE != vue">
           <action>Reduce ACCEPTANCE array to 9 criteria: PC-01..PC-06, PC-15..PC-17. Exclude PC-07..PC-14 (all Playwright E2E criteria).</action>
-          <action>Print warning: "HAS_FRONTEND=false — Playwright E2E criteria PC-07..PC-14 excluded from controller action goals. 9 criteria remain."</action>
+          <action>Print warning: "FRONTEND_MODE != vue — Playwright E2E criteria PC-07..PC-14 excluded from controller action goals (Playwright/E2E deliverables gate on the vue FrontendMode; twig and none emit none). 9 criteria remain."</action>
           <rule>E2E test deliverables (tests/E2E/{BC}/{ActionName}Test.{ext}) are also excluded from the deliverables list for this action goal.</rule>
         </branch>
-        <branch condition="HAS_FRONTEND==true">
+        <branch condition="FRONTEND_MODE == vue">
           <rule>All 17 criteria must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
         </branch>
         <rule>PC-07..PC-14 are conditional on Playwright availability. If Playwright status in test-environment.md is "not installed" or "not applicable", reduce to PC-01..PC-06, PC-15..PC-17 (9 criteria) and note E2E tests are out of scope for this goal.</rule>

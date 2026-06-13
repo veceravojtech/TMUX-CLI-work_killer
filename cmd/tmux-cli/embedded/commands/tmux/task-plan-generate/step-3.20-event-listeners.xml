@@ -13,7 +13,7 @@
           <field>source_bc — the BC that raises the event (aggregate root's BC)</field>
           <field>listener_bc — the BC that handles the event (same as source_bc for intra-BC, different for cross-BC)</field>
           <field>is_cross_bc — true if source_bc != listener_bc</field>
-          <field>handler_class_path — src/{listener_bc}/Infrastructure/Adapter/{EventName}Handler.php (cross-BC) or src/{listener_bc}/Infrastructure/EventListener/{EventName}Listener.php (intra-BC)</field>
+          <field>handler_class_path — contexts/{listener_bc}/app/src/Adapter/{EventName}Handler.php (cross-BC message processor) or contexts/{listener_bc}/app/src/EventListener/{EventName}Listener.php (intra-BC) — both live in the context app (framework) layer that consumes events and calls Application handlers</field>
           <field>acl_needed — true if is_cross_bc (ACL adapter translates Published Language event to local domain language)</field>
           <field>side_effect_summary — short description of what the handler does (from discovery output)</field>
         </fields>
@@ -54,15 +54,15 @@
         <action>For each event listener, build ACCEPTANCE array from EV-01..EV-13, with conditional criteria based on is_cross_bc and async transport:</action>
 
         <criteria-reference name="EV-01..EV-13" source="docs/task-plan-spec.md:669-683">
-          <item id="EV-01" always="true">Event class exists in Domain layer with correct past-tense name — file at src/{source_bc}/Domain/Event/{EventName}.php</item>
+          <item id="EV-01" always="true">Event class exists in Domain layer with correct past-tense name — file at contexts/{source_bc}/src/Domain/Event/{EventName}.php</item>
           <item id="EV-02" always="true">Event is recorded by aggregate root method (collected via DomainEventTrait, not dispatched inline)</item>
           <item id="EV-03" always="true">Event is dispatched by infrastructure repository after flush (flush-then-dispatch pattern)</item>
           <item id="EV-04" always="true">Domain event dispatcher interface exists in Domain layer</item>
           <item id="EV-05" always="true">Symfony Messenger adapter implements domain event dispatcher interface in Infrastructure layer</item>
           <item id="EV-06" always="true">Listener/handler class exists in appropriate layer — file at {handler_class_path}</item>
           <item id="EV-07" always="true">Listener is registered in Symfony DI (auto-configured via #[AsMessageHandler] or explicit services.yaml entry) — verify via bin/console debug:messenger</item>
-          <item id="EV-08" condition="is_cross_bc">Published Language event DTO used in src/Share/Event/{EventName}.php — not internal domain event class</item>
-          <item id="EV-09" condition="is_cross_bc">ACL adapter translates incoming Published Language event to local domain language — adapter at src/{listener_bc}/Infrastructure/ACL/</item>
+          <item id="EV-08" condition="is_cross_bc">Published Language event DTO used in contexts/previo/src/Event/{EventName}.php — not internal domain event class</item>
+          <item id="EV-09" condition="is_cross_bc">ACL adapter translates incoming Published Language event to local domain language — adapter at contexts/{listener_bc}/src/Bundle/Application/Acl/</item>
           <item id="EV-10" always="true">Integration test proves: trigger action that raises event, event dispatched, handler executes, side effect verified</item>
           <item id="EV-11" always="true">Integration test uses real database, not mocks on repositories — no mock() calls on repository interfaces</item>
           <item id="EV-12" condition="async transport selected">Async listener has proper Messenger transport config in messenger.yaml with doctrine://default or configured DSN</item>
@@ -86,9 +86,9 @@ Integration tests only — no Playwright E2E (event side effects tested via PHPU
         <section name="deliverables">
           <deliverable always="true">Listener class: {handler_class_path}</deliverable>
           <deliverable always="true">DI configuration: services.yaml entry or #[AsMessageHandler] attribute</deliverable>
-          <deliverable always="true">Integration test: tests/Integration/{listener_bc}/EventListener/{EventName}ListenerTest.php</deliverable>
-          <deliverable condition="is_cross_bc">ACL adapter: src/{listener_bc}/Infrastructure/ACL/{source_bc}ACLAdapter.php (if not already created by infra goal)</deliverable>
-          <deliverable condition="is_cross_bc">Published Language DTO: src/Share/Event/{EventName}.php (if not already created by domain goal)</deliverable>
+          <deliverable always="true">Integration test: contexts/{listener_bc}/app/tests/Integration/EventListener/{EventName}ListenerTest.php</deliverable>
+          <deliverable condition="is_cross_bc">ACL adapter: contexts/{listener_bc}/src/Bundle/Application/Acl/{source_bc}ACLAdapter.php (if not already created by infra goal)</deliverable>
+          <deliverable condition="is_cross_bc">Published Language DTO: contexts/previo/src/Event/{EventName}.php (if not already created by domain goal)</deliverable>
           <deliverable condition="async transport">Messenger transport config: config/packages/messenger.yaml routing entry for this event</deliverable>
         </section>
 
@@ -97,11 +97,11 @@ Integration tests only — no Playwright E2E (event side effects tested via PHPU
 
           <investigator n="1" name="Event wiring">
             <type>implementation-check</type>
-            <files>{handler_class_path}, src/{source_bc}/Domain/Event/{EventName}.php</files>
+            <files>{handler_class_path}, contexts/{source_bc}/src/Domain/Event/{EventName}.php</files>
             <commands>bin/console debug:messenger</commands>
             <pass>Event collected in aggregate via DomainEventTrait, dispatched by repo after flush, listener registered in DI, handler receives correct event class</pass>
             <fail>Missing event class, listener not registered, event not dispatched by repo, or handler receives wrong event type</fail>
-            <condition_extra condition="is_cross_bc">Also verify: ACL adapter exists in src/{listener_bc}/Infrastructure/ACL/, Published Language DTO in src/Share/Event/, handler imports only from own BC + Share namespaces</condition_extra>
+            <condition_extra condition="is_cross_bc">Also verify: ACL adapter exists in contexts/{listener_bc}/src/Bundle/Application/Acl/, Published Language DTO in contexts/previo/src/Event/, handler imports only from its own context + the shared-kernel (contexts/previo) namespace</condition_extra>
           </investigator>
 
           <investigator n="2" name="Integration tests">
@@ -113,7 +113,7 @@ Integration tests only — no Playwright E2E (event side effects tested via PHPU
 
           <investigator n="3" name="Quality gates">
             <type>quality-gate</type>
-            <commands>vendor/bin/phpstan analyse src/{listener_bc}/Infrastructure/ --level=9 &amp;&amp; vendor/bin/ecs check src/{listener_bc}/Infrastructure/</commands>
+            <commands>vendor/bin/phpstan analyse contexts/{listener_bc}/app/ contexts/{listener_bc}/src/Bundle/ --level=9 &amp;&amp; vendor/bin/ecs check contexts/{listener_bc}/app/ contexts/{listener_bc}/src/Bundle/</commands>
             <pass>PHPStan and ECS both exit 0 — zero errors on event listener and adapter files</pass>
             <fail>Type errors or code style violations in listener/adapter files</fail>
           </investigator>
@@ -135,8 +135,8 @@ Integration tests only — no Playwright E2E (event side effects tested via PHPU
           <param name="acceptance">EV-01..EV-13 criteria from substep 3.20.3 for this specific listener. Each criterion is a separate string in the array. Conditional criteria (EV-08, EV-09, EV-12) included only when applicable.</param>
           <param name="validate">[
             "vendor/bin/phpunit --filter=EventListener",
-            "vendor/bin/phpstan analyse src/{listener_bc}/Infrastructure/ --level=9",
-            "vendor/bin/ecs check src/{listener_bc}/Infrastructure/",
+            "vendor/bin/phpstan analyse contexts/{listener_bc}/app/ contexts/{listener_bc}/src/Bundle/ --level=9",
+            "vendor/bin/ecs check contexts/{listener_bc}/app/ contexts/{listener_bc}/src/Bundle/",
             "bin/console debug:messenger"
           ]</param>
           <param name="context">CONTEXT string from substep 3.20.4 (purpose + deliverables)</param>

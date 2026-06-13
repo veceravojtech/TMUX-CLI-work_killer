@@ -7,10 +7,11 @@
           <input name="BC">PascalCase bounded-context name (e.g. Booking, Identity).</input>
           <input name="NAME">Controller base name — the action name or auth-flow name (e.g. CreateBooking, Login).</input>
         </inputs>
-        <produces>src/{BC}/Infrastructure/Http/Controller/{NAME}Controller.php</produces>
+        <produces>contexts/{BC}/app/src/Http/Controller/{NAME}Controller.php</produces>
         <normalization>
           <rule>Strip a trailing "Controller" from NAME before appending the "Controller.php" suffix. So NAME=Login yields LoginController.php, and a NAME that already arrives as LoginController still yields LoginController.php — never LoginControllerController.php.</rule>
-          <rule>If a candidate controller path lacks the "/Controller/" segment immediately after "Infrastructure/Http/" (e.g. a Fan-Out value or a legacy string of the form src/{BC}/Infrastructure/Http/{NAME}Controller.php), insert "/Controller/" after "Infrastructure/Http/" so it matches the canonical shape above.</rule>
+          <rule>If a candidate controller path lacks the "/Controller/" segment immediately after "app/src/Http/" (e.g. a Fan-Out value or a legacy string of the form contexts/{BC}/app/src/Http/{NAME}Controller.php), insert "/Controller/" after "app/src/Http/" so it matches the canonical shape above. A retired flat string under the old "Infrastructure/Http/Controller/" tree is rewritten onto the canonical contexts/{BC}/app/src/Http/Controller/ shape — the Infrastructure layer became the context Bundle layer, and HTTP controllers moved to the context app layer.</rule>
+          <rule>Discovery-driven override (P2 monorepo): when api-endpoints discovery routes an action to a specific deployable-app Module rather than a context (a thin REST controller composed at the project root), the resolved path is projects/{app}/src/{Module}/{NAME}Controller.php instead. This deployable-app form is documented ONLY here (the discovery override); the &lt;produces&gt; line above stays the single canonical default that the 2-arg resolver returns when no Module discovery applies.</rule>
         </normalization>
         <result>The canonical controller path. The produces line above is the ONLY place the full canonical shape is stated; every controller reference elsewhere uses RESOLVE_CONTROLLER_PATH(BC, NAME).</result>
       </resolver>

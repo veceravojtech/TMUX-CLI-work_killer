@@ -16,7 +16,9 @@ import (
 
 // canonicalControllerLiteral is the full canonical controller-path shape. It is
 // the single source of truth and must appear in exactly one place in the XML.
-const canonicalControllerLiteral = "src/{BC}/Infrastructure/Http/Controller/{NAME}Controller.php"
+// P2 monorepo: controllers live in the context app (framework) layer, never the
+// retired flat Infrastructure/ tree.
+const canonicalControllerLiteral = "contexts/{BC}/app/src/Http/Controller/{NAME}Controller.php"
 
 func readApiEndpointsTemplate(t *testing.T) string {
 	t.Helper()
@@ -65,8 +67,8 @@ func TestTaskPlanGenerate_CanonicalShapeIsControllerSubdir(t *testing.T) {
 	produced := sliceBetween(t, resolver, "<produces>", "</produces>")
 	assert.Equal(t, canonicalControllerLiteral, strings.TrimSpace(produced),
 		"the resolver must produce the canonical /Controller/ subdir shape")
-	assert.Contains(t, produced, "Infrastructure/Http/Controller/",
-		"the canonical shape must place the controller under the Http/Controller/ subdir")
+	assert.Contains(t, produced, "app/src/Http/Controller/",
+		"the canonical shape must place the controller under the context app Http/Controller/ subdir")
 }
 
 func TestApiEndpointsTemplate_FanOutControllerShape(t *testing.T) {
@@ -74,8 +76,8 @@ func TestApiEndpointsTemplate_FanOutControllerShape(t *testing.T) {
 	require.Contains(t, content, "- Controller:",
 		"the Fan-Out line must be labelled 'Controller'")
 	line := sliceBetween(t, content, "- Controller:", "\n")
-	assert.Contains(t, line, "Infrastructure/Http/Controller/",
-		"the Fan-Out Controller line must document the canonical /Controller/ subdir shape")
+	assert.Contains(t, line, "app/src/Http/Controller/",
+		"the Fan-Out Controller line must document the canonical context-app /Controller/ subdir shape")
 	assert.Contains(t, line, "Controller.php",
 		"the Fan-Out Controller line must document the {action_name}Controller.php suffix")
 }
