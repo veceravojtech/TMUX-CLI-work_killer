@@ -7,7 +7,14 @@ import (
 )
 
 var gitExcludeEntries = []string{
-	"/.tmux-cli/",
+	// Exclude .tmux-cli as a NAME (no trailing slash) so the pattern matches BOTH
+	// the real control-plane directory AND the per-goal worktree's .tmux-cli
+	// back-symlink (git mode 120000). A directory-only "/.tmux-cli/" let that
+	// back-symlink slip past `git add -A` in a parallel-mode worktree, get
+	// committed, and fast-forward-merge into base — which replaced base's real
+	// .tmux-cli directory with a self-referential symlink (ELOOP) and destroyed
+	// the control plane. See taskvisor.symlinkControlPlane / mergeWorktreeBack.
+	"/.tmux-cli",
 	"/.tmux-cli-worktrees/",
 	"/.tmux-cli/logs/",
 	"/.claude/settings.json",

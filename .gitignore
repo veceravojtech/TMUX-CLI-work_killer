@@ -66,8 +66,12 @@ _bmad-output/implementation-artifacts/*
 .tmux-session
 /tmux-cli
 
-# tmux-cli runtime control plane (goals, worktrees, logs, signals) — never commit
-.tmux-cli/
+# tmux-cli runtime control plane (goals, worktrees, logs, signals) — never commit.
+# No trailing slash: the pattern must ALSO match the per-worktree .tmux-cli
+# back-symlink (a file, not a directory) so `git add -A` in a parallel-mode
+# worktree can never stage it, commit it, and ff-merge an ELOOP into base.
+.tmux-cli
+.tmux-cli-worktrees/
 /_bmad/
 /_bmad/*
 /_bmad-output/

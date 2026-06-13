@@ -11,7 +11,7 @@ import (
 )
 
 var managedEntries = []string{
-	"/.tmux-cli/",
+	"/.tmux-cli",
 	"/.tmux-cli-worktrees/",
 	"/.tmux-cli/logs/",
 	"/.claude/settings.json",
@@ -84,7 +84,7 @@ func TestEnsureGitExclude_NoGitDir(t *testing.T) {
 
 func TestEnsureGitExclude_PartialEntries(t *testing.T) {
 	root := setupGitInfo(t)
-	partial := "# tmux-cli managed\n/.tmux-cli/\n"
+	partial := "# tmux-cli managed\n/.tmux-cli\n"
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, ".git", "info", "exclude"),
 		[]byte(partial), 0o644,
@@ -93,7 +93,7 @@ func TestEnsureGitExclude_PartialEntries(t *testing.T) {
 	require.NoError(t, EnsureGitExclude(root))
 
 	content := readExclude(t, root)
-	assert.Equal(t, 1, strings.Count(content, "/.tmux-cli/\n"),
+	assert.Equal(t, 1, strings.Count(content, "/.tmux-cli\n"),
 		"should not duplicate existing entry")
 	assert.Contains(t, content, "/.claude/settings.json")
 	assert.Contains(t, content, "/.claude/commands/tmux/")
@@ -121,4 +121,26 @@ func TestEnsureGitExclude_CreatesExcludeFile(t *testing.T) {
 	for _, entry := range managedEntries {
 		assert.Contains(t, content, entry)
 	}
+}
+
+// TestEnsureGitExclude_TmuxCliMatchesSymlink is the unit guard for the
+// parallel-mode ELOOP regression: the .tmux-cli exclude must be a NAME
+// ("/.tmux-cli"), never directory-only ("/.tmux-cli/"). A trailing slash matches
+// only a directory, so the per-goal worktree's .tmux-cli back-symlink (a file)
+// slips past `git add -A`, gets committed, and ff-merges into base — replacing
+// base's real control-plane directory with a self-referential symlink (ELOOP).
+func TestEnsureGitExclude_TmuxCliMatchesSymlink(t *testing.T) {
+	root := setupGitInfo(t)
+	require.NoError(t, EnsureGitExclude(root))
+
+	hasNameEntry := false
+	for _, l := range strings.Split(readExclude(t, root), "\n") {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "/.tmux-cli" {
+			hasNameEntry = true
+		}
+		assert.NotEqual(t, "/.tmux-cli/", trimmed,
+			"directory-only /.tmux-cli/ reintroduces the parallel-mode ELOOP — use /.tmux-cli")
+	}
+	assert.True(t, hasNameEntry, "managed excludes must contain the name entry /.tmux-cli")
 }

@@ -255,8 +255,12 @@ func (d *Daemon) ensureWorktree(goal *Goal, parallel bool) (string, error) {
 
 // symlinkControlPlane points <worktree>/.tmux-cli at <base>/.tmux-cli so worker
 // reports/signals written relative to the worktree cwd resolve into the single
-// shared control plane. The base .tmux-cli dir is git-excluded, so the symlink is
-// never tracked/committed into the worktree branch.
+// shared control plane. This back-symlink must NEVER be committed: the exclude
+// entry "/.tmux-cli" (name, not the old directory-only "/.tmux-cli/") matches the
+// symlink so `git add -A` skips it, AND mergeWorktreeBack drops it from the index
+// with `git rm --cached --ignore-unmatch` as a belt-and-suspenders guard. If it
+// were committed, the ff-merge into base would replace base's real .tmux-cli
+// directory with a self-referential symlink (ELOOP) and destroy the control plane.
 func (d *Daemon) symlinkControlPlane(wtPath string) error {
 	baseCtl := filepath.Join(d.workDir, ".tmux-cli")
 	wtCtl := filepath.Join(wtPath, ".tmux-cli")
@@ -360,11 +364,28 @@ func (d *Daemon) mergeWorktreeBack(goal *Goal) error {
 		defer cancel()
 		run := d.gitRunner()
 
-		// Stage every tracked change the implementer made (no worker commits today).
+		// Stage every implementer change. The .tmux-cli back-symlink (a symlink into
+		// the shared base control plane; see symlinkControlPlane) is excluded by NAME
+		// in both .gitignore and .git/info/exclude, so `git add -A` skips it silently.
+		// If it were committed, fast-forwarding base would replace base's real
+		// .tmux-cli directory with a self-referential symlink and ELOOP the whole
+		// control plane.
 		if _, se, code, err := run(ctx, "-C", wt, "add", "-A"); err != nil {
 			return fmt.Errorf("git -C %s add -A: %w", wt, err)
 		} else if code != 0 {
 			return fmt.Errorf("git -C %s add -A failed (exit %d): %s", wt, code, strings.TrimSpace(se))
+		}
+
+		// Defense in depth at the merge seam: guarantee the control-plane back-symlink
+		// is never in the commit even if an ignore rule regresses or a prior corruption
+		// left .tmux-cli tracked in base. `rm --cached --ignore-unmatch` only edits the
+		// index (never the working-tree symlink) and exits 0 whether or not .tmux-cli
+		// is present — so it is a no-op normally and quietly untracks (self-heals) a
+		// stale entry, never propagating an ELOOP through the ff-merge.
+		if _, se, code, err := run(ctx, "-C", wt, "rm", "--cached", "--ignore-unmatch", "--", ".tmux-cli"); err != nil {
+			return fmt.Errorf("git -C %s rm --cached .tmux-cli: %w", wt, err)
+		} else if code != 0 {
+			return fmt.Errorf("git -C %s rm --cached .tmux-cli failed (exit %d): %s", wt, code, strings.TrimSpace(se))
 		}
 
 		// Commit only when something is staged (empty diff ⇒ skip the commit).
