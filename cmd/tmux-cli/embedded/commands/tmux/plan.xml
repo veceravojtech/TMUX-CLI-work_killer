@@ -626,7 +626,9 @@ Run `/tmux:supervisor` to execute the plan.
         <action>Retry the sub-agent ONCE with the same prompt. If the retry fails the same way, log "Audit sub-agent failed twice — accepting plan without audit (fail-open)" and treat as audit-pass.</action>
       </check>
       <branch condition="verdict is AUDIT:PASS (or fail-open after two sub-agent failures)">
-        <action>Audit passed. Write .tmux-cli/audit-done guard file. Proceed to step 11c.</action>
+        <action>Audit passed.</action>
+        <action condition="GOAL_MODE is false">Write .tmux-cli/audit-done guard file (standalone only — in goal mode SKIP the write: the consuming Stop hooks gate on the bare "supervisor" window name and never fire for supervisor-{ns} windows, so a goal-mode guard would linger unconsumed and suppress a later standalone cycle's hook).</action>
+        <action>Proceed to step 11c.</action>
       </branch>
       <branch condition="verdict is AUDIT:FAIL with an existing file= path">
         <action>Audit failed (pass AUDIT_PASS). Store AUDIT_FAIL_FILE = the file= path from the verdict line. Proceed to step 11b.</action>
@@ -651,10 +653,10 @@ Run `/tmux:supervisor` to execute the plan.
     </step>
 
     <step n="11c" title="Auto-execute handoff">
-      <action>Write .tmux-cli/audit-done guard file (idempotent — may already exist from step 11a pass).</action>
+      <action condition="GOAL_MODE is false">Write .tmux-cli/audit-done guard file (idempotent — may already exist from step 11a pass; standalone only — in goal mode skip the write, no Stop hook consumes guards for supervisor-{ns} windows).</action>
       <check condition="AUTO_EXECUTE is true">
         <action>Auto-execute mode enabled (plan.auto_execute=true in setting.yaml). Invoking supervisor automatically.</action>
-        <action>Write guard file .tmux-cli/auto-execute-guard (prevents the Stop hook from also restarting the supervisor — without this, both auto-execute AND the Stop hook would send /tmux:supervisor, causing a double invocation).</action>
+        <action condition="GOAL_MODE is false">Write guard file .tmux-cli/auto-execute-guard (prevents the standalone Stop hook from also restarting the supervisor — without this, both auto-execute AND the Stop hook would send /tmux:supervisor, causing a double invocation; in goal mode skip — the cycle hook exits for supervisor-{ns} windows, so there is no double-invocation risk and the guard would only leak).</action>
         <action>Send /clear to PLAN_WID via windows-send.</action>
         <action condition="GOAL_MODE is true">Send `/tmux:supervisor {GOAL_ID}` to PLAN_WID via windows-send — {GOAL_ID} already carries the goal- prefix (e.g. goal-046), so this expands to `/tmux:supervisor goal-046`. Ship the goal id (resolved in step 0b) as a leading token so the fresh supervisor binds to THIS goal authoritatively (its step 0b consumes the goal-{ns} argument) and never re-derives it from the last-writer-wins global .tmux-cli/taskvisor-current-goal marker.</action>
         <action condition="GOAL_MODE is false">Send `/tmux:supervisor .tmux-cli/tasks.yaml` to PLAN_WID via windows-send (standalone — no goal id to ship).</action>
