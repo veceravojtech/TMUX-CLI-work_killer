@@ -109,6 +109,7 @@ DELIVERABLE (write these sections INSIDE the spec .md; do NOT paste them into tm
 - ## Test Plan: Specific unit test cases with expected behavior (not just "write tests"). Integration test scenarios describing what to test against real services/hardware. If an I/O Matrix is present, include test cases covering its edge cases.
 - ## Acceptance Criteria: Given/When/Then format. Each criterion must be independently testable AND checkbox-formatted:
   - [ ] Given PRECONDITION, when ACTION, then EXPECTED_RESULT
+- ## Code Rules (present ONLY when the goal carries code rules — the supervisor passes a CODE_RULES: block / codeRules param; OMIT the whole section when the goal carries none, do NOT write "N/A"): for each `must` rule a `- CR-&lt;id&gt;: &lt;how this design satisfies the rule&gt;` line with NON-EMPTY satisfaction prose; for each `should` rule a `- &lt;id&gt;: apply | skip — &lt;reason&gt;` line. CR- prefix = must; plain id = should.
 - ## Design Notes (optional — DELETE entirely if the approach is straightforward, do NOT write "N/A"):
   Architectural rationale and golden examples only when non-obvious. Keep examples to 5–10 lines.
 - ## Implementation Notes: Tricky parts, gotchas, edge cases, performance considerations. Do NOT mix design rationale here — that belongs in Design Notes.
@@ -122,6 +123,7 @@ Verify the spec against the Ready for Development standard:
 - Testable: all Acceptance Criteria use Given/When/Then format
 - Complete: no placeholders, no TBDs, no "to be determined", no empty sections (except optional ones marked DELETE)
 - Preservation-safe: every MODIFIED file in Code Map has CURRENT/CHANGE/PRESERVE annotations
+- Code-Rules: when the goal carries `must` rules, the `## Code Rules` section is present and every must rule has a non-empty `CR-&lt;id&gt;:` line.
 If any criterion fails, fix before submitting DONE.
 
 EXPLORATION:
@@ -334,8 +336,9 @@ tasks:
       <branch condition="exactly ONE task is pending">
         <action>SELF_SPEC mode — do NOT spawn a worker. A spec worker would re-load the exact context this supervisor already holds (the plan, the module scope, the source files); for one module the spawn/route/kill cycle buys zero parallelism and no extra context capacity — one agent's context is enough. Set internal flag SELF_SPEC=true. Log: "Dispatch gate: 1 pending task — self-speccing inline (no worker spawn)".</action>
         <action title="solo-lane gate (LANE GATE G1–G5)">Apply the LANE GATE by REFERENCE: evaluate the canonical `solo-lane` block — &lt;lane-gate name="solo-lane"&gt; in .claude/commands/tmux/task-list.xml (tracked source: cmd/tmux-cli/embedded/commands/tmux/task-list.xml) — against this single pending task. Its G1–G5 criteria and plan-3d evaluation sources live ONLY in that block; NEVER restate them here. Standalone mode (GOAL_MODE=false — no goal.md / goals.yaml entry): the gate fails closed to full and NO lane key is ever written. Log the per-criterion verdict line. When G1–G4 all pass but the demotion veto fires, log it distinctly — `lane gate: G1–G4 pass but VETOED — prior G5 demotion → full` — and treat the verdict as NOT solo (the existing write rules below then apply unchanged). Verdict solo → write top-level `lane: solo` to tasks-path. Verdict NOT solo AND goal.md `## Lane` == solo (a stale inherited solo this run does not affirm) → write explicit top-level `lane: full` to tasks-path — the demotion override for the downstream lane-resolution fallback (tasks.yaml lane → goal.md → full), and the ONLY case where `lane: full` is ever written. Otherwise write NOTHING (absent lane = full).</action>
+        <action>Before writing the spec, run `tmux-cli rules match` for this task's footprint (same invocation as step 4 — `--files &lt;footprint&gt; --phase &lt;goal phase&gt;`, `--phase` omitted in standalone), read the payload inline, and persist it under a `### &lt;task wid/slug&gt;` heading to {research-root}/code-rules.md. Write the `## Code Rules` section of your spec yourself from that payload — you run the match; never glob-match rules by hand (Go owns WHICH rules apply).</action>
         <action>Write the spec yourself, exactly as a worker would: read the task's research-task context file and the source files it lists (isolate deep codebase exploration in sub-agents per the EXPLORATION guidance in &lt;spec-deliverable-template&gt; — distilled summaries only), then produce {research-root}/execute-{N}-{slug}.md — {N} from the task's wid, {slug} from its context filename — containing every mandatory section of &lt;spec-deliverable-template&gt;. Run the template's SELF-REVIEW before submitting your own spec to validation.</action>
-        <action>Validate your own spec through the SAME gates a worker faces: call spec-validate MCP tool on the file, then manually check S5/S6/S9 (definitions in step 6). On any failure, revise the spec and record the round in ## Spec Change Log (gap cited, what changed, KEEP instructions). Cap: 3 self-revision rounds — after the 3rd, accept as-is and log the unresolved gap(s) for the step 9 summary, mirroring the worker pushback cap.</action>
+        <action>Validate your own spec through the SAME gates a worker faces: call spec-validate MCP tool on the file, then manually check S5/S6/S9 (and S10 when the goal carries `must` rules) — definitions in step 6. On any failure, revise the spec and record the round in ## Spec Change Log (gap cited, what changed, KEEP instructions). Cap: 3 self-revision rounds — after the 3rd, accept as-is and log the unresolved gap(s) for the step 9 summary, mirroring the worker pushback cap.</action>
         <action>On acceptance: mark the task status=done in tasks-path and update its context field to the spec file path (same mechanics as a step 3c cache hit). Proceed directly to step 8b (coverage verification) — steps 4–7 are skipped entirely.</action>
         <rule critical="true">SELF_SPEC forces the blind audit: step 11a runs even when plan.audit=false. With author == verifier, the audit sub-agent is the only independent review of the spec — skipping it would leave the plan with no external gate at all.</rule>
       </branch>
@@ -348,6 +351,7 @@ tasks:
     </step>
 
     <step n="4" title="Spawn spec workers (sequentially within your turn)">
+      <action>BEFORE the spawn loop, for each pending task run `tmux-cli rules match --files &lt;the task's declared file footprint, comma-separated&gt; --phase &lt;goal phase from goal.md/goals.yaml; omit --phase in standalone mode&gt;` (the task footprint = the source-file list in the task's research-task context file — the spec is not written yet at dispatch). Capture the rendered payload to pass via the new `codeRules` spawn param (empty string when no rule matches), and append it under a `### &lt;task wid/slug&gt;` heading to {research-root}/code-rules.md — the deterministic, read-only artifact the step 11a blind audit reads. Only the supervisor runs `rules match`; never instruct the worker to glob-match rules itself (Go owns WHICH rules apply; the worker owns the satisfaction prose).</action>
       <action>For each pending task in tasks.yaml, call windows-spawn-worker with:</action>
       <params>
         - supervisorWid: your PLAN_WID name
@@ -356,6 +360,7 @@ tasks:
         - scope: derived from the context .md file (read it and summarize key scope points)
         - context: derived from the context .md file (dependencies, constraints, prior findings)
         - deliverable: custom spec format from &lt;spec-deliverable-template&gt;
+        - codeRules: rendered `tmux-cli rules match` payload for this task footprint (empty when none match)
       </params>
       <action>The tool atomically: picks the next execute-N name, creates the window, sends /tmux:execute, assembles and sends the task message with the custom DELIVERABLE + RESPONSE PROTOCOL.</action>
       <action>Record from the response: workerName, window.tmuxWindowId, taskMessage (for tracking).</action>
@@ -403,9 +408,10 @@ tasks:
       <gap id="S6">I/O Matrix missing when module has meaningful interfaces (APIs, CLI commands, message protocols, file formats) — if module has no I/O interfaces, this gap does not apply</gap>
       <gap id="S9">Modified files in Code Map lack current-state annotations (CURRENT/CHANGE/PRESERVE) — implementation worker needs to know what exists before changing it</gap>
       <note>ID collision: spec-validate can ALSO emit an "S9" gap, but with a different meaning — subjective validation gates (gate objectivity, fires only on Validation Rules / Investigation Config sections, which worker tech-specs lack). If the tool ever returns S9, push back using the tool's message text, not the manual S9 definition above.</note>
+      <gap id="S10">Code-Rules coverage. spec-validate emits S10 when a PRESENT `## Code Rules` section has any `- CR-&lt;id&gt;:` line with empty satisfaction text (ships behind a server restart — companion module). The PLANNER makes it BINDING and additionally catches the missing-section case the tool cannot: cross-check the `must` rule IDs from THIS supervisor's `rules match` payload against the spec's `## Code Rules` `CR-&lt;id&gt;` lines. If the goal carries `must` rules and the section is ABSENT, or any matched `must` rule has no line or an empty satisfaction line, HARD-push back [EXECUTE:PUSHBACK n=&lt;k&gt; gap=S10]. Distinct from the existing S9 (subjective-gate objectivity).</gap>
       <rule>Pushback at most 3x per worker. Each pushback MUST cite exactly one gap.</rule>
-      <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S0..S9&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
-      <check condition="spec-validate returns valid=true AND S5/S6/S9 manual checks pass">
+      <action>Pushback format: windows-message to that wid with [EXECUTE:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;S0..S10&gt;]\n&lt;one-sentence specific ask tied to the gap&gt;\nUpdate the same .md file, then re-tag [EXECUTE:DONE file=&lt;same-path&gt;].</action>
+      <check condition="spec-validate returns valid=true AND S5/S6/S9/S10 manual checks pass">
         <action>Accept. Proceed to step 7.</action>
       </check>
       <check condition="3 pushbacks already sent to this worker">
@@ -610,12 +616,13 @@ Run `/tmux:supervisor` to execute the plan.
         <action>Compose the sub-agent prompt exactly as specified below with ONE substitution: keep the "Daemon's-eye validate evaluation" bullet verbatim and extend it with the explicit non-vacuity instruction — "a validate command that already passes at baseline (e.g. grepping a token that exists before the change) is a finding" — and score against ONLY dimensions (1) validate-executability and (2) dependency-correctness, dropping dimensions 3–8 from the prompt. Everything else is UNCHANGED: the severity-weighted scoring formula, the PASS rule (score &gt;= 90 AND zero open SEV-1/SEV-2), the never-weaken guardrail, blind isolation, the one-file write, and the verdict-line contract.</action>
       </branch>
       <branch condition="lane key absent or any value other than solo">
-        <action>Compose the full 8-dimension prompt below unchanged — byte-identical to a plan with no lane key.</action>
+        <action>Compose the full 9-dimension prompt below unchanged — byte-identical to a plan with no lane key.</action>
       </branch>
       <action>Run the audit as ONE serial Claude-native sub-agent via the Agent tool. Do NOT create a tmux window, do NOT use windows-send or windows-message — the sub-agent runs in-process and returns its result synchronously. It starts with a FRESH context containing none of this planning conversation; that isolation is what makes the audit blind. Compose a fully self-contained prompt instructing it to:
         - Read ONLY on-disk artifacts, scoped to THIS plan: .tmux-cli/goals/{GOAL_ID}/goal.md and this goal's entry in goals.yaml (GOAL_MODE only), tasks-path, every spec and context file in {research-root}, prior findings files {VERDICT_DIR}/plan-audit-*.md (present on pass 2+), and AGENTS.md or CLAUDE.md for project conventions. It must never see planner conversation state.
+        - ALSO read the goal's matched code-rules payload at {research-root}/code-rules.md (per-task rule id/severity/catalogue paths) and each task spec's `## Code Rules` section — the deterministic inputs for dimension (9); never run rule-matching itself (Go owns WHICH rules apply).
         - Daemon's-eye validate evaluation: every validate command is concrete and runnable, a bare command (no shell wrappers or chains), and depends_on edges are valid — no cycles, no dangling references.
-        - Score against the 8-dimension checklist — exactly these, no inventions: (1) validate-executability, (2) dependency-correctness, (3) runtime-state-gating, (4) host-container-split, (5) objective-acceptance, (6) spec-discovery-consistency, (7) environment-prerequisites, (8) scope-sanity.
+        - Score against the 9-dimension checklist (1)..(9) — exactly these, no inventions: (1) validate-executability, (2) dependency-correctness, (3) runtime-state-gating, (4) host-container-split, (5) objective-acceptance, (6) spec-discovery-consistency, (7) environment-prerequisites, (8) scope-sanity, (9) rule-coverage (does every task whose file footprint matches a `must` rule cite it with a non-empty `- CR-&lt;id&gt;:` line, and does that line plausibly satisfy the rule?).
         - Severity-weighted scoring: start at 100; deduct SEV-1 −25 (blocks execution or produces wrong results), SEV-2 −15 (retry loops, cascading failures, silent corruption), SEV-3 −8 (unclear spec likely to waste retries), SEV-4 −3 (style/convention violation); floor at 0. PASS requires score >= 90 AND zero open SEV-1/SEV-2 findings.
         - Guardrail: reach 90% by fixing the plan, never by weakening validate/acceptance — the auditor reports defects; it must never water down validate commands or acceptance criteria to lift the score.
         - On pass 2+: re-verify every RESOLVED claim from prior findings files against the current artifacts BEFORE scoring; a regressed RESOLVED re-opens at its original severity.

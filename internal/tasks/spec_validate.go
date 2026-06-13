@@ -42,6 +42,13 @@ var (
 	// 80%") is objective and is left to the caller's anchor (the % / digit).
 	subjectiveGateRe = regexp.MustCompile(`(?i)\b(appropriate(ly)?|properly|sufficient(ly)?|adequate(ly)?|reasonabl[ey]|demonstrabl[ey]|as needed|where applicable)\b`)
 	coverageClauseRe = regexp.MustCompile(`(?i)(with\s+[\w/ ,.-]*\bcoverage\b|missing[\w/ ,.-]*\bcoverage\b|\btests?\s+coverage\b|\bcoverage\s+of\b|\bcovers?\s+(creation|mutation|invariant|event|the|all|each|every))`)
+
+	// S10 Code Rules satisfaction. A `## Code Rules` section lists matched rules:
+	// `- CR-<id>: <satisfaction>` is a `must` rule whose satisfaction line states
+	// how the spec honors it; `- <id>: ...` (no CR- prefix) is a `should` rule and
+	// is NOT subject to the emptiness check. crLineRe matches only the CR- form,
+	// capturing the id (group 1) and the trailing satisfaction text (group 2).
+	crLineRe = regexp.MustCompile(`(?m)^\s*-\s*CR-([\w.-]+):[ \t]*(.*)$`)
 )
 
 func ValidateSpecFile(path string) (*SpecValidationResult, error) {
@@ -63,6 +70,7 @@ func ValidateSpecFile(path string) (*SpecValidationResult, error) {
 	checkBoundaries(sections, result)
 	checkRFD(content, result)
 	checkGateObjectivity(sections, result)
+	checkCodeRules(sections, result)
 
 	result.Valid = len(result.Gaps) == 0
 	return result, nil
@@ -263,6 +271,37 @@ func checkGateObjectivity(sections map[string]string, result *SpecValidationResu
 		Message: fmt.Sprintf(
 			"Validation Rules / Investigation Config contain %d subjective gate(s) with no objective anchor — e.g. %q. A gate must be decidable from exit status, a numeric threshold, or a presence-grep (GM-09b); decompose coverage-style criteria into greppable checks.",
 			len(offenders), string(snippet),
+		),
+	})
+}
+
+// checkCodeRules flags an unsatisfied `must` rule (S10). A spec's `## Code Rules`
+// section lists the rules matched for the goal; each `- CR-<id>:` line MUST carry
+// a non-empty satisfaction statement saying how the spec honors that `must` rule.
+// A blank satisfaction line means the rule is declared but not addressed, so the
+// implementer has no objective contract to meet. This is a policy-free structural
+// check: it never parses rule YAML and never special-cases Valid (the existing
+// `Valid = len(Gaps)==0` aggregation flips it for free). Absent section → no gap;
+// `should` rules (plain `- <id>:`, no CR- prefix) are excluded by crLineRe.
+func checkCodeRules(sections map[string]string, result *SpecValidationResult) {
+	body, ok := sections["Code Rules"]
+	if !ok {
+		return
+	}
+	var offenders []string
+	for _, m := range crLineRe.FindAllStringSubmatch(body, -1) {
+		if strings.TrimSpace(m[2]) == "" {
+			offenders = append(offenders, "CR-"+m[1])
+		}
+	}
+	if len(offenders) == 0 {
+		return
+	}
+	result.Gaps = append(result.Gaps, SpecGap{
+		ID: "S10",
+		Message: fmt.Sprintf(
+			"Code Rules section declares %s with no satisfaction line — every `- CR-<id>:` must state how the spec honors that must-rule.",
+			strings.Join(offenders, ", "),
 		),
 	})
 }

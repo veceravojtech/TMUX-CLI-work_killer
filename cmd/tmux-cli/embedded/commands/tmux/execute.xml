@@ -26,6 +26,7 @@
       <action>Check if AGENTS.md exists in the project root. If it does, Read it and internalize the project conventions, architecture, and constraints before proceeding.</action>
       <action>If AGENTS.md does not exist, check for CLAUDE.md instead. Read whichever is found first.</action>
       <action>If neither exists, proceed without project context.</action>
+      <action>If the task message (a `CODE_RULES:` block) or the spec (a `## Code Rules` section) cites Code Rules, Read every cited rule file before writing code. `must` rules are binding; deviating from a `should` rule requires a one-line justification in the completion report (§8.2 — no waivers file).</action>
       <rule>This context MUST inform your implementation decisions, code style, testing approach, and all work within SCOPE.</rule>
     </step>
 
@@ -77,6 +78,7 @@ WHY: &lt;one line&gt;
 
     <step n="5" title="Report completion">
       <action>Save a full report to the path specified in RESPONSE PROTOCOL</action>
+      <rule>The saved report MAY include an optional `RULES:` line summarizing `must`-rule adherence and any `should` apply/skip + justification (§8.2 — no waivers file). The tmux message stays DONE-tag-only — the `RULES:` line lives in the report file, never inline in the windows-message.</rule>
       <action>windows-message to SUPERVISOR_WID with ONLY the DONE tag and file path:</action>
       <template>
 [EXECUTE:DONE wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt; file=&lt;abs-path-to-report&gt;]

@@ -489,7 +489,7 @@ func TestNextExecuteN_NonNumericSuffix(t *testing.T) {
 // --- buildTaskMessage tests ---
 
 func TestBuildTaskMessage_AllFields(t *testing.T) {
-	msg := buildTaskMessage("supervisor", "execute-3", "audit auth module", ".tmux-cli/research/2026-05-11-22/task-auth.md", "Check all auth endpoints", "Prior audit found XSS in login", ".tmux-cli/research/2026-05-11-22", "")
+	msg := buildTaskMessage("supervisor", "execute-3", "audit auth module", ".tmux-cli/research/2026-05-11-22/task-auth.md", "Check all auth endpoints", "Prior audit found XSS in login", ".tmux-cli/research/2026-05-11-22", "", "")
 
 	assert.Contains(t, msg, "SUPERVISOR_WID=supervisor")
 	assert.Contains(t, msg, "SELF_WID=execute-3")
@@ -505,19 +505,19 @@ func TestBuildTaskMessage_AllFields(t *testing.T) {
 }
 
 func TestBuildTaskMessage_EmptyContext(t *testing.T) {
-	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-05-11-22", "")
+	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-05-11-22", "", "")
 
 	assert.Contains(t, msg, "CONTEXT:\n(none)")
 }
 
 func TestBuildTaskMessage_ResearchDir(t *testing.T) {
-	msg := buildTaskMessage("supervisor", "execute-5", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-01-15-09", "")
+	msg := buildTaskMessage("supervisor", "execute-5", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-01-15-09", "", "")
 
 	assert.Contains(t, msg, ".tmux-cli/research/2026-01-15-09/execute-5-<slug>.md")
 }
 
 func TestBuildTaskMessage_DefaultDeliverable(t *testing.T) {
-	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-05-11-23", "")
+	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-05-11-23", "", "")
 
 	assert.Contains(t, msg, "FINDINGS")
 	assert.Contains(t, msg, "RISKS")
@@ -528,7 +528,7 @@ func TestBuildTaskMessage_DefaultDeliverable(t *testing.T) {
 
 func TestBuildTaskMessage_CustomDeliverable(t *testing.T) {
 	custom := "- SPEC: structured specification with sections\n- DESIGN: architecture decisions\n- TESTS: test plan"
-	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-05-11-23", custom)
+	msg := buildTaskMessage("supervisor", "execute-1", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-05-11-23", custom, "")
 
 	assert.Contains(t, msg, "DELIVERABLE")
 	assert.Contains(t, msg, custom)
@@ -538,11 +538,11 @@ func TestBuildTaskMessage_CustomDeliverable(t *testing.T) {
 }
 
 func TestBuildTaskMessage_GoalScopedSavePath(t *testing.T) {
-	goalMsg := buildTaskMessage("supervisor", "execute-2", "task", "ctx.md", "scope", "", ".tmux-cli/goals/goal-007/research", "")
+	goalMsg := buildTaskMessage("supervisor", "execute-2", "task", "ctx.md", "scope", "", ".tmux-cli/goals/goal-007/research", "", "")
 	assert.Contains(t, goalMsg, ".tmux-cli/goals/goal-007/research/execute-2-<slug>.md")
 	assert.NotContains(t, goalMsg, ".tmux-cli/research/")
 
-	standaloneMsg := buildTaskMessage("supervisor", "execute-2", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-06-01-14", "")
+	standaloneMsg := buildTaskMessage("supervisor", "execute-2", "task", "ctx.md", "scope", "", ".tmux-cli/research/2026-06-01-14", "", "")
 	assert.Contains(t, standaloneMsg, ".tmux-cli/research/2026-06-01-14/execute-2-<slug>.md")
 }
 
@@ -1166,7 +1166,7 @@ func TestServer_WindowsSpawnWorker_Success(t *testing.T) {
 	})).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	window, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "prior findings", "", "", "")
+	window, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "prior findings", "", "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-1", workerName)
@@ -1215,7 +1215,7 @@ func TestWindowsSpawnWorker_SelfIdentifiesSupervisorFromUUID(t *testing.T) {
 
 	server := newTestServer(mockExec, "/test/dir")
 	// Caller passes the WRONG name ("supervisor"); the real window is supervisor-045.
-	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "", "")
 
 	require.NoError(t, err)
 	assert.Contains(t, taskMessage, "SUPERVISOR_WID=supervisor-045\n",
@@ -1264,7 +1264,7 @@ func TestWindowsSpawnWorker_MaxWorkersIsPerSupervisor(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@9", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, root)
-	_, workerName, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "")
+	_, workerName, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "", "")
 
 	require.NoError(t, err, "sibling goal's workers must not consume this supervisor's budget")
 	assert.Equal(t, "execute-045-1", workerName)
@@ -1294,7 +1294,7 @@ func TestWindowsSpawnWorker_WorkingDirectory_ThreadsToCreateWindow(t *testing.T)
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, name, _, err := server.WindowsSpawnWorker("validator", "Investigate: tests", "goal.md", "run tests", "", "", "investigator-", wt)
+	_, name, _, err := server.WindowsSpawnWorker("validator", "Investigate: tests", "goal.md", "run tests", "", "", "investigator-", wt, "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "investigator-1", name)
@@ -1324,7 +1324,7 @@ func TestWindowsSpawnWorker_EmptyWorkingDirectory_UsesSessionDefault(t *testing.
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "")
+	_, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-1", name)
@@ -1334,28 +1334,28 @@ func TestWindowsSpawnWorker_EmptyWorkingDirectory_UsesSessionDefault(t *testing.
 
 func TestServer_WindowsSpawnWorker_EmptySupervisorWid(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("", "task", "ctx.md", "scope", "", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("", "task", "ctx.md", "scope", "", "", "", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 }
 
 func TestServer_WindowsSpawnWorker_EmptySubtask(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "", "ctx.md", "scope", "", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "", "ctx.md", "scope", "", "", "", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 }
 
 func TestServer_WindowsSpawnWorker_EmptyContextFile(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "", "scope", "", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "", "scope", "", "", "", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 }
 
 func TestServer_WindowsSpawnWorker_EmptyScope(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "", "", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "", "", "", "", "", "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
 }
@@ -1384,7 +1384,7 @@ func TestServer_WindowsSpawnWorker_WithCustomDeliverable(t *testing.T) {
 	})).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "write spec", "ctx.md", "create spec", "", customDeliverable, "", "")
+	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "write spec", "ctx.md", "create spec", "", customDeliverable, "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-1", workerName)
@@ -1419,7 +1419,7 @@ func TestServer_WindowsSpawnWorker_WithoutDeliverable(t *testing.T) {
 	})).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+	_, workerName, taskMessage, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-1", workerName)
@@ -1450,7 +1450,7 @@ func TestServer_WindowsSpawnWorker_ExecuteSendFails_CleansUp(t *testing.T) {
 	mockExec.On("KillWindow", "test-session", "@1").Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "", "")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
@@ -1478,7 +1478,7 @@ func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
 	mockExec.On("KillWindow", "test-session", "@1").Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "", "")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTmuxCommandFailed)
@@ -1504,7 +1504,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersExceeded(t *testing.T) {
 	}, nil)
 
 	server := newTestServer(mockExec, root)
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "", "")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMaxWorkersExceeded)
@@ -1537,7 +1537,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersNotExceeded(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@2", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, root)
-	window, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "")
+	window, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-2", name)
@@ -1572,7 +1572,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersZeroUnlimited(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@4", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, root)
-	_, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "")
+	_, name, _, err := server.WindowsSpawnWorker("supervisor", "task", "ctx.md", "scope", "", "", "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-4", name)
@@ -1596,7 +1596,7 @@ func TestWindowsSpawnWorker_PipePaneCalledAfterCreate(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "", "")
 
 	require.NoError(t, err)
 	mockExec.AssertCalled(t, "PipePane", "test-session", "@1", "/test/dir/.tmux-cli/logs/panes/execute-1.log")
@@ -1621,7 +1621,7 @@ func TestWindowsSpawnWorker_PipePaneError_DoesNotFailSpawn(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, workerName, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+	_, workerName, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "", "")
 
 	require.NoError(t, err, "pipe-pane error must not fail spawn")
 	assert.Equal(t, "execute-1", workerName)
@@ -1648,7 +1648,7 @@ func TestWindowsSpawnWorker_PipePaneLogPath_MatchesWorkerName(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, "/test/dir")
-	_, workerName, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+	_, workerName, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "", "")
 
 	require.NoError(t, err)
 	assert.Equal(t, "execute-045-1", workerName)
@@ -1674,7 +1674,7 @@ func TestWindowsSpawnWorker_PipePaneLogDir_Created(t *testing.T) {
 	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
 
 	server := newTestServer(mockExec, root)
-	_, _, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "")
+	_, _, _, err := server.WindowsSpawnWorker("supervisor", "audit auth", "ctx.md", "check endpoints", "", "", "", "", "")
 
 	require.NoError(t, err)
 	logDir := filepath.Join(root, ".tmux-cli", "logs", "panes")

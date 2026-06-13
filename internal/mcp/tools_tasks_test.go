@@ -226,3 +226,24 @@ func TestTaskQuery_DisabledClient(t *testing.T) {
 	_, err = s.TaskClaim(context.Background(), TaskClaimInput{})
 	assert.ErrorContains(t, err, "disabled")
 }
+
+// --- buildTaskMessage CODE_RULES block (goal-028, phase 2c) -------------------
+
+func TestBuildTaskMessage_CodeRulesOmittedWhenEmpty(t *testing.T) {
+	msg := buildTaskMessage("supervisor", "execute-1", "t", "ctx.md", "scope", "", ".tmux-cli/research/x", "", "")
+	assert.NotContains(t, msg, "CODE_RULES")
+}
+
+func TestBuildTaskMessage_CodeRulesEmittedWhenPresent(t *testing.T) {
+	codeRules := "CR-no-god-objects: keep handler thin\n- secrets-in-env: apply"
+	msg := buildTaskMessage("supervisor", "execute-1", "t", "ctx.md", "scope", "", ".tmux-cli/research/x", "", codeRules)
+	assert.Contains(t, msg, "CODE_RULES:")
+	assert.Contains(t, msg, "CR-no-god-objects: keep handler thin")
+}
+
+func TestBuildTaskMessage_CodeRulesBlockPlacement(t *testing.T) {
+	codeRules := "CR-no-god-objects: keep handler thin"
+	msg := buildTaskMessage("supervisor", "execute-1", "t", "ctx.md", "scope", "", ".tmux-cli/research/x", "", codeRules)
+	assert.Less(t, strings.Index(msg, "CONTEXT:"), strings.Index(msg, "CODE_RULES:"))
+	assert.Less(t, strings.Index(msg, "CODE_RULES:"), strings.Index(msg, "DELIVERABLE"))
+}

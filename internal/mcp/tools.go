@@ -597,7 +597,7 @@ func (s *Server) readPerGoalCycleMarker(goalID string) (int, bool) {
 	return n, true
 }
 
-func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchRoot, deliverable string) string {
+func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchRoot, deliverable, codeRules string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "SUPERVISOR_WID=%s\n", supervisorWid)
 	fmt.Fprintf(&b, "SELF_WID=%s\n", workerName)
@@ -613,6 +613,11 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 		b.WriteString("(none)")
 	}
 	b.WriteString("\n")
+	if codeRules != "" {
+		b.WriteString("\nCODE_RULES:\n")
+		b.WriteString(codeRules)
+		b.WriteString("\n")
+	}
 	b.WriteString("\nDELIVERABLE (write these sections INSIDE the report .md; do NOT paste them into tmux):\n")
 	if deliverable != "" {
 		b.WriteString(deliverable)
@@ -647,7 +652,7 @@ func buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, co
 
 // WindowsSpawnWorker atomically spawns a worker: creates window, sends /tmux:execute,
 // and sends the structured task message.
-func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, context, deliverable, prefix, workingDirectory string) (*WindowInfo, string, string, error) {
+func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, context, deliverable, prefix, workingDirectory, codeRules string) (*WindowInfo, string, string, error) {
 	if prefix == "" {
 		prefix = "execute-"
 	}
@@ -748,7 +753,7 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 
 	researchRoot := s.resolveResearchRoot(supervisorWid)
 	_ = os.MkdirAll(filepath.Join(s.workingDir, researchRoot), 0o755)
-	taskMessage := buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchRoot, deliverable)
+	taskMessage := buildTaskMessage(supervisorWid, workerName, subtask, contextFile, scope, context, researchRoot, deliverable, codeRules)
 
 	err = s.executor.SendMessageWithDelay(sessionID, window.TmuxWindowID, taskMessage)
 	if err != nil {

@@ -748,3 +748,74 @@ func TestValidateSpecFile_S9_MetaReferenceNoFire(t *testing.T) {
 	assert.NotContains(t, gapIDsOf(result), "S9")
 	assert.True(t, result.Valid)
 }
+
+// --- S10 Code Rules satisfaction (goal-028, phase 2c) ------------------------
+
+func TestValidateSpecFile_S10_AbsentSectionNoGap(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSpec(t, dir, "spec.md", fullValidSpec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, gapIDsOf(result), "S10")
+	assert.True(t, result.Valid)
+}
+
+func TestValidateSpecFile_S10_EmptySatisfactionFires(t *testing.T) {
+	dir := t.TempDir()
+	spec := fullValidSpec + "\n## Code Rules\n\n- CR-no-god-objects:\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, gapIDsOf(result), "S10")
+	var msg string
+	for _, g := range result.Gaps {
+		if g.ID == "S10" {
+			msg = g.Message
+		}
+	}
+	assert.Contains(t, msg, "CR-no-god-objects")
+	assert.Contains(t, msg, "Code Rules")
+}
+
+func TestValidateSpecFile_S10_NonEmptySatisfactionNoFire(t *testing.T) {
+	dir := t.TempDir()
+	spec := fullValidSpec + "\n## Code Rules\n\n- CR-no-god-objects: handler stays <200 lines, logic in service.\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, gapIDsOf(result), "S10")
+	assert.True(t, result.Valid)
+}
+
+func TestValidateSpecFile_S10_ShouldRuleIgnored(t *testing.T) {
+	dir := t.TempDir()
+	spec := fullValidSpec + "\n## Code Rules\n\n- prefer-value-objects: apply — domain type chosen\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, gapIDsOf(result), "S10")
+}
+
+func TestValidateSpecFile_S10_MixedFiresOnEmptyOnly(t *testing.T) {
+	dir := t.TempDir()
+	spec := fullValidSpec + "\n## Code Rules\n\n" +
+		"- CR-no-god-objects: handler stays <200 lines\n" +
+		"- CR-no-mixed-concerns:\n"
+	path := writeSpec(t, dir, "spec.md", spec)
+
+	result, err := ValidateSpecFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, gapIDsOf(result), "S10")
+	var msg string
+	for _, g := range result.Gaps {
+		if g.ID == "S10" {
+			msg = g.Message
+		}
+	}
+	assert.Contains(t, msg, "CR-no-mixed-concerns")
+	assert.NotContains(t, msg, "CR-no-god-objects")
+}

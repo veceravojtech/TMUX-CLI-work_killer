@@ -214,6 +214,7 @@ type WindowsSpawnWorkerInput struct {
 	Scope            string `json:"scope" jsonschema:"Multi-line scope summary — files, directories, what to investigate or implement."`
 	Context          string `json:"context,omitempty" jsonschema:"Multi-line supporting context — prior findings, constraints, non-goals. Optional."`
 	Deliverable      string `json:"deliverable,omitempty" jsonschema:"Custom deliverable format to replace the default FINDINGS/RISKS/RECOMMENDATION/FILES sections. When empty, the standard deliverable is used. Use this for spec-writing workers that need a different output format."`
+	CodeRules        string `json:"codeRules,omitempty" jsonschema:"Pre-rendered code-rule payload (from 'tmux-cli rules match') relayed verbatim to the worker as a CODE_RULES section. Empty omits the section. Supervisor-computed; buildTaskMessage never calls rules itself."`
 	Prefix           string `json:"prefix,omitempty" jsonschema:"Window name prefix (e.g. 'investigator-'). Defaults to 'execute-' if empty. Max workers limit applies per-prefix."`
 	WorkingDirectory string `json:"workingDirectory,omitempty" jsonschema:"Optional working directory the worker's shell starts in (tmux -c). Used to run a worker inside a goal's git worktree for validate isolation. When empty, the session default cwd is used."`
 }
@@ -641,7 +642,7 @@ func (s *Server) WindowsSpawnWorkerHandler(ctx context.Context, req *sdkmcp.Call
 	error,
 ) {
 	window, workerName, taskMessage, err := s.WindowsSpawnWorker(
-		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context, input.Deliverable, input.Prefix, input.WorkingDirectory,
+		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context, input.Deliverable, input.Prefix, input.WorkingDirectory, input.CodeRules,
 	)
 	if err != nil {
 		return nil, WindowsSpawnWorkerOutput{}, err
