@@ -251,6 +251,73 @@ func TestAutoCommit_NeverPushesOrBranches(t *testing.T) {
 	}
 }
 
+// TestGoalCommitMessage_BothPathsRenderDescriptiveSubject is the anti-drift
+// guard: the serial completion auto-commit (autocommit.go) and the parallel
+// worktree merge (worktree.go) must render the IDENTICAL descriptive subject
+// `<id>: <description> (backend task N)`, so the two commit paths can never
+// drift on commit-message format regardless of serial vs parallel execution.
+func TestGoalCommitMessage_BothPathsRenderDescriptiveSubject(t *testing.T) {
+	const want = "goal-009: Auto-commit resolved goals to the current branch (backend task 71)"
+
+	acceptance := []string{
+		"All tests pass",
+		"Backend task 71 is satisfied: both commit paths share one message renderer",
+	}
+
+	// (a) Serial path — autoCommitGoal commits the in-scope dirty diff.
+	serialFake := &fakeGitRunner{respond: dirtyScopeResponse}
+	sd := autoCommitDaemon(t, t.TempDir(), serialFake)
+	sg := scopedGoal()
+	sg.Acceptance = acceptance
+	sd.autoCommitGoal(sg)
+
+	serialMsgs := commitMessages(serialFake)
+	require.Len(t, serialMsgs, 1, "serial path must commit exactly once")
+	serialSubject := serialMsgs[0]
+
+	// (b) Worktree path — mergeWorktreeBack commits the dirty worktree before the
+	// ff-merge. Mirror TestMergeWorktreeBack_CleanMerge_AdvancesAndRemoves's
+	// runtime + responder so the commit branch is taken (dirty porcelain, one
+	// commit ahead, base branch resolvable).
+	wd, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	primeWorktree(wd, "goal-009")
+	wtFake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		switch {
+		case argsContain(args, "status", "--porcelain"):
+			return "M internal/taskvisor/x.go\n", 0
+		case argsContain(args, "rev-list", "--count"):
+			return "1\n", 0
+		case argsContain(args, "rev-parse", "--abbrev-ref", "HEAD"):
+			return "main\n", 0
+		}
+		return "", 0
+	}}
+	wd.SetGitRunnerFunc(wtFake.run)
+
+	wg := scopedGoal()
+	wg.Acceptance = acceptance
+	require.NoError(t, wd.mergeWorktreeBack(wg))
+
+	wtMsgs := commitMessages(wtFake)
+	require.Len(t, wtMsgs, 1, "worktree path must commit exactly once")
+	worktreeSubject := wtMsgs[0]
+
+	assert.Equal(t, want, serialSubject, "serial path subject")
+	assert.Equal(t, want, worktreeSubject, "worktree path subject")
+	assert.Equal(t, serialSubject, worktreeSubject, "both commit paths must render the same subject")
+}
+
+// TestGoalCommitMessage_OmitsSuffixWithoutBackendTask pins the helper's
+// no-mapping branch: with no `Backend task N` acceptance entry the subject is
+// the unsuffixed `<id>: <description>` (mirrors the serial path's
+// TestAutoCommit_MessageOmitsSuffixWithoutMapping).
+func TestGoalCommitMessage_OmitsSuffixWithoutBackendTask(t *testing.T) {
+	g := scopedGoal()
+	g.Acceptance = []string{"All tests pass"}
+	assert.Equal(t, "goal-009: Auto-commit resolved goals to the current branch", goalCommitMessage(g))
+}
+
 func TestAutoCommit_GitFailureIsWarnOnly(t *testing.T) {
 	g := scopedGoal()
 	g.Status = GoalDone

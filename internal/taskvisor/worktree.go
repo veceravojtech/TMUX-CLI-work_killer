@@ -394,7 +394,7 @@ func (d *Daemon) mergeWorktreeBack(goal *Goal) error {
 			return fmt.Errorf("git -C %s status: %w", wt, err)
 		}
 		if strings.TrimSpace(porcelain) != "" {
-			if _, se, code, err := run(ctx, "-C", wt, "commit", "-m", "goal "+goal.ID); err != nil {
+			if _, se, code, err := run(ctx, "-C", wt, "commit", "-m", goalCommitMessage(goal)); err != nil {
 				return fmt.Errorf("git -C %s commit: %w", wt, err)
 			} else if code != 0 {
 				return fmt.Errorf("git -C %s commit failed (exit %d): %s", wt, code, strings.TrimSpace(se))

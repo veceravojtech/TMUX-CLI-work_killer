@@ -67,7 +67,7 @@ func (d *Daemon) autoCommitGoal(g *Goal) {
 
 	// No --no-verify: operator pre-commit hooks keep their say; a hook
 	// rejection is just a warn-only skip like any other non-zero exit.
-	msg := fmt.Sprintf("%s: %s%s", g.ID, g.Description, backendTaskSuffix(g.Acceptance))
+	msg := goalCommitMessage(g)
 	_, stderr, code, err = d.autoCommitGit("-C", d.workDir, "commit", "-m", msg)
 	if code != 0 || err != nil {
 		log.Printf("warning: auto-commit %s: git commit failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
@@ -97,6 +97,15 @@ func scopePathspecs(scope []string) []string {
 		specs = append(specs, ":(glob)"+s)
 	}
 	return specs
+}
+
+// goalCommitMessage renders the descriptive git commit subject for a resolved
+// goal — `<id>: <description> (backend task N)`. It is the SINGLE source of
+// truth for both commit paths: the serial completion auto-commit (autoCommitGoal
+// here) and the parallel worktree merge (mergeWorktreeBack in worktree.go) both
+// call it, so the two can never drift on message format.
+func goalCommitMessage(g *Goal) string {
+	return fmt.Sprintf("%s: %s%s", g.ID, g.Description, backendTaskSuffix(g.Acceptance))
 }
 
 // backendTaskSuffix derives the " (backend task N)" commit-message suffix from
