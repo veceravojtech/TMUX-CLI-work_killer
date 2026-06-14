@@ -20,6 +20,20 @@
     <term name="TOPOLOGY">The resolved source roots, layer names, root namespace, and quality-gate commands read from the convention/code-rule packs `tmux-cli rules resolve` loads for THIS project's stack. Greenfield defaults only when the packs are empty.</term>
   </glossary>
 
+  <boundary>
+    <note>BOUNDARY vs neighbours — /tmux:feature is NOT a fifth full-cycle worker. It is the
+      BROWNFIELD composer over the existing /tmux:plan + /tmux:supervisor + /tmux:investigate
+      primitives, interactive only at Stage 2 (architecture).</note>
+    <vs name="task-plan-generate">GREENFIELD goal synthesis from docs/architecture discovery
+      (the task-plan-discover &#8594; task-plan-generate pair builds a project from scratch);
+      /tmux:feature drives ONE feature through an ALREADY-EXISTING system.</vs>
+    <vs name="/worker:* (MR cycles)">/worker:quick-dev, /worker:tech-spec, /worker:pipeline and the
+      Redmine/GitLab MR workers operate a diff&#8594;spec&#8594;MR cycle on an external ticket; /tmux:feature
+      orchestrates taskvisor goals end-to-end and never opens an MR.</vs>
+    <vs name="bmad-dev-story">a single sprint-loop story implemented via red-green-refactor;
+      /tmux:feature is the orchestrator that DELEGATES implementation, never the per-story implementer.</vs>
+  </boundary>
+
   <llm critical="true">
     <mandate>COMPOSER, NOT ENGINE: /tmux:feature orchestrates the EXISTING primitives — it delegates implementation to /tmux:plan + /tmux:supervisor and validation to /tmux:investigate. NEVER re-implement their planning, dispatch, or verification logic here; reference them.</mandate>
     <mandate>PORTABILITY IS MANDATORY: NEVER hardcode any project-shaped value — source roots, layer names, root namespace, quality-gate commands, lang/framework, ports. Resolve every such value from `tmux-cli rules resolve` / `--signals` / project manifests, or ASK at Stage 2. Greenfield skeleton values are DEFAULTS only. Emit no project name anywhere in this command.</mandate>
