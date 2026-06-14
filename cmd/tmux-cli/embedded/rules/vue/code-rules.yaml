@@ -128,3 +128,40 @@
     - "review: styles use design-token CSS variables, not hard-coded colour/size literals"
   validate_kind: review
   phase: frontend
+
+# VUE-GATE-001 is the vue pack's frontend MACHINE gate — the FE counterpart of
+# the php-symfony make-stan/phpstan gate. mixed: a real toolchain run
+# (make jsf = ESLint + Stylelint + vue-tsc + Vitest, plus the explicit commands
+# it wraps) PLUS a review: line. It carries no signal — mixed needs only a
+# review: line (cf. PHP-MONO-001). make jsf / vue-tsc / vitest / stylelint are
+# NOT weakOnly, so the gate is a genuine machine check, not a borrowed run.
+- id: VUE-GATE-001
+  category: quality
+  scope: generic
+  severity: must
+  title: "Changed *.vue/*.ts pass the FE machine gate (make jsf: ESLint+Stylelint+vue-tsc+Vitest)"
+  rule: >
+    A changed Vue SFC or TypeScript module must pass the frontend machine gate
+    before it is done: run `make jsf` (the previo2_fe toolchain — ESLint +
+    Stylelint + vue-tsc + Vitest), or the equivalent eslint + stylelint +
+    vue-tsc + vitest run, scoped to the changed files/package. A lint or type
+    error fails the gate.
+  why: >
+    Without a machine gate, Vue/TS changes get only rule-review and a lint or
+    type error ships silently. Mirroring P2's required make jsf turns those
+    errors red at implementation time instead of in CI or production.
+  applies_to:
+    - "assets/**/*.vue"
+    - "assets/**/*.ts"
+    - "packages/ui/**/*.vue"
+    - "packages/ui/**/*.ts"
+  acceptance:
+    - "GIVEN a changed *.vue or *.ts file WHEN the FE gate runs THEN make jsf (eslint + stylelint + vue-tsc + vitest) exits 0 with no lint or type errors"
+  validate:
+    - "make jsf"
+    - "vue-tsc --noEmit"
+    - "vitest run"
+    - "stylelint 'assets/**/*.{vue,ts,css}' 'packages/ui/**/*.{vue,ts,css}'"
+    - "review: changed *.vue/*.ts pass make jsf (eslint, stylelint, vue-tsc, vitest) with zero lint/type errors"
+  validate_kind: mixed
+  phase: frontend

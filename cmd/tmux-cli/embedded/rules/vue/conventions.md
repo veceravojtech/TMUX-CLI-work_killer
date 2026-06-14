@@ -14,3 +14,7 @@ The review and machine-checkable rules that enforce these conventions — SFC
 location and style, shared-component reuse, boolean-prop shape, date handling,
 `<script setup>` ordering, and design-token styling — live in `code-rules.yaml`
 in this pack.
+
+Changed `*.vue`/`*.ts` files must also pass the frontend machine gate: `make jsf`
+(the previo2_fe toolchain = ESLint + Stylelint + vue-tsc + Vitest), or the
+equivalent run scoped to the changed files — a lint or type error turns it red.
