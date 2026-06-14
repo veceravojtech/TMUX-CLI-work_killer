@@ -1,0 +1,83 @@
+<stage n="4" title="Implementation — emit a phased TDD goal DAG and hand to autonomous execution" autonomous="true">
+  <objective>Convert the approved feature spec (Stage 3) + the Stage 3b Test Plan into a PHASED GOAL DAG and hand it to the autonomous taskvisor daemon — the daemon's per-goal dispatch is what runs /tmux:plan then /tmux:supervisor, so EMITTING goals IS the delegation. For each BE-logic acceptance unit, emit a tests-first goal (validate asserts the new tests fail MEANINGFULLY — an assertion failure, not a collection/compile error) BEFORE its implementation goal (`depends_on` the tests-first goal; validate asserts those same tests green + the resolved static gates). Red&#8594;green is an ORDINARY dependency chain — the daemon already runs `depends_on` prerequisites first, so TDD ordering falls out of existing DAG semantics with NO new daemon mechanics. Every emitted goal's validate renders RESOLVED project commands (static analysis / unit / deptrac / e2e) from the Stage 0 TOPOLOGY — never a `src/` skeleton literal. This shard is the Stage 4 body the feature.xml load seam executes; it COMPOSES goal-create chains + the auto-start-taskvisor path, and never re-implements /tmux:plan or /tmux:supervisor.</objective>
+
+  <substep n="4.1" title="Consume upstream context blocks — never re-probe">
+    <action>Read the upstream emitted context blocks VERBATIM — do NOT re-probe the filesystem, re-run `tmux-cli rules resolve`, or re-open the architecture decision. Every fact this stage needs was resolved upstream:</action>
+    <action>From the Stage 0 capability block: SIGNALS (lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows), E2E_RUNNER_AVAILABLE, and TOPOLOGY — the RESOLVED source roots, test roots, layer names, root namespace, and the resolved quality-gate commands (static analysis / unit / deptrac / e2e). These supply EVERY validate command and path rendered below — never a literal.</action>
+    <action>From the Stage 1 context dossier: the existing-system surfaces the feature touches (affected modules, call sites, data shapes). These scope each goal's footprint.</action>
+    <action>From the Stage 2 approved ADR: the user-confirmed approach and its boundaries — the authoritative design anchor; goals implement it, never re-decide it.</action>
+    <action>From the Stage 3 feature spec + Stage 3b Test Plan: the acceptance units and the ONE Test Plan row per unit ({Acceptance unit, Class, Layer, Driver, Test path}). The Test Plan is the goal-DAG's source of truth — one classified row becomes one (or, for BE-logic, a tests-first&#8594;impl pair of) goal(s).</action>
+    <check condition="the Stage 3b Test Plan is absent OR empty (zero acceptance units)">
+      <action>Do NOT fabricate goals. Print a named, actionable reason: "Stage 4: no acceptance units in the Test Plan — nothing to emit. Re-run Stage 3/3b to populate the Test Plan." and STOP gracefully (never crash, never invent a goal).</action>
+    </check>
+  </substep>
+
+  <substep n="4.2" title="Classify acceptance units &amp; assign phases (reuse PHASE_ORDER)">
+    <action>For each Test Plan row, read its already-assigned Class (BE-logic / infra / FE / full-stack — Stage 3b classified it; do NOT re-classify, just consume).</action>
+    <action>Assign each unit a phase token and REUSE task-plan-generate.xml's PHASE_ORDER ranks verbatim (task-plan-generate.xml step 4.2, ~line 220): gate=0, scaffold=1, domain=2, application=3, infrastructure=4, fixtures=5, error_handling=6, auth=7, action=8, event_listener=9, cross-cutting (middleware/api_docs/messenger/health_check/docker/cicd/dx)=10, final_gate=11. Map a unit's Class to its phase: BE-logic domain/application logic &#8594; domain or application; infra/persistence &#8594; infrastructure; full-stack HTTP action &#8594; action; FE/browser surface &#8594; the relevant cross-cutting or action phase per the ADR. When a unit fits two phases pick the lower rank (earlier).</action>
+    <action>Order the units by PHASE_ORDER rank (ascending); break ties by Test Plan row order. This ordered list is the emission sequence — each goal is chained `depends_on` its predecessor so the daemon executes in rank order.</action>
+    <rule critical="true">Phase ranks and ordering reuse task-plan-generate.xml's logic — do NOT invent a new phase model and do NOT renumber the ranks. Equal rank is allowed for same-phase and cross-cutting units (interchangeable among themselves).</rule>
+  </substep>
+
+  <substep n="4.3" title="Emit the tests-first &#8594; impl goal DAG via goal-create depends_on chains">
+    <action>Walk the ordered unit list from 4.2. Maintain PREV_GOAL_ID, initialized empty (the first emitted goal has no predecessor unless an upstream gate goal exists). For each unit, emit goal(s) via the goal-create MCP tool, capturing each returned goal id and passing it as the next goal's `depends_on` — the task-list.xml chain-commit pattern (task-list.xml:122-127). Use goal-create(`depends_on`=[predecessor id]) for routine chaining; NEVER goal-add-prerequisite (that is the escalation backstop and increments escalation_count).</action>
+    <branch condition="unit Class == BE-logic (pure domain/application logic, TDD per Stage 3b)">
+      <action>Emit the tests-first goal A FIRST:
+        - description: "tests-first: &lt;unit&gt; — failing &lt;layer&gt; test(s)" (&#8804;120 chars).
+        - acceptance: the new test(s) for this unit EXIST at the Test Plan row's resolved test path AND fail with a MEANINGFUL assertion failure (a test that actually ran and asserted), NOT a collection/compile/import error.
+        - validate: the RESOLVED unit-test command from TOPOLOGY, scoped to the row's test path, phrased so a collection/compile error does NOT count as red — assert the runner reports a FAILING ASSERTION from a test that ran (e.g. the run reaches the assertion and reports a test failure, not merely a non-zero exit from an import/collection error). Render the resolved runner command — never a `src/` skeleton literal.
+        - phase: the unit's 4.2 phase; depends_on: [PREV_GOAL_ID] if set; lane: omit (full).
+        Capture goal A's returned id; set PREV_GOAL_ID = A.</action>
+      <action>Then emit the implementation goal B:
+        - description: "impl: &lt;unit&gt; — make tests-first goal green" (&#8804;120 chars).
+        - acceptance: the SAME tests from goal A now PASS (green) AND the resolved static gates pass (static analysis / unit / deptrac / e2e as applicable to this unit's layer).
+        - validate: the RESOLVED green commands — the same unit-test command now asserting PASS, PLUS the resolved static-analysis / deptrac / e2e gate commands from TOPOLOGY applicable to this layer. All RESOLVED — never `src/` skeleton literals.
+        - phase: the unit's 4.2 phase; depends_on: [A's goal id] (so the daemon dispatches B only after A is done — red-before, green-after as an ordinary dependency chain, no new daemon state); lane: omit.
+        Capture goal B's returned id; set PREV_GOAL_ID = B.</action>
+      <action>If only the tests-first goal is emittable this pass (impl deferred), still chain it correctly via depends_on and record the deferral — never drop the impl half silently.</action>
+    </branch>
+    <branch condition="unit Class != BE-logic (infra / FE / full-stack — no TDD red/green pair required)">
+      <action>Emit a SINGLE implementation goal in the unit's 4.2 phase:
+        - description / acceptance: implement the unit per the Test Plan row + ADR.
+        - validate: the RESOLVED command(s) for the row's Layer/Driver (integration with a real dependency when has_database resolves true; e2e via the resolved {{e2e_runner}} when has_frontend &amp;&amp; e2e_runner_available; HTTP-level fallback otherwise — all from TOPOLOGY, never a literal).
+        - phase: the unit's 4.2 phase; depends_on: [PREV_GOAL_ID] if set; lane: omit.
+        Capture the returned id; set PREV_GOAL_ID = it.</action>
+    </branch>
+    <action>After every emission, the chain is acyclic by construction (each goal depends only on an ALREADY-created predecessor — goal-create rejects a depends_on pointing at a non-existent goal). If a depends_on would ever point forward or form a cycle, ABORT with a named reason rather than emitting it (mirrors task-plan-generate.xml's G-15 acyclicity guard).</action>
+    <rule critical="true">EVERY emitted goal's validate renders RESOLVED project commands from the Stage 0 TOPOLOGY (static analysis / unit / deptrac / e2e, real test/source roots, real layer names) — NEVER a `src/` skeleton literal, project name, port, or hardcoded stack token.</rule>
+    <rule critical="true">Red&#8594;green is an ORDINARY depends_on chain. Do NOT add a "red phase" enum, statemachine state, or any daemon change — the tests-first goal's validate asserts meaningful red; the impl goal `depends_on` it and its validate asserts green. The daemon runs prerequisites first; that IS the TDD ordering.</rule>
+  </substep>
+
+  <substep n="4.4" title="Hand off to autonomous execution (reuse auto-start-taskvisor)">
+    <action>REUSE task-list.xml's auto-start-taskvisor substeps (task-list.xml:136-168) — do NOT re-implement them:
+      1. Assess daemon state: PID_ALIVE (.tmux-cli/taskvisor.pid exists AND `kill -0 $(cat .tmux-cli/taskvisor.pid)` succeeds) and ACTIVE (.tmux-cli/taskvisor-active exists). If both hold, the emitted goals schedule on the next tick — skip to the reconcile reminder.
+      2. If NOT PID_ALIVE, run `tmux-cli taskvisor restart`; on a no-session/no-window error print the named actionable reason ("Cannot auto-start: &lt;error&gt;. Start a session with tmux-cli start, then run: tmux-cli taskvisor restart — the queued goals will execute on activation.") and stop in a degraded-but-named state (goals stay queued, never silently idle).
+      3. Call the taskvisor-start MCP tool (it validates pending goals exist and writes .tmux-cli/taskvisor-start), then poll for .tmux-cli/taskvisor-active every 3s up to 30s. On activation print "taskvisor ACTIVE — executing &lt;goal ids&gt;."; on timeout print the last ~10 lines of .tmux-cli/logs/taskvisor.log and the named reason.</action>
+    <action>The daemon's per-goal dispatch runs /tmux:plan then /tmux:supervisor for each goal in the chain (delegation BY REFERENCE — this shard supplies the "what" = the DAG; the existing machinery supplies the "how"). The run ENDS with the daemon executing the chain, exactly as the /tmux:task-list consume contract requires (task-list.xml:179): "always ends with the daemon executing (or a named, actionable reason why not)" — queued-but-idle is a failure of this stage.</action>
+    <check condition="zero goals were creatable (every unit was non-emittable)">
+      <action>Do NOT silently finish. Print a named, actionable reason (which units were skipped and why) and STOP — never report success with an empty DAG.</action>
+    </check>
+    <action>Emit a one-line handoff to Stage 5: the emitted goal ids + the resolved validation commands, so stage-5-validation.xml can delegate verification to /tmux:investigate. Proceed to Stage 5.</action>
+  </substep>
+
+  <execution-rules>
+    <rule>COMPOSER, NOT ENGINE: emit goals via goal-create chains and let the taskvisor daemon run /tmux:plan + /tmux:supervisor per goal — NEVER re-implement their planning, dispatch, or supervision logic here (feature.xml:24).</rule>
+    <rule>PORTABILITY: every validate command, test path, and layer name is RESOLVED from the Stage 0 TOPOLOGY — never a `src/` skeleton literal, project name, port, or hardcoded stack token (feature.xml:25).</rule>
+    <rule>TDD AS A PLAIN DEPENDENCY CHAIN: a BE-logic unit yields a tests-first goal (validate asserts MEANINGFUL red) then an impl goal that `depends_on` it (validate asserts green + resolved static gates). No new daemon mechanics — the existing depends_on semantics ARE the red&#8594;green ordering.</rule>
+    <rule>PHASE ORDERING reuses task-plan-generate.xml's PHASE_ORDER ranks; chaining uses goal-create(depends_on=[predecessor id]) as task-list.xml's chain-commit does — never goal-add-prerequisite for routine chaining.</rule>
+    <rule>AUTONOMOUS STAGE: resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user (feature.xml is interactive ONLY at Stage 2).</rule>
+    <rule>ENDS EXECUTING: the run finishes with the daemon executing the chain, or prints a named, actionable reason why not (the /tmux:task-list consume contract) — queued-but-idle or a silent empty DAG is a failure of this stage.</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • COMPOSER, not engine — emit a goal DAG via goal-create chains; the daemon runs /tmux:plan + /tmux:supervisor per goal. Emitting goals IS the delegation; never re-implement them.
+      • TDD is an ORDINARY depends_on chain — a tests-first goal (validate asserts MEANINGFUL red, an assertion failure not a collection/compile error) BEFORE its impl goal (depends_on it; validate asserts green + resolved static gates). NO new daemon mechanics, no red-phase enum.
+      • PORTABILITY IS MANDATORY — every validate renders RESOLVED project commands (static analysis / unit / deptrac / e2e) from Stage 0 TOPOLOGY; never a `src/` skeleton literal, project name, or hardcoded stack token.
+      • PHASE ordering reuses task-plan-generate.xml's PHASE_ORDER ranks; chaining uses goal-create(depends_on=[predecessor id]) like task-list.xml chain-commit — never goal-add-prerequisite for routine chaining; abort on a cycle (G-15).
+      • HAND OFF to the autonomous daemon via the auto-start-taskvisor path (taskvisor-start MCP tool, poll .tmux-cli/taskvisor-active); the run ENDS with the daemon executing the chain or a named, actionable reason why not — never queued-but-idle, never a silent empty DAG.
+      • AUTONOMOUS stage — resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user.
+    </critical-rules>
+  </llm>
+</stage>
