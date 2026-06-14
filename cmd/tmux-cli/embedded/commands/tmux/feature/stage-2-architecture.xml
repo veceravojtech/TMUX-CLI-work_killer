@@ -1,0 +1,106 @@
+<stage n="2" title="Architecture recommendation" interactive="true">
+  <objective>The SOLE interactive stage of /tmux:feature. Using the Stage-0 resolved context block (SIGNALS / TOPOLOGY / CODE-RULES) and the Stage-1 dossier, propose the feature's architecture as 1&#8211;3 options phrased BY DDD ROLE using the resolved layer/namespace tokens (never project literals), record the chosen option as an ADR built from `templates/_base/adr.md`, and BLOCK autonomous Stages 3&#8211;5 until the user approves &#8212; honoring an explicit `feature.auto_approve` flag for unattended runs. COMPOSER, not engine: this stage recommends and records a decision; it never re-implements plan/supervisor/investigate logic.</objective>
+
+  <substep n="2.1" title="Ingest resolved context">
+    <action>Read the Stage-0 emitted context block VERBATIM &#8212; do NOT re-probe the filesystem and do NOT re-run `tmux-cli rules resolve`; every signal/token is already resolved upstream.</action>
+    <action>Extract TOPOLOGY: SOURCE ROOTS, LAYER NAMES, ROOT NAMESPACE, and the QUALITY-GATE COMMANDS &#8212; each tagged detected-from-packs vs greenfield-default. These resolved tokens are the ONLY vocabulary the options may use for layers/namespaces.</action>
+    <action>Extract the CODE RULES pointers (resolved code-rule / convention file paths) and READ every referenced pack file &#8212; these are the grounding source for the DDD roles the options are phrased in (e.g. aggregate, command handler, query service, domain repository, domain event, shared-kernel contract, app entry-point role).</action>
+    <action>Read the Stage-1 dossier: the existing code, contracts, and seams the feature touches.</action>
+    <action>Read `.tmux-cli/setting.yaml` from the project root (model the read on Stage 0 / task-list.xml step 0). Resolve `feature.auto_approve` &#8212; when the file or the key is ABSENT, treat it as false (the SOLE interactive stage stays interactive unless explicitly told otherwise). Modeled on plan.xml's AUTO_APPROVE.</action>
+    <rule critical="true">NEVER read or reference the stale monolithic `ddd-conventions.md` &#8212; it is a gitignored legacy artifact. Ground every role in the resolved split convention/code-rule packs that arrived via the Stage-0 CODE-RULES pointers.</rule>
+    <check condition="the Stage-0 context block or Stage-1 dossier is absent">
+      <action>This stage runs strictly downstream of Stages 0&#8211;1 &#8212; if their emitted context is missing, print "Stage 2 cannot run: Stage 0/1 context block missing &#8212; run /tmux:feature from Stage 0" and STOP gracefully (do NOT improvise the upstream stages).</action>
+    </check>
+  </substep>
+
+  <substep n="2.2" title="Derive 1&#8211;3 architecture options">
+    <action>From the Stage-1 dossier + resolved rules, derive 1&#8211;3 candidate architectures. For EACH option decide, BY DDD ROLE using the resolved TOPOLOGY tokens:
+      &#8226; which resolved LAYER(S) own the change (using the resolved LAYER NAMES, never literals);
+      &#8226; new aggregate vs extend an existing aggregate;
+      &#8226; the command (write / handler role) vs query (read / service role) split;
+      &#8226; the cross-context contract shape (the shared-kernel contract role), when contexts interact;
+      &#8226; domain events emitted (the domain-event / EventRecord role), if any;
+      &#8226; the persistence seam (the infrastructure / framework-adapter role under the resolved namespace).</action>
+    <action>Give each option a one-line TRADE-OFFS statement. Tag EXACTLY ONE option RECOMMENDED with a one-line rationale tied to the resolved rules and the dossier.</action>
+    <action>Resolve every architectural fork to the highest-quality in-scope option and record the one-line rationale &#8212; never expand the feature's scope to fit an option.</action>
+    <rule critical="true">PORTABILITY: phrase every option BY DDD ROLE using the resolved LAYER NAMES / ROOT NAMESPACE tokens. Emit NO project name and NO project literals; never hardcode a php-symfony (or any stack's) literal, and never reference a literal `php-symfony/code-rules.yaml` &#8212; the resolved code-rules pack arrives via the Stage-0 CODE-RULES pointers.</rule>
+    <check condition="the Stage-1 dossier admits exactly one sane architecture">
+      <action>Present exactly 1 option (the range 1&#8211;3 permits one). It is still recorded as an ADR, with Alternatives Considered = "none viable" and a one-line reason.</action>
+    </check>
+    <check condition="Stage 0 emitted greenfield-default layer tokens">
+      <action>Phrase the options on the default skeleton layers and FLAG them as greenfield defaults to confirm at approval &#8212; never invent a stack; let the approval step confirm the defaults.</action>
+    </check>
+  </substep>
+
+  <substep n="2.3" title="Present options + approval gate">
+    <check condition="feature.auto_approve is true (resolved in 2.1)">
+      <action>UNATTENDED path: auto-select the RECOMMENDED option, log the auto-selection + rationale, and SKIP the wait &#8212; proceed directly to substep 2.4 to write the ADR with Status=Accepted. The ADR is still mandatory under auto_approve.</action>
+    </check>
+    <check condition="feature.auto_approve is false (default)">
+      <action>Print the options + trade-offs and the reply contract using this presentation template, then idle for the user's reply:</action>
+      <template>
+== Stage 2: Architecture recommendation ==
+
+Feature: &lt;feature description from Stage 0&gt;
+Resolved layers: &lt;resolved LAYER NAMES&gt;   Root namespace: &lt;resolved ROOT NAMESPACE&gt;
+
+Option 1 (RECOMMENDED): &lt;DDD-role phrasing&gt;
+  Trade-offs: &lt;one line&gt;
+Option 2: &lt;DDD-role phrasing&gt;
+  Trade-offs: &lt;one line&gt;
+Option 3: &lt;DDD-role phrasing&gt;
+  Trade-offs: &lt;one line&gt;
+
+Reply to approve and unblock the autonomous Stages 3&#8211;5:
+  approve         &#8594; accept the RECOMMENDED option (Option 1)
+  approve &lt;N&gt;     &#8594; accept Option N
+  &lt;change request&gt; &#8594; revise the options and re-present (stays blocked)
+      </template>
+      <action>Wait for the user's approval message. Do NOTHING until it arrives &#8212; idle is the trigger.</action>
+      <check condition="reply is 'approve' or 'approve &lt;N&gt;'">
+        <action>Record the chosen option (RECOMMENDED on bare 'approve'; Option N on 'approve N') and proceed to substep 2.4.</action>
+      </check>
+      <check condition="reply is a change request (not an approval)">
+        <action>Revise the options per the feedback, re-present via the template, and STAY BLOCKED. Loop until an approval arrives &#8212; never auto-advance.</action>
+      </check>
+      <check condition="reply is unrecognized">
+        <action>Re-print the option list and idle again.</action>
+      </check>
+    </check>
+    <mandate>NEVER use AskUserQuestion or any other interactive tool &#8212; all interaction is text output + waiting for the user's message (tmux window compatibility), mirroring task-plan-discover.xml.</mandate>
+  </substep>
+
+  <substep n="2.4" title="Record the ADR + unblock Stages 3&#8211;5">
+    <action>Build the decision record from `templates/_base/adr.md`, filling its placeholders:
+      &#8226; `{{adr_number}}` &#8212; the next number by scanning existing `docs/architecture/adr-*.md` (greenfield &#8594; start at 1);
+      &#8226; `{{decision_title}}` &#8212; the feature + chosen architecture, by DDD role;
+      &#8226; `{{status}}` &#8212; Accepted (the option is now approved, or auto-selected under auto_approve);
+      &#8226; `{{date}}` &#8212; today's date;
+      &#8226; `{{bc_name}}` &#8212; the resolved bounded-context / module name from the TOPOLOGY tokens;
+      &#8226; Context / Decision Drivers / Decision &#8212; the dossier facts and resolved rules that drove the choice;
+      &#8226; Consequences (Positive / Negative / Neutral) &#8212; the chosen option's trade-offs;
+      &#8226; Alternatives Considered &#8212; the rejected options with their reason-rejected (or "none viable" for the single-option case).</action>
+    <action>Write the ADR under `docs/architecture/` (the repo's existing ADR home) as `adr-&lt;number&gt;-&lt;slug&gt;.md`, unless the resolved convention pack declares a different ADR location &#8212; in which case honor the pack's location. Create `docs/architecture/` if it does not exist.</action>
+    <action>Emit the approved-decision context block that Stage 3 consumes: the chosen option (by DDD role), the ADR path, and the resolved tokens it was grounded in. Hand it to Stage 3.</action>
+    <rule critical="true">Stages 3&#8211;5 stay BLOCKED until this substep completes &#8212; the approved ADR is the gate. Under interactive runs the gate opens only on the user's approval; under `auto_approve` it opens on the auto-selected RECOMMENDED option. Either way the ADR is written, so the decision is auditable.</rule>
+  </substep>
+
+  <execution-rules>
+    <rule>PORTABILITY: every layer/namespace value in an option is a resolved Stage-0 TOPOLOGY token &#8212; NEVER a hardcoded source root, layer name, root namespace, project name, or stack literal; greenfield defaults are flagged as defaults to confirm.</rule>
+    <rule>COMPOSER, not engine: this stage recommends an architecture and records the ADR; it never re-implements plan/supervisor/investigate logic.</rule>
+    <rule>INTERACTIVE-ONLY via text: present options as a `&lt;template&gt;` and idle for the user's message; never AskUserQuestion. Under `feature.auto_approve` the wait is skipped, but the ADR is still written.</rule>
+    <rule>GROUNDING: options are grounded in the resolved split convention/code-rule packs reached via the Stage-0 CODE-RULES pointers &#8212; never the stale `ddd-conventions.md`.</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` &#8212; compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (a change-request loop, an unrecognized reply re-print, or the approval wait itself).</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      &#8226; SOLE interactive stage &#8212; present options as text and idle for the user's approval message; NEVER use AskUserQuestion.
+      &#8226; PORTABILITY IS MANDATORY &#8212; phrase every option BY DDD ROLE using the resolved LAYER NAMES / ROOT NAMESPACE tokens; no project name, no stack literals, no `ddd-conventions.md`.
+      &#8226; 1&#8211;3 options, EXACTLY ONE tagged RECOMMENDED with a rationale and a trade-offs line each.
+      &#8226; The chosen option is recorded as an ADR built from `templates/_base/adr.md`, written under `docs/architecture/` with Status=Accepted.
+      &#8226; Stages 3&#8211;5 stay BLOCKED until the ADR is written &#8212; gated on user approval, or on `feature.auto_approve` for unattended runs (ADR still mandatory).
+      &#8226; auto_approve defaults to FALSE when setting.yaml or the key is absent.
+    </critical-rules>
+  </llm>
+</stage>
