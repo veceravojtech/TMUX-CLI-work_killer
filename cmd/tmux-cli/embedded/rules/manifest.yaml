@@ -97,5 +97,6 @@ packs:
       - context-layers.md
       - shared-kernel.md
       - app-layer.md
+      - security.md
     code_rules:
       - code-rules.yaml
