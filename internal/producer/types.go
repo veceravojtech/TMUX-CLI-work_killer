@@ -24,6 +24,12 @@ type TaskRequest struct {
 	ExpectedGreenState string              `json:"expectedGreenState"`
 	SystemInfo         identity.SystemInfo `json:"systemInfo"`
 	Payload            map[string]any      `json:"payload,omitempty"`
+	// DependsOn is the optional list of prerequisite task ids this report
+	// depends on (the agent passes them as id strings). omitempty keeps the key
+	// off the wire when empty, so a report carrying no deps stays byte-identical
+	// to today's payload. The backend owns the dependency model, claim-gating,
+	// and ready computation; this only shapes the request.
+	DependsOn []string `json:"dependsOn,omitempty"`
 	// Project is the machine-qualified lane the task belongs to. Stamped by
 	// SubmitTask from the client config; omitempty keeps it off the wire for
 	// unconfigured clients (backend treats absent as a null lane).

@@ -541,3 +541,57 @@ func TestBuildTaskMessage_CodeRulesBlockPlacement(t *testing.T) {
 	assert.Less(t, strings.Index(msg, "CONTEXT:"), strings.Index(msg, "CODE_RULES:"))
 	assert.Less(t, strings.Index(msg, "CODE_RULES:"), strings.Index(msg, "DELIVERABLE"))
 }
+
+// --- task-link ---------------------------------------------------------------
+
+// TestTaskLink_MissingFields proves both id and prerequisite_id are required and
+// validated BEFORE any client is built (the producer seam is never reached).
+func TestTaskLink_MissingFields(t *testing.T) {
+	cases := []struct {
+		name string
+		in   TaskLinkInput
+		want string
+	}{
+		{"missing id", TaskLinkInput{PrerequisiteID: "12"}, "id"},
+		{"blank id", TaskLinkInput{ID: "  ", PrerequisiteID: "12"}, "id"},
+		{"missing prerequisite", TaskLinkInput{ID: "20"}, "prerequisite_id"},
+		{"blank prerequisite", TaskLinkInput{ID: "20", PrerequisiteID: " "}, "prerequisite_id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withReportHook(t, failIfCalled(t)) // must reject before building a client
+			s := newReportServer(t)
+			out, err := s.TaskLink(context.Background(), tc.in)
+			assert.Nil(t, out)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// TestTaskLink_HappyPath_Httptest drives the tool through the producer seam and
+// asserts it POSTs the edge and surfaces the updated task view.
+func TestTaskLink_HappyPath_Httptest(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":20,"status":"new","dependsOn":[12],"ready":false}`)
+	out, err := s.TaskLink(context.Background(), TaskLinkInput{ID: "20", PrerequisiteID: "12"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "20", out.Task.ID)
+	assert.False(t, out.Task.Ready)
+	require.Len(t, out.Task.DependsOn, 1)
+	assert.Equal(t, "12", out.Task.DependsOn[0])
+	assert.Equal(t, http.MethodPost, last.Method)
+	assert.Equal(t, "/api/v1/tasks/20/dependencies", last.URL.Path)
+}
+
+// TestTaskGet_SurfacesDependsOnAndReady decodes a backend reply carrying
+// dependsOn + ready into the agent-facing view (ready=false ⇒ blocked).
+func TestTaskGet_SurfacesDependsOnAndReady(t *testing.T) {
+	s, _ := withTaskServer(t, http.StatusOK,
+		`{"id":20,"status":"new","dependsOn":[12,13],"ready":false,"events":[]}`)
+	out, err := s.TaskGet(context.Background(), TaskGetInput{ID: "20"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.False(t, out.Task.Ready)
+	assert.Equal(t, []string{"12", "13"}, out.Task.DependsOn)
+}

@@ -46,6 +46,14 @@ type Task struct {
 	ClaimedAt          string     `json:"claimedAt"`
 	CreatedAt          string     `json:"createdAt"`
 	UpdatedAt          string     `json:"updatedAt"`
+	// DependsOn is the task's prerequisite ids; the backend emits them as JSON
+	// numbers, so FlexibleID is used (mirroring ID/InstanceID). Ready is the
+	// backend-computed gate: false means the task is blocked on an unresolved
+	// prerequisite. Both decode from absent/null to their zero value (empty
+	// slice / false), which reads as "no deps, blocked-by-nothing" for a
+	// pre-deploy backend that omits them.
+	DependsOn []FlexibleID `json:"dependsOn,omitempty"`
+	Ready     bool         `json:"ready"`
 }
 
 // TaskList is one page of GET /api/v1/tasks: the filtered slice plus the full
@@ -369,6 +377,46 @@ func (c *Client) Archive(ctx context.Context, id, reason string) (*Task, error) 
 	}
 	defer resp.Body.Close()
 	if err := expect2xx(resp, "task archive", map[int]error{http.StatusNotFound: ErrTaskNotFound}); err != nil {
+		return nil, err
+	}
+	var out Task
+	if err := decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// LinkParams is the JSON body for the add-dependency endpoint — a single
+// prerequisite task id the target task is made to depend on.
+type LinkParams struct {
+	PrerequisiteID string `json:"prerequisiteId"`
+}
+
+// Link adds one prerequisite edge to a task via POST
+// /api/v1/tasks/{id}/dependencies with a {"prerequisiteId":...} body — making
+// the task depend on prerequisiteID. It maps 404 -> ErrTaskNotFound (unknown
+// task) and 422 -> ErrInvalidTransition (cycle / self-dependency rejected by
+// the backend); other non-2xx fall to the generic expect2xx error. The backend
+// owns the dependency model, cycle detection, and ready computation; this only
+// shapes the request and decodes the updated task. A nil receiver is a no-op
+// returning (nil, nil).
+func (c *Client) Link(ctx context.Context, id, prerequisiteID string) (*Task, error) {
+	if c == nil {
+		return nil, nil
+	}
+	body, err := json.Marshal(LinkParams{PrerequisiteID: prerequisiteID})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.doSigned(ctx, http.MethodPost, "/api/v1/tasks/"+url.PathEscape(id)+"/dependencies", nil, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := expect2xx(resp, "task link", map[int]error{
+		http.StatusNotFound:            ErrTaskNotFound,
+		http.StatusUnprocessableEntity: ErrInvalidTransition,
+	}); err != nil {
 		return nil, err
 	}
 	var out Task

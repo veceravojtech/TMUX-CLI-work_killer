@@ -214,3 +214,49 @@ func TestValidEnums_SingleSource(t *testing.T) {
 		assert.True(t, producer.ValidSeverities[s], "severity %q must be valid", s)
 	}
 }
+
+// TestTaskReport_PlumbsDependsOn asserts an optional depends_on is plumbed onto
+// the POST /api/v1/tasks body as the camelCase `dependsOn` array, and that a
+// report carrying no deps omits the key entirely (wire-shape preserved).
+func TestTaskReport_PlumbsDependsOn(t *testing.T) {
+	capture := func(t *testing.T) (*Server, *[]byte) {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		require.NoError(t, err)
+		var gotBody []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			gotBody = body
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"task-1","status":"queued"}`)
+		}))
+		t.Cleanup(srv.Close)
+		withReportHook(t, func(producer.Config) *producer.Client {
+			return producer.NewClientForTest(srv.URL, priv, srv.Client())
+		})
+		return newReportServer(t), &gotBody
+	}
+
+	t.Run("with deps", func(t *testing.T) {
+		s, gotBody := capture(t)
+		in := validReportInput()
+		in.DependsOn = []string{"12"}
+		_, err := s.TaskReport(context.Background(), in)
+		require.NoError(t, err)
+		var sent map[string]any
+		require.NoError(t, json.Unmarshal(*gotBody, &sent))
+		deps, ok := sent["dependsOn"].([]any)
+		require.True(t, ok, "dependsOn must be forwarded as an array")
+		require.Len(t, deps, 1)
+		assert.Equal(t, "12", deps[0])
+	})
+
+	t.Run("no deps absent", func(t *testing.T) {
+		s, gotBody := capture(t)
+		_, err := s.TaskReport(context.Background(), validReportInput())
+		require.NoError(t, err)
+		var sent map[string]any
+		require.NoError(t, json.Unmarshal(*gotBody, &sent))
+		_, has := sent["dependsOn"]
+		assert.False(t, has, "dependsOn must be absent when no depends_on is given")
+	})
+}

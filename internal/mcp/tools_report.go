@@ -87,7 +87,8 @@ func (s *Server) TaskReport(ctx context.Context, in TaskReportInput) (*TaskRepor
 		ExpectedGreenState: in.ExpectedGreenState,
 		SystemInfo:         identity.CollectSystemInfo(s.version),
 		Payload:            in.Payload,
-		Project:            in.Project, // explicit target lane; empty => SubmitTask defaults to this worker's project
+		Project:            in.Project,   // explicit target lane; empty => SubmitTask defaults to this worker's project
+		DependsOn:          in.DependsOn, // optional prerequisite ids; omitempty keeps the wire byte-identical when empty
 	}
 
 	// 8. Submit synchronously.

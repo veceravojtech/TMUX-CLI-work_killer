@@ -69,4 +69,20 @@ func TestTaskRequest_WireShape(t *testing.T) {
 		_, badSI := si[bad]
 		assert.False(t, badTop || badSI, "stale key %q must not appear on the wire", bad)
 	}
+
+	// A report carrying no dependsOn must be byte-identical (omitempty): the key
+	// is absent from the wire entirely.
+	_, hasDeps := got["dependsOn"]
+	assert.False(t, hasDeps, "dependsOn must be absent when DependsOn is nil (omitempty)")
+
+	// A report with DependsOn set serializes as a `dependsOn` string array.
+	withDeps := req
+	withDeps.DependsOn = []string{"12"}
+	b2, err := json.Marshal(withDeps)
+	require.NoError(t, err)
+	var got2 map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(b2, &got2))
+	raw, ok := got2["dependsOn"]
+	require.True(t, ok, "dependsOn must be present when DependsOn is set")
+	assert.JSONEq(t, `["12"]`, string(raw))
 }

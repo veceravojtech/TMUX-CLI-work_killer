@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -378,4 +380,70 @@ func TestParsePrivateKey(t *testing.T) {
 		_, err := parsePrivateKey([]byte(base64.StdEncoding.EncodeToString([]byte("tooshort"))))
 		require.Error(t, err)
 	})
+}
+
+// TestLink_PostsEdge asserts Link POSTs a single prerequisite edge to the
+// task's /dependencies sub-collection with a {"prerequisiteId":...} body and
+// decodes the updated task.
+func TestLink_PostsEdge(t *testing.T) {
+	pub, priv := testKeypair(t)
+	var sent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/api/v1/tasks/20/dependencies", r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		verifySig(t, pub, r, body)
+		require.NoError(t, json.Unmarshal(body, &sent))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":20,"status":"new","dependsOn":[12],"ready":false}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	task, err := c.Link(context.Background(), "20", "12")
+	require.NoError(t, err)
+	require.NotNil(t, task)
+	assert.Equal(t, "12", sent["prerequisiteId"])
+	assert.Equal(t, "20", task.ID.String())
+	assert.False(t, task.Ready)
+	require.Len(t, task.DependsOn, 1)
+	assert.Equal(t, "12", task.DependsOn[0].String())
+}
+
+// TestLink_NotFound maps a backend 404 to ErrTaskNotFound.
+func TestLink_NotFound(t *testing.T) {
+	_, priv := testKeypair(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	task, err := c.Link(context.Background(), "20", "12")
+	assert.Nil(t, task)
+	assert.True(t, errors.Is(err, ErrTaskNotFound), "want ErrTaskNotFound, got %v", err)
+}
+
+// TestLink_InvalidTransition maps a backend 422 (cycle / self-dep) to
+// ErrInvalidTransition.
+func TestLink_InvalidTransition(t *testing.T) {
+	_, priv := testKeypair(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	task, err := c.Link(context.Background(), "20", "20")
+	assert.Nil(t, task)
+	assert.True(t, errors.Is(err, ErrInvalidTransition), "want ErrInvalidTransition, got %v", err)
+}
+
+// TestLink_NilReceiverNoOp confirms a nil client is a no-op returning (nil, nil),
+// matching every other producer method.
+func TestLink_NilReceiverNoOp(t *testing.T) {
+	var c *Client
+	task, err := c.Link(context.Background(), "20", "12")
+	assert.NoError(t, err)
+	assert.Nil(t, task)
 }

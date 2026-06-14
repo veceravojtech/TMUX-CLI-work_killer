@@ -530,6 +530,7 @@ type TaskReportInput struct {
 	ExpectedGreenState string         `json:"expected_green_state" jsonschema:"What passing/fixed looks like; required"`
 	Payload            map[string]any `json:"payload,omitempty" jsonschema:"Optional structured payload forwarded verbatim to the backend"`
 	Project            string         `json:"project,omitempty" jsonschema:"Optional target project lane (e.g. cli, web). Omit to default to the reporting worker's own project. To report an issue about a DIFFERENT project, call projects-list, pick the project whose checkout the issue lives in, confirm it exists locally, and pass its name here."`
+	DependsOn          []string       `json:"depends_on,omitempty" jsonschema:"Optional list of prerequisite backend task ids this task depends on; the backend gates claiming on them. Omit when the task has no dependencies."`
 }
 
 // TaskReportOutput defines the output schema for the task-report tool.
@@ -900,6 +901,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: false,
 		},
 	}, s.TaskSetStatusHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-link",
+		Description: "Add a dependency edge so one backend task depends on another: POSTs prerequisite_id to the task's /dependencies sub-collection and returns the updated task (with its dependsOn list and ready flag). Both id and prerequisite_id are required (blanks are rejected before any request). The backend owns the dependency model — it gates claiming on unresolved prerequisites, computes ready, and rejects a cycle or self-dependency (surfaced as an invalid-transition error); an unknown task surfaces as not-found. Mutating and not idempotent.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.TaskLinkHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "projects-list",

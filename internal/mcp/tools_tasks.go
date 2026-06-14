@@ -19,23 +19,25 @@ import (
 // TaskView is the agent-facing projection of producer.Task. IDs are rendered as
 // strings (the backend emits numbers); empty fields are omitted.
 type TaskView struct {
-	ID                 string `json:"id" jsonschema:"Backend task id"`
-	Fingerprint        string `json:"fingerprint,omitempty" jsonschema:"Fingerprint of the machine that reported the task"`
-	InstanceID         string `json:"instance_id,omitempty"`
-	InstanceName       string `json:"instance_name,omitempty"`
-	Category           string `json:"category,omitempty"`
-	Severity           string `json:"severity,omitempty"`
-	Status             string `json:"status" jsonschema:"Lifecycle status (new, claimed, in_progress, resolved, failed, denied, archived)"`
-	Priority           int    `json:"priority" jsonschema:"Manual priority (higher = sooner); use as the goal priority when converting this task to a goal"`
-	Project            string `json:"project,omitempty" jsonschema:"Project lane this task belongs to"`
-	Title              string `json:"title,omitempty"`
-	Description        string `json:"description,omitempty"`
-	ProposedFix        string `json:"proposed_fix,omitempty"`
-	ExpectedGreenState string `json:"expected_green_state,omitempty"`
-	ClaimedBy          string `json:"claimed_by,omitempty" jsonschema:"Fingerprint of the machine that claimed the task"`
-	ClaimedAt          string `json:"claimed_at,omitempty"`
-	CreatedAt          string `json:"created_at,omitempty"`
-	UpdatedAt          string `json:"updated_at,omitempty"`
+	ID                 string   `json:"id" jsonschema:"Backend task id"`
+	Fingerprint        string   `json:"fingerprint,omitempty" jsonschema:"Fingerprint of the machine that reported the task"`
+	InstanceID         string   `json:"instance_id,omitempty"`
+	InstanceName       string   `json:"instance_name,omitempty"`
+	Category           string   `json:"category,omitempty"`
+	Severity           string   `json:"severity,omitempty"`
+	Status             string   `json:"status" jsonschema:"Lifecycle status (new, claimed, in_progress, resolved, failed, denied, archived)"`
+	Priority           int      `json:"priority" jsonschema:"Manual priority (higher = sooner); use as the goal priority when converting this task to a goal"`
+	Project            string   `json:"project,omitempty" jsonschema:"Project lane this task belongs to"`
+	Title              string   `json:"title,omitempty"`
+	Description        string   `json:"description,omitempty"`
+	ProposedFix        string   `json:"proposed_fix,omitempty"`
+	ExpectedGreenState string   `json:"expected_green_state,omitempty"`
+	ClaimedBy          string   `json:"claimed_by,omitempty" jsonschema:"Fingerprint of the machine that claimed the task"`
+	ClaimedAt          string   `json:"claimed_at,omitempty"`
+	CreatedAt          string   `json:"created_at,omitempty"`
+	UpdatedAt          string   `json:"updated_at,omitempty"`
+	DependsOn          []string `json:"depends_on,omitempty" jsonschema:"Prerequisite task ids this task depends on"`
+	Ready              bool     `json:"ready" jsonschema:"Backend-computed readiness; false means the task is blocked on an unresolved prerequisite"`
 }
 
 // descriptionPreviewLen caps the description excerpt returned in a list row so a
@@ -94,6 +96,13 @@ func toTaskSummary(t producer.Task) TaskSummary {
 }
 
 func toTaskView(t producer.Task) TaskView {
+	var dependsOn []string
+	if len(t.DependsOn) > 0 {
+		dependsOn = make([]string, 0, len(t.DependsOn))
+		for _, d := range t.DependsOn {
+			dependsOn = append(dependsOn, d.String())
+		}
+	}
 	return TaskView{
 		ID:                 t.ID.String(),
 		Fingerprint:        t.Fingerprint,
@@ -112,6 +121,8 @@ func toTaskView(t producer.Task) TaskView {
 		ClaimedAt:          t.ClaimedAt,
 		CreatedAt:          t.CreatedAt,
 		UpdatedAt:          t.UpdatedAt,
+		DependsOn:          dependsOn,
+		Ready:              t.Ready,
 	}
 }
 
@@ -649,6 +660,63 @@ func (s *Server) TaskSetStatusHandler(ctx context.Context, req *sdkmcp.CallToolR
 	output, err := s.TaskSetStatus(ctx, input)
 	if err != nil {
 		return nil, TaskSetStatusOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// ----------------------------------------------------------------------------
+// task-link (add one prerequisite dependency edge)
+// ----------------------------------------------------------------------------
+
+// TaskLinkInput defines the input schema for the task-link tool. Both fields are
+// required: id is the dependent task, prerequisite_id the task it depends on.
+type TaskLinkInput struct {
+	ID             string `json:"id" jsonschema:"Backend task id that should depend on the prerequisite; required"`
+	PrerequisiteID string `json:"prerequisite_id" jsonschema:"Backend task id of the prerequisite this task depends on; required"`
+}
+
+// TaskLinkOutput is the updated task after the dependency edge is added.
+type TaskLinkOutput struct {
+	Task TaskView `json:"task"`
+}
+
+// TaskLink adds one prerequisite dependency edge to a task via POST
+// /api/v1/tasks/{id}/dependencies. Both id and prerequisite_id are trimmed and
+// required, and are validated BEFORE the producer client is built (invalid input
+// never hits the wire). The backend owns the dependency model: it gates claiming
+// on unresolved prerequisites, computes ready, and rejects a cycle/self-dep
+// (surfaced as producer.ErrInvalidTransition); an unknown task surfaces as
+// producer.ErrTaskNotFound.
+func (s *Server) TaskLink(ctx context.Context, in TaskLinkInput) (*TaskLinkOutput, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, fmt.Errorf("%w: missing required field: id", ErrInvalidInput)
+	}
+	prerequisiteID := strings.TrimSpace(in.PrerequisiteID)
+	if prerequisiteID == "" {
+		return nil, fmt.Errorf("%w: missing required field: prerequisite_id", ErrInvalidInput)
+	}
+
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+
+	task, err := client.Link(ctx, id, prerequisiteID)
+	if err != nil {
+		return nil, err
+	}
+	return &TaskLinkOutput{Task: toTaskView(*task)}, nil
+}
+
+// TaskLinkHandler is the MCP tool handler for task-link.
+func (s *Server) TaskLinkHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskLinkInput) (
+	*sdkmcp.CallToolResult, TaskLinkOutput, error,
+) {
+	output, err := s.TaskLink(ctx, input)
+	if err != nil {
+		return nil, TaskLinkOutput{}, err
 	}
 	result, out := prependStaleWarning(*output)
 	return result, out, nil
