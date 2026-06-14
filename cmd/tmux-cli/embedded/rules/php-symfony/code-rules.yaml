@@ -529,6 +529,49 @@
     - "review: an AggregateData DAO references a foreign aggregate by its typed Id + #[PersistentReference], not a concrete foreign entity"
   validate_kind: review
   phase: domain
+
+- id: PHP-PERS-006
+  category: persistence
+  scope: generic
+  severity: should
+  title: "Cover every FK-less relation/foreign-id column with an explicit index"
+  rule: >
+    In a project that does not use database foreign keys, every relation /
+    foreign-id column — a typed aggregate Id paired with a #[PersistentReference]
+    back-reference, or any join column pointing at another table without an FK
+    constraint — carries an explicit covering index, declared in the migration
+    that creates or alters the column. A column governed by a real DB foreign key
+    is exempt: the foreign key already creates that index.
+  why: >
+    PHP-PERS-005 references a foreign aggregate by a typed Id + #[PersistentReference]
+    instead of a mapped foreign-entity association, so the schema has no foreign-key
+    constraint on that id column. A foreign key would auto-create the backing index;
+    without one, nothing guarantees the column is indexed and every join or filter on
+    it table-scans. The covering index restores the lookup performance the missing FK
+    would otherwise have provided.
+  depends_on_rules:
+    - "PHP-PERS-005"
+  applies_to:
+    - "migrations/**/*.php"
+    - "{src}/{infra}/**/*.php"
+    - "{src}/**/*Data.php"
+  detect:
+    - "a relation/foreign-id column (a typed Id + #[PersistentReference], or any FK-less join column) created or altered in a migration with no covering index on it"
+    - "a foreign-id column carrying neither a DB foreign-key constraint nor a covering index"
+  fix: >
+    Add a covering index on the relation/foreign-id column in the migration that
+    creates or alters it (an index line naming that column). In a project that does
+    use DB foreign keys, add the foreign-key constraint instead — it creates the
+    index and this rule no longer applies.
+  autofix: structural
+  acceptance:
+    - "GIVEN a project with no DB foreign keys, WHEN a relation/foreign-id column is added or altered, THEN a covering index on that column is declared in the same migration"
+    - "GIVEN a column governed by a DB foreign-key constraint THEN the rule is inert — the foreign key already provides the index"
+  validate:
+    - "review: every FK-less relation/foreign-id column added or altered in the diff has a covering index declared in its migration"
+    - "review: the rule stays inert where a DB foreign-key constraint governs the column — no covering-index demand on FK-backed columns"
+  validate_kind: review
+  phase: domain
 - id: PHP-MONO-001
   category: scaffold
   scope: generic
