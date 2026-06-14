@@ -40,6 +40,26 @@
 3. Are there custom Composer scripts defined (e.g., `auto-scripts`, `post-install-cmd`)?
    > {{composer_scripts}}
 
+4. **Source layout (code-rule routing).** Where does source code actually live,
+   and what is the infrastructure-layer directory called? The code-rules engine
+   resolves `{src}`/`{infra}` globs from this (see `.tmux-cli/rules/SCHEMA.md`).
+   Derive the source roots from the PSR-4 dirs above when possible; **ASK** when
+   the topology is a monorepo the root `composer.json` can't express (per-context
+   `contexts/*/src`, framework `contexts/*/app/src`, `projects/*/src`,
+   `packages/*/src`) or the infra layer is not the default `Infrastructure`.
+   Record the answer in `docs/architecture/layout.md` under a `## Layers` section
+   with exactly these two lines (authoritative over PSR-4 detection):
+
+   ```markdown
+   ## Layers
+
+   - Source roots: {{layout_source_roots}}
+   - Infrastructure layer: {{layout_infra_layer}}
+   ```
+
+   - Source roots (comma-separated globs): {{layout_source_roots}}
+   - Infrastructure layer directory: {{layout_infra_layer}}
+
 ---
 
 ## 1c. PHP Extension Requirements

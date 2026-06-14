@@ -78,7 +78,12 @@ ruleset:
 - Shared concepts live in exactly one place (`contexts/previo/src` for domain
   language, `packages/*` for cross-cutting libraries), so duplication can't drift.
 
-The code rules in this pack are globbed onto these paths: `contexts/*/src/**`
-(context library), `contexts/*/app/**` (framework layer), `projects/*/src/**`
-(deployables), `contexts/*/src/Bundle/**` (infrastructure), and project-root
-`templates/**` / `config/**` / `.env` for views and configuration.
+The code rules in this pack glob onto these paths via the discovery-resolved
+`{src}`/`{infra}` tokens (see `../SCHEMA.md`), NOT hardcoded prefixes: `{src}`
+resolves to the context library + framework-layer + deployable + package source
+roots (`contexts/*/src`, `contexts/*/app/src`, `projects/*/src`, `packages/*/src`)
+and `{infra}` to the infrastructure-layer dir (`Bundle`). The `## Layers` section
+of `docs/architecture/layout.md` is authoritative for this monorepo topology (a
+path-package monorepo's root `composer.json` cannot enumerate per-context source
+roots). Project-root `templates/**` / `config/**` / `.env` stay literal — they
+carry no source-root semantics.

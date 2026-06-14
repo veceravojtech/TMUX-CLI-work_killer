@@ -73,6 +73,22 @@ Required: `id`, `category`, `scope` (generic | project), `severity`
 `applies_to` (path globs), `acceptance` (Given/When/Then list), `validate`
 (list), `validate_kind` (automated | review | mixed), `phase`.
 
+`applies_to` globs may carry two **discovery tokens** that decouple the rule
+from a hardcoded source layout, resolved once at load time before matching:
+
+- `{src}` — the project's source-root globs. Expands to one glob per resolved
+  source root, so a rule routes to wherever code actually lives (top-level
+  `src/` greenfield, or `contexts/*/src`, `projects/*/src`, … in a monorepo).
+- `{infra}` — the infra-layer directory name (greenfield `Infrastructure`; a P2
+  monorepo's `Bundle`).
+
+The Layout is resolved (read-only, never interactive) in precedence order:
+`docs/architecture/layout.md` `## Layers` (authoritative) → `composer.json`
+`autoload.psr-4` directory values → the greenfield default
+`{["src"],"Infrastructure"}` (with a warning that discovery should ASK). A glob
+carrying NEITHER token passes through byte-unchanged, so a flat-`src` project
+behaves exactly as before tokenization.
+
 Optional: `adapted_from` (source rule ID when adapted from another
 catalogue), `origin` (provenance for project-local rules, e.g. an MR note),
 `detect`, `fix`, `autofix` (safe | structural | none), `refs`,

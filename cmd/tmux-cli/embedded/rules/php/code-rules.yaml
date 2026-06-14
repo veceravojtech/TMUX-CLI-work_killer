@@ -5,8 +5,9 @@
 #
 # Adapted from a production house-rules catalogue grown out of real MR review
 # feedback (adapted_from records the source rule ID); provenance identifiers
-# are intentionally not embedded. Path globs target the generated DDD skeleton
-# (src/<BC>/<Layer>/...).
+# are intentionally not embedded. Path globs use the {src} source-root token
+# (resolved from discovery — see ../SCHEMA.md), which expands to the generated
+# DDD skeleton's top-level src/ by default (src/<BC>/<Layer>/...).
 
 - id: PHP-TYPE-001
   category: types
@@ -22,7 +23,7 @@
     runtime assertions; a typed signature documents intent.
   adapted_from: "PHP-TYPE-001"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "string-typed $id/$uuid parameters paired with Assert/preg_match UUID checks"
   fix: >
@@ -50,7 +51,7 @@
     scattered checks.
   adapted_from: "PHP-TYPE-002"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "string params compared against literal sets ('confirmed', 'cancelled', ...)"
   fix: >
@@ -77,7 +78,7 @@
     Duplicate setup drifts; one action gets the fix, the others keep the bug.
   adapted_from: "PHP-CTRL-001"
   applies_to:
-    - "src/**/*Controller.php"
+    - "{src}/**/*Controller.php"
   detect:
     - "identical setup statements opening 2+ actions of one controller"
   fix: >
@@ -105,7 +106,7 @@
     boundary exception validates once and keeps actions linear.
   adapted_from: "PHP-CTRL-002"
   applies_to:
-    - "src/**/*Controller.php"
+    - "{src}/**/*Controller.php"
   detect:
     - "getters returning X|Y unions consumed with instanceof in actions"
   fix: >
@@ -133,7 +134,7 @@
     creation path untestable in isolation.
   adapted_from: "PHP-CTRL-003"
   applies_to:
-    - "src/**/*Controller.php"
+    - "{src}/**/*Controller.php"
   detect:
     - "`new <Entity>(` or `->persist(` / `->flush(` inside a controller action"
   fix: >
@@ -160,7 +161,7 @@
     must be authoritative.
   adapted_from: "PHP-DATE-001"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "createdAt/updatedAt populated from request DTO fields"
   fix: >
@@ -185,7 +186,7 @@
     updatedAt==createdAt rows make "was this ever modified?" unanswerable.
   adapted_from: "PHP-DATE-002"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "constructor/create factory assigning both createdAt and updatedAt"
   fix: >
@@ -212,7 +213,7 @@
     scatters format strings and breaks clients one endpoint at a time.
   adapted_from: "PHP-DATE-003"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "->format('Y-m-d...') used to build response payload fields"
   fix: >
@@ -238,7 +239,7 @@
     Concept-named classes are findable and self-documenting; abbreviations rot.
   adapted_from: "PHP-NAME-001"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "abbreviated or generic class names (Manager, Helper, Util) for domain concepts"
   fix: >
@@ -263,7 +264,7 @@
     Misleading suffixes send readers hunting for an entity that doesn't exist.
   adapted_from: "PHP-NAME-002"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "enum-like fields/classes named *Id that don't reference an entity"
   fix: >
@@ -289,7 +290,7 @@
     assignment.
   adapted_from: "PHP-NAME-003"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "$data/$val/$tmp style locals holding domain values"
   fix: >
@@ -314,7 +315,7 @@
     Misleading names are worse than vague ones — they assert something false.
   adapted_from: "PHP-NAME-004"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "class/method names whose reading contradicts their behavior"
   fix: >
@@ -341,7 +342,7 @@
     silently.
   adapted_from: "PHP-TEST-001"
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "handler/service changes in the diff with no matching test change"
   fix: >
@@ -369,7 +370,7 @@
     A committed debug call leaks internals, can dump sensitive data into output,
     and dd() halts execution in production — P2 bans them outright.
   applies_to:
-    - "src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "var_dump(/dd(/dump(/print_r(/var_export( in committed PHP"
   fix: >

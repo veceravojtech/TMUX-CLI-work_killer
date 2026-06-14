@@ -166,10 +166,16 @@ runnable signal. A rule whose signal cannot run is dropped with a warning.`,
 			return err
 		}
 
+		// Expand the catalogue's {src}/{infra} tokens against the
+		// discovery-resolved Layout BEFORE matching (Go owns all glob
+		// resolution; Match never sees a token).
+		layout, layoutWarnings := rules.ResolveLayout(projectRoot)
+		codeRules = rules.ExpandAppliesTo(codeRules, layout)
+
 		result, _ := rules.Match(codeRules, rulesMatchFiles, rulesMatchPhase)
-		// Surface conservative-inclusion warnings from resolution alongside the
-		// match-time warnings (dropped rules, bad globs).
-		result.Warnings = append(append([]string{}, resolveWarnings...), result.Warnings...)
+		// Surface layout + conservative-inclusion warnings from resolution
+		// alongside the match-time warnings (dropped rules, bad globs).
+		result.Warnings = append(append(append([]string{}, layoutWarnings...), resolveWarnings...), result.Warnings...)
 		return printMatchResult(cmd, result, rulesMatchJSON)
 	},
 }
@@ -225,10 +231,16 @@ Greenfield (no rules tree) yields an empty result, exit 0.`,
 			return err
 		}
 
+		// Expand the catalogue's {src}/{infra} tokens against the
+		// discovery-resolved Layout BEFORE checking (Go owns all glob
+		// resolution; Check never sees a token).
+		layout, layoutWarnings := rules.ResolveLayout(projectRoot)
+		codeRules = rules.ExpandAppliesTo(codeRules, layout)
+
 		result := rules.Check(codeRules, files, rulesCheckPhase, projectRoot)
-		// Surface conservative-inclusion warnings from resolution alongside the
-		// check-time warnings (dropped rules, bad globs, grep errors).
-		result.Warnings = append(append([]string{}, resolveWarnings...), result.Warnings...)
+		// Surface layout + conservative-inclusion warnings from resolution
+		// alongside the check-time warnings (dropped rules, bad globs, grep errors).
+		result.Warnings = append(append(append([]string{}, layoutWarnings...), resolveWarnings...), result.Warnings...)
 		return printCheckResult(cmd, result, rulesCheckJSON)
 	},
 }

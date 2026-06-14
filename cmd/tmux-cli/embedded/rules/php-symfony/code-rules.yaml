@@ -7,11 +7,17 @@
 #
 # Adapted from a production house-rules catalogue grown out of real MR review
 # feedback (adapted_from records the source rule ID); provenance identifiers
-# are intentionally not embedded. Path globs target the P2 monorepo topology:
-# contexts/<bc>/src/{Domain,Application,Bundle} (the bounded-context library;
-# Bundle is the infrastructure layer), contexts/<bc>/app (framework layer),
-# contexts/previo/src (shared kernel), projects/<app>/src (deployable apps),
-# and packages/<pkg> (shared libraries).
+# are intentionally not embedded.
+#
+# Path globs use the {src}/{infra} discovery tokens (see ../SCHEMA.md): {src}
+# expands to every resolved source root, {infra} to the infra-layer directory
+# name. For the P2 monorepo topology a `## Layers` doc resolves {src} to
+# contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src and {infra}
+# to Bundle. Tokenizing COLLAPSES the former context-vs-project glob distinction
+# (contexts/*/src/**/*Handler.php and projects/*/src/... both become {src}/...);
+# this is intentional — the goal is portability (rules match the real tree), and
+# deptrac remains the authoritative boundary enforcer for the mixed rules.
+# PHP-MONO-001's component-manifest globs stay LITERAL (no source-root semantics).
 
 - id: PHP-ARCH-001
   category: architecture
@@ -27,8 +33,7 @@
   adapted_from: "PHP-ARCH-001"
   applies_to:
     - "templates/**/*.twig"
-    - "contexts/*/src/**/View/**/*.php"
-    - "projects/*/src/**/View/**/*.php"
+    - "{src}/**/View/**/*.php"
   detect:
     - "conditional business rules computed inside a template"
   fix: >
@@ -54,7 +59,7 @@
     handlers; it keeps Domain free of orchestration.
   adapted_from: "PHP-ARCH-002"
   applies_to:
-    - "contexts/*/src/**/*Handler.php"
+    - "{src}/**/*Handler.php"
   detect:
     - "a *Handler class outside */Application/*"
     - "handler entry method not named handle"
@@ -83,7 +88,7 @@
     from the domain strands them.
   adapted_from: "PHP-ARCH-003"
   applies_to:
-    - "contexts/*/src/Domain/**/*.php"
+    - "{src}/Domain/**/*.php"
   detect:
     - "a Domain repository method typed to return a *DTO"
   fix: >
@@ -109,8 +114,7 @@
     One seam to change how data is stored; callers stay storage-agnostic.
   adapted_from: "PHP-ARCH-004"
   applies_to:
-    - "contexts/*/src/**/*.php"
-    - "projects/*/src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "EntityManager/persist/flush called from a controller or handler"
   fix: >
@@ -137,7 +141,7 @@
     Needless indirection adds files and cognitive load with no benefit.
   adapted_from: "PHP-ARCH-005"
   applies_to:
-    - "contexts/*/src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "a new interface with exactly one implementation and no test double need"
     - "a message dispatched async where the caller awaits the outcome"
@@ -165,9 +169,9 @@
     tangles unrelated concerns.
   adapted_from: "PHP-ARCH-006"
   applies_to:
-    - "projects/*/src/*/*Controller.php"
-    - "projects/*/src/*/*Request.php"
-    - "projects/*/src/*/*Response.php"
+    - "{src}/*/*Controller.php"
+    - "{src}/*/*Request.php"
+    - "{src}/*/*Response.php"
   detect:
     - "Request/Response/Command DTOs loose in a module root"
     - "one controller exposing actions for two distinct resources"
@@ -197,8 +201,8 @@
     typos.
   adapted_from: "PHP-PERS-001"
   applies_to:
-    - "contexts/*/src/Bundle/**/*.php"
-    - "projects/*/src/**/*Repository.php"
+    - "{src}/{infra}/**/*.php"
+    - "{src}/**/*Repository.php"
   detect:
     - "repositories returning/accepting associative arrays for domain state"
   fix: >
@@ -227,9 +231,9 @@
   depends_on_rules:
     - "PHP-PERS-001"
   applies_to:
-    - "contexts/*/src/Bundle/**/*.php"
-    - "contexts/*/src/Domain/**/*.php"
-    - "projects/*/src/**/Entity/**/*.php"
+    - "{src}/{infra}/**/*.php"
+    - "{src}/Domain/**/*.php"
+    - "{src}/**/Entity/**/*.php"
   detect:
     - "ORM column type string/varchar holding UUIDs"
   fix: >
@@ -259,8 +263,8 @@
   depends_on_rules:
     - "PHP-PERS-001"
   applies_to:
-    - "contexts/*/src/Domain/**/*.php"
-    - "contexts/*/src/Bundle/**/*.php"
+    - "{src}/Domain/**/*.php"
+    - "{src}/{infra}/**/*.php"
   detect:
     - "json ORM column holding an array of structured records"
   fix: >
@@ -289,7 +293,7 @@
   depends_on_rules:
     - "PHP-PERS-001"
   applies_to:
-    - "contexts/*/src/Bundle/**/*.php"
+    - "{src}/{infra}/**/*.php"
   detect:
     - "string columns + manual from()/value conversions around enum fields"
   fix: >
@@ -350,8 +354,7 @@
     exceptions keep the boundary uniform.
   adapted_from: "PHP-I18N-001"
   applies_to:
-    - "contexts/*/src/**/*.php"
-    - "projects/*/src/**/*.php"
+    - "{src}/**/*.php"
     - "templates/**/*.twig"
   detect:
     - "literal user-facing strings in controllers/templates"
@@ -388,9 +391,7 @@
     with Doctrine's binary UUID mapping (see PHP-PERS-002).
   adapted_from: "PHP-TYPE-001"
   applies_to:
-    - "contexts/*/src/**/*.php"
-    - "contexts/*/app/src/**/*.php"
-    - "projects/*/src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "Assert::uuid(...) or the attribute #[Assert\\Uuid] guarding a value then typed/passed as a string"
     - "a *Id/*Uuid property or param holding a UUID but typed string instead of a UUID value object"
@@ -425,9 +426,7 @@
     The package/layer graph is the architecture; an upward or cross-internal edge
     couples what must stay independently buildable and deployable.
   applies_to:
-    - "contexts/*/src/**/*.php"
-    - "packages/*/src/**/*.php"
-    - "projects/*/src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "a lower layer importing a higher layer (Domain using Application/Bundle)"
     - "a package importing another package's internal namespace, not its contract"
@@ -457,7 +456,7 @@
     A concrete cross-context import welds two contexts together; the next refactor
     in one breaks the other, defeating the bounded-context split.
   applies_to:
-    - "contexts/*/src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "a use/import of another context's concrete Domain/Application namespace"
     - "constructor injection typed to a foreign context's concrete service"
@@ -487,7 +486,7 @@
     Reading through the contract keeps the consumer decoupled from the producer's
     internal shape; the producer can change its query service without a ripple.
   applies_to:
-    - "contexts/*/src/**/*.php"
+    - "{src}/**/*.php"
   detect:
     - "a consumer context typing against a foreign concrete query service or result DTO"
   fix: >
@@ -515,8 +514,8 @@
     another and breaks aggregate boundaries; the typed Id + #[PersistentReference]
     seam keeps each aggregate independently loadable.
   applies_to:
-    - "contexts/*/src/**/*Data.php"
-    - "contexts/*/src/Domain/**/*.php"
+    - "{src}/**/*Data.php"
+    - "{src}/Domain/**/*.php"
   detect:
     - "an AggregateData DAO mapping a concrete foreign aggregate entity association"
     - "a back-reference to a parent aggregate without #[PersistentReference]"
