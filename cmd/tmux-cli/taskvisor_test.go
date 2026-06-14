@@ -1,8 +1,10 @@
+//go:build integration
+
 package main
 
 import (
-	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,29 +42,18 @@ func TestRunTaskvisorGoalSkip_SweepsNamespaced(t *testing.T) {
 	assert.NotContains(t, killed, "execute-009-1", "sibling goal windows must survive")
 }
 
-func captureStdout(t *testing.T, fn func()) string {
+// isolateTmuxServer redirects any tmux server a daemon-lifecycle test (or the
+// code under test) might spawn onto a throwaway per-test socket and tears it
+// down even on failure, so a spawned session can never join the developer's
+// live tmux server / taskvisor daemon. Setting TMUX_TMPDIR isolates the default
+// tmux socket at $TMUX_TMPDIR/tmux-$UID/default. The t.Cleanup kill inherits
+// that env (t.Cleanup runs LIFO, before t.Setenv's env-restore), so it targets
+// only the isolated server; a "no server running" non-zero exit is expected and
+// ignored.
+func isolateTmuxServer(t *testing.T) {
 	t.Helper()
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stdout = w
-
-	fn()
-
-	w.Close()
-	out, _ := io.ReadAll(r)
-	os.Stdout = old
-	return string(out)
-}
-
-func withTempCwd(t *testing.T, fn func(dir string)) {
-	t.Helper()
-	dir := t.TempDir()
-	orig, err := os.Getwd()
-	require.NoError(t, err)
-	require.NoError(t, os.Chdir(dir))
-	defer func() { require.NoError(t, os.Chdir(orig)) }()
-	fn(dir)
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
 }
 
 func TestTaskvisorCommandHierarchy(t *testing.T) {
@@ -286,6 +277,7 @@ func TestGoalListCmd_Empty(t *testing.T) {
 
 func TestTaskvisorStartCmd_WritesSignalFile(t *testing.T) {
 	withTempCwd(t, func(dir string) {
+		isolateTmuxServer(t)
 		gf := &taskvisor.GoalsFile{
 			Goals: []taskvisor.Goal{
 				{ID: "goal-001", Description: "Test goal", Status: taskvisor.GoalPending, MaxRetries: 3},
@@ -304,6 +296,7 @@ func TestTaskvisorStartCmd_WritesSignalFile(t *testing.T) {
 
 func TestTaskvisorStartCmd_NoPendingGoals(t *testing.T) {
 	withTempCwd(t, func(dir string) {
+		isolateTmuxServer(t)
 		gf := &taskvisor.GoalsFile{
 			Goals: []taskvisor.Goal{
 				{ID: "goal-001", Description: "Done goal", Status: taskvisor.GoalDone, MaxRetries: 3},
@@ -709,6 +702,7 @@ func TestGoalSkipCmd_CustomReason(t *testing.T) {
 // (errored "no pending goals"), passes after.
 func TestRunTaskvisorStart_WritesSignalForRecoverableBlock(t *testing.T) {
 	withTempCwd(t, func(dir string) {
+		isolateTmuxServer(t)
 		gf := &taskvisor.GoalsFile{
 			Goals: []taskvisor.Goal{
 				{ID: "goal-001", Description: "Done blocker", Status: taskvisor.GoalDone, MaxRetries: 3},
@@ -730,6 +724,7 @@ func TestRunTaskvisorStart_WritesSignalForRecoverableBlock(t *testing.T) {
 // at least one pending goal keeps the original behavior (signal written, no error).
 func TestRunTaskvisorStart_WritesSignalForPending(t *testing.T) {
 	withTempCwd(t, func(dir string) {
+		isolateTmuxServer(t)
 		gf := &taskvisor.GoalsFile{
 			Goals: []taskvisor.Goal{
 				{ID: "goal-001", Description: "Pending goal", Status: taskvisor.GoalPending, MaxRetries: 3},
@@ -752,6 +747,7 @@ func TestRunTaskvisorStart_WritesSignalForPending(t *testing.T) {
 // refused with no signal written.
 func TestRunTaskvisorStart_RefusesTerminalGraph(t *testing.T) {
 	withTempCwd(t, func(dir string) {
+		isolateTmuxServer(t)
 		gf := &taskvisor.GoalsFile{
 			Goals: []taskvisor.Goal{
 				{ID: "goal-001", Description: "Done goal", Status: taskvisor.GoalDone, MaxRetries: 3},
@@ -772,6 +768,7 @@ func TestRunTaskvisorStart_RefusesTerminalGraph(t *testing.T) {
 
 func TestTaskvisorStartCmd_NoGoalsFile(t *testing.T) {
 	withTempCwd(t, func(dir string) {
+		isolateTmuxServer(t)
 		err := runTaskvisorStart(nil, nil)
 		assert.Error(t, err)
 
