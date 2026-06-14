@@ -1,0 +1,54 @@
+<stage n="3" title="Docs + test strategy" autonomous="true">
+  <objective>Emit ONE per-feature specification `.md` for the feature under design, reusing /tmux:plan's existing spec-section vocabulary (Intent, Boundaries &amp; Constraints, I/O &amp; Edge-Case Matrix, Acceptance, Design Notes) — never a new doc format. Every section is GROUNDED in the upstream context blocks: Stage 0's resolved SIGNALS+TOPOLOGY, Stage 1's context dossier, and Stage 2's approved ADR — no project-shaped value is fabricated or hardcoded. This shard is the Stage 3 ENTRY (the "docs" half): it owns Intent through Acceptance + Design Notes, keeps the spec's Test Plan section an explicit STUB, and then routes into the existing sibling `stage-3b-test-strategy.xml` (the test-strategy half) to fill that stub. The two compose into one feature spec without overlap.</objective>
+
+  <substep n="3.1" title="Consume Stage 0 / 1 / 2 context — never re-probe">
+    <action>Read the upstream emitted context blocks verbatim — do NOT re-probe the filesystem, re-run `tmux-cli rules resolve`, or re-open the architecture decision. Every fact this stage needs was resolved upstream:</action>
+    <action>From the Stage 0 capability block: SIGNALS (lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows), E2E_RUNNER_AVAILABLE, and TOPOLOGY (source roots, layer names, root namespace, quality-gate commands). These ground the spec's Boundaries, Code Map, and Dependencies in this project's actual stack.</action>
+    <action>From the Stage 1 context dossier: the existing-system surfaces the feature touches (affected modules, call sites, data shapes, prior-art conventions). These ground Intent, the I/O &amp; Edge-Case Matrix, and Dependencies.</action>
+    <action>From the Stage 2 approved ADR: the user-confirmed architecture decision (the chosen approach, its boundaries, the rejected alternatives and why). This is the AUTHORITATIVE design anchor — the emitted spec's Approach and Design Notes restate it, never re-decide it.</action>
+    <check condition="an upstream block (Stage 2 ADR or Stage 1 dossier) is absent from context">
+      <action>Note the gap IN the affected section rather than fabricating a value — resolve per the autonomous highest-quality-in-scope rule and record the rationale. Never invent a project fact to fill a missing block.</action>
+    </check>
+  </substep>
+
+  <substep n="3.2" title="Emit the feature spec .md using /tmux:plan's section vocabulary">
+    <action>Write a per-feature specification `.md` under the command's research-root, reusing /tmux:plan's `&lt;spec-deliverable-template&gt;` section names VERBATIM — do NOT invent a new doc format. The docs half owns these sections:</action>
+    <section name="Intent">**Problem:** one-to-two sentences — what the feature adds/changes in the existing system (from the Stage 1 dossier). **Approach:** one-to-two sentences — the high-level "what" from the Stage 2 approved ADR, not a re-decision.</section>
+    <section name="Boundaries &amp; Constraints">Three tiers — **Always:** invariants the feature must obey (grounded in the resolved TOPOLOGY conventions); **Ask First:** decidable forks the implementation worker auto-resolves to the highest-quality in-scope option (escalate ONLY user-only facts); **Never:** explicit non-goals from the ADR's rejected alternatives.</section>
+    <section name="I/O &amp; Edge-Case Matrix">Optional — table (Scenario | Input / State | Expected Output / Behavior | Error Handling) covering happy path, error cases, boundary conditions, each row specific enough to become a test case. If the feature is pure-logic with no meaningful I/O surface, DELETE the section entirely per plan.xml's optional-section rule — do NOT write "N/A".</section>
+    <section name="Dependencies">Which existing modules must already be in place and what they provide (from the Stage 1 dossier + Stage 0 topology); "none" if independent.</section>
+    <section name="Design Notes">Optional — architectural rationale from the approved ADR (why this approach over the rejected ones); keep golden examples to 5–10 lines. DELETE if the approach is straightforward — do NOT write "N/A".</section>
+    <section name="Test Plan">STUB ONLY. Write an explicit, visible placeholder — e.g. "_Filled by Stage 3b (stage-3b-test-strategy.xml): one Test Plan row per acceptance unit, classified and mapped to {layer, driver, test path} from the Stage 0 capability signals._" — NOT a populated plan and NEVER the bare word "N/A". This section is deliberately left for the test-strategy half (F5) to complete; substep 3.3 hands the feature's acceptance criteria to it.</section>
+    <section name="Acceptance">Acceptance criteria in Given/When/Then, checkbox-formatted (`- [ ] Given … when … then …`), each criterion independently testable and grounded in the ADR's expected behavior. These ARE the acceptance units Stage 3b classifies into Test Plan rows.</section>
+    <rule critical="true">PORTABILITY: every value written into the spec is a resolved signal / topology value / dossier fact / ADR decision — NEVER a hardcoded source root, layer name, runner name, port, project name, or path literal. Emit no project name anywhere.</rule>
+    <rule>Section headings reuse /tmux:plan's vocabulary verbatim — do NOT rename, do NOT invent sibling sections. The docs half is Intent → Acceptance + Design Notes; the Test Plan stays a stub for 3b.</rule>
+  </substep>
+
+  <substep n="3.3" title="Route into stage-3b-test-strategy.xml to fill the Test Plan stub">
+    <load file=".claude/commands/tmux/feature/stage-3b-test-strategy.xml">After the spec `.md` is written, READ stage-3b-test-strategy.xml NOW and execute its content as the test-strategy half of this stage: hand it the emitted spec's Acceptance criteria (the acceptance units) plus the Stage 0 capability context block so it renders the Test Plan table and replaces the docs half's Test Plan stub in place. It is present on disk (shipped with F5).</load>
+    <check condition="stage-3b-test-strategy.xml is somehow absent from disk">
+      <action>The spec `.md` still emits with its Test Plan STUB intact and visibly labeled for Stage 3b — print "Stage 3b pending — feature/stage-3b-test-strategy.xml not present; Test Plan left as stub" and STOP gracefully. Never crash, never improvise the Test Plan body.</action>
+    </check>
+    <action>Hand the completed feature spec (docs half + Stage 3b's Test Plan) to Stage 4 for implementation. Proceed to Stage 4.</action>
+  </substep>
+
+  <execution-rules>
+    <rule>REUSE, DON'T REINVENT: the emitted spec reuses /tmux:plan's `&lt;spec-deliverable-template&gt;` section vocabulary verbatim — this shard EMITS a doc shaped by that vocabulary; it never re-implements /tmux:plan's planning, dispatch, or supervisor logic.</rule>
+    <rule>DOCS/TEST-STRATEGY SPLIT: stage-3-docs.xml owns Intent → Acceptance + Design Notes and keeps the spec's Test Plan an explicit stub; stage-3b-test-strategy.xml owns the Test Plan. The two compose into one feature spec without overlap — the stub is the handoff seam, never an empty "N/A".</rule>
+    <rule>PORTABILITY: every spec value is a resolved Stage 0 signal / TOPOLOGY value / Stage 1 dossier fact / Stage 2 ADR decision — NEVER a hardcoded source root, layer name, runner name, port, path literal, or project name.</rule>
+    <rule>GROUNDED, NOT FABRICATED: when an upstream block is missing, the affected section records the gap and resolves per the highest-quality in-scope rule — it never invents a project fact.</rule>
+    <rule>AUTONOMOUS STAGE: resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user (feature.xml is interactive ONLY at Stage 2).</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • AUTONOMOUS stage — resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user (mirrors feature.xml's autonomous-stage mandate).
+      • REUSE /tmux:plan's spec-section vocabulary VERBATIM (Intent, Boundaries &amp; Constraints, I/O &amp; Edge-Case Matrix, Acceptance, Design Notes) — never invent a new doc format; the shard EMITS a doc, it does not run a planning supervisor.
+      • GROUND every section in Stage 0 SIGNALS+TOPOLOGY, the Stage 1 dossier, and the Stage 2 approved ADR — never re-probe, never re-decide the architecture, never fabricate a missing fact.
+      • PORTABILITY IS MANDATORY — no source root, layer name, runner name, port, path literal, or project name is hardcoded; every value is a resolved signal or upstream-block fact.
+      • The spec's Test Plan section is a VISIBLE STUB labeled for Stage 3b — never a populated plan, never "N/A"; substep 3.3 routes into stage-3b-test-strategy.xml to fill it.
+      • A missing stage-3b shard stops gracefully with the spec's Test Plan stub intact — never crash, never improvise the Test Plan body.
+    </critical-rules>
+  </llm>
+</stage>
