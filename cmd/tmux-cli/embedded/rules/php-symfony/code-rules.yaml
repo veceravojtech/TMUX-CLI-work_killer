@@ -207,8 +207,9 @@
   acceptance:
     - "GIVEN domain persistence THEN it uses mapped Doctrine entities"
   validate:
+    - "composer p2:db-validate"
     - "review: changed repositories operate on mapped entities, not raw arrays"
-  validate_kind: review
+  validate_kind: mixed
   phase: domain
 
 - id: PHP-PERS-002
@@ -237,8 +238,9 @@
   acceptance:
     - "GIVEN a UUID column THEN its Doctrine type is the binary UUID type"
   validate:
+    - "composer p2:db-validate"
     - "review: new UUID columns in the diff use the uuid Doctrine type"
-  validate_kind: review
+  validate_kind: mixed
   phase: domain
 
 - id: PHP-PERS-003
@@ -267,8 +269,9 @@
   acceptance:
     - "GIVEN a structured collection THEN it is a mapped child entity, not a JSON column"
   validate:
+    - "composer p2:db-validate"
     - "review: no new JSON columns holding structured collections in the diff"
-  validate_kind: review
+  validate_kind: mixed
   phase: domain
 
 - id: PHP-PERS-004
@@ -295,8 +298,9 @@
   acceptance:
     - "GIVEN an enum/VO column THEN a custom DBAL type owns the conversion"
   validate:
+    - "composer p2:db-validate"
     - "review: new enum/VO columns in the diff are mapped via custom DBAL types"
-  validate_kind: review
+  validate_kind: mixed
   phase: domain
 
 - id: PHP-CFG-001
