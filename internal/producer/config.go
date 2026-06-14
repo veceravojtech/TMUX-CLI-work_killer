@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/console/tmux-cli/internal/identity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,11 +16,14 @@ import (
 type Config struct {
 	APIURL     string
 	APIEnabled bool
-	// Project is the task "lane" the client reports to and claims from: a
-	// machine-qualified working-folder identity. Resolved by LoadConfig as a
-	// `project:` override from setting.yaml, else auto-derived as
-	// "<identity.Fingerprint()>:<abs projectRoot>". Empty only when no
-	// setting.yaml exists (API disabled anyway).
+	// Project is the task "lane" the client reports to and claims from: the
+	// absolute working-folder path. Resolved by LoadConfig as a `project:`
+	// override from setting.yaml, else auto-derived as the abs projectRoot. The
+	// path is the matching key, so the SAME path on different machines pairs
+	// (e.g. a laptop reports work that the remote box, sharing the path, claims);
+	// the reporting machine (origin) is tracked separately via the task's
+	// instance/fingerprint in the backend. Empty only when no setting.yaml exists
+	// (API disabled anyway).
 	Project string
 }
 
@@ -76,9 +78,11 @@ func LoadConfig(projectRoot string) (Config, error) {
 	}
 
 	// Project lane: a `project:` override (flat preferred, then nested) wins;
-	// otherwise auto-derive the machine-qualified working folder so the same path
-	// on different machines is a distinct lane. Resolved only when a setting.yaml
-	// exists — a missing file already returned a zero-value Config above.
+	// otherwise auto-derive the absolute working-folder path. The path is the
+	// matching key, so the same path on different machines pairs (laptop reports,
+	// remote claims). The reporting machine (origin) lives on the task's instance
+	// in the backend, not in this key. Resolved only when a setting.yaml exists —
+	// a missing file already returned a zero-value Config above.
 	override := ""
 	if f.Project != nil {
 		override = *f.Project
@@ -92,7 +96,7 @@ func LoadConfig(projectRoot string) (Config, error) {
 		if absErr != nil {
 			absRoot = projectRoot
 		}
-		cfg.Project = identity.Fingerprint() + ":" + absRoot
+		cfg.Project = absRoot
 	}
 
 	return cfg, nil

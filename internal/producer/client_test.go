@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/console/tmux-cli/internal/identity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -276,15 +275,13 @@ func TestLoadConfig_FlatAndNested(t *testing.T) {
 		assert.Equal(t, Config{}, cfg)
 	})
 
-	t.Run("project auto-derives the machine-qualified lane when no override", func(t *testing.T) {
+	t.Run("project auto-derives the absolute working path when no override", func(t *testing.T) {
 		root := write(t, "apiEnabled: true\n")
 		cfg, err := LoadConfig(root)
 		require.NoError(t, err)
-		// t.TempDir() is already absolute, so the lane is "<fingerprint>:<root>".
-		assert.True(t, strings.HasSuffix(cfg.Project, ":"+root),
-			"lane must end with :<abs project root>, got %q", cfg.Project)
-		assert.True(t, strings.HasPrefix(cfg.Project, identity.Fingerprint()+":"),
-			"lane must be prefixed by this machine's fingerprint, got %q", cfg.Project)
+		// t.TempDir() is already absolute → the lane IS the path itself
+		// (machine-independent, so the same path pairs across machines).
+		assert.Equal(t, root, cfg.Project)
 	})
 
 	t.Run("explicit project override wins over auto-derive (flat)", func(t *testing.T) {

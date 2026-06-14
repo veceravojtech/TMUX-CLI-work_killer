@@ -28,14 +28,12 @@ func TestApiProjectCmd_PrintsAutoDerivedLane(t *testing.T) {
 		apiProjectCmd.SetOut(&buf)
 		require.NoError(t, apiProjectCmd.RunE(apiProjectCmd, nil))
 		out := strings.TrimSpace(buf.String())
-		// lane == "<fingerprint>:<abs cwd>" — assert shape, not the exact (machine-
-		// and tmpdir-dependent) value. os.Getwd may return a symlink-resolved path.
+		// lane IS the absolute working path (os.Getwd may resolve symlinks, e.g. /tmp).
 		require.NotEmpty(t, out)
-		assert.Contains(t, out, ":", "lane is <fingerprint>:<abs-path>")
 		resolved, err := filepath.EvalSymlinks(root)
 		require.NoError(t, err)
-		assert.True(t, strings.HasSuffix(out, ":"+root) || strings.HasSuffix(out, ":"+resolved),
-			"lane must end with the absolute working dir, got %q", out)
+		assert.True(t, out == root || out == resolved,
+			"lane must be the absolute working dir, got %q (want %q or %q)", out, root, resolved)
 	})
 }
 
