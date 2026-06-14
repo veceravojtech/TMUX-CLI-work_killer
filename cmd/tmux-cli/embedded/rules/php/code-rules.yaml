@@ -386,3 +386,38 @@
   examples:
     bad: 'var_dump($user);'
     good: '$logger->info($message);'
+
+- id: PHP-TEST-002
+  category: tests
+  scope: project
+  severity: should
+  title: "Test-first ordering for new business logic (opt-in: project declares a test-first policy)"
+  rule: >
+    OPT-IN, default OFF. WHEN — and only when — the project declares a test-first
+    policy (e.g. a "test-first" statement in its discovery / architecture docs or
+    team conventions), new or changed business logic ships with its test authored
+    FIRST: the failing test for the behavior is written before the production code
+    that satisfies it. Projects that do not declare the policy are exempt — this
+    rule imposes nothing on them.
+  why: >
+    Some teams mandate test-first (red-green-refactor) to pin behavior before code
+    and keep coverage honest. PHP-TEST-001 requires coverage but says nothing about
+    ORDERING. Making the discipline an explicit opt-in lets those teams enforce it
+    without imposing it on projects that deliberately do not, so the pack stays
+    portable.
+  origin: "backend task 94 — discovery-gated opt-in test-first convention"
+  applies_to:
+    - "{src}/**/*.php"
+  detect:
+    - "in a test-first project, production business logic added/changed in the diff with no test authored first for it"
+  fix: >
+    Author the failing test for the new behavior before the production code. If the
+    project has not declared a test-first policy, skip this rule.
+  autofix: none
+  acceptance:
+    - "GIVEN a project that declares a test-first policy WHEN new business logic is added THEN a test for it was authored first (it exists and pinned the behavior before the code)"
+    - "GIVEN a project that does NOT declare a test-first policy THEN this rule does not apply and imposes nothing"
+  validate:
+    - "review: when the project declares test-first, every new business-logic change in the diff has a test authored first; when the project does not declare test-first, this rule is N/A and yields no finding"
+  validate_kind: review
+  phase: domain
