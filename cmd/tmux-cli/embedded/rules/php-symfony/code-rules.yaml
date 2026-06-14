@@ -330,8 +330,9 @@
   acceptance:
     - "GIVEN a new env var THEN it is declared in .env with a dev default and no committed secret value"
   validate:
+    - "composer p2:env-merge"
     - "review: new env vars declared in .env; no secret values committed in the diff"
-  validate_kind: review
+  validate_kind: mixed
   phase: deployment
 
 - id: PHP-I18N-001
