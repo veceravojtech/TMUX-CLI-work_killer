@@ -301,3 +301,40 @@
     - "review: changed classes' namespaces mirror their directory path under the resolved root namespace"
   validate_kind: mixed
   phase: architecture
+
+- id: PHP-ARCH-011
+  category: architecture
+  scope: generic
+  severity: must
+  title: "Framework entry points live in the resolved entry/app layer, not the domain/application library"
+  rule: >
+    A framework entry point — a controller, CLI command, message consumer/processor,
+    event listener, or external-system adapter — lives in the project's resolved
+    framework entry-point layer (the app layer: contexts/<bc>/app or
+    projects/<app>/src in the P2 monorepo; the entry location resolved from
+    discovery / the generated skeleton for other layouts — ASK when unknown), never
+    inside the pure domain/application library (contexts/<bc>/src Domain/Application).
+    That app layer is the only layer permitted to use framework attributes
+    (#[Route], #[AsCommand], #[AsMessageProcessor], …); Domain/Application stay
+    framework-free.
+  why: >
+    An entry point in the library layer drags HTTP/CLI/messaging framework
+    dependencies into code that must stay framework-free and independently testable,
+    breaking the layer contract and the bounded-context split.
+  applies_to:
+    - "{src}/**/*Controller.php"
+    - "{src}/**/*CliCommand.php"
+  detect:
+    - "a controller, CLI command, message processor/listener, or external adapter defined under the pure domain/application library (contexts/<bc>/src Domain/Application) instead of the resolved entry/app layer"
+    - "a framework attribute (#[Route], #[AsCommand], #[AsMessageProcessor]) on a class outside the entry/app layer"
+  fix: >
+    Move the entry point to the project's resolved entry/app layer
+    (contexts/<bc>/app or projects/<app>/src); leave only framework-free
+    domain/application code in the context library.
+  autofix: structural
+  acceptance:
+    - "GIVEN a framework entry point THEN it lives in the resolved entry/app layer, not the pure domain/application library"
+  validate:
+    - "review: changed framework entry points (controllers, CLI commands, consumers, listeners, adapters) live in the resolved entry/app layer, not the pure domain/application library"
+  validate_kind: review
+  phase: architecture
