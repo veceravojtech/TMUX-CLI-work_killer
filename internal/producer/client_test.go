@@ -275,13 +275,13 @@ func TestLoadConfig_FlatAndNested(t *testing.T) {
 		assert.Equal(t, Config{}, cfg)
 	})
 
-	t.Run("project auto-derives the absolute working path when no override", func(t *testing.T) {
+	t.Run("project auto-derives the working-folder basename when no override", func(t *testing.T) {
 		root := write(t, "apiEnabled: true\n")
 		cfg, err := LoadConfig(root)
 		require.NoError(t, err)
-		// t.TempDir() is already absolute → the lane IS the path itself
-		// (machine-independent, so the same path pairs across machines).
-		assert.Equal(t, root, cfg.Project)
+		// lane is the short project NAME = basename of the root (machine/path
+		// independent, so the same project pairs across machines).
+		assert.Equal(t, filepath.Base(root), cfg.Project)
 	})
 
 	t.Run("explicit project override wins over auto-derive (flat)", func(t *testing.T) {

@@ -16,14 +16,14 @@ import (
 type Config struct {
 	APIURL     string
 	APIEnabled bool
-	// Project is the task "lane" the client reports to and claims from: the
-	// absolute working-folder path. Resolved by LoadConfig as a `project:`
-	// override from setting.yaml, else auto-derived as the abs projectRoot. The
-	// path is the matching key, so the SAME path on different machines pairs
-	// (e.g. a laptop reports work that the remote box, sharing the path, claims);
-	// the reporting machine (origin) is tracked separately via the task's
-	// instance/fingerprint in the backend. Empty only when no setting.yaml exists
-	// (API disabled anyway).
+	// Project is the task "lane" the client reports to and claims from: a short
+	// project NAME (e.g. "cli", "web"). Resolved by LoadConfig as a `project:`
+	// override from setting.yaml, else auto-derived as the BASENAME of the project
+	// root. The name is the matching key, so the same project on different
+	// machines (and different absolute paths) pairs — a laptop reports work the
+	// remote box claims. The per-machine address (path/repo) and origin live in
+	// the backend (the project_binding registry + the task's instance). Empty
+	// only when no setting.yaml exists (API disabled anyway).
 	Project string
 }
 
@@ -96,7 +96,7 @@ func LoadConfig(projectRoot string) (Config, error) {
 		if absErr != nil {
 			absRoot = projectRoot
 		}
-		cfg.Project = absRoot
+		cfg.Project = filepath.Base(absRoot)
 	}
 
 	return cfg, nil

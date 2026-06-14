@@ -28,12 +28,10 @@ func TestApiProjectCmd_PrintsAutoDerivedLane(t *testing.T) {
 		apiProjectCmd.SetOut(&buf)
 		require.NoError(t, apiProjectCmd.RunE(apiProjectCmd, nil))
 		out := strings.TrimSpace(buf.String())
-		// lane IS the absolute working path (os.Getwd may resolve symlinks, e.g. /tmp).
+		// lane is the short project NAME = basename of the working dir.
 		require.NotEmpty(t, out)
-		resolved, err := filepath.EvalSymlinks(root)
-		require.NoError(t, err)
-		assert.True(t, out == root || out == resolved,
-			"lane must be the absolute working dir, got %q (want %q or %q)", out, root, resolved)
+		assert.Equal(t, filepath.Base(root), out,
+			"lane must be the working-folder basename, got %q", out)
 	})
 }
 
