@@ -2,8 +2,13 @@
 
 A bounded context (`contexts/<bc>/src`) is layered Domain ← Application ← Bundle.
 Domain is the lowest and purest; Application is the entry point for use cases;
-Bundle is infrastructure. A lower layer never imports a higher one. Namespaces
-follow `App\<Bc>\<Layer>\<Module>\...`.
+Bundle is infrastructure. A lower layer never imports a higher one. A class's
+namespace mirrors its directory path under the project's **resolved root
+namespace** — the vendor prefix discovered from the project's `composer.json`
+PSR-4 autoload (or the `docs/architecture/layout.md` `## Layers` doc), falling
+back to `App\` only for a greenfield project, and ASK when ambiguous. So
+namespaces follow `<RootNs>\<Bc>\<Layer>\<Module>\...` (shown here with the
+greenfield `App\` default; substitute the discovered vendor, e.g. `Previo2\`).
 
 ## Domain — the aggregate triad
 

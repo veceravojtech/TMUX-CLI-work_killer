@@ -563,3 +563,35 @@
     - "review: every new/changed component dir carries a monorepo-component.json and composer p2:mono-schema exits 0"
   validate_kind: mixed
   phase: scaffold
+
+- id: PHP-ARCH-010
+  category: architecture
+  scope: generic
+  severity: must
+  title: "A class's namespace mirrors its directory path under the resolved root namespace"
+  rule: >
+    Every class's namespace mirrors its directory path under the project's
+    resolved root namespace (the PSR-4 vendor prefix discovered from composer.json
+    autoload / docs/architecture/layout.md; App\ only as the greenfield default).
+    A file at <root>/<A>/<B>/Foo.php is namespaced <RootNs>\<A>\<B>; the prefix is
+    never hardcoded.
+  why: >
+    PSR-4 autoloading binds the root namespace to a directory and each sub-namespace
+    to a subdirectory; a namespace that does not mirror its path silently fails to
+    autoload and a hardcoded vendor prefix misdirects every other project.
+  applies_to:
+    - "{src}/**/*.php"
+  detect:
+    - "a class whose namespace does not mirror its directory path under the resolved root"
+    - "a hardcoded vendor/root prefix that ignores the project's PSR-4 root"
+  fix: >
+    Align the namespace to the file's path under the resolved PSR-4 root (or move
+    the file); never hardcode the vendor prefix.
+  autofix: structural
+  acceptance:
+    - "GIVEN a class THEN its namespace mirrors its directory path under the resolved root namespace"
+  validate:
+    - "composer dump-autoload --strict-psr"
+    - "review: changed classes' namespaces mirror their directory path under the resolved root namespace"
+  validate_kind: mixed
+  phase: architecture

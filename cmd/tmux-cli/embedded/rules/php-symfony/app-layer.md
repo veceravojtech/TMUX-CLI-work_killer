@@ -4,7 +4,9 @@ The `app/` folder of a context (`contexts/<bc>/app`) is the **framework
 entry-point layer**. It wires HTTP, CLI, and messaging to the context's
 Application layer. It is architecturally identical to `projects/<app>/src` — both
 are thin framework layers that delegate into Application handlers and own no
-business logic. Namespace: `App\<Bc>App\<Module>\...`.
+business logic. Namespace: `<RootNs>\<Bc>App\<Module>\...` — the resolved root
+namespace (`App\` shown as the greenfield default; substitute the discovered
+vendor).
 
 ## What lives here
 

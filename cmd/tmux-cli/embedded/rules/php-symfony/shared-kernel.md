@@ -3,7 +3,9 @@
 `contexts/previo/src` is the **shared-kernel context**: the one published language
 that every other context and project may depend on. Keep this directory name
 literal — it is the canonical shared-kernel context for this pack. Its namespace
-is `App\Previo\<Layer>\<Module>\...`. Nothing here may depend on any other
+is `<RootNs>\Previo\<Layer>\<Module>\...` — the resolved root namespace
+(greenfield `App\`; substitute the discovered vendor), with `Previo` the literal
+shared-kernel context segment. Nothing here may depend on any other
 context; everything here is hard to change, so changes must stay **non-breaking**
 (additive only).
 
@@ -26,7 +28,7 @@ The shared kernel's Domain layer is the vocabulary other contexts speak:
   concrete event.
 
 ```php
-namespace App\Previo\Domain\Order;
+namespace App\Previo\Domain\Order;          // App\ = greenfield root; substitute the discovered vendor
 
 final class OrderId extends AbstractIntId {}                 // shared identity
 
