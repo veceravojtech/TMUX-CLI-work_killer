@@ -1,0 +1,42 @@
+# Pack: php-symfony — i18n rules (category: i18n).
+# Split per-category from the former code-rules.yaml monolith. See ../SCHEMA.md.
+#
+# Path globs use the {src}/{infra} discovery tokens (see ../SCHEMA.md): {src}
+# expands to every resolved source root, {infra} to the infra-layer directory
+# name. For the P2 monorepo topology a `## Layers` doc resolves {src} to
+# contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src and {infra}
+# to Bundle. Tokenizing COLLAPSES the former context-vs-project glob distinction
+# (contexts/*/src/**/*Handler.php and projects/*/src/... both become {src}/...);
+# this is intentional — the goal is portability (rules match the real tree), and
+# deptrac remains the authoritative boundary enforcer for the mixed rules.
+
+- id: PHP-I18N-001
+  category: i18n
+  scope: generic
+  severity: must
+  title: "User-facing strings come from translations; backend errors are translatable exceptions"
+  rule: >
+    User-visible text resolves through the translation catalogue (reuse
+    existing keys before minting new ones). Backend user-facing errors are
+    translatable exception types carrying a message key — not sprintf'd
+    English.
+  why: >
+    Hardcoded strings can't be localized and fork per call site; translatable
+    exceptions keep the boundary uniform.
+  adapted_from: "PHP-I18N-001"
+  applies_to:
+    - "{src}/**/*.php"
+    - "templates/**/*.twig"
+  detect:
+    - "literal user-facing strings in controllers/templates"
+    - "user-facing exceptions built with sprintf/string concat"
+  fix: >
+    Move the string to the translation catalogue and reference the key; throw
+    the translatable exception type.
+  autofix: structural
+  acceptance:
+    - "GIVEN user-facing text THEN it resolves from the translation catalogue"
+  validate:
+    - "review: no hardcoded user-facing strings or sprintf'd user-facing exceptions in the diff"
+  validate_kind: review
+  phase: cross-cutting

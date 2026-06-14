@@ -1,0 +1,35 @@
+# Pack: php-symfony — config rules (category: config).
+# Split per-category from the former code-rules.yaml monolith. See ../SCHEMA.md.
+# Globs here are literal config paths (.env, config/**) — no {src}/{infra} tokens.
+
+- id: PHP-CFG-001
+  category: config
+  scope: generic
+  severity: must
+  title: "Env vars belong in `.env` with dev defaults; secrets never committed"
+  rule: >
+    New configuration enters through env vars declared in the root .env with
+    safe dev defaults; real secrets live in the deployment secret store /
+    vault, never in committed files.
+  why: >
+    One declared surface for configuration; committed secrets are a breach,
+    undeclared env vars are a 3am outage.
+  adapted_from: "PHP-CFG-001"
+  applies_to:
+    - ".env"
+    - ".env.test"
+    - "config/**"
+  detect:
+    - "getenv/parameter access for a var not declared in .env"
+    - "secret-looking literals in committed config"
+  fix: >
+    Declare the var in .env with a dev default; route the real value through
+    the secret store.
+  autofix: none
+  acceptance:
+    - "GIVEN a new env var THEN it is declared in .env with a dev default and no committed secret value"
+  validate:
+    - "composer p2:env-merge"
+    - "review: new env vars declared in .env; no secret values committed in the diff"
+  validate_kind: mixed
+  phase: deployment

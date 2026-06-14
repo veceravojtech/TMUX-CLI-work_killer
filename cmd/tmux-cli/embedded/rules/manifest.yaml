@@ -99,4 +99,9 @@ packs:
       - app-layer.md
       - security.md
     code_rules:
-      - code-rules.yaml
+      - architecture.yaml
+      - persistence.yaml
+      - config.yaml
+      - i18n.yaml
+      - types.yaml
+      - scaffold.yaml

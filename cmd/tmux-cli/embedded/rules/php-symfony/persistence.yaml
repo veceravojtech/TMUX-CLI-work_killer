@@ -1,0 +1,204 @@
+# Pack: php-symfony — persistence rules (category: persistence).
+# Split per-category from the former code-rules.yaml monolith. See ../SCHEMA.md.
+#
+# Path globs use the {src}/{infra} discovery tokens (see ../SCHEMA.md): {src}
+# expands to every resolved source root, {infra} to the infra-layer directory
+# name. For the P2 monorepo topology a `## Layers` doc resolves {src} to
+# contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src and {infra}
+# to Bundle. Tokenizing COLLAPSES the former context-vs-project glob distinction
+# (contexts/*/src/**/*Handler.php and projects/*/src/... both become {src}/...);
+# this is intentional — the goal is portability (rules match the real tree), and
+# deptrac remains the authoritative boundary enforcer for the mixed rules.
+
+- id: PHP-PERS-001
+  category: persistence
+  scope: generic
+  severity: must
+  title: "Persist via Doctrine entities, not raw array repositories"
+  rule: >
+    Persistence goes through mapped Doctrine entities. No repositories that
+    read/write associative arrays against hand-written SQL for domain state.
+  why: >
+    Mapped entities carry types, identity, and migrations; array bags carry
+    typos.
+  adapted_from: "PHP-PERS-001"
+  applies_to:
+    - "{src}/{infra}/**/*.php"
+    - "{src}/**/*Repository.php"
+  detect:
+    - "repositories returning/accepting associative arrays for domain state"
+  fix: >
+    Map the entity and rewrite the repository against it.
+  autofix: structural
+  acceptance:
+    - "GIVEN domain persistence THEN it uses mapped Doctrine entities"
+  validate:
+    - "composer p2:db-validate"
+    - "review: changed repositories operate on mapped entities, not raw arrays"
+  validate_kind: mixed
+  phase: domain
+
+- id: PHP-PERS-002
+  category: persistence
+  scope: generic
+  severity: should
+  title: "Map UUID columns as binary UUID, not string"
+  rule: >
+    UUID columns use the binary UUID Doctrine type (e.g. uuid/binaryUuid per
+    the project's Doctrine stack), not VARCHAR(36).
+  why: >
+    Binary UUIDs are 16 bytes with index-friendly ordering; string UUIDs bloat
+    indexes.
+  adapted_from: "PHP-PERS-002"
+  depends_on_rules:
+    - "PHP-PERS-001"
+  applies_to:
+    - "{src}/{infra}/**/*.php"
+    - "{src}/Domain/**/*.php"
+    - "{src}/**/Entity/**/*.php"
+  detect:
+    - "ORM column type string/varchar holding UUIDs"
+  fix: >
+    Switch the column mapping to the UUID type and migrate.
+  autofix: structural
+  acceptance:
+    - "GIVEN a UUID column THEN its Doctrine type is the binary UUID type"
+  validate:
+    - "composer p2:db-validate"
+    - "review: new UUID columns in the diff use the uuid Doctrine type"
+  validate_kind: mixed
+  phase: domain
+
+- id: PHP-PERS-003
+  category: persistence
+  scope: generic
+  severity: must
+  title: "Model collections as their own entity/table, not a JSON blob"
+  rule: >
+    A collection of structured child records (messages of a thread, items of
+    an order) is its own mapped entity with a relation — never a JSON column
+    on the parent.
+  why: >
+    JSON blobs can't be queried, indexed, migrated, or constrained; they decay
+    into schema-less mud.
+  adapted_from: "PHP-PERS-003"
+  depends_on_rules:
+    - "PHP-PERS-001"
+  applies_to:
+    - "{src}/Domain/**/*.php"
+    - "{src}/{infra}/**/*.php"
+  detect:
+    - "json ORM column holding an array of structured records"
+  fix: >
+    Extract the child entity + relation; migrate the blob.
+  autofix: structural
+  acceptance:
+    - "GIVEN a structured collection THEN it is a mapped child entity, not a JSON column"
+  validate:
+    - "composer p2:db-validate"
+    - "review: no new JSON columns holding structured collections in the diff"
+  validate_kind: mixed
+  phase: domain
+
+- id: PHP-PERS-004
+  category: persistence
+  scope: generic
+  severity: should
+  title: "Map enum/value columns with a dedicated custom Doctrine DBAL type"
+  rule: >
+    Enum and value-object columns get a custom DBAL type that converts to/from
+    the PHP type — not string columns converted ad hoc at every read site.
+  why: >
+    The DBAL type converts once, centrally; ad-hoc conversion scatters and
+    drifts.
+  adapted_from: "PHP-PERS-004"
+  depends_on_rules:
+    - "PHP-PERS-001"
+  applies_to:
+    - "{src}/{infra}/**/*.php"
+  detect:
+    - "string columns + manual from()/value conversions around enum fields"
+  fix: >
+    Add a custom DBAL type and map the column with it.
+  autofix: structural
+  acceptance:
+    - "GIVEN an enum/VO column THEN a custom DBAL type owns the conversion"
+  validate:
+    - "composer p2:db-validate"
+    - "review: new enum/VO columns in the diff are mapped via custom DBAL types"
+  validate_kind: mixed
+  phase: domain
+
+- id: PHP-PERS-005
+  category: persistence
+  scope: generic
+  severity: should
+  title: "DAO references a foreign aggregate by typed Id + #[PersistentReference], not a concrete entity"
+  rule: >
+    An AggregateData DAO that needs another aggregate holds that aggregate's typed
+    Id and a #[PersistentReference] back-reference — it never maps a concrete
+    foreign entity association. Child collections of the same aggregate stay as a
+    mapped Collection<> on the DAO.
+  why: >
+    A direct foreign-entity association leaks one aggregate's persistence into
+    another and breaks aggregate boundaries; the typed Id + #[PersistentReference]
+    seam keeps each aggregate independently loadable.
+  applies_to:
+    - "{src}/**/*Data.php"
+    - "{src}/Domain/**/*.php"
+  detect:
+    - "an AggregateData DAO mapping a concrete foreign aggregate entity association"
+    - "a back-reference to a parent aggregate without #[PersistentReference]"
+  fix: >
+    Replace the foreign-entity association with the aggregate's typed Id and a
+    #[PersistentReference] back-reference.
+  autofix: structural
+  acceptance:
+    - "GIVEN an AggregateData DAO THEN foreign aggregates are referenced by typed Id + #[PersistentReference], not concrete entities"
+  validate:
+    - "review: an AggregateData DAO references a foreign aggregate by its typed Id + #[PersistentReference], not a concrete foreign entity"
+  validate_kind: review
+  phase: domain
+
+- id: PHP-PERS-006
+  category: persistence
+  scope: generic
+  severity: should
+  title: "Cover every FK-less relation/foreign-id column with an explicit index"
+  rule: >
+    In a project that does not use database foreign keys, every relation /
+    foreign-id column — a typed aggregate Id paired with a #[PersistentReference]
+    back-reference, or any join column pointing at another table without an FK
+    constraint — carries an explicit covering index, declared in the migration
+    that creates or alters the column. A column governed by a real DB foreign key
+    is exempt: the foreign key already creates that index.
+  why: >
+    PHP-PERS-005 references a foreign aggregate by a typed Id + #[PersistentReference]
+    instead of a mapped foreign-entity association, so the schema has no foreign-key
+    constraint on that id column. A foreign key would auto-create the backing index;
+    without one, nothing guarantees the column is indexed and every join or filter on
+    it table-scans. The covering index restores the lookup performance the missing FK
+    would otherwise have provided.
+  depends_on_rules:
+    - "PHP-PERS-005"
+  applies_to:
+    - "migrations/**/*.php"
+    - "{src}/{infra}/**/*.php"
+    - "{src}/**/*Data.php"
+  detect:
+    - "a relation/foreign-id column (a typed Id + #[PersistentReference], or any FK-less join column) created or altered in a migration with no covering index on it"
+    - "a foreign-id column carrying neither a DB foreign-key constraint nor a covering index"
+  fix: >
+    Add a covering index on the relation/foreign-id column in the migration that
+    creates or alters it (an index line naming that column). In a project that does
+    use DB foreign keys, add the foreign-key constraint instead — it creates the
+    index and this rule no longer applies.
+  autofix: structural
+  acceptance:
+    - "GIVEN a project with no DB foreign keys, WHEN a relation/foreign-id column is added or altered, THEN a covering index on that column is declared in the same migration"
+    - "GIVEN a column governed by a DB foreign-key constraint THEN the rule is inert — the foreign key already provides the index"
+  validate:
+    - "review: every FK-less relation/foreign-id column added or altered in the diff has a covering index declared in its migration"
+    - "review: the rule stays inert where a DB foreign-key constraint governs the column — no covering-index demand on FK-backed columns"
+  validate_kind: review
+  phase: domain
