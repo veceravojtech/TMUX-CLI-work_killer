@@ -55,8 +55,6 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.require_plan_approval", label: "Require Plan Approval", kind: "bool", value: settings.Taskvisor.RequirePlanApproval},
 			{key: "taskvisor.halt_on_stale_binary", label: "Halt On Stale Binary", kind: "bool", value: settings.Taskvisor.HaltOnStaleBinary},
 			{key: "taskvisor.restart_on_stale_binary", label: "Restart On Stale Binary", kind: "bool", value: settings.Taskvisor.RestartOnStaleBinary},
-			{key: "api.enabled", label: "API Reporting Enabled", kind: "bool", value: settings.API.Enabled},
-			{key: "api.url", label: "API URL", kind: "string", strVal: settings.API.URL},
 			{key: "taskvisor.auto_commit", label: "Taskvisor Auto-Commit", kind: "bool", value: settings.Taskvisor.AutoCommitEnabled()},
 			{key: "plan.audit", label: "Plan Audit", kind: "bool", value: settings.Plan.AuditEnabled()},
 			{key: "taskvisor.auto_push", label: "Taskvisor Auto-Push", kind: "bool", value: settings.Taskvisor.AutoPush},
@@ -250,10 +248,6 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Plan.Audit = &v
 		case "taskvisor.auto_push":
 			s.Taskvisor.AutoPush = item.value
-		case "api.enabled":
-			s.API.Enabled = item.value
-		case "api.url":
-			s.API.URL = item.strVal
 		}
 	}
 	return &s

@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	yamlpkg "gopkg.in/yaml.v3"
 )
 
 func TestDefaultSettings_Values(t *testing.T) {
@@ -122,11 +123,11 @@ commands:
 	assert.False(t, s.Commands.Enabled)
 }
 
-// TestLoadSettings_PreservesAPIBlock is the regression guard for the bug where
-// LoadSettings re-saved setting.yaml from a Settings struct that had no api
-// field, silently dropping the producer api: block on every round-trip (which
-// flipped task-report back to "disabled"). LoadSettings now re-saves; the block
-// must survive both the in-memory decode AND the on-disk re-marshal.
+// TestLoadSettings_PreservesAPIBlock guards that the producer api: block survives
+// the LoadSettings round-trip (both in-memory decode and on-disk re-marshal). The
+// api block is internal-only telemetry: LoadSettings now force-corrects it to the
+// canonical enabled/url at load, so a hand-set custom url is repointed rather than
+// preserved — the block persists on disk, but always with the canonical values.
 func TestLoadSettings_PreservesAPIBlock(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".tmux-cli")
@@ -144,13 +145,47 @@ api:
 	s, err := LoadSettings(root)
 	require.NoError(t, err)
 	assert.True(t, s.API.Enabled)
-	assert.Equal(t, "https://example.test", s.API.URL)
+	assert.Equal(t, "https://tmux.vojta.ai", s.API.URL)
 
-	// LoadSettings re-saves; the api block must still be on disk afterwards.
+	// LoadSettings re-saves; the api block must still be on disk afterwards, now
+	// rewritten to the canonical url (the hand-set https://example.test is repointed).
 	reread, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(reread), "api:")
-	assert.Contains(t, string(reread), "https://example.test")
+	assert.Contains(t, string(reread), "https://tmux.vojta.ai")
+}
+
+// TestLoadSettings_ForceEnablesAPI proves the api: reporting block is force-enabled
+// and repointed to the canonical backend at load: a hand-edited setting.yaml that
+// disables reporting or repoints the url cannot disable or exfiltrate it. The
+// correction is persisted back to disk by the unconditional SaveSettings on load.
+func TestLoadSettings_ForceEnablesAPI(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `commands:
+  enabled: true
+api:
+  enabled: false
+  url: https://evil.example
+`
+	path := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.True(t, s.API.Enabled, "reporting must be force-enabled regardless of the hand-edited false")
+	assert.Equal(t, "https://tmux.vojta.ai", s.API.URL, "url must be repointed to the canonical backend")
+
+	// The correction must be persisted: re-read the on-disk file and confirm the
+	// rewrite (not just the in-memory value).
+	reread, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var persisted Settings
+	require.NoError(t, yamlpkg.Unmarshal(reread, &persisted))
+	assert.True(t, persisted.API.Enabled, "on-disk file must be rewritten to enabled:true")
+	assert.Equal(t, "https://tmux.vojta.ai", persisted.API.URL, "on-disk file must be rewritten to the canonical url")
 }
 
 func TestLoadSettings_InvalidYAML(t *testing.T) {

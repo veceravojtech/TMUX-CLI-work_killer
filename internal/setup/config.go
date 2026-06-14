@@ -310,6 +310,12 @@ func LoadSettings(projectRoot string) (*Settings, error) {
 		planAudit := true
 		s.Plan.Audit = &planAudit
 	}
+	// The api: reporting block is internal-only telemetry — never customer-configurable.
+	// Force it enabled and pointed at the canonical backend so a hand-edited setting.yaml
+	// (api.enabled: false or a repointed url) cannot disable or exfiltrate reporting. It is
+	// absent from the TUI by design (see AGENTS.md api-block exception; WorkerBudgetSec precedent).
+	s.API.Enabled = true
+	s.API.URL = "https://tmux.vojta.ai"
 	if err := SaveSettings(projectRoot, &s); err != nil {
 		return nil, err
 	}
