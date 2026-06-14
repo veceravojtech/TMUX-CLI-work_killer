@@ -166,6 +166,7 @@ type TaskListInput struct {
 	Status      string `json:"status,omitempty" jsonschema:"Filter by status: new, claimed, in_progress, resolved, failed, denied, archived"`
 	Category    string `json:"category,omitempty" jsonschema:"Filter by category: plan, supervisor, validator, execute, general"`
 	Severity    string `json:"severity,omitempty" jsonschema:"Filter by severity: critical, warning, info"`
+	Project     string `json:"project,omitempty" jsonschema:"Filter by project (lane) name, e.g. cli or web; omit for the default lane"`
 	Since       string `json:"since,omitempty" jsonschema:"ISO-8601 datetime; only tasks created at or after this time"`
 	Limit       int    `json:"limit,omitempty" jsonschema:"Page size, clamped to 1..200 (default 50)"`
 	Offset      int    `json:"offset,omitempty" jsonschema:"Rows to skip (default 0)"`
@@ -203,6 +204,7 @@ func (s *Server) TaskList(ctx context.Context, in TaskListInput) (*TaskListOutpu
 		Status:      in.Status,
 		Category:    in.Category,
 		Severity:    in.Severity,
+		Project:     in.Project,
 		Since:       in.Since,
 		Limit:       in.Limit,
 		Offset:      in.Offset,

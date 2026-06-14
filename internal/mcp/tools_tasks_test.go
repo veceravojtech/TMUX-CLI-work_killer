@@ -61,6 +61,55 @@ func TestTaskList_HappyPath(t *testing.T) {
 	assert.Equal(t, "10", last.URL.Query().Get("limit"))
 }
 
+func TestTaskList_ProjectScoped(t *testing.T) {
+	// project=cli must reach the wire and scope the result to the cli lane: the
+	// project-aware backend returns ONLY cli-lane rows when query project==cli,
+	// proving no other-lane row surfaces.
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	var gotProject string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotProject = r.URL.Query().Get("project")
+		w.WriteHeader(http.StatusOK)
+		if gotProject == "cli" {
+			_, _ = io.WriteString(w, `{"tasks":[
+				{"id":1,"status":"new","title":"a","project":"cli"},
+				{"id":2,"status":"new","title":"b","project":"cli"}],
+				"total":2,"limit":50,"offset":0}`)
+			return
+		}
+		// mixed lanes when not scoped — the test must never see this page.
+		_, _ = io.WriteString(w, `{"tasks":[
+			{"id":1,"status":"new","title":"a","project":"cli"},
+			{"id":3,"status":"new","title":"c","project":"web"}],
+			"total":2,"limit":50,"offset":0}`)
+	}))
+	t.Cleanup(srv.Close)
+	withReportHook(t, func(producer.Config) *producer.Client {
+		return producer.NewClientForTest(srv.URL, priv, srv.Client())
+	})
+	s := newReportServer(t)
+
+	out, err := s.TaskList(context.Background(), TaskListInput{Project: "cli"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "cli", gotProject, "project=cli must reach the wire")
+	require.Len(t, out.Tasks, 2)
+	for _, task := range out.Tasks {
+		assert.Equal(t, "cli", task.Project, "only cli-lane rows must surface")
+	}
+}
+
+func TestTaskList_OmittedProjectSendsNoParam(t *testing.T) {
+	// Omitting Project must not force a project param at the MCP layer — prior
+	// behavior is preserved (NewClientForTest leaves c.project empty, so the
+	// producer's lane default emits nothing).
+	s, last := withTaskServer(t, http.StatusOK, `{"tasks":[],"total":0,"limit":50,"offset":0}`)
+	_, err := s.TaskList(context.Background(), TaskListInput{})
+	require.NoError(t, err)
+	assert.Equal(t, "", last.URL.Query().Get("project"), "no project param when project omitted")
+}
+
 func TestTaskList_SummaryTruncatesAndOmitsBodies(t *testing.T) {
 	// A list row must be token-bounded: the (potentially huge) body fields are
 	// not returned in full — description is capped to a preview, and
