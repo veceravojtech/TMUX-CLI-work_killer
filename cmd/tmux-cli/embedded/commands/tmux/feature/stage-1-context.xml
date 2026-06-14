@@ -1,0 +1,77 @@
+<stage n="1" title="Context mapping" autonomous="true">
+  <objective>Map the EXISTING system's blast radius for the feature: locate the modules, layers, aggregates, handlers, controllers, and contracts it touches, and attach the resolved code-rule packs that govern those files — then emit ONE "context dossier" block for Stage 2. This shard is a COMPOSER over the investigate primitive: it spawns read-only investigator-* workers (reusing investigate.xml / investigate-worker.xml) and routes the same [EXECUTE:*] tag protocol, so verification, timeout, and read-only semantics are INHERITED, not duplicated. ZERO project-shaped value is hardcoded — every touched source root, layer, namespace, and applicable rule is resolved from Stage 0's emitted TOPOLOGY and `tmux-cli rules resolve` / `tmux-cli rules match`, never a path literal. The stage performs ZERO edits to project source; the spawned workers are strictly read-only.</objective>
+
+  <substep n="1.1" title="Preflight + consume the Stage-0 context block">
+    <action>Confirm the tmux-cli MCP precondition by calling a read-only MCP tool (windows-list).</action>
+    <check condition="tmux-cli MCP not available">
+      <action>Print exactly: "ERROR: tmux-cli MCP required but not available — enable it and retry."</action>
+      <action>STOP. (fail closed — do not create any windows.)</action>
+    </check>
+    <action>Ingest Stage 0's emitted context block VERBATIM — do NOT re-probe the filesystem and do NOT re-run `tmux-cli rules resolve --signals`; every capability + topology value is already resolved upstream. Extract: FEATURE (the feature description); SIGNALS (lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows); TOPOLOGY (source roots, layer names, root namespace, quality-gate commands — each tagged detected-from-packs vs greenfield-default); CODE RULES (the resolved code-rule file pointers, or "none"); SETTINGS (the relevant .tmux-cli/setting.yaml values, or "absent").</action>
+    <action>Resolve this stage's research-root the SAME way plan.xml does, so worker reports land beside the goal's other artifacts: GOAL mode (a current goal is active — .tmux-cli/taskvisor-current-goal exists and is non-empty, or this stage was dispatched with a goal id) &#8594; research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp); STANDALONE &#8594; research-root = .tmux-cli/research/{y-m-d-hh}/ (current timestamp). Create the directory if absent. This is the ONLY directory this stage writes to — never project source.</action>
+    <action>Identify STAGE_WID: the name of THIS stage's tmux window (the window /tmux:feature runs in). Pass it as the supervisorWid argument to every windows-spawn-worker call below so worker routing binds to this window.</action>
+  </substep>
+
+  <substep n="1.2" title="Derive the blast-radius investigation set">
+    <action>From the FEATURE description + the resolved TOPOLOGY (source roots, layer names, root namespace), derive 2–4 READ-ONLY investigator definitions, each scoped to ONE touched source-root / layer footprint where the feature's existing code is likely to live (aggregates, handlers, controllers, contracts, persistence adapters). Worker count is a 2–4 RANGE, not a fixed number: scale breadth to the feature's resolved blast radius — a narrow single-layer feature warrants 2; a feature crossing domain + application + infrastructure + contract warrants 4. Record a one-line rationale for the chosen count.</action>
+    <action>For EACH derived footprint, attach the applicable code-rule packs by running, via Bash: `tmux-cli rules match --files &lt;footprint paths&gt; --json` (add `--phase` if the call distinguishes phases). The Go `rules match` predicate owns WHICH rules apply — never hand-glob a rule set and never re-derive Stage 0's resolved rule list. Carry the matched rule ids/paths into that investigator's scope so its dossier shard can report "rules applicable to this footprint".</action>
+    <action>Resolve every touched location from the TOPOLOGY / `tmux-cli rules resolve` output — NEVER hardcode a source root, layer name, namespace, or path. If TOPOLOGY is greenfield-default (empty packs) the footprints fall back to the skeleton source roots flagged as defaults, not invented project paths.</action>
+    <check condition="TOPOLOGY resolves no source roots and `rules match` returns no rules (greenfield / empty catalogue)">
+      <action>Still derive at least 2 investigator definitions over the skeleton-default source roots; mark the dossier "no resolved rules / skeleton topology". Do NOT fabricate project-shaped paths.</action>
+    </check>
+  </substep>
+
+  <substep n="1.3" title="Spawn read-only investigators">
+    <action>For EACH investigator definition, call windows-spawn-worker with: prefix: "investigator-" (reuse the investigate primitive's worker BY REFERENCE — this spawns the investigate-worker read-only agent, NOT an implement worker); supervisorWid: STAGE_WID; subtask: "Context map: &lt;footprint label&gt;"; scope: the footprint's source-root/layer + the `rules match` rule ids attached in 1.2 + an instruction to write its report to {research-root}/investigator-&lt;N&gt;-&lt;slug&gt;.md; context: FEATURE + the relevant SIGNALS/TOPOLOGY slice + the non-goal "READ-ONLY: locate existing code &amp; applicable rules, edit nothing"; deliverable: the read-only dossier shard (## VERDICT / ## FINDINGS / ## EVIDENCE) — never an implement deliverable.</action>
+    <rule critical="true">The workers are READ-ONLY: they Read files and run non-mutating Bash only. This stage itself writes NOTHING to project source — its only writes are the per-worker reports under research-root. Declare the read-only contract in every worker's scope.</rule>
+    <rule>ALWAYS spawn via windows-spawn-worker with prefix: "investigator-" — never assemble the spawn manually via windows-create + windows-send, and never re-implement investigate.xml's orchestration. Record each workerName (investigator-N) for routing.</rule>
+  </substep>
+
+  <substep n="1.4" title="Idle, route, collect">
+    <action>Do NOTHING but wait for windows-message from the investigators. NEVER use sleep — idle is the trigger. Stop-hook idle lines ("Idling …") are expected lifecycle output: do not REMIND, do not advance state, just keep waiting.</action>
+    <branch tag="[EXECUTE:DONE wid=investigator-N sup=&lt;stage&gt; file=&lt;abs-path&gt;]">
+      <action>Read the cited report file, extract its VERDICT/FINDINGS/EVIDENCE, record it for the dossier, then windows-kill the worker by NAME (e.g. "investigator-1") — never the @id. Continue until every spawned worker is terminal.</action>
+    </branch>
+    <branch tag="[EXECUTE:NEED_INPUT wid=investigator-N sup=&lt;stage&gt; &lt;reason&gt;]">
+      <action>Answer the fact via windows-message to that investigator-N from FEATURE / SIGNALS / TOPOLOGY / files on disk; if unanswerable reply [SUPERVISOR:NARROW-SCOPE &lt;reduced footprint&gt;]. NEVER use windows-send and NEVER bounce a decidable technical fork to the user.</action>
+    </branch>
+    <branch tag="[EXECUTE:FAILED ...] or per-worker timeout (no report within the worker budget)">
+      <action>Send [SUPERVISOR:KILL] via windows-message, then narrow the footprint and respawn ONCE; if it FAILs again, record a PARTIAL dossier note for that footprint and continue — degrade, never crash. windows-kill the dead worker by NAME.</action>
+    </branch>
+    <branch tag="worker emitted content with no [EXECUTE:...] header AND not a stop-hook idle line">
+      <action>Reply ONCE via windows-message: [SUPERVISOR:REMIND] respond only with [EXECUTE:DONE file=&lt;abs-path&gt;] / [EXECUTE:NEED_INPUT] / [EXECUTE:FAILED]. Do not advance state.</action>
+    </branch>
+    <action>Continue routing until ALL spawned investigators have reached a terminal state (completed / failed / timeout).</action>
+  </substep>
+
+  <substep n="1.5" title="Emit the context dossier">
+    <action>Synthesize the collected worker reports into ONE context dossier block and hand it to Stage 2. The dossier lists: TOUCHED MODULES / LAYERS — the feature's blast radius, each location RESOLVED from the TOPOLOGY (never hardcoded); APPLICABLE RULES — the `rules match` rule ids/paths attached per touched footprint; and the existing aggregates/handlers/controllers/contracts each investigator located, with file references.</action>
+    <check condition="the investigators found no existing code the feature touches">
+      <action>Record "no existing blast radius — net-new surface" in the dossier and hand it to Stage 2 (informational, not an error).</action>
+    </check>
+    <check condition="`rules match` resolved no rules / TOPOLOGY was skeleton-default">
+      <action>Record "no resolved rules / skeleton topology" in the dossier; still emit the module map. (greenfield path — no hardcoding.)</action>
+    </check>
+    <action>Hand the dossier to Stage 2. Proceed to Stage 2.</action>
+  </substep>
+
+  <execution-rules>
+    <rule>READ-ONLY: this stage edits NO project source; the spawned investigators are read-only (Read + non-mutating Bash + windows-message/list only). The stage's only writes are the per-worker reports under research-root.</rule>
+    <rule>COMPOSE, don't re-implement: reuse the investigate primitive BY REFERENCE — spawn investigate-worker via windows-spawn-worker with prefix: "investigator-", route [EXECUTE:*] tags via windows-message, kill via windows-kill (window NAME, never @id). Never duplicate investigate.xml's orchestration/verification/timeout logic.</rule>
+    <rule>PORTABILITY: every touched source root, layer name, namespace, and applicable rule is resolved from the Stage-0 TOPOLOGY / `tmux-cli rules resolve` / `tmux-cli rules match --files … --json` — NEVER hardcoded. Greenfield skeleton values are flagged defaults only. No project name appears anywhere.</rule>
+    <rule>CONSUME Stage 0, don't re-derive it: read the emitted SIGNALS/TOPOLOGY/CODE RULES block verbatim; never re-run `tmux-cli rules resolve --signals` or re-probe the filesystem for capability.</rule>
+    <rule>AUTONOMOUS stage: resolve every decidable fork (worker count 2–4, footprint boundaries) to the highest-quality in-scope option and record the rationale; NEVER use sleep and NEVER use AskUserQuestion — idle is the trigger, and Stage 2 is the sole interactive stage.</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • READ-ONLY — the stage edits nothing; spawned investigate-worker agents are read-only; the only writes are per-worker reports under research-root.
+      • COMPOSER, not engine — reuse the investigate primitive by reference (windows-spawn-worker prefix:"investigator-", windows-message, windows-kill by NAME); never re-implement investigate.xml.
+      • PORTABILITY IS MANDATORY — every touched location + applicable rule is resolved from Stage-0 TOPOLOGY / `tmux-cli rules resolve` / `tmux-cli rules match`; no hardcoded source root, layer, namespace, path, or project name.
+      • CONSUME Stage 0's emitted block — never re-derive SIGNALS/TOPOLOGY or re-probe the filesystem.
+      • AUTONOMOUS — resolve every fork to the highest-quality in-scope option with a recorded rationale; never sleep, never AskUserQuestion.
+      • Emit ONE context dossier (touched modules/layers + applicable resolved rules) for Stage 2; net-new surface or greenfield/empty rules are informational notes, never a crash.
+    </critical-rules>
+  </llm>
+</stage>
