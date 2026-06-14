@@ -202,3 +202,46 @@
     - "review: the rule stays inert where a DB foreign-key constraint governs the column — no covering-index demand on FK-backed columns"
   validate_kind: review
   phase: domain
+
+- id: PHP-PERS-007
+  category: persistence
+  scope: generic
+  severity: should
+  title: "Split the aggregate's mutable persistence-DAO from its readonly input/output DTO; expose children as DTOs"
+  rule: >
+    An aggregate keeps two distinct types: a mutable persistence-DAO (the
+    ORM-mapped carrier of stored state) and a readonly input/output DTO (the
+    value object crossing the aggregate boundary in/out). One type never plays
+    both roles — the mutable carrier is not handed out as the readonly input or
+    output object. Child entities of the aggregate are exposed only as DTOs,
+    never returned whole. The roles are what matter; the common suffixes
+    *Data (persistence-DAO) and *DTO (readonly-DTO) are illustrative examples,
+    not required names.
+  why: >
+    Keeping the mutable persistence carrier separate from the readonly
+    input/output value object preserves aggregate encapsulation: callers read
+    and submit an immutable shape while the ORM-mapped state stays internal.
+    Returning a child entity whole leaks the aggregate's mutable internals
+    across its boundary, letting outside code mutate persisted state behind the
+    aggregate's back.
+  depends_on_rules:
+    - "PHP-PERS-005"
+  applies_to:
+    - "{src}/**/*Data.php"
+    - "{src}/Domain/**/*.php"
+  detect:
+    - "an aggregate whose mutable persistence-DAO doubles as its readonly input/output object (no distinct readonly DTO)"
+    - "an aggregate exposing or returning a child entity whole instead of a readonly DTO"
+  fix: >
+    Introduce a distinct readonly input/output DTO for the aggregate and expose
+    every child entity as a DTO; keep the mutable persistence-DAO internal to
+    the aggregate.
+  autofix: structural
+  acceptance:
+    - "GIVEN an aggregate THEN its mutable persistence-DAO and its readonly input/output DTO are distinct types, neither doubling as the other"
+    - "GIVEN an aggregate with child entities THEN those children are exposed only via readonly DTOs, never returned whole"
+  validate:
+    - "review: the aggregate's mutable persistence-DAO (ORM carrier) and its readonly input/output DTO are distinct types, identified by role rather than by *Data/*DTO suffix"
+    - "review: child entities of the aggregate are exposed only as DTOs in the diff, never returned whole"
+  validate_kind: review
+  phase: domain
