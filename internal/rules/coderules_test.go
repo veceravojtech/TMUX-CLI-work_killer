@@ -168,24 +168,24 @@ func TestRulesMatch_NoRulesTreeReturnsEmpty(t *testing.T) {
 }
 
 func TestRulesMatch_LoadCodeRulesPopulatesPathsFromSource(t *testing.T) {
-	// LoadCodeRules parses the {rules:[...]} wrapper and stamps each rule with
-	// its source code-rules file path, which Match surfaces verbatim as Paths.
+	// LoadCodeRules parses each pack's bare top-level []CodeRule sequence and
+	// stamps each rule with its source code-rules file path, which Match
+	// surfaces verbatim as Paths.
 	root := t.TempDir()
 	dir := filepath.Join(root, RulesDir, "php")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	yamlBody := `rules:
-  - id: PHP-X-001
-    category: architecture
-    scope: generic
-    severity: must
-    title: t
-    rule: r
-    why: w
-    applies_to: ["src/**/*.php"]
-    acceptance: ["GIVEN x THEN y"]
-    validate: ["review: check"]
-    validate_kind: review
-    phase: application
+	yamlBody := `- id: PHP-X-001
+  category: architecture
+  scope: generic
+  severity: must
+  title: t
+  rule: r
+  why: w
+  applies_to: ["src/**/*.php"]
+  acceptance: ["GIVEN x THEN y"]
+  validate: ["review: check"]
+  validate_kind: review
+  phase: application
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "code-rules.yaml"), []byte(yamlBody), 0o644))
 
@@ -201,13 +201,48 @@ func TestRulesMatch_LoadCodeRulesPopulatesPathsFromSource(t *testing.T) {
 	assert.Equal(t, "CR-PHP-X-001: GIVEN x THEN y", result.Rules[0].AcceptanceLine)
 }
 
+func TestLoadCodeRules_BareSequencePack(t *testing.T) {
+	// Every shipped pack is authored as a BARE top-level []CodeRule sequence
+	// (no `rules:` wrapper) — the same shape resolve and the golden catalogue
+	// test use. LoadCodeRules must decode that shape with no unmarshal error and
+	// stamp each rule's source path.
+	root := t.TempDir()
+	dir := filepath.Join(root, RulesDir, "php")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	yamlBody := `- id: PHP-TYPE-001
+  category: types
+  scope: generic
+  severity: must
+  title: t
+  rule: r
+  why: w
+  applies_to: ["src/**/*.php"]
+  acceptance: ["GIVEN x THEN y"]
+  validate: ["review: check"]
+  validate_kind: review
+  phase: application
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "code-rules.yaml"), []byte(yamlBody), 0o644))
+
+	resolved := []ResolvedFile{{Pack: "php", Kind: KindCodeRules, Path: ".tmux-cli/rules/php/code-rules.yaml"}}
+	loaded, err := LoadCodeRules(root, resolved)
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	assert.Equal(t, "PHP-TYPE-001", loaded[0].ID)
+	assert.Equal(t, ".tmux-cli/rules/php/code-rules.yaml", loaded[0].sourcePath)
+
+	result, _ := Match(loaded, []string{"src/A/Foo.php"}, "")
+	require.Len(t, result.Rules, 1)
+	assert.Equal(t, []string{".tmux-cli/rules/php/code-rules.yaml"}, result.Rules[0].Paths)
+}
+
 func TestRulesMatch_LoadCodeRulesIgnoresConventions(t *testing.T) {
 	// Only Kind==code-rules files are parsed; convention entries are skipped.
 	root := t.TempDir()
 	dir := filepath.Join(root, RulesDir, "php")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "code-rules.yaml"),
-		[]byte("rules:\n  - id: ONLY\n    severity: should\n    phase: application\n    applies_to: [\"*.php\"]\n"), 0o644))
+		[]byte("- id: ONLY\n  severity: should\n  phase: application\n  applies_to: [\"*.php\"]\n"), 0o644))
 	resolved := []ResolvedFile{
 		{Pack: "php", Kind: KindConvention, Path: ".tmux-cli/rules/php/conventions.md"},
 		{Pack: "php", Kind: KindCodeRules, Path: ".tmux-cli/rules/php/code-rules.yaml"},

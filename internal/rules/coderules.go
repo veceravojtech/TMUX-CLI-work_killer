@@ -64,8 +64,10 @@ type MatchResult struct {
 }
 
 // LoadCodeRules reads every Kind==code-rules file from resolved (in resolve
-// order, so local/ overrides stay last), unmarshals each `{rules: [...]}`
-// wrapper, and concatenates the rules, stamping each with its source path.
+// order, so local/ overrides stay last), unmarshals each pack's BARE top-level
+// []CodeRule sequence — the authored catalogue shape (no `rules:` wrapper), the
+// same shape resolve enumerates and the golden catalogue test asserts — and
+// concatenates the rules, stamping each with its source path.
 func LoadCodeRules(projectRoot string, resolved []ResolvedFile) ([]CodeRule, error) {
 	var out []CodeRule
 	for _, f := range resolved {
@@ -76,16 +78,14 @@ func LoadCodeRules(projectRoot string, resolved []ResolvedFile) ([]CodeRule, err
 		if err != nil {
 			return nil, fmt.Errorf("code-rules file unreadable: %s: %w", f.Path, err)
 		}
-		var wrapper struct {
-			Rules []CodeRule `yaml:"rules"`
-		}
-		if err := yaml.Unmarshal(data, &wrapper); err != nil {
+		var ruleSet []CodeRule
+		if err := yaml.Unmarshal(data, &ruleSet); err != nil {
 			return nil, fmt.Errorf("code-rules file invalid: %s: %w", f.Path, err)
 		}
-		for i := range wrapper.Rules {
-			wrapper.Rules[i].sourcePath = f.Path
+		for i := range ruleSet {
+			ruleSet[i].sourcePath = f.Path
 		}
-		out = append(out, wrapper.Rules...)
+		out = append(out, ruleSet...)
 	}
 	return out, nil
 }
