@@ -362,16 +362,18 @@
   validate_kind: review
   phase: cross-cutting
 
-# PHP-TYPE-003 is the Symfony-monorepo AUTOMATED counterpart of the generic
-# php-pack PHP-TYPE-001 (review): same UUID-type intent, but enforced with a
-# falsifiable grep signal. It carries a distinct id because the falsifiability
+# PHP-TYPE-003 is the Symfony-monorepo MIXED counterpart of the generic
+# php-pack PHP-TYPE-001 (review): same UUID-type intent, enforced with a
+# falsifiable grep signal AND a `make stan`/PHPStan machine validate
+# (validate_kind: mixed, not purely automated — PHPStan is a type analyzer
+# and this is the catalogue's sole type rule). It carries a distinct id because the falsifiability
 # selftest (go test ./cmd/tmux-cli) enforces GLOBAL id-uniqueness across every
 # pack, and the php pack already owns PHP-TYPE-001/002.
 - id: PHP-TYPE-003
   category: types
   scope: generic
   severity: should
-  title: "Use real UUID types end-to-end (automated) — no asserted UUID strings"
+  title: "Use real UUID types end-to-end (automated + stan) — no asserted UUID strings"
   rule: >
     Where a value is a UUID, type it as a UUID value object (e.g. UuidInterface)
     rather than a string guarded by an assert. Apply it consistently: the getter,
@@ -394,8 +396,9 @@
   acceptance:
     - "GIVEN a UUID value THEN it is typed as a UUID value object, not an asserted string"
   validate:
+    - "vendor/bin/phpstan analyse"
     - "No `Assert\\Uuid` / `Assert::uuid` remains where a UUID type fits on the changed UUID paths — grep returns nothing"
-  validate_kind: automated
+  validate_kind: mixed
   phase: domain
   signal: 'Assert\\Uuid|Assert::uuid'
   examples:
