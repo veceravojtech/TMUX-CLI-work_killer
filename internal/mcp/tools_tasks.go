@@ -26,6 +26,8 @@ type TaskView struct {
 	Category           string `json:"category,omitempty"`
 	Severity           string `json:"severity,omitempty"`
 	Status             string `json:"status" jsonschema:"Lifecycle status (new, claimed, in_progress, resolved, failed, denied, archived)"`
+	Priority           int    `json:"priority" jsonschema:"Manual priority (higher = sooner); use as the goal priority when converting this task to a goal"`
+	Project            string `json:"project,omitempty" jsonschema:"Project lane this task belongs to"`
 	Title              string `json:"title,omitempty"`
 	Description        string `json:"description,omitempty"`
 	ProposedFix        string `json:"proposed_fix,omitempty"`
@@ -62,6 +64,8 @@ type TaskSummary struct {
 	Status             string `json:"status"`
 	Category           string `json:"category,omitempty"`
 	Severity           string `json:"severity,omitempty"`
+	Priority           int    `json:"priority"`
+	Project            string `json:"project,omitempty"`
 	Title              string `json:"title,omitempty"`
 	Fingerprint        string `json:"fingerprint,omitempty" jsonschema:"Fingerprint of the machine that reported the task"`
 	ClaimedBy          string `json:"claimed_by,omitempty" jsonschema:"Fingerprint of the machine that claimed the task"`
@@ -77,6 +81,8 @@ func toTaskSummary(t producer.Task) TaskSummary {
 		Status:             t.Status,
 		Category:           t.Category,
 		Severity:           t.Severity,
+		Priority:           t.Priority,
+		Project:            t.Project,
 		Title:              t.Title,
 		Fingerprint:        t.Fingerprint,
 		ClaimedBy:          t.ClaimedBy,
@@ -96,6 +102,8 @@ func toTaskView(t producer.Task) TaskView {
 		Category:           t.Category,
 		Severity:           t.Severity,
 		Status:             t.Status,
+		Priority:           t.Priority,
+		Project:            t.Project,
 		Title:              t.Title,
 		Description:        t.Description,
 		ProposedFix:        t.ProposedFix,

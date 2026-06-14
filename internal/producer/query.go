@@ -36,6 +36,8 @@ type Task struct {
 	Category           string     `json:"category"`
 	Severity           string     `json:"severity"`
 	Status             string     `json:"status"`
+	Priority           int        `json:"priority"`
+	Project            string     `json:"project"`
 	Title              string     `json:"title"`
 	Description        string     `json:"description"`
 	ProposedFix        string     `json:"proposedFix"`
