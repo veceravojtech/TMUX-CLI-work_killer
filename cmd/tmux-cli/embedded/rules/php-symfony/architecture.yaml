@@ -338,3 +338,67 @@
     - "review: changed framework entry points (controllers, CLI commands, consumers, listeners, adapters) live in the resolved entry/app layer, not the pure domain/application library"
   validate_kind: review
   phase: architecture
+
+- id: PHP-ARCH-012
+  category: architecture
+  scope: generic
+  severity: must
+  title: "Domain-event payloads evolve additively only — add fields, never remove or rename"
+  rule: >
+    A published domain event's payload is a backward-compatible contract: a change
+    may evolve it additively — adding optional fields — but must never remove,
+    rename, or retype an existing field, because downstream consumers bind to the
+    published shape. When a breaking change is unavoidable, version the event by
+    introducing a new event type and leave existing consumers on the old one.
+  why: >
+    Events are a published language; a non-additive payload change silently breaks
+    every consumer deserializing the old shape — a runtime failure no producer-side
+    test catches.
+  applies_to:
+    - "{src}/**/*Event.php"
+    - "{src}/**/Event/**/*.php"
+  detect:
+    - "an existing payload field removed, renamed, or retyped on a published event"
+    - "a required (non-optional) field added to an event already in use"
+  fix: >
+    Restore the removed/renamed field (keep the change additive) or introduce a new
+    versioned event type for the breaking shape; leave old consumers on the old event.
+  autofix: structural
+  acceptance:
+    - "GIVEN a change to a published domain event THEN the payload change is additive — no field removed, renamed, or retyped"
+  validate:
+    - "review: changed domain events evolve their payload additively (fields added only; none removed, renamed, or retyped)"
+  validate_kind: review
+  phase: architecture
+
+- id: PHP-ARCH-013
+  category: architecture
+  scope: generic
+  severity: must
+  title: "A domain event carries a readonly state-snapshot record, not the whole aggregate"
+  rule: >
+    A domain event's payload is a readonly state-snapshot record of the relevant
+    aggregate state at emission time — a flat, immutable value object (a 'state
+    snapshot record', e.g. a *EventRecord, naming illustrative only) — never the
+    live aggregate object, its entities, or its repository-bound references.
+  why: >
+    Embedding the aggregate leaks mutable internal structure into the published
+    language and couples consumers to the producer's domain model; a readonly
+    snapshot keeps the event a stable, serializable contract.
+  applies_to:
+    - "{src}/**/*Event.php"
+    - "{src}/**/Event/**/*.php"
+  detect:
+    - "an event constructor or property typed to an aggregate root or Doctrine entity"
+    - "an event exposing the live aggregate instead of a flat readonly record"
+  fix: >
+    Replace the aggregate reference with a readonly snapshot record holding only the
+    fields consumers need (role: 'state snapshot record', e.g. a *EventRecord); copy
+    values at emission time.
+  autofix: structural
+  acceptance:
+    - "GIVEN a domain event THEN its payload is a readonly state-snapshot record, not the full aggregate object"
+  validate:
+    - "review: changed domain events carry a readonly state-snapshot record (role: 'state snapshot record', e.g. *EventRecord), never the full aggregate"
+  validate_kind: review
+  phase: architecture
