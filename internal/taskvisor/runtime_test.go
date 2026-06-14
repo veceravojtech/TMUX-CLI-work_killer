@@ -173,11 +173,14 @@ func TestCrashRecovery_RebuildsRuntimeForRunningGoal(t *testing.T) {
 	}))
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
-	// crashRecovery now emits a [TASKVISOR:CRASH-RECOVERY goals=N] notification for
-	// the recovered running goal; an empty window list means notifySupervisor finds
-	// no "supervisor" window and silently skips (no SendMessage), but the lookup
-	// still consumes one ListWindows call which must be programmed.
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+	// A live validator-001 window corroborates the ValidatorSignal so pass-1's
+	// liveness gate resumes the goal in place (rebuilding its runtime to validating).
+	// crashRecovery still emits a [TASKVISOR:CRASH-RECOVERY goals=N] notification; the
+	// notify lookup finds no bare "supervisor" window and silently skips (no
+	// SendMessage), but its ListWindows call must be programmed.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "validator-001"},
+	}, nil)
 
 	before := time.Now()
 	require.NoError(t, d.crashRecovery(false))

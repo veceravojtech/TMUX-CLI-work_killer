@@ -90,10 +90,14 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 	d.currentGoal = running[0].ID
 	goals.CurrentGoal = running[0].ID
 
-	// Pass 1: goals with a pending signal resume their phase in place (still
-	// GoalRunning) — exactly the old single-goal behavior, now applied to each.
-	// Goals without a signal are deferred to pass 2, which is the ONLY path that
-	// needs the window list (kept lazy so the signal-resume path never lists).
+	// Pass 1: a goal with a pending signal resumes its phase in place (still
+	// GoalRunning) ONLY when the signal is corroborated by a live window in the
+	// CURRENT session — winErr != nil (survey unverifiable → fail-safe resume) OR
+	// the goal still owns a goal-namespace window. A stale signal inherited from a
+	// destroyed session, whose windows died with it, is NOT honored: the goal falls
+	// through to pass 2, which re-dispatches no-live-window goals. Pass 1 REUSES the
+	// survey slice fetched above — it adds NO ListWindows call (the count-2 contract).
+	// Goals without a signal are always deferred to pass 2.
 	var needWindowCheck []*Goal
 	for _, g := range running {
 		rt := d.runtime(g.ID)
@@ -101,7 +105,7 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 		if sigErr != nil {
 			log.Printf("crash recovery: failed to read signal for %s: %v", g.ID, sigErr)
 		}
-		if sig != nil {
+		if sig != nil && (winErr != nil || goalHasLiveWindow(windows, g.ID, mg)) {
 			switch sig.(type) {
 			case *SupervisorSignal:
 				rt.phase = phaseSupervising
@@ -111,6 +115,9 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 			rt.phaseStartedAt = d.now()
 			continue
 		}
+		if sig != nil {
+			log.Printf("crash recovery: %s: orphaned running (%s gone in current session) -> re-dispatch", g.ID, supervisorWindow(g.ID, mg))
+		}
 		needWindowCheck = append(needWindowCheck, g)
 	}
 
@@ -118,11 +125,13 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 		return nil
 	}
 
-	// Pass 2: no signal — a live validator/investigator window means work was
-	// mid-validation (resume), otherwise the supervisor state is lost and the goal
-	// is re-dispatched (re-pended, or failed when its retry budget is spent). The
-	// window list is the survey's; a listing failure surfaces here, where the
-	// list is load-bearing (the survey alone tolerates it as "unknown").
+	// Pass 2: a goal reaches here with no signal, or with a stale signal whose
+	// window died in the current session (pass 1 declined to resume it). A live
+	// validator/investigator window means work was mid-validation (resume),
+	// otherwise the supervisor state is lost and the goal is re-dispatched (re-pended
+	// with marker cleanup, or failed when its retry budget is spent). The window
+	// list is the survey's; a listing failure surfaces here, where the list is
+	// load-bearing (the survey alone tolerates it as "unknown").
 	if winErr != nil {
 		return winErr
 	}
@@ -189,6 +198,13 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 		action := "re-dispatch"
 		if g.Retries < g.MaxRetries {
 			g.Status = GoalPending
+			// Orphan reconcile: drop the run timestamp and delete the stale runtime
+			// handles the dead session left behind, so the next poll dispatches a
+			// clean pending goal (never an active-but-idle zombie). taskvisor-active
+			// is deliberately untouched — the daemon stays active.
+			g.StartedAt = ""
+			d.clearOrphanedGoalMarkers(g.ID)
+			log.Printf("crash recovery: %s: orphaned running (%s gone) -> pending", g.ID, supervisorWindow(g.ID, mg))
 			if _, serr := os.Stat(tasks.GoalTasksFilePath(d.workDir, g.ID)); serr == nil {
 				g.NextDispatch = dispatchImplementer
 			}
@@ -207,6 +223,34 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 	return nil
 }
 
+// windowBelongsToGoal reports whether a tmux window name belongs to goalID's
+// namespace — its supervisor or validator window, or any window in its
+// investigator/execute worker pool. It is the single per-window match shared by
+// liveGoalWindows (the survey announcement) and goalHasLiveWindow (the pass-1
+// liveness gate), so "this window is the goal's" is computed exactly one way and
+// the two can never drift. Names come only from the window_names.go helpers.
+func windowBelongsToGoal(name, goalID string, mg int) bool {
+	return name == supervisorWindow(goalID, mg) ||
+		name == validatorWindow(goalID, mg) ||
+		strings.HasPrefix(name, investigatorPrefix(goalID, mg)) ||
+		strings.HasPrefix(name, executePrefix(goalID, mg))
+}
+
+// goalHasLiveWindow reports whether any window in the survey slice belongs to
+// goalID's namespace. It is the liveness predicate behind pass 1's signal-resume
+// gate: a stale signal inherited from a destroyed session resolves to false here
+// (its windows are gone), so the goal is re-dispatched instead of resumed onto a
+// dead window. It walks the already-fetched survey slice and issues NO new
+// ListWindows call (preserving the recovery count-2 contract).
+func goalHasLiveWindow(windows []tmux.WindowInfo, goalID string, mg int) bool {
+	for _, w := range windows {
+		if windowBelongsToGoal(w.Name, goalID, mg) {
+			return true
+		}
+	}
+	return false
+}
+
 // liveGoalWindows returns a name(@id) entry for every window in the listing that
 // belongs to one of the running goals' namespaces — supervisor, validator,
 // investigator-pool and execute-pool windows. It is the pure half of the recovery
@@ -217,16 +261,36 @@ func liveGoalWindows(windows []tmux.WindowInfo, running []*Goal, mg int) []strin
 	var live []string
 	for _, w := range windows {
 		for _, g := range running {
-			if w.Name == supervisorWindow(g.ID, mg) ||
-				w.Name == validatorWindow(g.ID, mg) ||
-				strings.HasPrefix(w.Name, investigatorPrefix(g.ID, mg)) ||
-				strings.HasPrefix(w.Name, executePrefix(g.ID, mg)) {
+			if windowBelongsToGoal(w.Name, g.ID, mg) {
 				live = append(live, fmt.Sprintf("%s(%s)", w.Name, w.TmuxWindowID))
 				break
 			}
 		}
 	}
 	return live
+}
+
+// clearOrphanedGoalMarkers idempotently deletes the stale runtime handles a dead
+// session left pointing at an orphaned goal window: the per-goal supervisor-window
+// and current-cycle markers, plus the top-level taskvisor-current-goal and
+// taskvisor-current-cycle pointers (paths byte-identical to dispatch.go's
+// writeSupervisorWindowMarker/writeCycleMarker). It deliberately NEVER removes
+// taskvisor-active — the daemon stays active and dispatches the next pending goal.
+// os.IsNotExist is tolerated (the markers may already be absent, and the call is
+// idempotent across recovery cycles); any other remove error is logged but never
+// fatal, so a marker-delete failure cannot abort recovery of the remaining goals.
+func (d *Daemon) clearOrphanedGoalMarkers(goalID string) {
+	paths := []string{
+		filepath.Join(d.workDir, ".tmux-cli", "goals", goalID, "supervisor-window"),
+		filepath.Join(d.workDir, ".tmux-cli", "goals", goalID, "current-cycle"),
+		filepath.Join(d.workDir, ".tmux-cli", "taskvisor-current-goal"),
+		filepath.Join(d.workDir, ".tmux-cli", "taskvisor-current-cycle"),
+	}
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			log.Printf("crash recovery: %s: clear orphaned marker %s: %v", goalID, p, err)
+		}
+	}
 }
 
 // reportWorkerCrashFn is the indirection the genuine-crash branch invokes to emit

@@ -177,7 +177,11 @@ func TestCrashRecovery_NoReport_OnSignalResume(t *testing.T) {
 	}))
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+	// A live supervisor-001 window corroborates the signal so pass-1 resumes in place
+	// (the liveness gate); resume-in-place still must NOT emit a crash report.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor-001"},
+	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 

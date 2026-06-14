@@ -91,9 +91,12 @@ func TestCrashRecovery_GuardWithSignalFile(t *testing.T) {
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	// The survey and the CRASH-RECOVERY notifySupervisor lookup list windows once each
-	// (no bare "supervisor" present → notify silently skipped). The pass-1 signal-resume
-	// path adds no further listing — asserted below via call count.
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+	// (no bare "supervisor" present → notify silently skipped). Pass-1 signal-resume now
+	// requires a LIVE matching window (supervisor-001), but reuses the survey slice and
+	// adds no further listing — asserted below via call count.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor-001"},
+	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
@@ -123,9 +126,12 @@ func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	// The survey and the CRASH-RECOVERY notifySupervisor lookup list windows once each
-	// (no bare "supervisor" present → notify silently skipped). The pass-1 signal-resume
-	// path adds no further listing — asserted below via call count.
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+	// (no bare "supervisor" present → notify silently skipped). Pass-1 signal-resume now
+	// requires a LIVE matching window (validator-001), but reuses the survey slice and
+	// adds no further listing — asserted below via call count.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "validator-001"},
+	}, nil)
 	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
@@ -140,6 +146,72 @@ func TestCrashRecovery_GuardWithValidatorSignalFile(t *testing.T) {
 	assert.True(t, d.runtime("goal-001").phaseStartedAt.After(before) || d.runtime("goal-001").phaseStartedAt.Equal(before))
 	// The survey + the notify lookup each list once; pass-1 signal-resume never lists again.
 	exec.AssertNumberOfCalls(t, "ListWindows", 2)
+}
+
+// TestCrashRecovery_OrphanedSignalResume_DeadWindow_RePends is the regression for
+// task 120: a GoalRunning goal carrying a stale Supervisor signal inherited from a
+// destroyed session, whose supervisor window no longer exists in the CURRENT
+// session, must NOT be resumed in place (that is the active-but-idle zombie bug).
+// The liveness gate routes it to pass 2, which re-pends it, clears started_at, and
+// deletes the stale per-goal + top-level runtime markers so the next poll cycle
+// dispatches a clean pending goal.
+func TestCrashRecovery_OrphanedSignalResume_DeadWindow_RePends(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-020",
+		Goals: []Goal{{
+			ID:          "goal-020",
+			Description: "orphaned running goal",
+			Status:      GoalRunning,
+			StartedAt:   time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339),
+			Retries:     0,
+			MaxRetries:  3,
+		}},
+	})
+
+	// Stale signal from the dead session — present but NOT corroborated by a live window.
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-020", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-06-14T10:25:51Z",
+	}))
+
+	// Stale runtime markers inherited from the destroyed session.
+	goalDir := filepath.Join(dir, ".tmux-cli", "goals", "goal-020")
+	require.NoError(t, os.MkdirAll(goalDir, 0o755))
+	perGoalSupWindow := filepath.Join(goalDir, "supervisor-window")
+	perGoalCycle := filepath.Join(goalDir, "current-cycle")
+	topGoal := filepath.Join(dir, ".tmux-cli", "taskvisor-current-goal")
+	topCycle := filepath.Join(dir, ".tmux-cli", "taskvisor-current-cycle")
+	require.NoError(t, os.WriteFile(perGoalSupWindow, []byte("supervisor-020"), 0o644))
+	require.NoError(t, os.WriteFile(perGoalCycle, []byte("1"), 0o644))
+	require.NoError(t, os.WriteFile(topGoal, []byte("goal-020"), 0o644))
+	require.NoError(t, os.WriteFile(topCycle, []byte("1"), 0o644))
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	// New session: none of goal-020's windows survive.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	err := d.crashRecovery(false)
+	require.NoError(t, err)
+
+	assert.Equal(t, modeActive, d.mode)
+
+	goals, err := LoadGoals(dir)
+	require.NoError(t, err)
+	g, ok := goals.GoalByID("goal-020")
+	require.True(t, ok)
+	assert.Equal(t, GoalPending, g.Status, "orphaned running goal with a dead window must be re-pended, not resumed")
+	assert.Empty(t, g.StartedAt, "started_at must be cleared on orphan re-pend")
+
+	// All four stale runtime markers must be deleted; taskvisor-active must survive.
+	for _, p := range []string{perGoalSupWindow, perGoalCycle, topGoal, topCycle} {
+		_, statErr := os.Stat(p)
+		assert.True(t, os.IsNotExist(statErr), "stale marker must be deleted: %s", p)
+	}
+	_, activeErr := os.Stat(filepath.Join(dir, ".tmux-cli", "taskvisor-active"))
+	assert.NoError(t, activeErr, "taskvisor-active must NOT be removed — the daemon stays active")
 }
 
 func TestCrashRecovery_GuardNoWindowsRetriesLeft(t *testing.T) {
