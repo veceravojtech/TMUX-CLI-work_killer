@@ -421,3 +421,91 @@
     - "review: when the project declares test-first, every new business-logic change in the diff has a test authored first; when the project does not declare test-first, this rule is N/A and yields no finding"
   validate_kind: review
   phase: domain
+
+- id: PHP-TEST-003
+  category: tests
+  scope: generic
+  severity: should
+  title: "Mark test methods with the framework's test attribute, not a test* prefix"
+  rule: >
+    Mark test methods with the framework's dedicated test attribute (resolve the
+    concrete marker per project/framework from discovery — e.g. a PHPUnit
+    `#[Test]` attribute) rather than the legacy `test*` method-name prefix. Apply
+    one consistent marker style across the suite.
+  why: >
+    The attribute decouples "this is a test" from the method name, so tests can
+    be named for the behavior they assert; mixing prefix and attribute styles
+    hides tests from the runner and makes the convention undiscoverable.
+  origin: "backend task 95 — ddd-conventions test layout pinned as rules"
+  applies_to:
+    - "tests/**/*.php"
+  detect:
+    - "test methods named test* instead of carrying the framework's test attribute, or both styles mixed in one suite"
+  fix: >
+    Add the framework's test attribute and drop the test* name prefix; rename the
+    method for the behavior it asserts.
+  autofix: structural
+  acceptance:
+    - "GIVEN a test method THEN it is marked with the framework's test attribute resolved from discovery, not a test* name prefix"
+  validate:
+    - "review: changed test methods use the framework's test attribute (resolved from discovery), not a test* prefix, consistently across the suite"
+  validate_kind: review
+  phase: final
+
+- id: PHP-TEST-004
+  category: tests
+  scope: generic
+  severity: should
+  title: "Reuse static test-mother/factory fixtures that build real domain objects"
+  rule: >
+    Build test inputs through shared static test-mother/factory fixtures (objects
+    under a fixtures/Resources folder that construct REAL domain objects) and
+    reuse them across suites — do not re-instantiate the same domain object ad hoc
+    inside individual tests.
+  why: >
+    A reused test-mother centralizes valid-object construction, so a change to a
+    domain invariant updates one fixture instead of dozens of bespoke setups; ad
+    hoc construction drifts and silently builds invalid objects.
+  origin: "backend task 95 — ddd-conventions test layout pinned as rules"
+  applies_to:
+    - "tests/**/*.php"
+  detect:
+    - "the same domain object constructed inline in multiple tests instead of via a shared test-mother/factory fixture"
+  fix: >
+    Extract the construction into a static test-mother/factory under the
+    fixtures/Resources folder and call it from each suite.
+  autofix: structural
+  acceptance:
+    - "GIVEN tests needing the same domain object THEN they build it via a shared static test-mother/factory fixture, not ad hoc inline construction"
+  validate:
+    - "review: changed tests build shared domain objects via a reused static test-mother/factory fixture rather than ad hoc per-test construction"
+  validate_kind: review
+  phase: final
+
+- id: PHP-TEST-005
+  category: tests
+  scope: generic
+  severity: should
+  title: "Mirror the source tree under tests/"
+  rule: >
+    Place each test at the path under tests/ that mirrors the source file it
+    covers (a test for {src}/<path>/Foo.php lives at the parallel <path> under
+    tests/), so the test tree is a structural map of the source tree.
+  why: >
+    A mirrored layout makes the test for any class findable by path and makes
+    coverage gaps visible as missing mirror entries; a flat or ad hoc test
+    layout hides both.
+  origin: "backend task 95 — ddd-conventions test layout pinned as rules"
+  applies_to:
+    - "tests/**/*.php"
+  detect:
+    - "a test file whose path under tests/ does not mirror the source path of the class it covers"
+  fix: >
+    Move the test to the tests/ path that mirrors its subject's source path.
+  autofix: structural
+  acceptance:
+    - "GIVEN a test file THEN its path under tests/ mirrors the source path of the class under test"
+  validate:
+    - "review: changed test files sit at the tests/ path mirroring the source path of the class they cover"
+  validate_kind: review
+  phase: final
