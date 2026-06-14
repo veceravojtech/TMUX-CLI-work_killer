@@ -165,3 +165,35 @@
     - "review: changed *.vue/*.ts pass make jsf (eslint, stylelint, vue-tsc, vitest) with zero lint/type errors"
   validate_kind: mixed
   phase: frontend
+
+- id: VUE-DEBUG-001
+  category: debugging
+  scope: generic
+  severity: must
+  title: "No committed debug calls (console.log/console.debug/debugger)"
+  rule: >
+    Never commit console.log, console.debug, or a debugger statement in Vue/TS
+    source. Remove the debug call before committing.
+  why: >
+    Committed console.debug/log noise leaks state to the browser console and a
+    stray debugger statement freezes the app under open devtools — P2 bans them.
+  applies_to:
+    - "assets/**/*.vue"
+    - "assets/**/*.ts"
+    - "packages/ui/**/*.vue"
+    - "packages/ui/**/*.ts"
+  detect:
+    - "console.log(/console.debug(/debugger in committed Vue/TS"
+  fix: >
+    Delete the console.log/console.debug/debugger; use a proper logger if needed.
+  autofix: safe
+  acceptance:
+    - "GIVEN a changed Vue/TS file THEN it contains no console.log/console.debug/debugger"
+  validate:
+    - "grep -REn 'console\\.(log|debug)\\(|\\bdebugger\\b' assets packages/ui returns nothing"
+  validate_kind: automated
+  phase: frontend
+  signal: 'console\.(log|debug)\(|\bdebugger\b'
+  examples:
+    bad: 'console.log(user)'
+    good: "this.$emit('update', value)"

@@ -355,3 +355,33 @@
     - "vendor/bin/phpunit --testsuite=unit"
   validate_kind: mixed
   phase: final
+
+- id: PHP-DEBUG-001
+  category: debugging
+  scope: generic
+  severity: must
+  title: "No committed debug calls (var_dump/dd/dump/print_r/var_export)"
+  rule: >
+    Never commit debug calls — var_dump, dd, dump, print_r, var_export — in PHP
+    source. Use the logger or a debugger session instead; remove the call before
+    committing.
+  why: >
+    A committed debug call leaks internals, can dump sensitive data into output,
+    and dd() halts execution in production — P2 bans them outright.
+  applies_to:
+    - "src/**/*.php"
+  detect:
+    - "var_dump(/dd(/dump(/print_r(/var_export( in committed PHP"
+  fix: >
+    Delete the debug call; if diagnostics are needed, log via the project logger.
+  autofix: safe
+  acceptance:
+    - "GIVEN a changed PHP file THEN it contains no var_dump/dd/dump/print_r/var_export call"
+  validate:
+    - "grep -REn '\\b(var_dump|dd|dump|print_r|var_export)\\s*\\(' src returns nothing"
+  validate_kind: automated
+  phase: cross-cutting
+  signal: '\b(var_dump|dd|dump|print_r|var_export)\s*\('
+  examples:
+    bad: 'var_dump($user);'
+    good: '$logger->info($message);'
