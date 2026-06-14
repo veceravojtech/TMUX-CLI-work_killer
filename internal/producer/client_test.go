@@ -319,6 +319,26 @@ func TestSubmitTask_StampsClientProject(t *testing.T) {
 		"SubmitTask must stamp the client's lane onto the request body")
 }
 
+func TestSubmitTask_ExplicitProjectPreserved(t *testing.T) {
+	_, priv := testKeypair(t)
+
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"t1","status":"queued","createdAt":"2026-06-14T00:00:00Z"}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	c.project = "cli" // this worker's own lane
+	// A cross-project report explicitly targets another lane; it must NOT be overridden.
+	_, err := c.SubmitTask(context.Background(), TaskRequest{Category: "general", Severity: "info", Title: "t", Project: "web"})
+	require.NoError(t, err)
+	assert.Contains(t, gotBody, `"project":"web"`, "explicit req.Project must be preserved, not overridden by the client lane")
+}
+
 // TestParsePrivateKey covers the two interchangeable encodings loadPrivateKey
 // accepts: PKCS#8 PEM (openssl/Go) and base64 of a raw Ed25519 key (the
 // libsodium shape the web GenerateKeypairCommand emits, either 64-byte secret

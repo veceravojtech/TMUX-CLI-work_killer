@@ -208,6 +208,35 @@ func TestListTasks_ScopesToClientLane(t *testing.T) {
 		"list defaults to the client's own lane")
 }
 
+func TestListProjectBindings_BuildsQueryAndDecodes(t *testing.T) {
+	pub, priv := testKeypair(t)
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "/api/v1/project-bindings", r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		assert.Empty(t, body)
+		verifySig(t, pub, r, nil)
+		gotQuery = r.URL.Query()
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"bindings":[
+			{"projectName":"web","path":"/p/web","repository":"git@x:web.git","branch":"master","fingerprint":"fp","hostname":"box"}],
+			"total":1}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	out, err := c.ListProjectBindings(context.Background(), ListBindingsParams{Hostname: "box"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	assert.Equal(t, "box", gotQuery.Get("hostname"))
+	require.Len(t, out.Bindings, 1)
+	assert.Equal(t, "web", out.Bindings[0].ProjectName)
+	assert.Equal(t, "/p/web", out.Bindings[0].Path)
+	assert.Equal(t, "git@x:web.git", out.Bindings[0].Repository)
+}
+
 func TestClaimTask_NoContent(t *testing.T) {
 	_, priv := testKeypair(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

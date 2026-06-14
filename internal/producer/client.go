@@ -116,9 +116,13 @@ func (c *Client) SubmitTask(ctx context.Context, req TaskRequest) (*TaskResponse
 		return nil, nil
 	}
 
-	// Stamp the client's lane transparently so every reporter (daemon failures,
-	// the MCP task-report tool) tags the task with this worker's project.
-	req.Project = c.project
+	// Default to the client's own lane only when the caller did not set one
+	// explicitly. An explicit req.Project (e.g. a cross-project task-report that
+	// targets another lane) is preserved — so a report from any project can route
+	// to the project the issue actually belongs to.
+	if req.Project == "" {
+		req.Project = c.project
+	}
 
 	body, err := json.Marshal(req)
 	if err != nil {

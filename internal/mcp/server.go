@@ -529,6 +529,7 @@ type TaskReportInput struct {
 	ProposedFix        string         `json:"proposed_fix" jsonschema:"Concrete remediation; required and must be actionable (a contentless stub like TBD, none, n/a is rejected)"`
 	ExpectedGreenState string         `json:"expected_green_state" jsonschema:"What passing/fixed looks like; required"`
 	Payload            map[string]any `json:"payload,omitempty" jsonschema:"Optional structured payload forwarded verbatim to the backend"`
+	Project            string         `json:"project,omitempty" jsonschema:"Optional target project lane (e.g. cli, web). Omit to default to the reporting worker's own project. To report an issue about a DIFFERENT project, call projects-list, pick the project whose checkout the issue lives in, confirm it exists locally, and pass its name here."`
 }
 
 // TaskReportOutput defines the output schema for the task-report tool.
@@ -863,6 +864,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: false,
 		},
 	}, s.TaskUpdateStatusHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "projects-list",
+		Description: "List the available projects from the tmux-cli project-lane registry: each project NAME (e.g. cli, web) and its addresses (machine hostname/fingerprint, absolute install path, git repository). Use this to route a cross-project task-report: pick the project whose checkout the issue lives in, confirm its path exists locally, then pass its name as task-report's project. Optional filters: hostname, fingerprint. Read-only.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, s.ProjectsListHandler)
 
 	return nil
 }

@@ -169,7 +169,7 @@ internal/
 - `PostCommandConfig` has a 3-level fallback chain for launching Claude in new windows — errors from one level trigger the next
 - The `install` command was removed — all setup is automatic via `start`/`start-attach`
 
-## MCP tools (16 total)
+## MCP tools (22 total)
 
 Source of truth: `RegisterTools()` in `internal/mcp/server.go`. Regenerate this table when registrations change.
 
@@ -191,6 +191,12 @@ Source of truth: `RegisterTools()` in `internal/mcp/server.go`. Regenerate this 
 | goal-validation-done | no | yes | Report validation results for a goal (atomic signal.json write; validator-UUID authorized) |
 | hooks-config | no | yes | List/enable/disable hooks in setting.yaml |
 | sudo-execute | yes | yes | DISABLED — returns guidance to use `tmux-cli sudo` CLI instead |
+| task-report | no | no | File a structured task report to the backend; auto-tags the worker's project lane, or an explicit `project` for cross-project reporting |
+| task-list | yes | yes | List/search backend tasks (filters incl. project lane) |
+| task-get | yes | yes | Fetch one backend task + its event history |
+| task-claim | no | no | Atomically claim the next task in the worker's lane |
+| task-update-status | no | no | Advance a claimed task's status |
+| projects-list | yes | yes | List the project-lane registry (project name → machine/path/repo) so an agent can route a cross-project task-report |
 
 ## Post-task requirement
 

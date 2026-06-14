@@ -392,3 +392,68 @@ func (s *Server) TaskUpdateStatusHandler(ctx context.Context, req *sdkmcp.CallTo
 	result, out := prependStaleWarning(*output)
 	return result, out, nil
 }
+
+// ProjectInfo is one entry of the project-lane registry as shown to an agent:
+// the project NAME (pass it as task-report's project) plus where it lives.
+type ProjectInfo struct {
+	Project     string `json:"project" jsonschema:"Project lane name (e.g. cli, web) — pass this as task-report's project to route a cross-project report"`
+	Path        string `json:"path,omitempty" jsonschema:"Absolute install path of this project on its machine"`
+	Repository  string `json:"repository,omitempty"`
+	Branch      string `json:"branch,omitempty"`
+	Hostname    string `json:"hostname,omitempty" jsonschema:"Machine hosting this address of the project"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
+// ProjectsListInput are the optional filters for the projects-list tool.
+type ProjectsListInput struct {
+	Hostname    string `json:"hostname,omitempty" jsonschema:"Only projects hosted on this machine hostname"`
+	Fingerprint string `json:"fingerprint,omitempty" jsonschema:"Only projects hosted on this machine fingerprint"`
+}
+
+// ProjectsListOutput is the projects-list reply.
+type ProjectsListOutput struct {
+	Projects []ProjectInfo `json:"projects"`
+	Total    int           `json:"total"`
+}
+
+// ProjectsList fetches the project-lane registry from the backend so an agent can
+// pick the right `project` for a cross-project task-report (confirm the chosen
+// project's path exists locally, then pass its name to task-report).
+func (s *Server) ProjectsList(ctx context.Context, in ProjectsListInput) (*ProjectsListOutput, error) {
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+	list, err := client.ListProjectBindings(ctx, producer.ListBindingsParams{
+		Hostname:    in.Hostname,
+		Fingerprint: in.Fingerprint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &ProjectsListOutput{Total: list.Total}
+	out.Projects = make([]ProjectInfo, 0, len(list.Bindings))
+	for _, b := range list.Bindings {
+		out.Projects = append(out.Projects, ProjectInfo{
+			Project:     b.ProjectName,
+			Path:        b.Path,
+			Repository:  b.Repository,
+			Branch:      b.Branch,
+			Hostname:    b.Hostname,
+			Fingerprint: b.Fingerprint,
+		})
+	}
+	return out, nil
+}
+
+// ProjectsListHandler is the MCP tool handler for projects-list.
+func (s *Server) ProjectsListHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input ProjectsListInput) (
+	*sdkmcp.CallToolResult, ProjectsListOutput, error,
+) {
+	output, err := s.ProjectsList(ctx, input)
+	if err != nil {
+		return nil, ProjectsListOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}

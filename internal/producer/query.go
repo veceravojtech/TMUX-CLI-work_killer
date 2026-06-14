@@ -302,3 +302,59 @@ func decode(resp *http.Response, v any) error {
 	}
 	return nil
 }
+
+// ProjectBindingDTO is one row of the project-lane registry: a project NAME and
+// one of its concrete addresses (the machine + absolute path + repo). Fetched so
+// an agent can pick the right lane for a cross-project task report.
+type ProjectBindingDTO struct {
+	ProjectName string `json:"projectName"`
+	Path        string `json:"path"`
+	Repository  string `json:"repository"`
+	Branch      string `json:"branch"`
+	Fingerprint string `json:"fingerprint"`
+	Hostname    string `json:"hostname"`
+}
+
+// BindingList is the decoded GET /api/v1/project-bindings reply.
+type BindingList struct {
+	Bindings []ProjectBindingDTO `json:"bindings"`
+	Total    int                 `json:"total"`
+}
+
+// ListBindingsParams optionally narrows the registry fetch.
+type ListBindingsParams struct {
+	Hostname    string
+	Fingerprint string
+}
+
+func (p ListBindingsParams) query() url.Values {
+	q := url.Values{}
+	if p.Hostname != "" {
+		q.Set("hostname", p.Hostname)
+	}
+	if p.Fingerprint != "" {
+		q.Set("fingerprint", p.Fingerprint)
+	}
+	return q
+}
+
+// ListProjectBindings fetches the project-lane registry (all enabled bindings,
+// optionally narrowed by p). A nil receiver is a no-op returning (nil, nil).
+func (c *Client) ListProjectBindings(ctx context.Context, p ListBindingsParams) (*BindingList, error) {
+	if c == nil {
+		return nil, nil
+	}
+	resp, err := c.doSigned(ctx, http.MethodGet, "/api/v1/project-bindings", p.query(), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := expect2xx(resp, "project bindings", nil); err != nil {
+		return nil, err
+	}
+	var out BindingList
+	if err := decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
