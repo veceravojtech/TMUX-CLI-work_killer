@@ -866,6 +866,24 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 	}, s.TaskUpdateStatusHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-deny",
+		Description: "Deny a backend task, recording why. Both id and reason are required (a blank reason is rejected). POSTs to the task /deny endpoint and returns the task with status denied. Mutating and not idempotent.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.TaskDenyHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-resolve",
+		Description: "FORCE-resolve a backend task via the administrative /resolve endpoint — distinct from task-update-status transitioning to resolved (which is claim-gated and follows from->to rules). Use this to clear a terminal failed task or otherwise resolve a task out-of-band. Both id and reason are required (a blank reason is rejected). Returns the task with status resolved. Mutating and not idempotent.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.TaskResolveHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "projects-list",
 		Description: "List the available projects from the tmux-cli project-lane registry: each project NAME (e.g. cli, web) and its addresses (machine hostname/fingerprint, absolute install path, git repository). Use this to route a cross-project task-report: pick the project whose checkout the issue lives in, confirm its path exists locally, then pass its name as task-report's project. Optional filters: hostname, fingerprint. Read-only.",
 		Annotations: &sdkmcp.ToolAnnotations{

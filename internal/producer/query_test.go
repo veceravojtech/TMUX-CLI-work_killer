@@ -322,6 +322,76 @@ func TestUpdateTaskStatus_ErrorMapping(t *testing.T) {
 	}
 }
 
+func TestDeny_SendsReasonAndDecodes(t *testing.T) {
+	pub, priv := testKeypair(t)
+	var sent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/api/v1/tasks/42/deny", r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		verifySig(t, pub, r, body)
+		require.NoError(t, json.Unmarshal(body, &sent))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":42,"status":"denied"}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	task, err := c.Deny(context.Background(), "42", "dup")
+	require.NoError(t, err)
+	require.NotNil(t, task)
+	assert.Equal(t, "denied", task.Status)
+	assert.Equal(t, "dup", sent["reason"])
+}
+
+func TestDeny_NotFound(t *testing.T) {
+	_, priv := testKeypair(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	task, err := c.Deny(context.Background(), "42", "dup")
+	assert.Nil(t, task)
+	assert.True(t, errors.Is(err, ErrTaskNotFound), "want ErrTaskNotFound, got %v", err)
+}
+
+func TestForceResolve_SendsReasonAndDecodes(t *testing.T) {
+	pub, priv := testKeypair(t)
+	var sent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/api/v1/tasks/42/resolve", r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		verifySig(t, pub, r, body)
+		require.NoError(t, json.Unmarshal(body, &sent))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":42,"status":"resolved"}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	task, err := c.ForceResolve(context.Background(), "42", "manual fix")
+	require.NoError(t, err)
+	require.NotNil(t, task)
+	assert.Equal(t, "resolved", task.Status)
+	assert.Equal(t, "manual fix", sent["reason"])
+}
+
+func TestForceResolve_NotFound(t *testing.T) {
+	_, priv := testKeypair(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	task, err := c.ForceResolve(context.Background(), "42", "manual fix")
+	assert.Nil(t, task)
+	assert.True(t, errors.Is(err, ErrTaskNotFound), "want ErrTaskNotFound, got %v", err)
+}
+
 func TestQueryMethods_NilReceiverNoOp(t *testing.T) {
 	var c *Client
 	list, err := c.ListTasks(context.Background(), ListTasksParams{})
@@ -331,4 +401,12 @@ func TestQueryMethods_NilReceiverNoOp(t *testing.T) {
 	task, err := c.ClaimTask(context.Background(), ClaimParams{})
 	assert.NoError(t, err)
 	assert.Nil(t, task)
+
+	denied, err := c.Deny(context.Background(), "42", "dup")
+	assert.NoError(t, err)
+	assert.Nil(t, denied)
+
+	resolved, err := c.ForceResolve(context.Background(), "42", "manual fix")
+	assert.NoError(t, err)
+	assert.Nil(t, resolved)
 }

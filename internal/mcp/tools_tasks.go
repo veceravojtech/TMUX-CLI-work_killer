@@ -401,6 +401,111 @@ func (s *Server) TaskUpdateStatusHandler(ctx context.Context, req *sdkmcp.CallTo
 	return result, out, nil
 }
 
+// ----------------------------------------------------------------------------
+// task-deny
+// ----------------------------------------------------------------------------
+
+// TaskDenyInput defines the input schema for the task-deny tool. Both fields are
+// required; reason is recorded with the denial.
+type TaskDenyInput struct {
+	ID     string `json:"id" jsonschema:"Backend task id to deny; required"`
+	Reason string `json:"reason" jsonschema:"Why the task is being denied; required, non-empty"`
+}
+
+// TaskDenyOutput is the denied task.
+type TaskDenyOutput struct {
+	Task TaskView `json:"task"`
+}
+
+// TaskDeny denies a task, recording the supplied reason. It rejects a blank id
+// or reason before building a client so no network work happens on bad input.
+func (s *Server) TaskDeny(ctx context.Context, in TaskDenyInput) (*TaskDenyOutput, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, fmt.Errorf("%w: missing required field: id", ErrInvalidInput)
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return nil, fmt.Errorf("%w: missing required field: reason", ErrInvalidInput)
+	}
+
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+
+	task, err := client.Deny(ctx, id, reason)
+	if err != nil {
+		return nil, err
+	}
+	return &TaskDenyOutput{Task: toTaskView(*task)}, nil
+}
+
+// TaskDenyHandler is the MCP tool handler for task-deny.
+func (s *Server) TaskDenyHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskDenyInput) (
+	*sdkmcp.CallToolResult, TaskDenyOutput, error,
+) {
+	output, err := s.TaskDeny(ctx, input)
+	if err != nil {
+		return nil, TaskDenyOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// ----------------------------------------------------------------------------
+// task-resolve (force / administrative resolve)
+// ----------------------------------------------------------------------------
+
+// TaskResolveInput defines the input schema for the task-resolve tool. Both
+// fields are required; reason is recorded with the forced resolution.
+type TaskResolveInput struct {
+	ID     string `json:"id" jsonschema:"Backend task id to force-resolve; required"`
+	Reason string `json:"reason" jsonschema:"Why the task is being force-resolved; required, non-empty"`
+}
+
+// TaskResolveOutput is the resolved task.
+type TaskResolveOutput struct {
+	Task TaskView `json:"task"`
+}
+
+// TaskResolve force-resolves a task (administrative endpoint), recording the
+// supplied reason. It rejects a blank id or reason before building a client so
+// no network work happens on bad input.
+func (s *Server) TaskResolve(ctx context.Context, in TaskResolveInput) (*TaskResolveOutput, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, fmt.Errorf("%w: missing required field: id", ErrInvalidInput)
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return nil, fmt.Errorf("%w: missing required field: reason", ErrInvalidInput)
+	}
+
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+
+	task, err := client.ForceResolve(ctx, id, reason)
+	if err != nil {
+		return nil, err
+	}
+	return &TaskResolveOutput{Task: toTaskView(*task)}, nil
+}
+
+// TaskResolveHandler is the MCP tool handler for task-resolve.
+func (s *Server) TaskResolveHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskResolveInput) (
+	*sdkmcp.CallToolResult, TaskResolveOutput, error,
+) {
+	output, err := s.TaskResolve(ctx, input)
+	if err != nil {
+		return nil, TaskResolveOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
 // ProjectInfo is one entry of the project-lane registry as shown to an agent:
 // the project NAME (pass it as task-report's project) plus where it lives.
 type ProjectInfo struct {

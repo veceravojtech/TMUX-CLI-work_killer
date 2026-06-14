@@ -214,6 +214,87 @@ func TestTaskUpdateStatus_InvalidTransitionSurfaced(t *testing.T) {
 	assert.ErrorIs(t, err, producer.ErrInvalidTransition)
 }
 
+// --- task-deny ---------------------------------------------------------------
+
+func TestTaskDeny_HappyPath(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"denied"}`)
+	out, err := s.TaskDeny(context.Background(), TaskDenyInput{ID: "42", Reason: "dup"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "denied", out.Task.Status)
+	assert.Equal(t, http.MethodPost, last.Method)
+	assert.Equal(t, "/api/v1/tasks/42/deny", last.URL.Path)
+}
+
+func TestTaskDeny_Rejections(t *testing.T) {
+	cases := []struct {
+		name string
+		in   TaskDenyInput
+		want string
+	}{
+		{"missing id", TaskDenyInput{Reason: "dup"}, "id"},
+		{"blank id", TaskDenyInput{ID: "  ", Reason: "dup"}, "id"},
+		{"missing reason", TaskDenyInput{ID: "42"}, "reason"},
+		{"blank reason", TaskDenyInput{ID: "42", Reason: "  "}, "reason"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withReportHook(t, failIfCalled(t))
+			s := newReportServer(t)
+			out, err := s.TaskDeny(context.Background(), tc.in)
+			assert.Nil(t, out)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// --- task-resolve (force resolve) --------------------------------------------
+
+func TestTaskResolve_HappyPath(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"resolved"}`)
+	out, err := s.TaskResolve(context.Background(), TaskResolveInput{ID: "42", Reason: "manual"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "resolved", out.Task.Status)
+	assert.Equal(t, http.MethodPost, last.Method)
+	assert.Equal(t, "/api/v1/tasks/42/resolve", last.URL.Path)
+}
+
+func TestTaskResolve_Rejections(t *testing.T) {
+	cases := []struct {
+		name string
+		in   TaskResolveInput
+		want string
+	}{
+		{"missing id", TaskResolveInput{Reason: "manual"}, "id"},
+		{"blank id", TaskResolveInput{ID: "  ", Reason: "manual"}, "id"},
+		{"missing reason", TaskResolveInput{ID: "42"}, "reason"},
+		{"blank reason", TaskResolveInput{ID: "42", Reason: "  "}, "reason"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withReportHook(t, failIfCalled(t))
+			s := newReportServer(t)
+			out, err := s.TaskResolve(context.Background(), tc.in)
+			assert.Nil(t, out)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestTaskDenyResolve_DisabledClient(t *testing.T) {
+	withReportHook(t, func(producer.Config) *producer.Client { return nil })
+	s := newReportServer(t)
+
+	_, err := s.TaskDeny(context.Background(), TaskDenyInput{ID: "42", Reason: "dup"})
+	assert.ErrorContains(t, err, "disabled")
+
+	_, err = s.TaskResolve(context.Background(), TaskResolveInput{ID: "42", Reason: "manual"})
+	assert.ErrorContains(t, err, "disabled")
+}
+
 // --- disabled reporting ------------------------------------------------------
 
 func TestTaskQuery_DisabledClient(t *testing.T) {
