@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/console/tmux-cli/internal/identity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -16,6 +17,12 @@ import (
 type Config struct {
 	APIURL     string
 	APIEnabled bool
+	// Project is the task "lane" the client reports to and claims from: a
+	// machine-qualified working-folder identity. Resolved by LoadConfig as a
+	// `project:` override from setting.yaml, else auto-derived as
+	// "<identity.Fingerprint()>:<abs projectRoot>". Empty only when no
+	// setting.yaml exists (API disabled anyway).
+	Project string
 }
 
 // apiFile mirrors the two accepted shapes of api configuration in
@@ -26,9 +33,11 @@ type Config struct {
 type apiFile struct {
 	APIURL     *string `yaml:"apiUrl"`
 	APIEnabled *bool   `yaml:"apiEnabled"`
+	Project    *string `yaml:"project"`
 	API        struct {
 		URL     string `yaml:"url"`
 		Enabled bool   `yaml:"enabled"`
+		Project string `yaml:"project"`
 	} `yaml:"api"`
 }
 
@@ -65,5 +74,26 @@ func LoadConfig(projectRoot string) (Config, error) {
 	} else {
 		cfg.APIEnabled = f.API.Enabled
 	}
+
+	// Project lane: a `project:` override (flat preferred, then nested) wins;
+	// otherwise auto-derive the machine-qualified working folder so the same path
+	// on different machines is a distinct lane. Resolved only when a setting.yaml
+	// exists — a missing file already returned a zero-value Config above.
+	override := ""
+	if f.Project != nil {
+		override = *f.Project
+	} else {
+		override = f.API.Project
+	}
+	if override != "" {
+		cfg.Project = override
+	} else {
+		absRoot, absErr := filepath.Abs(projectRoot)
+		if absErr != nil {
+			absRoot = projectRoot
+		}
+		cfg.Project = identity.Fingerprint() + ":" + absRoot
+	}
+
 	return cfg, nil
 }

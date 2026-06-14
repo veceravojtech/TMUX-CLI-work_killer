@@ -82,6 +82,7 @@ type ListTasksParams struct {
 	Status      string
 	Category    string
 	Severity    string
+	Project     string
 	Since       string
 	Limit       int
 	Offset      int
@@ -99,6 +100,7 @@ func (p ListTasksParams) query() url.Values {
 	set("status", p.Status)
 	set("category", p.Category)
 	set("severity", p.Severity)
+	set("project", p.Project)
 	set("since", p.Since)
 	if p.Limit > 0 {
 		q.Set("limit", strconv.Itoa(p.Limit))
@@ -113,6 +115,7 @@ func (p ListTasksParams) query() url.Values {
 type ClaimParams struct {
 	Category string
 	Severity string
+	Project  string
 }
 
 func (p ClaimParams) query() url.Values {
@@ -122,6 +125,9 @@ func (p ClaimParams) query() url.Values {
 	}
 	if p.Severity != "" {
 		q.Set("severity", p.Severity)
+	}
+	if p.Project != "" {
+		q.Set("project", p.Project)
 	}
 	return q
 }
@@ -138,6 +144,9 @@ type UpdateStatusParams struct {
 func (c *Client) ListTasks(ctx context.Context, p ListTasksParams) (*TaskList, error) {
 	if c == nil {
 		return nil, nil
+	}
+	if p.Project == "" {
+		p.Project = c.project // default to this worker's lane; callers may override
 	}
 	resp, err := c.doSigned(ctx, http.MethodGet, "/api/v1/tasks", p.query(), nil)
 	if err != nil {
@@ -181,6 +190,9 @@ func (c *Client) GetTask(ctx context.Context, id string) (*TaskDetail, error) {
 func (c *Client) ClaimTask(ctx context.Context, p ClaimParams) (*Task, error) {
 	if c == nil {
 		return nil, nil
+	}
+	if p.Project == "" {
+		p.Project = c.project // claim only within this worker's lane unless overridden
 	}
 	resp, err := c.doSigned(ctx, http.MethodPost, "/api/v1/tasks/claim", p.query(), nil)
 	if err != nil {

@@ -24,6 +24,10 @@ type TaskRequest struct {
 	ExpectedGreenState string              `json:"expectedGreenState"`
 	SystemInfo         identity.SystemInfo `json:"systemInfo"`
 	Payload            map[string]any      `json:"payload,omitempty"`
+	// Project is the machine-qualified lane the task belongs to. Stamped by
+	// SubmitTask from the client config; omitempty keeps it off the wire for
+	// unconfigured clients (backend treats absent as a null lane).
+	Project string `json:"project,omitempty"`
 }
 
 // TaskResponse is the minimal decoded form of a successful backend reply. The

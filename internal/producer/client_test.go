@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/console/tmux-cli/internal/identity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -274,6 +275,51 @@ func TestLoadConfig_FlatAndNested(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, Config{}, cfg)
 	})
+
+	t.Run("project auto-derives the machine-qualified lane when no override", func(t *testing.T) {
+		root := write(t, "apiEnabled: true\n")
+		cfg, err := LoadConfig(root)
+		require.NoError(t, err)
+		// t.TempDir() is already absolute, so the lane is "<fingerprint>:<root>".
+		assert.True(t, strings.HasSuffix(cfg.Project, ":"+root),
+			"lane must end with :<abs project root>, got %q", cfg.Project)
+		assert.True(t, strings.HasPrefix(cfg.Project, identity.Fingerprint()+":"),
+			"lane must be prefixed by this machine's fingerprint, got %q", cfg.Project)
+	})
+
+	t.Run("explicit project override wins over auto-derive (flat)", func(t *testing.T) {
+		root := write(t, "apiEnabled: true\nproject: laptop-fp:/home/u/cli\n")
+		cfg, err := LoadConfig(root)
+		require.NoError(t, err)
+		assert.Equal(t, "laptop-fp:/home/u/cli", cfg.Project)
+	})
+
+	t.Run("nested api.project override is honored when flat absent", func(t *testing.T) {
+		root := write(t, "api:\n  enabled: true\n  project: other:/srv/web\n")
+		cfg, err := LoadConfig(root)
+		require.NoError(t, err)
+		assert.Equal(t, "other:/srv/web", cfg.Project)
+	})
+}
+
+func TestSubmitTask_StampsClientProject(t *testing.T) {
+	_, priv := testKeypair(t)
+
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"t1","status":"queued","createdAt":"2026-06-14T00:00:00Z"}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	c.project = "fp-cli:/proj/cli"
+	_, err := c.SubmitTask(context.Background(), TaskRequest{Category: "execute", Severity: "info", Title: "t"})
+	require.NoError(t, err)
+	assert.Contains(t, gotBody, `"project":"fp-cli:/proj/cli"`,
+		"SubmitTask must stamp the client's lane onto the request body")
 }
 
 // TestParsePrivateKey covers the two interchangeable encodings loadPrivateKey

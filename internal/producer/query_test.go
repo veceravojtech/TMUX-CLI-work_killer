@@ -156,6 +156,58 @@ func TestClaimTask_Success(t *testing.T) {
 	assert.Equal(t, "critical", gotQuery.Get("severity"))
 }
 
+func TestClaimTask_ScopesToClientLane(t *testing.T) {
+	_, priv := testKeypair(t)
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	c.project = "fp-cli:/proj/cli"
+	_, err := c.ClaimTask(context.Background(), ClaimParams{})
+	require.NoError(t, err)
+	assert.Equal(t, "fp-cli:/proj/cli", gotQuery.Get("project"),
+		"claim defaults to the client's own lane")
+}
+
+func TestClaimTask_ExplicitProjectOverridesClientLane(t *testing.T) {
+	_, priv := testKeypair(t)
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	c.project = "fp-cli:/proj/cli"
+	_, err := c.ClaimTask(context.Background(), ClaimParams{Project: "override:/lane"})
+	require.NoError(t, err)
+	assert.Equal(t, "override:/lane", gotQuery.Get("project"),
+		"an explicit ClaimParams.Project overrides the client lane")
+}
+
+func TestListTasks_ScopesToClientLane(t *testing.T) {
+	_, priv := testKeypair(t)
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"tasks":[],"total":0,"limit":50,"offset":0}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	c.project = "fp-web:/proj/web"
+	_, err := c.ListTasks(context.Background(), ListTasksParams{Status: "new"})
+	require.NoError(t, err)
+	assert.Equal(t, "fp-web:/proj/web", gotQuery.Get("project"),
+		"list defaults to the client's own lane")
+}
+
 func TestClaimTask_NoContent(t *testing.T) {
 	_, priv := testKeypair(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

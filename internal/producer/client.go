@@ -57,6 +57,10 @@ type Client struct {
 	httpClient  *http.Client
 	privateKey  ed25519.PrivateKey
 	fingerprint string
+	// project is the lane applied transparently to every call: stamped on each
+	// SubmitTask and used to scope ClaimTask/ListTasks. Empty means unscoped
+	// (global) — preserving the pre-lane behavior for clients without a config.
+	project string
 }
 
 // New builds a Client from cfg. It returns nil (a no-op client) when reporting
@@ -72,7 +76,9 @@ func New(cfg Config) *Client {
 		fmt.Fprintln(os.Stderr, "producer: reporting disabled, could not load signing key:", err)
 		return nil
 	}
-	return newClient(resolveBaseURL(cfg.APIURL), key, &http.Client{Timeout: 10 * time.Second})
+	c := newClient(resolveBaseURL(cfg.APIURL), key, &http.Client{Timeout: 10 * time.Second})
+	c.project = cfg.Project
+	return c
 }
 
 // newClient is the construction seam shared by New and tests. Tests inject a
@@ -109,6 +115,10 @@ func (c *Client) SubmitTask(ctx context.Context, req TaskRequest) (*TaskResponse
 	if c == nil {
 		return nil, nil
 	}
+
+	// Stamp the client's lane transparently so every reporter (daemon failures,
+	// the MCP task-report tool) tags the task with this worker's project.
+	req.Project = c.project
 
 	body, err := json.Marshal(req)
 	if err != nil {
