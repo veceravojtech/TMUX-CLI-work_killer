@@ -884,6 +884,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 	}, s.TaskResolveHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-set-status",
+		Description: "Set a backend task's status by id WITHOUT claiming it — the consolidated admin transition tool. status must be one of denied, resolved, archived (unknown values are rejected, never coerced). Routes to the task /deny, /resolve, or /archive endpoint accordingly. Use this to retire an erroneous/duplicate task (archived), clear a terminal failed task (resolved), or reject one (denied) out-of-band. Both id and reason are required (a blank reason is rejected). Distinct from the claim-gated task-update-status. Mutating and not idempotent.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.TaskSetStatusHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "projects-list",
 		Description: "List the available projects from the tmux-cli project-lane registry: each project NAME (e.g. cli, web) and its addresses (machine hostname/fingerprint, absolute install path, git repository). Use this to route a cross-project task-report: pick the project whose checkout the issue lives in, confirm its path exists locally, then pass its name as task-report's project. Optional filters: hostname, fingerprint. Read-only.",
 		Annotations: &sdkmcp.ToolAnnotations{

@@ -417,28 +417,16 @@ type TaskDenyOutput struct {
 	Task TaskView `json:"task"`
 }
 
-// TaskDeny denies a task, recording the supplied reason. It rejects a blank id
-// or reason before building a client so no network work happens on bad input.
+// TaskDeny denies a task, recording the supplied reason. It is a thin alias over
+// the shared setTaskStatus core (status "denied") so deny/resolve/archive share
+// one validated code path; the id/reason gate and client-after-validation
+// ordering are enforced there.
 func (s *Server) TaskDeny(ctx context.Context, in TaskDenyInput) (*TaskDenyOutput, error) {
-	id := strings.TrimSpace(in.ID)
-	if id == "" {
-		return nil, fmt.Errorf("%w: missing required field: id", ErrInvalidInput)
-	}
-	reason := strings.TrimSpace(in.Reason)
-	if reason == "" {
-		return nil, fmt.Errorf("%w: missing required field: reason", ErrInvalidInput)
-	}
-
-	client, err := s.taskClient()
+	view, err := s.setTaskStatus(ctx, in.ID, "denied", in.Reason)
 	if err != nil {
 		return nil, err
 	}
-
-	task, err := client.Deny(ctx, id, reason)
-	if err != nil {
-		return nil, err
-	}
-	return &TaskDenyOutput{Task: toTaskView(*task)}, nil
+	return &TaskDenyOutput{Task: *view}, nil
 }
 
 // TaskDenyHandler is the MCP tool handler for task-deny.
@@ -470,28 +458,15 @@ type TaskResolveOutput struct {
 }
 
 // TaskResolve force-resolves a task (administrative endpoint), recording the
-// supplied reason. It rejects a blank id or reason before building a client so
-// no network work happens on bad input.
+// supplied reason. It is a thin alias over the shared setTaskStatus core (status
+// "resolved") so deny/resolve/archive share one validated code path; the
+// id/reason gate and client-after-validation ordering are enforced there.
 func (s *Server) TaskResolve(ctx context.Context, in TaskResolveInput) (*TaskResolveOutput, error) {
-	id := strings.TrimSpace(in.ID)
-	if id == "" {
-		return nil, fmt.Errorf("%w: missing required field: id", ErrInvalidInput)
-	}
-	reason := strings.TrimSpace(in.Reason)
-	if reason == "" {
-		return nil, fmt.Errorf("%w: missing required field: reason", ErrInvalidInput)
-	}
-
-	client, err := s.taskClient()
+	view, err := s.setTaskStatus(ctx, in.ID, "resolved", in.Reason)
 	if err != nil {
 		return nil, err
 	}
-
-	task, err := client.ForceResolve(ctx, id, reason)
-	if err != nil {
-		return nil, err
-	}
-	return &TaskResolveOutput{Task: toTaskView(*task)}, nil
+	return &TaskResolveOutput{Task: *view}, nil
 }
 
 // TaskResolveHandler is the MCP tool handler for task-resolve.
@@ -501,6 +476,91 @@ func (s *Server) TaskResolveHandler(ctx context.Context, req *sdkmcp.CallToolReq
 	output, err := s.TaskResolve(ctx, input)
 	if err != nil {
 		return nil, TaskResolveOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// ----------------------------------------------------------------------------
+// task-set-status (id-targeted admin transition: denied | resolved | archived)
+// ----------------------------------------------------------------------------
+
+// TaskSetStatusInput defines the input schema for the task-set-status tool. All
+// three fields are required; status must be one of the admin terminal targets.
+type TaskSetStatusInput struct {
+	ID     string `json:"id" jsonschema:"Backend task id to transition; required"`
+	Status string `json:"status" jsonschema:"Target status; required; one of denied, resolved, archived"`
+	Reason string `json:"reason" jsonschema:"Why the task is being transitioned; required, non-empty"`
+}
+
+// TaskSetStatusOutput is the transitioned task.
+type TaskSetStatusOutput struct {
+	Task TaskView `json:"task"`
+}
+
+// setTaskStatus is the shared core for the id-targeted, no-claim admin
+// transitions exposed by task-set-status (and the task-deny/task-resolve
+// aliases). It trims and validates id/reason (rejecting with ErrInvalidInput
+// BEFORE building a client, so invalid input never reaches the network),
+// validates status against the closed admin set with no coercion, then routes to
+// the matching producer endpoint. status is required: the explicit non-empty
+// check runs before rejectIfNotIn (which accepts an empty value) so a blank
+// status is reported as a missing field rather than passing the enum gate.
+func (s *Server) setTaskStatus(ctx context.Context, id, status, reason string) (*TaskView, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("%w: missing required field: id", ErrInvalidInput)
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, fmt.Errorf("%w: missing required field: reason", ErrInvalidInput)
+	}
+	if strings.TrimSpace(status) == "" {
+		return nil, fmt.Errorf("%w: missing required field: status", ErrInvalidInput)
+	}
+	if err := rejectIfNotIn("status", status, producer.ValidAdminStatusTargets); err != nil {
+		return nil, err
+	}
+
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+
+	var task *producer.Task
+	switch status {
+	case "denied":
+		task, err = client.Deny(ctx, id, reason)
+	case "resolved":
+		task, err = client.ForceResolve(ctx, id, reason)
+	case "archived":
+		task, err = client.Archive(ctx, id, reason)
+	}
+	if err != nil {
+		return nil, err
+	}
+	view := toTaskView(*task)
+	return &view, nil
+}
+
+// TaskSetStatus performs an id-targeted, no-claim admin transition of a task to
+// one of denied/resolved/archived, recording the supplied reason. It delegates
+// to the shared setTaskStatus core.
+func (s *Server) TaskSetStatus(ctx context.Context, in TaskSetStatusInput) (*TaskSetStatusOutput, error) {
+	view, err := s.setTaskStatus(ctx, in.ID, in.Status, in.Reason)
+	if err != nil {
+		return nil, err
+	}
+	return &TaskSetStatusOutput{Task: *view}, nil
+}
+
+// TaskSetStatusHandler is the MCP tool handler for task-set-status.
+func (s *Server) TaskSetStatusHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskSetStatusInput) (
+	*sdkmcp.CallToolResult, TaskSetStatusOutput, error,
+) {
+	output, err := s.TaskSetStatus(ctx, input)
+	if err != nil {
+		return nil, TaskSetStatusOutput{}, err
 	}
 	result, out := prependStaleWarning(*output)
 	return result, out, nil

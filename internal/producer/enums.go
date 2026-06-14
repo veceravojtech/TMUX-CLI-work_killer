@@ -47,3 +47,15 @@ var ValidWorkerStatusTargets = map[string]bool{
 	"resolved":    true,
 	"failed":      true,
 }
+
+// ValidAdminStatusTargets is the set of terminal statuses an id-targeted admin
+// tool may set out-of-band (no claim required) via the task /deny, /resolve, and
+// /archive endpoints. It is the single source of truth for the MCP
+// task-set-status tool — distinct from ValidWorkerStatusTargets, which is the
+// claim-gated worker advance set. Worker lifecycle statuses
+// (new/claimed/in_progress/failed) are deliberately excluded.
+var ValidAdminStatusTargets = map[string]bool{
+	"denied":   true,
+	"resolved": true,
+	"archived": true,
+}

@@ -295,6 +295,117 @@ func TestTaskDenyResolve_DisabledClient(t *testing.T) {
 	assert.ErrorContains(t, err, "disabled")
 }
 
+// --- task-set-status (consolidated admin transition) -------------------------
+
+func TestTaskSetStatus_Archive_HappyPath(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"archived"}`)
+	out, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "42", Status: "archived", Reason: "dupe"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "archived", out.Task.Status)
+	assert.Equal(t, http.MethodPost, last.Method)
+	assert.Equal(t, "/api/v1/tasks/42/archive", last.URL.Path)
+}
+
+func TestTaskSetStatus_Denied_HappyPath(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"denied"}`)
+	out, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "42", Status: "denied", Reason: "invalid"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "denied", out.Task.Status)
+	assert.Equal(t, http.MethodPost, last.Method)
+	assert.Equal(t, "/api/v1/tasks/42/deny", last.URL.Path)
+}
+
+func TestTaskSetStatus_Resolved_HappyPath(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"resolved"}`)
+	out, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "42", Status: "resolved", Reason: "done oob"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "resolved", out.Task.Status)
+	assert.Equal(t, http.MethodPost, last.Method)
+	assert.Equal(t, "/api/v1/tasks/42/resolve", last.URL.Path)
+}
+
+// TestTaskSetStatus_UnclaimedAllThree drives a single unclaimed-task id through
+// all three admin targets in one table test — proving no claim step is required.
+func TestTaskSetStatus_UnclaimedAllThree(t *testing.T) {
+	cases := []struct {
+		status   string
+		wantPath string
+	}{
+		{"archived", "/api/v1/tasks/42/archive"},
+		{"denied", "/api/v1/tasks/42/deny"},
+		{"resolved", "/api/v1/tasks/42/resolve"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.status, func(t *testing.T) {
+			s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"`+tc.status+`"}`)
+			out, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "42", Status: tc.status, Reason: "oob"})
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Equal(t, tc.status, out.Task.Status)
+			assert.Equal(t, http.MethodPost, last.Method)
+			assert.Equal(t, tc.wantPath, last.URL.Path)
+		})
+	}
+}
+
+func TestTaskSetStatus_InvalidStatus(t *testing.T) {
+	withReportHook(t, failIfCalled(t))
+	s := newReportServer(t)
+	out, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "42", Status: "frobnicate", Reason: "x"})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Contains(t, err.Error(), `invalid status "frobnicate"`)
+	assert.Contains(t, err.Error(), "archived, denied, resolved")
+}
+
+func TestTaskSetStatus_WorkerStatusRejected(t *testing.T) {
+	withReportHook(t, failIfCalled(t))
+	s := newReportServer(t)
+	out, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "42", Status: "in_progress", Reason: "x"})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	assert.Contains(t, err.Error(), `invalid status "in_progress"`)
+}
+
+func TestTaskSetStatus_MissingId(t *testing.T) {
+	withReportHook(t, failIfCalled(t))
+	s := newReportServer(t)
+	out, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "  ", Status: "archived", Reason: "x"})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "id")
+}
+
+func TestTaskSetStatus_BlankReason(t *testing.T) {
+	withReportHook(t, failIfCalled(t))
+	s := newReportServer(t)
+	out, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "42", Status: "archived", Reason: "  "})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reason")
+}
+
+func TestTaskSetStatus_BlankStatus(t *testing.T) {
+	withReportHook(t, failIfCalled(t))
+	s := newReportServer(t)
+	out, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "42", Status: "  ", Reason: "x"})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status")
+}
+
+func TestTaskSetStatus_DisabledClient(t *testing.T) {
+	withReportHook(t, func(producer.Config) *producer.Client { return nil })
+	s := newReportServer(t)
+	_, err := s.TaskSetStatus(context.Background(), TaskSetStatusInput{ID: "42", Status: "archived", Reason: "x"})
+	assert.ErrorContains(t, err, "disabled")
+}
+
 // --- disabled reporting ------------------------------------------------------
 
 func TestTaskQuery_DisabledClient(t *testing.T) {

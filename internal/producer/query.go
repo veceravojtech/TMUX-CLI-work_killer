@@ -305,6 +305,34 @@ func (c *Client) ForceResolve(ctx context.Context, id, reason string) (*Task, er
 	return &out, nil
 }
 
+// Archive administratively archives a task via POST
+// /api/v1/tasks/{id}/archive with a {"reason":...} body — retires a task
+// out-of-band (e.g. an erroneous or duplicate task) without claiming it. It maps
+// 404 -> ErrTaskNotFound and leaves other non-2xx to the generic expect2xx
+// error. A nil receiver is a no-op returning (nil, nil).
+func (c *Client) Archive(ctx context.Context, id, reason string) (*Task, error) {
+	if c == nil {
+		return nil, nil
+	}
+	body, err := json.Marshal(ReasonParams{Reason: reason})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.doSigned(ctx, http.MethodPost, "/api/v1/tasks/"+url.PathEscape(id)+"/archive", nil, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := expect2xx(resp, "task archive", map[int]error{http.StatusNotFound: ErrTaskNotFound}); err != nil {
+		return nil, err
+	}
+	var out Task
+	if err := decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // doSigned builds, signs, and sends an authenticated request. The Ed25519
 // signature covers fmt.Sprintf("%d", ts)+string(body) — an empty body for GET —
 // exactly as the backend verifier reconstructs it. body may be nil (no body
