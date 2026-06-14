@@ -169,7 +169,7 @@ internal/
 - `PostCommandConfig` has a 3-level fallback chain for launching Claude in new windows — errors from one level trigger the next
 - The `install` command was removed — all setup is automatic via `start`/`start-attach`
 
-## MCP tools (22 total)
+## MCP tools (29 total)
 
 Source of truth: `RegisterTools()` in `internal/mcp/server.go`. Regenerate this table when registrations change.
 
@@ -197,7 +197,13 @@ Source of truth: `RegisterTools()` in `internal/mcp/server.go`. Regenerate this 
 | task-claim | no | no | Atomically claim the next task in the worker's lane |
 | task-update-status | no | no | Advance a claimed task's status |
 | task-edit | no | no | Edit a filed task's content in place (title/description/proposed_fix/expected_green_state/severity/category/payload) without deny+re-report |
+| task-deny | no | no | Deny a backend task with a recorded reason (alias over the admin deny endpoint) |
+| task-resolve | no | no | Force-resolve a backend task out-of-band with a recorded reason (admin /resolve) |
+| task-set-status | no | no | Set a task's status by id without claiming it (denied/resolved/archived) — consolidated admin transition |
 | projects-list | yes | yes | List the project-lane registry (project name → machine/path/repo) so an agent can route a cross-project task-report |
+| task-artifact-upload | no | no | Attach a local file as an artifact to a task (multipart); returns {artifact_id, sha256, size, filename, role} |
+| task-artifact-list | yes | yes | List a task's artifacts with metadata (id, filename, sha256, size, role, mime_type, created_at) |
+| task-artifact-get | yes | yes | Download an artifact to a local path and verify its sha256 against the advertised (and optional caller) checksum |
 
 ## Post-task requirement
 

@@ -381,8 +381,21 @@ func (c *Client) Archive(ctx context.Context, id, reason string) (*Task, error) 
 // doSigned builds, signs, and sends an authenticated request. The Ed25519
 // signature covers fmt.Sprintf("%d", ts)+string(body) — an empty body for GET —
 // exactly as the backend verifier reconstructs it. body may be nil (no body
-// sent and no Content-Type set).
+// sent and no Content-Type set). It is a thin wrapper over doSignedRaw that
+// pins the JSON content type, so every existing JSON caller is byte-identical.
 func (c *Client) doSigned(ctx context.Context, method, path string, query url.Values, body []byte) (*http.Response, error) {
+	return c.doSignedRaw(ctx, method, path, query, body, "application/json")
+}
+
+// doSignedRaw is the content-type-aware core of doSigned: it builds, signs, and
+// sends an authenticated request, setting the caller-supplied contentType on the
+// body (when body != nil). The Ed25519 signature covers the EXACT body bytes
+// (fmt.Sprintf("%d", ts)+string(body)) so the caller MUST pass the same bytes it
+// wants on the wire. It exists so a multipart upload can pass its
+// boundary-carrying w.FormDataContentType() — which doSigned's hardcoded
+// application/json cannot express — while keeping the JSON path unchanged. body
+// may be nil (no body sent and no Content-Type set, e.g. a GET).
+func (c *Client) doSignedRaw(ctx context.Context, method, path string, query url.Values, body []byte, contentType string) (*http.Response, error) {
 	u := c.baseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -397,7 +410,7 @@ func (c *Client) doSigned(ctx context.Context, method, path string, query url.Va
 		return nil, err
 	}
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 	ts := time.Now().Unix()
 	req.Header.Set("X-Signature", c.sign(ts, body))

@@ -910,5 +910,32 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 		},
 	}, s.ProjectsListHandler)
 
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-artifact-upload",
+		Description: "Attach a local file as an artifact to a backend task: uploads the file's bytes (multipart) to the task and returns {artifact_id, sha256, size, filename, role}. id and path are required (path must be a readable file); role is an optional free-form label (e.g. log, screenshot, diff, spec). Use this instead of cramming support material into a task's bounded text payload or referencing local paths the consumer cannot reach. Mutating and not idempotent.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.TaskArtifactUploadHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-artifact-list",
+		Description: "List the artifacts attached to a backend task: returns each artifact's metadata (id, filename, sha256, size, role, mime_type, created_at) plus the total. id is required. Read-only.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, s.TaskArtifactListHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-artifact-get",
+		Description: "Download a task artifact to a local file and verify its integrity: streams the bytes to dest, computes their sha256, and verifies it against the backend-advertised checksum (and an optional caller-supplied sha256), erroring on mismatch without leaving a truncated file. id, artifact_id and dest are required (dest's parent directory must exist); sha256 is optional. Returns {path, sha256, size, verified}. Read-only on the backend.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, s.TaskArtifactGetHandler)
+
 	return nil
 }
