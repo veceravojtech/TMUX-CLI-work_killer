@@ -3,7 +3,7 @@
 
   <glossary>
     <term name="MODE">"list" (default) or "consume" — set by a `consume` token in $ARGUMENTS.</term>
-    <term name="N">Consume count: integer following the `consume` token. Default 1, hard cap 3. A full-scope phase chain counts as ONE consume unit (the cap never truncates a chain mid-way).</term>
+    <term name="N">Consume count: integer following the `consume` token. Default 1, hard cap 10. A full-scope phase chain counts as ONE consume unit (the cap never truncates a chain mid-way).</term>
     <term name="FILTERS">Optional `category=&lt;c&gt;` and `severity=&lt;s&gt;` tokens in $ARGUMENTS. Validate against the closed sets (category: plan, supervisor, validator, execute, general; severity: critical, warning, info) and reject unknown values naming the allowed ones.</term>
     <term name="MAPPING_FILE">.tmux-cli/task-goals.yaml — the local task↔goal ledger: `mappings: [{task_id, goal_id, title, claimed_at}]`. Created on first consume; absence means nothing to reconcile.</term>
     <term name="GOALS_FILE">.tmux-cli/goals.yaml — read-only here (atomic-rename writes make unlocked reads safe). NEVER written by this command.</term>
@@ -27,7 +27,7 @@
     <mandate>NEVER write GOALS_FILE — goals are created ONLY via the goal-create MCP tool; the only file this command writes is MAPPING_FILE</mandate>
     <mandate>NEVER mark a task resolved unless its mapped goal Status is "done" in GOALS_FILE — resolution is earned by the validated goal, not assumed</mandate>
     <mandate>NEVER retry-loop a failed status update — 403/404/422 means another actor advanced the task; drop the mapping with a warning and move on</mandate>
-    <mandate>Consume is opt-in and capped at 3 per invocation — never drain the queue</mandate>
+    <mandate>Consume is opt-in and capped at 10 per invocation — never drain the queue</mandate>
   </llm>
 
   <flow>
@@ -175,7 +175,7 @@ age = humanized now − created_at (e.g. 3d, 5h).</template>
     <rule>Only file written: MAPPING_FILE (full-file rewrite after reconcile, append on consume)</rule>
     <rule>GOALS_FILE is read-only; goals are created exclusively through goal-create</rule>
     <rule>Status-update failures (403/404/422) drop the mapping with a warning — never retried, never fatal to the run</rule>
-    <rule>Consume cap: 3 per invocation regardless of N; a full-scope phase chain is ONE consume unit and is never truncated mid-chain by the cap. Opt-out is explicit only ('defer'/'do not implement' in the task text)</rule>
+    <rule>Consume cap: 10 per invocation regardless of N; a full-scope phase chain is ONE consume unit and is never truncated mid-chain by the cap. Opt-out is explicit only ('defer'/'do not implement' in the task text)</rule>
     <rule>Consume always ends with the daemon executing (or a named, actionable reason why not) — queued-but-idle is a failure of this spec</rule>
     <rule>The solo-lane gate is applied exactly ONCE per claimed task — here at step 3.2, upstream; executing surfaces (supervisor/investigate) only READ the lane, never re-evaluate or self-declare it</rule>
     <rule>Mis-created goal undo: tmux-cli taskvisor goal delete &lt;id&gt; — the sanctioned single-goal removal; goal-prune is nuclear (wipes ALL goal state) and never for single-goal removal</rule>
