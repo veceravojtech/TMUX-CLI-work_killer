@@ -1,0 +1,61 @@
+<stage n="3b" title="Test strategy" autonomous="true">
+  <objective>Turn the feature's acceptance criteria into a concrete, capability-aware Test Plan: classify every acceptance unit (BE-logic / full-stack / FE / infra) and map it to exactly ONE Test Plan row → {layer, driver, test path}, with every layer/driver/threshold derived from Stage 0's resolved capability signals. ZERO project-shaped value is hardcoded — no runner name, project name, port, path literal, or auth threshold; each is a resolved signal or a discovery var (`{{e2e_runner}}` / `{{fixture_command}}`). No FE-testable unit is ever silently skipped. This shard is SELF-CONTAINED: it renders a complete Test Plan from the Stage 0 context block alone, so F4 can wire it into the Stage 3 seam without edits.</objective>
+
+  <substep n="3b.1" title="Consume Stage 0 context + enumerate acceptance units">
+    <action>Read the Stage 0 emitted context block verbatim — do NOT re-probe the filesystem or re-run `tmux-cli rules resolve`; every signal is already resolved upstream.</action>
+    <action>Extract the SIGNALS fields by name: `has_database`, `has_frontend`, `frontend_mode`, `n_auth_flows`, `run_target`.</action>
+    <action>Extract `e2e_runner_available` from the context block — it is NOT a Signals field; Stage 0 probed it separately (Playwright/Cypress config presence) and carries it in the block. READ it here; never re-probe.</action>
+    <action>Extract TOPOLOGY: source roots, layer names, the resolved test roots, and the resolved runner / fixture commands (`{{e2e_runner}}` / `{{fixture_command}}` from discovery). These supply the per-row test path and driver command — never a literal.</action>
+    <action>Enumerate the feature's acceptance units from the prior stages' acceptance criteria. Each acceptance criterion that asserts one observable behavior is ONE acceptance unit to classify.</action>
+    <check condition="zero acceptance units (empty feature spec)">
+      <action>Emit an EMPTY Test Plan table plus a one-line note ("No acceptance units to classify — Test Plan intentionally empty."). Do NOT fabricate rows. Proceed without crashing.</action>
+    </check>
+  </substep>
+
+  <substep n="3b.2" title="Classify each acceptance unit">
+    <action>Tag each acceptance unit as exactly ONE class. Apply these definitions:</action>
+    <rule>BE-logic = pure domain / application logic with no I/O (aggregates, value objects, domain services, application handlers).</rule>
+    <rule>infra = persistence or external-adapter behavior (repository implementation, DB mapping, migration, external service adapter).</rule>
+    <rule>FE = browser-surface behavior (UI rendering, client-side interaction) exercised through the frontend.</rule>
+    <rule>full-stack = an HTTP request → response that flows through the whole stack (controller → application → domain → infrastructure).</rule>
+    <rule critical="true">Every unit gets exactly one class — no unit is left unclassified, and no unit carries two classes. When a unit could read as two classes, pick the OUTERMOST observable surface (full-stack over BE-logic when an HTTP boundary is asserted; FE over full-stack when a browser surface is asserted).</rule>
+  </substep>
+
+  <substep n="3b.3" title="Select layer + driver (decision table)">
+    <action>For each classified unit, select its {layer, driver} from this decision table. Every gate reads a resolved capability signal — never a literal.</action>
+    <decision-table>
+      <rule>BE-logic → Unit layer, TDD driver: write the failing unit test FIRST, drive red→green (test-first ordering per AGENTS.md). The failing unit test precedes the implementation; this is the test-first / TDD contract.</rule>
+      <rule>infra / persistence → Integration layer, real-dependency driver: exercise the real dependency — a real DB when `has_database` resolves true. If `has_database` is unknown, match conservatively and still route to Integration (the UNKNOWN-matches-conservatively convention).</rule>
+      <rule>full-stack OR FE behavior AND `has_frontend` true AND `e2e_runner_available` true → E2E layer, Playwright driver using the resolved `{{e2e_runner}}` (never a literal runner name). Reuse the auth `storageState` fixture when `n_auth_flows >= 1` — i.e. the emitted `n_auth_flows` count meets the manifest's `min_auth_flows` ≥ 1 threshold (the `frontend-auth` pack gate). When `n_auth_flows &lt; 1`, run the E2E WITHOUT storageState reuse — emit no storageState fixture.</rule>
+      <rule>FE-testable unit with NO browser runner (`has_frontend` true AND `e2e_runner_available` false), OR any full-stack unit without a browser surface (`has_frontend` false) → E2E layer, API / HTTP-level E2E fallback driver. This fallback is EXPLICIT and recorded in the row with its reason — it is NEVER a silent skip.</rule>
+    </decision-table>
+    <rule critical="true">No FE-testable behavior is ever dropped: when `e2e_runner_available` is false, the unit falls back to the HTTP-level driver — it does not vanish from the Test Plan.</rule>
+    <rule critical="true">storageState reuse is gated SOLELY on the resolved `n_auth_flows` count versus the `min_auth_flows` threshold; never assume auth flows exist.</rule>
+  </substep>
+
+  <substep n="3b.4" title="Emit the Test Plan">
+    <action>Render a markdown Test Plan table — ONE row per acceptance unit — with columns: `| Acceptance unit | Class | Layer | Driver | Test path |`.</action>
+    <action>Resolve each row's Test path from the TOPOLOGY test roots (unit / integration / E2E roots) and each row's driver command from the resolved `{{e2e_runner}}` / `{{fixture_command}}` discovery vars — never a literal path, port, or runner name.</action>
+    <action>For every E2E row, state the driver explicitly: Playwright (when `e2e_runner_available`) or the HTTP-level fallback (when not). For Playwright rows with `n_auth_flows >= 1`, note storageState reuse; otherwise note no storageState reuse.</action>
+    <action>Hand the rendered Test Plan table to the Stage 3 docs output for the downstream stages to consume.</action>
+  </substep>
+
+  <execution-rules>
+    <rule>PORTABILITY: every value in the Test Plan is a resolved capability signal or a discovery var (`{{e2e_runner}}` / `{{fixture_command}}` / resolved test roots) — NEVER a hardcoded runner name, project name, port, path literal, or auth threshold.</rule>
+    <rule>NO SILENT SKIP: an FE-testable unit with no browser runner falls back to API / HTTP-level E2E, explicitly recorded with its reason — it is never omitted from the Test Plan.</rule>
+    <rule>SELF-CONTAINED: this shard resolves nothing on its own — it consumes Stage 0's emitted context block (SIGNALS + `e2e_runner_available` + TOPOLOGY) and never re-probes the filesystem.</rule>
+    <rule>SIGNAL NAMING: the emitted count is `n_auth_flows`; the manifest gate is `min_auth_flows` — reference both correctly (compare the `n_auth_flows` count against the `min_auth_flows` ≥ 1 threshold).</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • AUTONOMOUS stage — resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user (mirrors feature.xml's autonomous-stage mandate).
+      • PORTABILITY IS MANDATORY — no runner name, project name, port, path literal, or auth threshold is hardcoded; every value is a resolved signal or discovery var (mirrors feature.xml's portability mandate).
+      • ONE Test Plan row per acceptance unit, each classified exactly once and mapped to exactly one {layer, driver, test path}.
+      • BE-logic is test-first (TDD): the failing unit test precedes implementation, red→green.
+      • Playwright E2E is gated on `has_frontend` AND `e2e_runner_available`; storageState reuse is gated on `n_auth_flows >= 1` (`min_auth_flows` threshold); otherwise fall back to HTTP-level E2E — never a silent skip.
+      • Zero acceptance units → empty Test Plan + a note, never a crash.
+    </critical-rules>
+  </llm>
+</stage>
