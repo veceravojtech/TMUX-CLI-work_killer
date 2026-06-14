@@ -402,3 +402,76 @@
     - "review: changed domain events carry a readonly state-snapshot record (role: 'state snapshot record', e.g. *EventRecord), never the full aggregate"
   validate_kind: review
   phase: architecture
+
+- id: PHP-ARCH-014
+  category: architecture
+  scope: generic
+  severity: should
+  title: "An infra repository implementation states its storage technology in its name"
+  rule: >
+    A concrete repository implementation in the infrastructure ({infra}/Bundle)
+    layer — one that implements a domain RepositoryInterface or an Application
+    query-repository interface and is the only layer binding to Doctrine/MySQL/a
+    storage SDK — names the storage technology it binds to, so one interface's
+    competing implementations (a real persistence one vs an in-memory test double)
+    are distinguishable at a glance and the technology is explicit at wiring.
+    Concrete suffixes (e.g. Doctrine*Repository, Mysql*Repository,
+    Mysql*QueryRepository) are illustrative only; resolve the project's actual
+    vocabulary from discovery. The domain repository INTERFACE itself names the
+    concept, not the technology — this rule binds only implementations in the
+    infra layer.
+  why: >
+    A tech-anonymous infra implementation name hides which storage it binds to and
+    collides with in-memory doubles of the same interface; stating the technology
+    keeps the binding explicit and the seam reviewable.
+  applies_to:
+    - "{src}/{infra}/**/*Repository.php"
+  detect:
+    - "a concrete repository implementation in the infra layer whose name does not state the storage technology it binds to"
+    - "two implementations of one repository interface indistinguishable by name"
+  fix: >
+    Rename the infra implementation to state its storage technology (illustrative:
+    Doctrine…Repository / Mysql…QueryRepository); leave the domain interface
+    concept-named.
+  autofix: structural
+  acceptance:
+    - "GIVEN an infra-layer repository implementation THEN its name states the storage technology it binds to"
+  validate:
+    - "review: changed infra-layer repository implementations state their storage technology in the class name (illustrative: Doctrine*Repository / Mysql*QueryRepository), resolved from project vocabulary"
+  validate_kind: review
+  phase: architecture
+
+- id: PHP-ARCH-015
+  category: architecture
+  scope: generic
+  severity: should
+  title: "Application use cases name their role — command handler (write) vs query service (read)"
+  rule: >
+    An Application-layer use case names its role so the write/read split is legible
+    from the class name: a command (write) use case is a handler and a query (read)
+    use case is a query service implementing a published query contract. Concrete
+    suffixes (e.g. a *Handler for the command side, a *QueryService implementing a
+    *QueryContract for the read side) are illustrative only; resolve the project's
+    actual vocabulary from discovery. Phrased by role, not suffix — a name that
+    hides whether a class reads or writes violates the rule.
+  why: >
+    Distinct role-naming makes the CQRS read/write split self-evident in the file
+    tree and at call sites; an ambiguous name forces readers to open the class to
+    learn whether it mutates or only reads.
+  applies_to:
+    - "{src}/**/Application/**/*.php"
+  detect:
+    - "a write (command) use case not named as a handler"
+    - "a read (query) use case not named as a query service"
+    - "an Application use case whose name does not reveal its read-vs-write role"
+  fix: >
+    Rename the use case to state its role (illustrative: …Handler for the command
+    side, …QueryService implementing a …QueryContract for the read side).
+  autofix: structural
+  acceptance:
+    - "GIVEN an Application command use case THEN its name states the handler (write) role"
+    - "GIVEN an Application query use case THEN its name states the query-service (read) role"
+  validate:
+    - "review: changed Application use cases name their role — command handler (write, illustrative *Handler) vs query service (read, illustrative *QueryService impl *QueryContract), resolved from project vocabulary"
+  validate_kind: review
+  phase: architecture
