@@ -1,0 +1,54 @@
+<stage n="0" title="Capability + topology resolution" autonomous="true">
+  <objective>Resolve everything the later stages need to stay portable: (a) preflight the invocation, (b) detect capability SIGNALS, (c) resolve the project TOPOLOGY and quality gates from the rules catalogue, and (d) emit a single resolved context block the downstream stages consume. ZERO project-shaped value is hardcoded — every one is resolved from `tmux-cli rules resolve` / `--signals` / manifests, or (in interactive context) ASKed; greenfield skeleton values are DEFAULTS only.</objective>
+
+  <substep n="0.1" title="Preflight">
+    <action>Tokenize $ARGUMENTS into the feature description. Trim whitespace.</action>
+    <check condition="$ARGUMENTS is empty or whitespace-only">
+      <action>Print exactly: "Usage: /tmux:feature &lt;feature description&gt; — describe the ONE feature to drive end-to-end."</action>
+      <action>STOP.</action>
+    </check>
+    <action>Confirm the tmux-cli MCP precondition by calling a read-only MCP tool (e.g. windows-list).</action>
+    <check condition="tmux-cli MCP not available">
+      <action>Print exactly: "ERROR: tmux-cli MCP required but not available — enable it and retry."</action>
+      <action>STOP.</action>
+    </check>
+    <action>Read .tmux-cli/setting.yaml from the project root (model the read on task-list.xml step 0). Record whether the file is present; capture any settings the later stages reference (it is NOT required to exist — record "absent" and proceed if missing).</action>
+  </substep>
+
+  <substep n="0.2" title="Capability signal resolution">
+    <action>Run via Bash: `tmux-cli rules resolve --signals --json`. This short-circuits before the manifest load and ALWAYS exits 0 on a valid project (greenfield included, emitting unknowns). Parse the printed JSON object.</action>
+    <action>Extract these SIGNALS fields verbatim from the JSON: `lang`, `framework`, `run_target`, `has_database`, `has_frontend`, `frontend_mode`, `n_auth_flows`. (The JSON also carries uses_jwt / has_mailer / has_messenger / has_http_client / n_bounded_contexts — carry them forward too if present, but the seven above are the required set.)</action>
+    <check condition="the command exits non-zero">
+      <action>Treat as a genuine tool defect — follow the shared error-reporting procedure (referenced from feature.xml's &lt;execution-rules&gt;), then STOP.</action>
+    </check>
+    <action>Identify UNKNOWN signals using the zero-value convention: empty string for `lang` / `framework` / `run_target` / `frontend_mode`; the literal "unknown" for the Tri fields `has_database` / `has_frontend`; `n_auth_flows == -1`.</action>
+    <resolution-rule critical="true">For EACH unknown signal:
+      • INTERACTIVE context (the stage is being run with a user present): ASK the user a single targeted question to resolve it, and record both the answer and a one-line rationale.
+      • AUTONOMOUS context (no user available): apply the greenfield DEFAULT and record the default + rationale. Greenfield defaults: `lang`/`framework` = leave as detected/empty (do not invent a stack); `run_target` = "local"; `has_database` = no; `has_frontend` = no; `frontend_mode` = "none"; `n_auth_flows` = 0.
+      • NEVER silently assume — every filled-in value carries a recorded rationale (ASKed vs greenfield-default).</resolution-rule>
+    <action>Probe E2E_RUNNER_AVAILABLE SEPARATELY — it is NOT a Signals field. Check the project for an e2e runner config: look for a Playwright config (playwright.config.ts / playwright.config.js) or a Cypress config (cypress.config.ts / cypress.config.js / cypress.json) at the project root or under a frontend package. If found, E2E_RUNNER_AVAILABLE = true; if not found and interactive, ASK; otherwise default to false. Record the source (config path / ASKed / default).</action>
+  </substep>
+
+  <substep n="0.3" title="Topology + quality-gate resolution">
+    <action>Run via Bash: `tmux-cli rules resolve --kind=convention` (append `--lang=&lt;LANG&gt; --framework=&lt;FRAMEWORK&gt;` when those signals are known, to override filesystem detection). It prints one convention rule-file path per line for THIS project's stack. Read EVERY printed file.</action>
+    <action>Run via Bash: `tmux-cli rules resolve --kind=code-rules` (same `--lang`/`--framework` flags when known). It prints the project's code-rule file paths. Read EVERY printed file — these define implementation/review conventions the later stages honor.</action>
+    <action>From the loaded convention packs, resolve the TOPOLOGY: SOURCE ROOTS (where production code lives), LAYER NAMES (the architectural layering the packs declare), ROOT NAMESPACE (the project's top-level namespace/module prefix), and the QUALITY-GATE COMMANDS (the static-analysis / lint / test commands the packs prescribe — emitted bare, host-style; the daemon wraps them at dispatch).</action>
+    <check condition="`tmux-cli rules resolve` prints no convention files (empty catalogue / greenfield)">
+      <action>Apply greenfield DEFAULTS and mark each as a default (not a detected value): SOURCE ROOTS = ["src"]; LAYER NAMES = none declared; ROOT NAMESPACE = empty; QUALITY-GATE COMMANDS = none. Record that these are skeleton defaults to be confirmed at Stage 2, NOT detected project facts.</action>
+    </check>
+    <rule critical="true">NEVER hardcode a source root, layer name, root namespace, quality-gate command, port, lang, or framework. Every such value is either resolved from the loaded packs/manifests above or is an explicitly-flagged greenfield default. No project name appears anywhere.</rule>
+  </substep>
+
+  <substep n="0.4" title="Emit resolved capability + topology context block">
+    <action>Compose ONE structured context block carrying everything the later stages consume:</action>
+    <emit>
+      • FEATURE: the parsed $ARGUMENTS description.
+      • SIGNALS: lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows — each with its source (detected / ASKed / greenfield-default) and rationale for any filled-in unknown.
+      • E2E_RUNNER_AVAILABLE: true/false + source (config path / ASKed / default).
+      • TOPOLOGY: source roots, layer names, root namespace, quality-gate commands — each tagged detected-from-packs vs greenfield-default.
+      • CODE RULES: the resolved code-rule file paths (pointers for the implementation/validation stages to read), or "none".
+      • SETTINGS: relevant .tmux-cli/setting.yaml values, or "absent".
+    </emit>
+    <action>Hand this context block to Stage 1. Proceed to Stage 1.</action>
+  </substep>
+</stage>

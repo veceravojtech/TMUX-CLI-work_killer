@@ -20,6 +20,7 @@ import (
 // wires the reference or opts the new shard into this list. A staleness
 // assertion keeps every entry honest (each must map to a real walked file).
 var exemptFromErrorReporting = map[string]bool{
+	"feature/stage-0-capability.xml":                              true,
 	"task-plan-generate/step-1-gate0.xml":                         true,
 	"task-plan-generate/step-2-scaffold.xml":                      true,
 	"task-plan-generate/step-3.14-domain.xml":                     true,
