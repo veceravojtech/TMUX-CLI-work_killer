@@ -16,7 +16,7 @@
 
   <flow>
     <step n="1" title="Resolve the input">
-      <action>If the argument names a GitLab MR (an iid or URL), pull the review note via the gitlab MCP — the comment text is a ready-made examples.bad fixture and its reference becomes `origin:`.</action>
+      <action>If the argument names a GitLab MR (an iid or URL), pull the review note via the gitlab MCP — the comment text is a ready-made examples.bad fixture. Do NOT embed that live MR reference in `origin:` — set `adapted_from` to a stable rule id and keep `origin` a non-identifying one-line note.</action>
       <action>If the argument is a free-form description or a file:line citation, read the cited code and use it as the bad example.</action>
       <action>If the argument is empty, interactively gather: the rule intent, one concrete BAD snippet, one compliant GOOD snippet, the file globs it applies to, and whether the violation is machine-checkable.</action>
     </step>
@@ -30,7 +30,7 @@
       <rule>Pick validate_kind honestly: automated when a grep-able signal proves the violation; review when only a human can judge (every validate line prefixed `review:`); mixed when some validate lines are real commands and some are `review:` lines.</rule>
       <rule>For an automated or mixed rule carrying a signal: author signal (a regexp), examples.bad (the signal MUST match it), and examples.good (the signal MUST NOT match it). Derive examples.bad from the cited bad code so the check provably fires on the real violation.</rule>
       <rule>A machine-checked rule must not borrow a bare phpstan/eslint run as its only validate line — that green build is not earned by the rule.</rule>
-      <rule>Set origin: to the feedback source (MR note URL or iid, ticket, or a one-line description of where the rule came from).</rule>
+      <rule>Set origin: to a non-identifying one-line description of where the rule came from — never a live MR note pointer or author-named reference; record stable provenance via adapted_from (a rule id) and capture the offending snippet as examples.bad.</rule>
       <rule>Give the rule a globally-unique id — it must not collide with an embedded id UNLESS you deliberately intend a local override of that rule.</rule>
     </step>
 
@@ -48,7 +48,7 @@
     </step>
 
     <step n="6" title="Report">
-      <action>Report the new rule id, the file path written, the recorded origin, and the lint verdict (clean). Note that the rule resolves into plans from the next planning cycle on (local/ is always included by `tmux-cli rules resolve`).</action>
+      <action>Report the new rule id, the file path written, the recorded (non-identifying) origin and adapted_from, and the lint verdict (clean). Note that the rule resolves into plans from the next planning cycle on (local/ is always included by `tmux-cli rules resolve`).</action>
     </step>
   </flow>
 
@@ -61,7 +61,7 @@
 
   <llm final="true">
     <critical-rules>
-      • Distill feedback into ONE schema-valid rule, write it to .tmux-cli/rules/local/code-rules/ as a bare list, set origin:
+      • Distill feedback into ONE schema-valid rule, write it to .tmux-cli/rules/local/code-rules/ as a bare list, set a non-identifying origin + adapted_from
       • For automated/mixed rules the signal MUST match examples.bad and MUST NOT match examples.good
       • HARD-GATE on `tmux-cli rules lint` — fix findings and re-lint until exit 0; never report success on red
       • Never edit embedded packs; never weaken a rule to pass the gate

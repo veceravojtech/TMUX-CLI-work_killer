@@ -90,8 +90,10 @@ carrying NEITHER token passes through byte-unchanged, so a flat-`src` project
 behaves exactly as before tokenization.
 
 Optional: `adapted_from` (source rule ID when adapted from another
-catalogue), `origin` (provenance for project-local rules, e.g. an MR note),
-`detect`, `fix`, `autofix` (safe | structural | none), `refs`,
+catalogue), `origin` (a non-identifying one-line description of where the rule
+came from — record durable provenance via `adapted_from` (a rule id) plus an
+inline `examples.bad` fixture, never a live MR/note URL or author-named
+pointer), `detect`, `fix`, `autofix` (safe | structural | none), `refs`,
 `depends_on_rules`, `signal`, `examples` ({bad, good} snippets).
 
 Falsifiability contract (enforced by the embedded-catalogue selftest):
@@ -120,8 +122,11 @@ that's how a project tightens or overrides a default.
 
 Ingesting review feedback (GitLab MRs etc.) into rules is a per-project
 workflow: distill the feedback into the schema above (the MR comment is a
-ready-made `examples.bad` fixture; record the MR/note in `origin`), drop the
-file in `local/code-rules/`, and it resolves from the next plan on.
+ready-made `examples.bad` fixture; set `adapted_from` to a stable rule id and
+keep `origin` a non-identifying one-line note — never embed the live MR/note
+URL or iid, mirroring the packs' "provenance identifiers are intentionally not
+embedded" stance), drop the file in `local/code-rules/`, and it resolves from
+the next plan on.
 
 ## Editing embedded packs (this repo)
 
