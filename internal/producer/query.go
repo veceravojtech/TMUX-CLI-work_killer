@@ -141,6 +141,20 @@ type UpdateStatusParams struct {
 	Resolution map[string]any `json:"resolution,omitempty"`
 }
 
+// EditTaskParams is the PATCH /api/v1/tasks/{id} body — the editable content of
+// a filed task. Every field is optional and only sent (and recorded by the
+// backend) when non-empty/non-nil, so a caller patches just the fields it wants
+// to change. Tags are camelCase to match the backend task DTO.
+type EditTaskParams struct {
+	Title              string         `json:"title,omitempty"`
+	Description        string         `json:"description,omitempty"`
+	ProposedFix        string         `json:"proposedFix,omitempty"`
+	ExpectedGreenState string         `json:"expectedGreenState,omitempty"`
+	Severity           string         `json:"severity,omitempty"`
+	Category           string         `json:"category,omitempty"`
+	Payload            map[string]any `json:"payload,omitempty"`
+}
+
 // ListTasks fetches a filtered page of tasks. A nil receiver is a no-op
 // returning (nil, nil), matching SubmitTask, so callers never have to nil-check.
 func (c *Client) ListTasks(ctx context.Context, p ListTasksParams) (*TaskList, error) {
@@ -232,6 +246,37 @@ func (c *Client) UpdateTaskStatus(ctx context.Context, id string, p UpdateStatus
 	}
 	defer resp.Body.Close()
 	if err := expect2xx(resp, "task status update", map[int]error{
+		http.StatusForbidden:           ErrForbidden,
+		http.StatusNotFound:            ErrTaskNotFound,
+		http.StatusUnprocessableEntity: ErrInvalidTransition,
+	}); err != nil {
+		return nil, err
+	}
+	var out Task
+	if err := decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// EditTask amends a filed task's content via PATCH /api/v1/tasks/{id}. It maps
+// the documented failures to sentinels: 403 -> ErrForbidden, 404 ->
+// ErrTaskNotFound, 422 -> ErrInvalidTransition (terminal-state edit rejected by
+// the backend). A nil receiver is a no-op.
+func (c *Client) EditTask(ctx context.Context, id string, p EditTaskParams) (*Task, error) {
+	if c == nil {
+		return nil, nil
+	}
+	body, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.doSigned(ctx, http.MethodPatch, "/api/v1/tasks/"+url.PathEscape(id), nil, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := expect2xx(resp, "task edit", map[int]error{
 		http.StatusForbidden:           ErrForbidden,
 		http.StatusNotFound:            ErrTaskNotFound,
 		http.StatusUnprocessableEntity: ErrInvalidTransition,

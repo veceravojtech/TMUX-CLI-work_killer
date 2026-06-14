@@ -866,6 +866,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 	}, s.TaskUpdateStatusHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "task-edit",
+		Description: "Edit a filed task's CONTENT in place (PATCHes the task resource) so you can fix or clarify a reported task without deny+re-report — preserving its id and event history. id is required; pass any subset of title, description, proposed_fix, expected_green_state, severity, category, payload and only the provided fields change. severity/category are rejected (never coerced) if outside the valid enum, a contentless proposed_fix stub is rejected, and at least one editable field is required. The backend records an `edited` event and rejects edits to terminal-state tasks (surfaced as an invalid-transition error). Mutating and not idempotent.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.TaskEditHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "task-deny",
 		Description: "Deny a backend task, recording why. Both id and reason are required (a blank reason is rejected). POSTs to the task /deny endpoint and returns the task with status denied. Mutating and not idempotent.",
 		Annotations: &sdkmcp.ToolAnnotations{

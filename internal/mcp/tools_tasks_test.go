@@ -214,6 +214,108 @@ func TestTaskUpdateStatus_InvalidTransitionSurfaced(t *testing.T) {
 	assert.ErrorIs(t, err, producer.ErrInvalidTransition)
 }
 
+// --- task-edit ---------------------------------------------------------------
+
+func TestTaskEdit_HappyPath(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"claimed","description":"new"}`)
+	out, err := s.TaskEdit(context.Background(), TaskEditInput{ID: "42", Description: "new"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "new", out.Task.Description)
+	assert.Equal(t, http.MethodPatch, last.Method)
+	assert.Equal(t, "/api/v1/tasks/42", last.URL.Path)
+}
+
+func TestTaskEdit_SendsOnlyProvidedFields(t *testing.T) {
+	// withTaskServer records only method/path/query (the body is drained by its
+	// handler), so stand up a dedicated server that decodes the PATCH body.
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	var sent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		require.NoError(t, json.Unmarshal(body, &sent))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":42,"status":"claimed","title":"t","severity":"warning"}`)
+	}))
+	t.Cleanup(srv.Close)
+	withReportHook(t, func(producer.Config) *producer.Client {
+		return producer.NewClientForTest(srv.URL, priv, srv.Client())
+	})
+	s := newReportServer(t)
+
+	out, err := s.TaskEdit(context.Background(), TaskEditInput{ID: "42", Title: "t", Severity: "warning"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "t", sent["title"])
+	assert.Equal(t, "warning", sent["severity"])
+	for _, k := range []string{"description", "proposedFix", "expectedGreenState", "category", "payload"} {
+		_, has := sent[k]
+		assert.False(t, has, "%s must be omitted when not provided", k)
+	}
+}
+
+func TestTaskEdit_Rejections(t *testing.T) {
+	cases := []struct {
+		name string
+		in   TaskEditInput
+		want string
+	}{
+		{"missing id", TaskEditInput{Description: "x"}, "id"},
+		{"blank id", TaskEditInput{ID: "  ", Description: "x"}, "id"},
+		{"no editable field", TaskEditInput{ID: "42"}, "no editable fields"},
+		{"invalid severity", TaskEditInput{ID: "42", Severity: "huge"}, "severity"},
+		{"invalid category", TaskEditInput{ID: "42", Category: "bogus"}, "category"},
+		{"contentless proposed_fix", TaskEditInput{ID: "42", ProposedFix: "TBD"}, "stub"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withReportHook(t, failIfCalled(t))
+			s := newReportServer(t)
+			out, err := s.TaskEdit(context.Background(), tc.in)
+			assert.Nil(t, out)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestTaskEdit_PayloadCountsAsProvided(t *testing.T) {
+	s, last := withTaskServer(t, http.StatusOK, `{"id":42,"status":"claimed"}`)
+	out, err := s.TaskEdit(context.Background(), TaskEditInput{ID: "42", Payload: map[string]any{}})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "/api/v1/tasks/42", last.URL.Path)
+}
+
+func TestTaskEdit_TerminalStateRejected(t *testing.T) {
+	s, _ := withTaskServer(t, http.StatusUnprocessableEntity, `{"error":"invalid_transition"}`)
+	out, err := s.TaskEdit(context.Background(), TaskEditInput{ID: "42", Description: "new"})
+	assert.Nil(t, out)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, producer.ErrInvalidTransition)
+}
+
+func TestTaskEdit_ForbiddenAndNotFound(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		want error
+	}{
+		{"forbidden", http.StatusForbidden, producer.ErrForbidden},
+		{"not_found", http.StatusNotFound, producer.ErrTaskNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := withTaskServer(t, tc.code, `{}`)
+			out, err := s.TaskEdit(context.Background(), TaskEditInput{ID: "42", Description: "new"})
+			assert.Nil(t, out)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tc.want)
+		})
+	}
+}
+
 // --- task-deny ---------------------------------------------------------------
 
 func TestTaskDeny_HappyPath(t *testing.T) {

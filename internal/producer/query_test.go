@@ -322,6 +322,105 @@ func TestUpdateTaskStatus_ErrorMapping(t *testing.T) {
 	}
 }
 
+func TestEditTask_SendsBodyAndDecodes(t *testing.T) {
+	pub, priv := testKeypair(t)
+	var sent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPatch, r.Method)
+		assert.Equal(t, "/api/v1/tasks/42", r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		verifySig(t, pub, r, body)
+		require.NoError(t, json.Unmarshal(body, &sent))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":42,"status":"claimed","description":"new"}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	task, err := c.EditTask(context.Background(), "42", EditTaskParams{
+		Description: "new",
+		Severity:    "warning",
+		Payload:     map[string]any{"k": "v"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, task)
+	assert.Equal(t, "new", task.Description)
+	assert.Equal(t, "new", sent["description"])
+	assert.Equal(t, "warning", sent["severity"])
+	pl, ok := sent["payload"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "v", pl["k"])
+}
+
+func TestEditTask_OmitsEmptyFields(t *testing.T) {
+	_, priv := testKeypair(t)
+	var sent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		require.NoError(t, json.Unmarshal(body, &sent))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":42,"status":"claimed","title":"t"}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	_, err := c.EditTask(context.Background(), "42", EditTaskParams{Title: "t"})
+	require.NoError(t, err)
+	assert.Equal(t, "t", sent["title"])
+	for _, k := range []string{"description", "proposedFix", "expectedGreenState", "severity", "category", "payload"} {
+		_, has := sent[k]
+		assert.False(t, has, "%s must be omitted when empty", k)
+	}
+}
+
+func TestEditTask_PathEscapesID(t *testing.T) {
+	_, priv := testKeypair(t)
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"a b","status":"claimed"}`)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	_, err := c.EditTask(context.Background(), "a b", EditTaskParams{Title: "t"})
+	require.NoError(t, err)
+	assert.Equal(t, "/api/v1/tasks/a%20b", gotPath)
+}
+
+func TestEditTask_ErrorMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		want error
+	}{
+		{"forbidden", http.StatusForbidden, ErrForbidden},
+		{"not_found", http.StatusNotFound, ErrTaskNotFound},
+		{"invalid_transition", http.StatusUnprocessableEntity, ErrInvalidTransition},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, priv := testKeypair(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.code)
+			}))
+			defer srv.Close()
+			c := newClient(srv.URL, priv, srv.Client())
+			task, err := c.EditTask(context.Background(), "42", EditTaskParams{Title: "t"})
+			assert.Nil(t, task)
+			assert.True(t, errors.Is(err, tc.want), "want %v, got %v", tc.want, err)
+		})
+	}
+}
+
+func TestEditTask_NilReceiver(t *testing.T) {
+	var c *Client
+	task, err := c.EditTask(context.Background(), "42", EditTaskParams{Title: "t"})
+	require.NoError(t, err)
+	assert.Nil(t, task)
+}
+
 func TestDeny_SendsReasonAndDecodes(t *testing.T) {
 	pub, priv := testKeypair(t)
 	var sent map[string]any

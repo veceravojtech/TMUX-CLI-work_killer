@@ -196,6 +196,7 @@ Source of truth: `RegisterTools()` in `internal/mcp/server.go`. Regenerate this 
 | task-get | yes | yes | Fetch one backend task + its event history |
 | task-claim | no | no | Atomically claim the next task in the worker's lane |
 | task-update-status | no | no | Advance a claimed task's status |
+| task-edit | no | no | Edit a filed task's content in place (title/description/proposed_fix/expected_green_state/severity/category/payload) without deny+re-report |
 | projects-list | yes | yes | List the project-lane registry (project name → machine/path/repo) so an agent can route a cross-project task-report |
 
 ## Post-task requirement

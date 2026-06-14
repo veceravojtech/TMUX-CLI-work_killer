@@ -402,6 +402,94 @@ func (s *Server) TaskUpdateStatusHandler(ctx context.Context, req *sdkmcp.CallTo
 }
 
 // ----------------------------------------------------------------------------
+// task-edit
+// ----------------------------------------------------------------------------
+
+// TaskEditInput defines the input schema for the task-edit tool. id is required;
+// every other field is an optional content edit applied only when provided.
+type TaskEditInput struct {
+	ID                 string         `json:"id" jsonschema:"Backend task id to edit; required"`
+	Title              string         `json:"title,omitempty" jsonschema:"New short one-line summary"`
+	Description        string         `json:"description,omitempty" jsonschema:"New full description of the issue and its context"`
+	ProposedFix        string         `json:"proposed_fix,omitempty" jsonschema:"New concrete remediation; must be actionable (a contentless stub like TBD, none, n/a is rejected)"`
+	ExpectedGreenState string         `json:"expected_green_state,omitempty" jsonschema:"New description of what passing/fixed looks like"`
+	Severity           string         `json:"severity,omitempty" jsonschema:"New severity; one of critical, warning, info (rejected, never coerced, if invalid)"`
+	Category           string         `json:"category,omitempty" jsonschema:"New category; one of plan, supervisor, validator, execute, general (rejected, never coerced, if invalid)"`
+	Payload            map[string]any `json:"payload,omitempty" jsonschema:"New structured payload forwarded verbatim to the backend"`
+}
+
+// TaskEditOutput is the updated task.
+type TaskEditOutput struct {
+	Task TaskView `json:"task"`
+}
+
+// TaskEdit amends a filed task's content in place via PATCH /api/v1/tasks/{id},
+// so an agent can fix or clarify a reported task without deny+re-report (which
+// loses the id and event history). All input is validated BEFORE the client is
+// built (invalid input never hits the wire): id is required, severity/category
+// are rejected without coercion, a contentless proposed_fix stub is rejected,
+// and at least one editable field must be provided. The backend owns recording
+// the `edited` event and rejecting terminal-state edits (surfaced as 422 ->
+// producer.ErrInvalidTransition).
+func (s *Server) TaskEdit(ctx context.Context, in TaskEditInput) (*TaskEditOutput, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, fmt.Errorf("%w: missing required field: id", ErrInvalidInput)
+	}
+	if err := rejectIfNotIn("severity", in.Severity, producer.ValidSeverities); err != nil {
+		return nil, err
+	}
+	if err := rejectIfNotIn("category", in.Category, producer.ValidCategories); err != nil {
+		return nil, err
+	}
+	if in.ProposedFix != "" {
+		if c := strings.ToLower(strings.TrimSpace(in.ProposedFix)); contentlessCorrections[c] {
+			return nil, fmt.Errorf("%w: proposed_fix is a contentless stub (%q); provide a concrete remediation", ErrInvalidInput, in.ProposedFix)
+		}
+	}
+	if strings.TrimSpace(in.Title) == "" &&
+		strings.TrimSpace(in.Description) == "" &&
+		strings.TrimSpace(in.ProposedFix) == "" &&
+		strings.TrimSpace(in.ExpectedGreenState) == "" &&
+		strings.TrimSpace(in.Severity) == "" &&
+		strings.TrimSpace(in.Category) == "" &&
+		in.Payload == nil {
+		return nil, fmt.Errorf("%w: no editable fields provided", ErrInvalidInput)
+	}
+
+	client, err := s.taskClient()
+	if err != nil {
+		return nil, err
+	}
+
+	task, err := client.EditTask(ctx, id, producer.EditTaskParams{
+		Title:              in.Title,
+		Description:        in.Description,
+		ProposedFix:        in.ProposedFix,
+		ExpectedGreenState: in.ExpectedGreenState,
+		Severity:           in.Severity,
+		Category:           in.Category,
+		Payload:            in.Payload,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &TaskEditOutput{Task: toTaskView(*task)}, nil
+}
+
+// TaskEditHandler is the MCP tool handler for task-edit.
+func (s *Server) TaskEditHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskEditInput) (
+	*sdkmcp.CallToolResult, TaskEditOutput, error,
+) {
+	output, err := s.TaskEdit(ctx, input)
+	if err != nil {
+		return nil, TaskEditOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// ----------------------------------------------------------------------------
 // task-deny
 // ----------------------------------------------------------------------------
 
