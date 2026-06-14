@@ -387,6 +387,38 @@
     bad: 'var_dump($user);'
     good: '$logger->info($message);'
 
+- id: PHP-STYLE-001
+  category: style
+  scope: generic
+  severity: should
+  title: "Human-style comments — no comment that restates the code"
+  rule: >
+    Code is self-documenting: a function/method name plus its signature carries
+    WHAT it does. Add a comment ONLY for a non-obvious WHY, a gotcha/workaround,
+    a regex or magic constant, or type info the language can't express. Never
+    write a comment that merely restates the adjacent statement.
+  why: >
+    Comments that paraphrase the code add noise, drift out of sync with it, and
+    fingerprint machine-generated work; a clear name beats a narrating comment.
+    Load-bearing comments (WHY / gotcha / constant / inexpressible type) stay —
+    they capture intent the code itself cannot.
+  applies_to:
+    - "{src}/**/*.php"
+  detect:
+    - "new/changed comment paraphrasing the adjacent statement (per-line '// set x to y', trivial getter/setter narration)"
+    - "block comment narrating obvious control flow ('// loop over users', '// if logged in then ...')"
+  fix: >
+    Delete the redundant comment. If the intent is unclear, rename the symbol
+    rather than annotate it. Keep only WHY / gotcha / workaround / constant /
+    type comments.
+  autofix: none
+  acceptance:
+    - "GIVEN a changed PHP file THEN it contains no comment that merely restates the adjacent code; every surviving comment explains a non-obvious WHY, a gotcha/workaround, a regex/magic constant, or otherwise-inexpressible type info"
+  validate:
+    - "review: changed files contain no code-restating comments; every surviving comment is a why/gotcha/workaround/constant/type comment, not a paraphrase of the adjacent code"
+  validate_kind: review
+  phase: cross-cutting
+
 - id: PHP-TEST-002
   category: tests
   scope: project
