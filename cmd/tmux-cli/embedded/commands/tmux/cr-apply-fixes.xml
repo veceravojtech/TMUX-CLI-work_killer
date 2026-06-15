@@ -1,0 +1,85 @@
+<task id="cr-apply-fixes" name="Code-review apply-fixes orchestrator">
+  <objective>Drive a CHANGE SET into FULL rule compliance — detect every code-rule violation and every failing quality gate on a diff, group them by CATEGORY, then dispatch ONE remediation goal per affected category and hand the chain to the autonomous taskvisor daemon, which plans + supervises + validates each goal so the run ENDS with fully validated, rule-compliant code. The read-and-fix sibling of /tmux:feature: it drops the build-design middle (no architecture, no feature spec, no test strategy) and instead COMPOSES `tmux-cli rules check` (violation detection) + `tmux-cli rules match` (per-rule validate payloads) + goal-create chains + /tmux:investigate (validation). Four stages (0&#8211;3); interactive ONLY at the Stage 2 confirm gate; fully autonomous otherwise. This file is the SPINE: Stage 0 (capability + topology resolution) is loaded here; Stages 1&#8211;3 are loaded sub-step seams.</objective>
+
+  <input>
+    <note>$ARGUMENTS = the OPTIONAL review scope. Empty &#8594; the working tree vs HEAD (the `tmux-cli rules check` default). A git range (e.g. `main..HEAD`) &#8594; `--diff &lt;range&gt;`. A PR ref &#8594; resolve to a range / file list. Explicit paths &#8594; `--files`. Empty $ARGUMENTS is NOT a hard stop — it selects the default working-tree scope.</note>
+  </input>
+
+  <requirements critical="true">
+    <mcp>tmux-cli MCP server REQUIRED (for the rules-check / goal-create / investigate composition the later stages delegate to).</mcp>
+  </requirements>
+
+  <glossary>
+    <term name="STAGE 0">Capability + topology resolution (this file's loaded sub-step). Preflight (scope-oriented, NOT a required feature description) + `tmux-cli rules resolve --signals` capability detection + `tmux-cli rules resolve --kind=convention|code-rules` topology/quality-gate resolution. Autonomous.</term>
+    <term name="STAGE 1">Violation detection — resolve the scope, run `tmux-cli rules check --json`, judge the agent_review rules, run the Stage-0 quality gates on the footprint, and group every violation by category. Autonomous.</term>
+    <term name="STAGE 2">Confirm + per-category remediation DAG — present the violations dossier + the planned per-category fix-goals, gate on the user's approval (the SOLE interactive point; honors auto_approve), then emit one goal per affected category and hand off to taskvisor. Interactive at the confirm gate.</term>
+    <term name="STAGE 3">Validation — delegate verification of each emitted goal to /tmux:investigate and surface the aggregated pass/fail verdict. Autonomous.</term>
+    <term name="CAPABILITY SIGNALS">The `tmux-cli rules resolve --signals --json` fields carried forward from Stage 0: lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows.</term>
+    <term name="TOPOLOGY">The resolved source roots, layer names, root namespace, and quality-gate commands read from the convention/code-rule packs `tmux-cli rules resolve` loads for THIS project's stack. Greenfield defaults only when the packs are empty.</term>
+    <term name="VIOLATION">A matched code-rule whose automated signal FIRES on the diff (the `tmux-cli rules check` VIOLATED state), an agent_review rule a convention-audit investigator judges non-compliant, OR a Stage-0 quality gate that FAILS on the changed footprint.</term>
+    <term name="CATEGORY">The code-rule schema's `category` field (plus synthetic categories for the failing quality gates: lint/style, static-analysis, tests). The unit of goal emission — ONE remediation goal per affected category.</term>
+    <term name="GATE_SET">Each emitted goal's composed validate: the category's violated rules' resolved validate_cmd (from `tmux-cli rules match`) PLUS the FULL Stage-0-resolved quality-gate command list VERBATIM (static-analysis + lint/style + tests), the test gate change-scoped to the footprint; review-kind MUST rules route to convention-audit review-investigators.</term>
+  </glossary>
+
+  <boundary>
+    <note>BOUNDARY vs neighbours — /tmux:cr-apply-fixes is the BROWNFIELD compliance-remediation composer:
+      it detects rule violations on a diff and dispatches per-category fix-goals. It never designs or
+      builds new functionality, and it is interactive only at the confirm gate.</note>
+    <vs name="/tmux:feature">BUILDS new functionality through an existing system (architecture ADR, feature spec, TDD
+      implementation DAG); /tmux:cr-apply-fixes FIXES existing code to satisfy the rules — scope is the diff,
+      there is no new design, no ADR, and no feature spec.</vs>
+    <vs name="/previo:code-rules:goals">the project-specific Previo enforcement command; /tmux:cr-apply-fixes is the
+      portable, stack-RESOLVED, staged generalization built on `tmux-cli rules check` / `tmux-cli rules match` with
+      no project literals.</vs>
+    <vs name="/tmux:investigate">a READ-ONLY verdict-only orchestrator; /tmux:cr-apply-fixes DELEGATES verdicts to it
+      but its emitted goals EDIT code to remediate — it ends with rule-compliant code, not just a verdict.</vs>
+    <vs name="/code-review (built-in)">a cloud/diff bug-and-quality review that surfaces findings; /tmux:cr-apply-fixes
+      orchestrates taskvisor goals that remediate catalogue violations + failing quality gates end-to-end.</vs>
+  </boundary>
+
+  <llm critical="true">
+    <mandate>COMPOSER, NOT ENGINE: /tmux:cr-apply-fixes orchestrates the EXISTING primitives — `tmux-cli rules check` detects violations, `tmux-cli rules match` supplies validate payloads, goal-create chains emit the DAG, the daemon runs /tmux:plan + /tmux:supervisor per goal, and /tmux:investigate validates. NEVER re-implement their detection, matching, dispatch, or verification logic here; reference them.</mandate>
+    <mandate>PORTABILITY IS MANDATORY: NEVER hardcode any project-shaped value — source roots, layer names, root namespace, quality-gate commands, lang/framework, ports, runner names. Resolve every such value from `tmux-cli rules resolve` / `--signals` / `tmux-cli rules check|match` / manifests. Greenfield skeleton values are DEFAULTS only. Emit no project name anywhere in this command, and never a `src/` skeleton literal in an emitted goal's validate.</mandate>
+    <mandate>INTERACTIVE ONLY AT THE STAGE 2 CONFIRM GATE: Stage 2's confirm gate is the SOLE point that may prompt the user (it honors auto_approve for unattended runs). Stages 0, 1, and 3 run autonomously — within them, resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user.</mandate>
+    <mandate>NEVER skip a stage or run them out of order — the sequence 0 &#8594; 3 is strict; each stage consumes the prior stage's emitted context block.</mandate>
+    <mandate>VIOLATIONS ARE DETECTED, NOT ASSUMED: emit a remediation goal ONLY for a category with a REAL violation (a fired automated signal, a judged agent_review failure, or a failing quality gate). A clean diff emits NO goals. Never fabricate a violation, and never emit a no-op gate goal.</mandate>
+  </llm>
+
+  <flow>
+    <stage n="0" title="Capability + topology resolution" autonomous="true">
+      <load file=".claude/commands/tmux/cr-apply-fixes/stage-0-capability.xml">READ stage-0-capability.xml NOW and execute its content as this stage. It is present.</load>
+    </stage>
+
+    <stage n="1" title="Violation detection" autonomous="true">
+      <load file=".claude/commands/tmux/cr-apply-fixes/stage-1-detect.xml">READ stage-1-detect.xml NOW and execute its content as this stage. It is present.</load>
+    </stage>
+
+    <stage n="2" title="Confirm + per-category remediation DAG" interactive="true">
+      <load file=".claude/commands/tmux/cr-apply-fixes/stage-2-dispatch.xml">READ stage-2-dispatch.xml NOW and execute its content as this stage. It is present. This is the SOLE interactive point: it may prompt the user to confirm the dispatch of the per-category fix-goals (honoring auto_approve).</load>
+    </stage>
+
+    <stage n="3" title="Validation (delegates to /tmux:investigate)" autonomous="true">
+      <load file=".claude/commands/tmux/cr-apply-fixes/stage-3-validation.xml">READ stage-3-validation.xml NOW and execute its content as this stage. It is present. REUSE /tmux:investigate by reference — never re-implement it.</load>
+    </stage>
+  </flow>
+
+  <execution-rules>
+    <rule>Stage sequence is strict and one-way: 0 &#8594; 1 &#8594; 2 &#8594; 3. Never re-order, never skip.</rule>
+    <rule>Stage 2's confirm gate is the ONLY interactive point; all other stages are autonomous and resolve forks per the highest-quality in-scope option, recording rationale.</rule>
+    <rule>COMPOSE existing primitives — detect via `tmux-cli rules check`, payload via `tmux-cli rules match`, dispatch via goal-create chains, validate via /tmux:investigate; never duplicate their logic.</rule>
+    <rule>PORTABILITY: every project-shaped value is resolved from `tmux-cli rules resolve` / `--signals` / `tmux-cli rules check|match` / manifests — never hardcoded; greenfield defaults only; no `src/` skeleton literal in an emitted validate.</rule>
+    <rule>DETECTED, NOT ASSUMED: a category goal is emitted only for a real violation; a clean diff emits zero goals; never a no-op gate goal.</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (a red validate cycle, supervisor pushback, NEED_INPUT, the confirm-gate wait, or a clean-diff no-violations result) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      * COMPOSER, not engine — detect via `tmux-cli rules check`, payload via `tmux-cli rules match`, dispatch via goal-create chains, validate via /tmux:investigate; never re-implement them
+      * PORTABILITY — resolve every project-shaped value from `tmux-cli rules resolve`/`--signals`/`rules check|match`/manifests; greenfield defaults only; no project name anywhere; no `src/` skeleton literal in an emitted validate
+      * Interactive ONLY at the Stage 2 confirm gate (honors auto_approve) — Stages 0/1/3 are autonomous
+      * Strict stage order 0 &#8594; 3 — each stage consumes the prior stage's emitted context block
+      * DETECTED, NOT ASSUMED — one goal per category with a REAL violation; a clean diff emits zero goals; never a no-op gate goal
+      * ONE remediation goal per affected CATEGORY — the run ENDS with the daemon executing the chain into fully validated, rule-compliant code
+    </critical-rules>
+  </llm>
+</task>

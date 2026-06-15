@@ -1,0 +1,59 @@
+<stage n="0" title="Capability + topology resolution" autonomous="true">
+  <objective>Resolve everything the later stages need to stay portable: (a) preflight the invocation (scope-oriented — $ARGUMENTS is the OPTIONAL review scope, NOT a required description), (b) detect capability SIGNALS, (c) resolve the project TOPOLOGY and quality gates from the rules catalogue, and (d) emit a single resolved context block the downstream stages consume. ZERO project-shaped value is hardcoded — every one is resolved from `tmux-cli rules resolve` / `--signals` / manifests; greenfield skeleton values are DEFAULTS only.</objective>
+
+  <substep n="0.1" title="Preflight (scope-oriented)">
+    <action>Tokenize $ARGUMENTS into the OPTIONAL review scope. Trim whitespace. UNLIKE /tmux:feature, empty $ARGUMENTS is NOT a hard stop: empty &#8594; the default working-tree-vs-HEAD scope (resolved fully in Stage 1). Record the raw scope token (empty / git-range / PR ref / explicit paths) for Stage 1 to resolve into `tmux-cli rules check` flags.</action>
+    <action>Confirm the tmux-cli MCP precondition by calling a read-only MCP tool (e.g. windows-list).</action>
+    <check condition="tmux-cli MCP not available">
+      <action>Print exactly: "ERROR: tmux-cli MCP required but not available — enable it and retry."</action>
+      <action>STOP.</action>
+    </check>
+    <action>Read .tmux-cli/setting.yaml from the project root (model the read on task-list.xml step 0). Record whether the file is present; capture any settings the later stages reference (the confirm gate reads `cr.auto_approve`, falling back to `feature.auto_approve`). It is NOT required to exist — record "absent" and proceed if missing.</action>
+  </substep>
+
+  <substep n="0.2" title="Capability signal resolution">
+    <action>Run via Bash: `tmux-cli rules resolve --signals --json`. This short-circuits before the manifest load and ALWAYS exits 0 on a valid project (greenfield included, emitting unknowns). Parse the printed JSON object.</action>
+    <action>Extract these SIGNALS fields verbatim from the JSON: `lang`, `framework`, `run_target`, `has_database`, `has_frontend`, `frontend_mode`, `n_auth_flows`. (Carry forward uses_jwt / has_mailer / has_messenger / has_http_client / n_bounded_contexts too if present, but the seven above are the required set.)</action>
+    <check condition="the command exits non-zero">
+      <action>Treat as a genuine tool defect — follow the shared error-reporting procedure (referenced from cr-apply-fixes.xml's &lt;execution-rules&gt;), then STOP.</action>
+    </check>
+    <action>Identify UNKNOWN signals using the zero-value convention: empty string for `lang` / `framework` / `run_target` / `frontend_mode`; the literal "unknown" for the Tri fields `has_database` / `has_frontend`; `n_auth_flows == -1`. AUTONOMOUS context (cr-apply-fixes never blocks on the user here): apply the greenfield DEFAULT and record the default + rationale — `lang`/`framework` = leave as detected/empty (do not invent a stack); `run_target` = "local"; `has_database` = no; `has_frontend` = no; `frontend_mode` = "none"; `n_auth_flows` = 0. NEVER silently assume — every filled-in value carries a recorded rationale.</action>
+  </substep>
+
+  <substep n="0.3" title="Topology + quality-gate resolution">
+    <action>Run via Bash: `tmux-cli rules resolve --kind=convention` (append `--lang=&lt;LANG&gt; --framework=&lt;FRAMEWORK&gt;` when those signals are known, to override filesystem detection). It prints one convention rule-file path per line for THIS project's stack. Read EVERY printed file.</action>
+    <action>Run via Bash: `tmux-cli rules resolve --kind=code-rules` (same `--lang`/`--framework` flags when known). It prints the project's code-rule file paths. Read EVERY printed file — these define the catalogue Stage 1 checks the diff against.</action>
+    <action>From the loaded convention packs, resolve the TOPOLOGY: SOURCE ROOTS (where production code lives), LAYER NAMES (the architectural layering the packs declare), ROOT NAMESPACE (the project's top-level namespace/module prefix), and the QUALITY-GATE COMMANDS (the static-analysis / lint/style / test commands the packs prescribe — emitted bare, host-style; the daemon wraps them at dispatch). Carry the quality-gate command list forward IN FULL (static-analysis + lint/style + tests) — it is the GATE_SET floor every emitted goal's validate renders.</action>
+    <check condition="`tmux-cli rules resolve` prints no convention files (empty catalogue / greenfield)">
+      <action>Apply greenfield DEFAULTS and mark each as a default (not a detected value): SOURCE ROOTS = ["src"]; LAYER NAMES = none declared; ROOT NAMESPACE = empty; QUALITY-GATE COMMANDS = none. With no catalogue and no quality gates there is nothing to enforce — record this; Stage 1 will report "no resolved rules / skeleton topology" and likely emit zero goals.</action>
+    </check>
+    <rule critical="true">NEVER hardcode a source root, layer name, root namespace, quality-gate command, port, runner name, lang, or framework. Every such value is either resolved from the loaded packs/manifests above or is an explicitly-flagged greenfield default. No project name appears anywhere.</rule>
+  </substep>
+
+  <substep n="0.4" title="Emit resolved capability + topology context block">
+    <action>Compose ONE structured context block carrying everything the later stages consume:</action>
+    <emit>
+      • SCOPE: the raw $ARGUMENTS scope token (empty &#8594; working-tree default) for Stage 1 to resolve into `tmux-cli rules check` flags.
+      • SIGNALS: lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows — each with its source (detected / greenfield-default) and rationale for any filled-in unknown.
+      • TOPOLOGY: source roots, layer names, root namespace, and the FULL quality-gate command list (static-analysis + lint/style + tests) — each tagged detected-from-packs vs greenfield-default.
+      • CODE RULES: the resolved code-rule file paths (the catalogue Stage 1 checks against), or "none".
+      • SETTINGS: relevant .tmux-cli/setting.yaml values incl. `cr.auto_approve` / `feature.auto_approve`, or "absent".
+    </emit>
+    <action>Hand this context block to Stage 1. Proceed to Stage 1.</action>
+  </substep>
+
+  <execution-rules>
+    <rule>PORTABILITY: every signal / topology / quality-gate value is resolved from `tmux-cli rules resolve` / `--signals` / manifests — never hardcoded; greenfield skeleton values are flagged defaults only; no project name anywhere.</rule>
+    <rule>AUTONOMOUS: $ARGUMENTS is the optional scope, not a required description; empty selects the working-tree default. Resolve every unknown signal to its greenfield default with a recorded rationale; never block on the user (cr-apply-fixes is interactive only at the Stage 2 confirm gate).</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected results (a greenfield empty catalogue, a missing setting.yaml).</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • AUTONOMOUS stage — $ARGUMENTS is the OPTIONAL scope (empty &#8594; working-tree default); resolve every unknown signal to its greenfield default with a recorded rationale; never block on the user.
+      • PORTABILITY IS MANDATORY — every signal / topology / quality-gate command is RESOLVED from `tmux-cli rules resolve` / `--signals` / manifests; no hardcoded source root, layer, namespace, runner, or project name.
+      • Carry the FULL quality-gate command list forward (static-analysis + lint/style + tests) — it is the GATE_SET floor every emitted goal's validate renders downstream.
+      • Emit ONE resolved context block (SCOPE + SIGNALS + TOPOLOGY + CODE RULES + SETTINGS) for Stage 1; an empty catalogue / greenfield topology is an informational note, never a crash.
+    </critical-rules>
+  </llm>
+</stage>

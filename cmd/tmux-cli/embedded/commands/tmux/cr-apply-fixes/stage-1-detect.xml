@@ -1,0 +1,70 @@
+<stage n="1" title="Violation detection" autonomous="true">
+  <objective>Detect EVERY rule violation and EVERY failing quality gate on the resolved change set, then group them by CATEGORY into ONE violations dossier for Stage 2. This is the only genuinely new logic in /tmux:cr-apply-fixes: it COMPOSES `tmux-cli rules check` (the brownfield diff gate — the violation detector) for the catalogue, judges the agent_review rules with read-only convention-audit investigators (reusing the investigate primitive by reference), and runs the Stage-0 quality gates change-scoped to the footprint. ZERO project-shaped value is hardcoded — the scope, the catalogue, and the gate commands are all resolved upstream or by `tmux-cli rules check`. This stage performs ZERO edits to project source.</objective>
+
+  <substep n="1.1" title="Preflight + consume the Stage-0 context block">
+    <action>Confirm the tmux-cli MCP precondition by calling a read-only MCP tool (windows-list).</action>
+    <check condition="tmux-cli MCP not available">
+      <action>Print exactly: "ERROR: tmux-cli MCP required but not available — enable it and retry."</action>
+      <action>STOP. (fail closed — do not create any windows.)</action>
+    </check>
+    <action>Ingest Stage 0's emitted context block VERBATIM — do NOT re-probe the filesystem and do NOT re-run `tmux-cli rules resolve --signals`. Extract: SCOPE (the raw $ARGUMENTS scope token); SIGNALS (lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows); TOPOLOGY (source roots, layer names, root namespace, and the FULL quality-gate command list); CODE RULES (the resolved catalogue pointers, or "none"); SETTINGS (incl. cr.auto_approve / feature.auto_approve, or "absent").</action>
+    <action>Resolve this stage's research-root the SAME way plan.xml does so worker reports land beside the goal's other artifacts: GOAL mode (a current goal is active — .tmux-cli/taskvisor-current-goal exists and is non-empty, or this stage was dispatched with a goal id) &#8594; research-root = .tmux-cli/goals/{GOAL_ID}/research/ (NO timestamp); STANDALONE &#8594; research-root = .tmux-cli/research/{y-m-d-hh}/ (current timestamp). Create the directory if absent. This is the ONLY directory this stage writes to — never project source.</action>
+    <action>Identify STAGE_WID: the name of THIS stage's tmux window. Pass it as the supervisorWid argument to every windows-spawn-worker call below.</action>
+  </substep>
+
+  <substep n="1.2" title="Resolve the scope into rules-check flags">
+    <action>Resolve the Stage-0 SCOPE token into `tmux-cli rules check` flags: empty &#8594; no flag (the default working tree vs HEAD); a git range (e.g. `main..HEAD`) &#8594; `--diff &lt;range&gt;`; a PR ref &#8594; resolve the PR to its merge-base range or its changed-file list via the host VCS, then pass `--diff &lt;range&gt;` (or `--files &lt;paths&gt;`); explicit paths &#8594; `--files &lt;paths&gt;`. Record the resolved flag form and a one-line rationale.</action>
+    <action>Derive the CHANGED FOOTPRINT (the changed file paths) from the resolved scope — `tmux-cli rules check` derives it itself, but capture the same path set here (e.g. `git diff --name-only &lt;range&gt;`) so substep 1.4 can change-scope the quality gates to exactly that footprint.</action>
+    <check condition="the resolved scope yields zero changed files">
+      <action>There is nothing to review. Emit an EMPTY violations dossier with the note "no changed files in scope — nothing to review" and hand it to Stage 2 (which will report clean and emit zero goals). Do NOT crash.</action>
+    </check>
+  </substep>
+
+  <substep n="1.3" title="Detect catalogue violations via `tmux-cli rules check`">
+    <action>Run via Bash: `tmux-cli rules check &lt;resolved scope flags&gt; --json` (append `--phase &lt;phase&gt;` only if a phase filter is explicitly requested). Parse the printed CheckResult JSON. Go owns ALL glob/severity/signal routing — never hand-glob a rule set and never negate a signal yourself.</action>
+    <action>From the CheckResult, partition the matched rules: (a) AUTOMATED-SIGNAL rules with a VIOLATED verdict — the anti-pattern FIRED on the diff (the determinate violations); (b) agent_review:true rules (signal-less / review / mixed) — Go never auto-fails these; they MUST be judged by an agent. For each agent_review rule, capture its id, category, severity, validate_kind, the source code-rule path(s), and the footprint paths it applies to.</action>
+    <action>For the agent_review rules, judge compliance with READ-ONLY convention-audit investigators (reuse the investigate primitive BY REFERENCE — never re-implement it): call windows-spawn-worker with prefix: "investigator-"; supervisorWid: STAGE_WID; subtask: "convention-audit: &lt;rule id&gt;"; scope: the rule's footprint paths + the rule id + its source code-rule path + an instruction to write its verdict to {research-root}/investigator-&lt;N&gt;-&lt;rule-id&gt;.md; context: the rule text + the relevant SIGNALS/TOPOLOGY slice + the non-goal "READ-ONLY: judge whether the changed footprint VIOLATES this rule; edit nothing"; deliverable: a read-only verdict shard (## VERDICT compliant|violated / ## FINDINGS / ## EVIDENCE). Batch 2&#8211;4 rules per investigator where they share a footprint; never exceed the investigate primitive's worker budget. Idle for windows-message, route the [EXECUTE:*] tags exactly as investigate.xml does (NEVER sleep — idle is the trigger), Read each cited verdict, then windows-kill the worker by NAME. A "violated" verdict promotes that agent_review rule to a VIOLATION; "compliant" drops it.</action>
+    <rule critical="true">COMPOSE, don't re-implement: violation detection for automated rules is `tmux-cli rules check`'s job (Go decides VIOLATED); violation detection for agent_review rules is a read-only convention-audit investigator's job (the agent decides from the JSON + footprint, the determinism boundary). NEVER negate a signal by hand and NEVER auto-fail an agent_review rule without an investigator verdict.</rule>
+  </substep>
+
+  <substep n="1.4" title="Detect failing quality gates on the footprint">
+    <action>Run each Stage-0-resolved quality-gate command (static-analysis + lint/style + tests) CHANGE-SCOPED to the changed footprint from 1.2 — render the test gate targeting only the footprint's test path(s)/classes (positional path arg; fall back to `--filter &lt;ClassName&gt;` for class-granular runners), and the static-analysis / lint/style gates over the changed files. A gate that FAILS on the footprint is a VIOLATION in its own SYNTHETIC category: lint/style, static-analysis, or tests respectively. Capture the failing command verbatim (resolved, never a `src/` literal) for Stage 2's GATE_SET.</action>
+    <action>be-checks parity: failures OUTSIDE the changed footprint are pre-existing debt — reported as a note, NOT promoted to a violation; only a gate failing on the changed footprint counts.</action>
+    <check condition="TOPOLOGY carried no quality-gate commands (greenfield / empty packs)">
+      <action>Record "no resolved quality gates — skeleton topology"; contribute no quality-gate violations. (greenfield path — no hardcoding.)</action>
+    </check>
+  </substep>
+
+  <substep n="1.5" title="Group by category + emit the violations dossier">
+    <action>Group EVERY violation by CATEGORY: catalogue violations by their schema `category` field; failing quality gates by their synthetic category (lint/style, static-analysis, tests). For each category record: the violated rule ids (+ severity + validate_kind + source path per rule), the footprint paths, and any failing gate command(s). This per-category grouping is the unit Stage 2 turns into ONE goal per category.</action>
+    <action>Emit ONE violations dossier block and hand it to Stage 2.</action>
+    <check condition="zero violations across all categories (clean diff)">
+      <action>Record "CLEAN — no catalogue violations and no failing quality gates on the changed footprint" in the dossier and hand it to Stage 2 (informational, not an error). Stage 2 will report clean and emit zero goals.</action>
+    </check>
+    <check condition="`tmux-cli rules check` resolved no rules / TOPOLOGY was skeleton-default">
+      <action>Record "no resolved rules / skeleton topology" in the dossier; still report any failing quality-gate violations. (greenfield path — no hardcoding.)</action>
+    </check>
+    <action>Hand the dossier to Stage 2. Proceed to Stage 2.</action>
+  </substep>
+
+  <execution-rules>
+    <rule>READ-ONLY: this stage edits NO project source; the convention-audit investigators are read-only (Read + non-mutating Bash + windows-message/list only). Its only writes are the per-investigator verdicts under research-root.</rule>
+    <rule>COMPOSE, don't re-implement: detect catalogue violations with `tmux-cli rules check --json` (Go owns VIOLATED); judge agent_review rules with read-only convention-audit investigators via windows-spawn-worker (prefix "investigator-"), routing [EXECUTE:*] tags and killing by NAME — never duplicate investigate.xml's orchestration, and never negate a signal by hand.</rule>
+    <rule>PORTABILITY: the scope flags, the catalogue, and the change-scoped quality-gate commands are all resolved from the Stage-0 block / `tmux-cli rules check` — NEVER a hardcoded source root, layer, namespace, runner, port, path literal, or project name.</rule>
+    <rule>CONSUME Stage 0, don't re-derive it: read the emitted SCOPE/SIGNALS/TOPOLOGY/CODE RULES block verbatim; never re-run `tmux-cli rules resolve --signals` or re-probe the filesystem for capability.</rule>
+    <rule>DETECTED, NOT ASSUMED: a category appears in the dossier only with a REAL violation (a fired automated signal, a judged agent_review failure, or a footprint-scoped failing gate); a clean diff yields an explicit CLEAN dossier and zero goals downstream.</rule>
+    <rule>AUTONOMOUS stage: resolve every decidable fork (scope flag form, investigator batching) to the highest-quality in-scope option and record the rationale; NEVER use sleep and NEVER use AskUserQuestion — idle is the trigger, and the Stage 2 confirm gate is the sole interactive point.</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (a clean diff, a NEED_INPUT, an agent_review "compliant" verdict) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • READ-ONLY — the stage edits nothing; spawned convention-audit investigators are read-only; the only writes are per-investigator verdicts under research-root.
+      • COMPOSER, not engine — detect catalogue violations with `tmux-cli rules check --json` (Go owns VIOLATED); judge agent_review rules with read-only convention-audit investigators (windows-spawn-worker prefix "investigator-", windows-message, windows-kill by NAME); never re-implement investigate.xml and never negate a signal by hand.
+      • PORTABILITY IS MANDATORY — scope flags, catalogue, and change-scoped quality-gate commands are all resolved; no hardcoded source root, layer, namespace, runner, port, path literal, or project name.
+      • CONSUME Stage 0's emitted block — never re-derive SIGNALS/TOPOLOGY or re-probe the filesystem.
+      • DETECTED, NOT ASSUMED — a category enters the dossier only with a real violation; a clean diff emits an explicit CLEAN dossier and zero goals downstream.
+      • Emit ONE violations dossier grouped by CATEGORY (catalogue `category` + synthetic lint/style, static-analysis, tests) for Stage 2 — greenfield / empty catalogue is an informational note, never a crash.
+    </critical-rules>
+  </llm>
+</stage>

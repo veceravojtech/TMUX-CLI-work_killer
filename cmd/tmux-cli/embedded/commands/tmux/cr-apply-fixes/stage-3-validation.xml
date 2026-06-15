@@ -1,0 +1,45 @@
+<stage n="3" title="Validation — delegate to /tmux:investigate and surface the verdict" autonomous="true">
+  <objective>Validate the remediated code by DELEGATING to /tmux:investigate — never by re-implementing its spawn/collect/verdict logic. Each category goal Stage 2 emitted carries an `## Investigation Config` whose validation commands are RESOLVED from the Stage-0 TOPOLOGY (the category's validate_cmds + the quality gates); /tmux:investigate reads that config, runs static-analysis / pure-command checks inline and spawns parallel read-only inv-* workers ONLY for advanced validation, collects verdicts with its own timeout, and reports pass/fail via goal-validation-done. This shard's job is narrow: confirm each emitted goal is validated through /tmux:investigate against RESOLVED commands, then aggregate and SURFACE the overall pass/fail verdict and close the flow — the run ends with fully validated, rule-compliant code (or a named, actionable reason why not).</objective>
+
+  <substep n="3.1" title="Consume the Stage-2 handoff — never re-probe">
+    <action>Read the upstream emitted blocks VERBATIM — do NOT re-probe the filesystem or re-run `tmux-cli rules resolve` / `tmux-cli rules check`:</action>
+    <action>From the Stage-0 capability block: TOPOLOGY — the RESOLVED validation commands (static analysis / lint/style / tests) and test roots. These are the commands /tmux:investigate runs; never substitute a literal.</action>
+    <action>From the Stage-1 dossier: the per-category violated rules + footprint — the observable compliance the validation must cover.</action>
+    <action>From the Stage-2 handoff: the emitted category goal ids (the goal DAG) and the resolved validation commands per goal. These name WHAT is being validated and which goal.md `## Investigation Config` /tmux:investigate consumes.</action>
+    <check condition="the Stage-2 handoff names zero emitted goals">
+      <action>There is nothing to validate. Print a named, actionable reason ("cr-apply-fixes Stage 3: Stage 2 emitted no goals — either the diff was CLEAN (success) or every category was non-emittable; nothing to validate.") and STOP gracefully (never crash, never fabricate a verdict).</action>
+    </check>
+  </substep>
+
+  <substep n="3.2" title="Delegate validation to /tmux:investigate">
+    <action>For each emitted category goal, validation is delegated to /tmux:investigate — the taskvisor daemon already dispatches /tmux:investigate as that goal's validator (reading its goal.md `## Investigation Config`), so the primary path is: let the daemon-dispatched /tmux:investigate run per goal and collect its goal-validation-done verdict. Do NOT re-spawn or re-implement the validator; reference it.</action>
+    <action>Confirm each emitted goal's `## Investigation Config` uses the RESOLVED validation commands from the Stage-0 TOPOLOGY (the category's validate_cmds + static analysis / lint/style / tests) — never a hardcoded runner name, port, project name, or `src/` skeleton literal. /tmux:investigate splits these: static-analysis / pure-command investigators run INLINE in its window; advanced validation (code-review, e2e/Chrome, integration) spawns parallel read-only inv-* workers, and the inv-* worker timeout is handled INSIDE /tmux:investigate.</action>
+    <rule critical="true">COMPOSER, not engine: /tmux:investigate owns the spawn / collect / timeout / verdict logic and the goal-validation-done reporting. This stage delegates to it and reads its result — it never duplicates that machinery and never modifies project files (validation is read-only).</rule>
+  </substep>
+
+  <substep n="3.3" title="Surface the verdict and close the flow">
+    <action>/tmux:investigate reports each goal's pass/fail via the goal-validation-done MCP call (a "pass" verdict only when ALL active investigators pass; any fail/timeout/error = fail) and writes corrections/cycle-N.md on a fail. Collect those per-goal verdicts.</action>
+    <action>Aggregate: the change set is FULLY rule-compliant only when every emitted category goal's /tmux:investigate verdict is pass. Surface the consolidated outcome — per-category pass/fail, the failing commands and corrections for any fail, and a one-line overall verdict ("all categories green — code fully validated and rule-compliant" or the failing set).</action>
+    <action>On overall pass: report the change set validated and close the /tmux:cr-apply-fixes flow (Stage 3 is the terminal stage). On any fail: surface the failing category goal(s), the failing validation command(s), and the corrections /tmux:investigate recorded — the daemon's normal retry/bounce path handles re-implementation; do NOT loop or re-dispatch here.</action>
+    <action>Resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user (autonomous stage).</action>
+  </substep>
+
+  <execution-rules>
+    <rule>COMPOSER, NOT ENGINE: delegate ALL validation to /tmux:investigate — it owns the investigator split, parallel inv-* spawn, timeout, verdict aggregation, and goal-validation-done reporting. Never re-implement any of it here.</rule>
+    <rule>PORTABILITY: the validation commands /tmux:investigate runs are RESOLVED from the Stage-0 TOPOLOGY (the category validate_cmds + static analysis / lint/style / tests) — never a hardcoded runner name, port, project name, or `src/` skeleton literal.</rule>
+    <rule>READ-ONLY: validation modifies no project files — /tmux:investigate's only writes are corrections/cycle-N.md and the goal-validation-done signal; this stage only reads and surfaces verdicts.</rule>
+    <rule>AUTONOMOUS STAGE: resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user (cr-apply-fixes is interactive ONLY at the Stage 2 confirm gate).</rule>
+    <rule>SURFACE, DON'T RE-RUN: aggregate the per-goal /tmux:investigate verdicts into one feature-level pass/fail and surface it; on fail, relay the failing commands + recorded corrections and let the daemon's retry/bounce path own re-implementation — never loop here.</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (a red validate cycle, supervisor pushback, NEED_INPUT) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • COMPOSER, not engine — delegate validation to /tmux:investigate; it owns the investigator split, parallel inv-* spawn, timeout, verdict aggregation, and goal-validation-done. Never re-implement it.
+      • PORTABILITY IS MANDATORY — the validation commands are RESOLVED from Stage-0 TOPOLOGY (category validate_cmds + static analysis / lint/style / tests); never a hardcoded runner name, port, project name, or `src/` skeleton literal.
+      • READ-ONLY validation — no project file is modified; /tmux:investigate's only writes are corrections/cycle-N.md and goal-validation-done; this stage reads and surfaces.
+      • SURFACE the aggregated verdict — the change set is fully rule-compliant only when every emitted category goal's /tmux:investigate verdict is pass; on fail relay failing commands + corrections and let the daemon's retry/bounce path own re-implementation.
+      • AUTONOMOUS stage — resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user.
+    </critical-rules>
+  </llm>
+</stage>

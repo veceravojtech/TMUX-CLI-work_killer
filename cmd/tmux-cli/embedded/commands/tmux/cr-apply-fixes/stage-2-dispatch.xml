@@ -1,0 +1,106 @@
+<stage n="2" title="Confirm + per-category remediation DAG" interactive="true">
+  <objective>Turn the Stage-1 violations dossier into a PHASED remediation goal DAG — ONE goal per affected CATEGORY — and hand it to the autonomous taskvisor daemon, which runs /tmux:plan then /tmux:supervisor per goal so the run ENDS with fully validated, rule-compliant code. This stage carries the SOLE interactive point: a confirm gate (honoring cr.auto_approve / feature.auto_approve) presents the violations + the planned per-category fix-goals before any code-editing goal is dispatched. Each goal's validate is composed (substep 2.3a) from the category's violated rules' resolved validate_cmd PLUS the FULL Stage-0-resolved quality-gate command list VERBATIM. COMPOSER, not engine: it emits goals via goal-create chains and lets the daemon run the existing plan/supervisor machinery — it never re-implements them.</objective>
+
+  <substep n="2.1" title="Consume the dossier + resolve auto_approve">
+    <action>Read the Stage-1 violations dossier VERBATIM (per-category: violated rule ids + severity + validate_kind + source paths, footprint paths, failing gate commands) and the Stage-0 TOPOLOGY (the FULL quality-gate command list + resolved test/source roots). Do NOT re-run `tmux-cli rules check` or `tmux-cli rules resolve`; every fact was resolved upstream.</action>
+    <action>For EACH affected category, run via Bash: `tmux-cli rules match --files &lt;the category's footprint paths&gt; --json` to obtain the PRE-RENDERED per-rule validate payloads (id, severity, validate_kind, phase, source path(s), CR-&lt;id&gt; acceptance_line for must rules, fail-closed validate_cmd). Go owns the payload rendering; COPY the validate_cmd verbatim — never re-derive it. (Stage 1 ran `rules check` for detection; `rules match` here supplies the goal's validate payloads.)</action>
+    <action>Resolve `cr.auto_approve` from SETTINGS, falling back to `feature.auto_approve`; when both the file and the keys are ABSENT, treat it as FALSE (the confirm gate stays interactive unless explicitly told otherwise). Modeled on plan.xml's AUTO_APPROVE.</action>
+    <check condition="the dossier is CLEAN (zero violations across all categories)">
+      <action>Print "cr-apply-fixes: CLEAN — no catalogue violations and no failing quality gates on the changed footprint. Nothing to fix." and STOP gracefully. Emit NO goals (never a no-op gate goal). This is a success result, not an error.</action>
+    </check>
+  </substep>
+
+  <substep n="2.2" title="Confirm gate (the SOLE interactive point)">
+    <check condition="auto_approve is true (resolved in 2.1)">
+      <action>UNATTENDED path: log the auto-approval + the categories being dispatched, and SKIP the wait — proceed directly to substep 2.3 to emit the goals.</action>
+    </check>
+    <check condition="auto_approve is false (default)">
+      <action>Print the violations summary + the planned per-category fix-goals and the reply contract using this presentation template, then idle for the user's reply:</action>
+      <template>
+== cr-apply-fixes: confirm remediation dispatch ==
+
+Scope: &lt;resolved scope&gt;   Changed footprint: &lt;N files&gt;
+
+Violations by category (one fix-goal each):
+  &lt;category&gt;: &lt;violated rule ids / failing gates&gt;  (&lt;count&gt;)
+  &lt;category&gt;: &lt;violated rule ids / failing gates&gt;  (&lt;count&gt;)
+
+These &lt;K&gt; fix-goals will be dispatched (phase-ordered, depends_on chain) and the
+taskvisor daemon will EDIT code to bring the footprint into compliance.
+
+Reply to confirm and unblock dispatch:
+  approve          &#8594; dispatch all listed fix-goals
+  approve &lt;cats&gt;   &#8594; dispatch only the named categories
+  &lt;change request&gt; &#8594; revise the plan and re-present (stays blocked)
+      </template>
+      <action>Wait for the user's reply. Do NOTHING until it arrives — idle is the trigger.</action>
+      <check condition="reply is 'approve' or 'approve &lt;cats&gt;'">
+        <action>Record the approved category set (ALL on bare 'approve'; the named subset on 'approve &lt;cats&gt;') and proceed to substep 2.3.</action>
+      </check>
+      <check condition="reply is a change request (not an approval)">
+        <action>Revise the plan per the feedback, re-present via the template, and STAY BLOCKED. Loop until an approval arrives — never auto-advance.</action>
+      </check>
+      <check condition="reply is unrecognized">
+        <action>Re-print the plan and idle again.</action>
+      </check>
+    </check>
+    <mandate>NEVER use AskUserQuestion or any other interactive tool — all interaction is text output + waiting for the user's message (tmux window compatibility), mirroring task-plan-discover.xml. The confirm gate is the ONLY interactive point in /tmux:cr-apply-fixes.</mandate>
+  </substep>
+
+  <substep n="2.3" title="Emit ONE goal per category via goal-create depends_on chains">
+    <action>Order the approved categories by PHASE: REUSE task-plan-generate.xml's PHASE_ORDER ranks verbatim (gate=0, scaffold=1, domain=2, application=3, infrastructure=4, fixtures=5, error_handling=6, auth=7, action=8, event_listener=9, cross-cutting=10, final_gate=11). A category's phase = the MINIMUM phase among its violated rules (from the `rules match` payloads); synthetic gate categories (lint/style, static-analysis, tests) rank at gate=0 / final_gate=11 respectively (style/static early, tests last). Break ties by dossier order. This ordered list is the emission sequence.</action>
+    <action>Walk the ordered category list. Maintain PREV_GOAL_ID, initialized empty. For EACH category emit ONE goal via the goal-create MCP tool, capturing each returned goal id and passing it as the next goal's `depends_on` — the task-list.xml chain-commit pattern. Use goal-create(`depends_on`=[predecessor id]) for routine chaining; NEVER goal-add-prerequisite (that is the escalation backstop and increments escalation_count). The depends_on chain SERIALIZES edits so two category goals touching overlapping files never collide.
+      - description: "cr-fix: &lt;category&gt; — &lt;N&gt; violations to compliance" (&#8804;120 chars).
+      - acceptance: every violated rule in this category PASSES on the footprint AND the category's quality gates PASS — scoped to the footprint, grounded in the `rules match` CR-&lt;id&gt; acceptance lines for the must rules.
+      - validate: substep 2.3a's GATE_SET for this category — bare, sh-valid commands only.
+      - investigation_config: substep 2.3a's convention-audit review-investigators for this category's review-kind must rules (≤4 total entries).
+      - phase: the category's phase; depends_on: [PREV_GOAL_ID] if set; lane: omit (full).
+      Capture the returned id; set PREV_GOAL_ID = it.</action>
+    <action>After every emission the chain is acyclic by construction (each goal depends only on an ALREADY-created predecessor — goal-create rejects a depends_on pointing at a non-existent goal). If a depends_on would ever point forward or form a cycle, ABORT with a named reason rather than emitting it (mirrors task-plan-generate.xml's G-15 acyclicity guard).</action>
+    <rule critical="true">ONE goal per affected CATEGORY — never one-per-rule and never a single mega-goal. A category goal's validate bundles ALL its violated rules' checks (2.3a). DETECTED, NOT ASSUMED: emit only for categories the dossier flagged with a real violation; never a no-op gate goal.</rule>
+    <rule critical="true">MEANINGFUL VALIDATE IS A BARE, sh-valid COMMAND — NEVER PROSE: every validate entry the shard emits is a bare, sh-valid runnable command on which `sh -n` passes — a resolved validate_cmd or a resolved quality-gate command — never prose, parentheses, or conditional/explanatory text. The daemon compiles each validate entry verbatim into validate.sh under sh, so a stray parenthesis or quote breaks the gate.</rule>
+  </substep>
+
+  <substep n="2.3a" title="Compose each category goal's GATE_SET (data-driven)">
+    <action>This substep DEFINES the GATE_SET that 2.3 renders into each category goal's validate. Compose it data-driven from the upstream blocks — never re-resolve gates and never re-run `tmux-cli rules check`. GATE_SET assembles, in order:</action>
+    <action>1. The category's VIOLATED rules' validate_cmd, copied VERBATIM from the substep-2.1 `tmux-cli rules match` payloads — one per machine-checkable (validate_kind == automated|mixed) violated rule in this category. These are the fail-closed checks that assert the anti-pattern is GONE from the footprint.</action>
+    <action>2. The FULL Stage-0-resolved quality-gate command list, carried forward VERBATIM and IN FULL — static-analysis + lint/style + tests — including the lint/style gate (e.g. the resolved `ecs` / `cs check`). NEVER drop the lint/style gate and NEVER re-narrow to a fixed subset; the full resolved list is the floor for every emitted goal. ORTHOGONAL TARGET-SCOPING (scopes WHAT the test gate runs, never WHICH gates run): within the SET, the TEST gate is rendered CHANGE-SCOPED to the category's footprint (the footprint test path as a positional path arg, falling back to `--filter &lt;ClassName&gt;` for class-granular runners) so it reds only on a regression in the changed footprint; the static-analysis + lint/style gates stay component/project-wide and VERBATIM.</action>
+    <action>3. CONDITIONAL manifest/schema validators, appended only when the category goal's footprint warrants: the resolved `mono-schema` validator when a manifest/schema file is in the footprint; the resolved `db-validate` when a DB schema/migration artifact is in the footprint. Artifact absent &#8594; omit that conditional validator (never fabricate it). Same composition as /tmux:feature's GATE_SET (stage-4 4.3a) — these are non-test gates that apply to every emitted goal regardless of category.</action>
+    <action>4. For EACH violated rule in this category with `validate_kind == review` (signal-less; its validate_cmd is empty) AND `severity == must`, do NOT add a bare validate — instead add a `convention-audit` review-investigator (carrying the rule id + the footprint paths + a pass/fail verdict) to the emitted goal's goal-create investigation_config. A `should`-severity review rule is advisory, not a hard gate.</action>
+    <rule critical="true">`validate_kind` (automated|review|mixed) — NOT `severity` — decides routing: automated/mixed &#8594; append validate_cmd to `validate`; review &#8594; convention-audit review-investigator. goal-create's investigation_config accepts 2&#8211;4 entries and the `convention-audit` type; the review-investigator slots in ALONGSIDE the auto-derived investigators — do NOT exceed 4 total.</rule>
+    <rule critical="true">GATE_SET is RESOLVED-only: every command is carried forward from the Stage-0 TOPOLOGY / the `rules match` payloads verbatim — never a `src/` skeleton literal, project name, port, runner literal, or hardcoded stack token. The portability mandate applies to the validate_cmds exactly as to the base quality gates.</rule>
+  </substep>
+
+  <substep n="2.4" title="Hand off to autonomous execution (reuse auto-start-taskvisor)">
+    <action>REUSE task-list.xml's auto-start-taskvisor substeps — do NOT re-implement them:
+      1. Assess daemon state: PID_ALIVE (.tmux-cli/taskvisor.pid exists AND `kill -0 $(cat .tmux-cli/taskvisor.pid)` succeeds) and ACTIVE (.tmux-cli/taskvisor-active exists). If both hold, the emitted goals schedule on the next tick — skip to the handoff.
+      2. If NOT PID_ALIVE, run `tmux-cli taskvisor restart`; on a no-session/no-window error print the named actionable reason ("Cannot auto-start: &lt;error&gt;. Start a session with tmux-cli start, then run: tmux-cli taskvisor restart — the queued fix-goals will execute on activation.") and stop in a degraded-but-named state (goals stay queued, never silently idle).
+      3. Call the taskvisor-start MCP tool (it validates pending goals exist and writes .tmux-cli/taskvisor-start), then poll for .tmux-cli/taskvisor-active every 3s up to 30s. On activation print "taskvisor ACTIVE — executing &lt;goal ids&gt;."; on timeout print the last ~10 lines of .tmux-cli/logs/taskvisor.log and the named reason.</action>
+    <action>The daemon's per-goal dispatch runs /tmux:plan then /tmux:supervisor for each category goal in the chain (delegation BY REFERENCE — this shard supplies the "what" = the per-category DAG; the existing machinery supplies the "how"). The run ENDS with the daemon executing the chain, exactly as the /tmux:task-list consume contract requires — queued-but-idle is a failure of this stage.</action>
+    <check condition="zero goals were creatable (every approved category was non-emittable)">
+      <action>Do NOT silently finish. Print a named, actionable reason (which categories were skipped and why) and STOP — never report success with an empty DAG.</action>
+    </check>
+    <action>Emit a one-line handoff to Stage 3: the emitted goal ids + the resolved validation commands, so stage-3-validation.xml can delegate verification to /tmux:investigate. Proceed to Stage 3.</action>
+  </substep>
+
+  <execution-rules>
+    <rule>COMPOSER, NOT ENGINE: emit goals via goal-create chains and let the taskvisor daemon run /tmux:plan + /tmux:supervisor per goal — NEVER re-implement their planning, dispatch, or supervision logic here.</rule>
+    <rule>PORTABILITY: every validate command, test path, and layer name is RESOLVED from the Stage-0 TOPOLOGY / the `rules match` payloads — never a `src/` skeleton literal, project name, port, runner literal, or hardcoded stack token.</rule>
+    <rule>ONE GOAL PER CATEGORY, phase-ordered via PHASE_ORDER, chained via goal-create(depends_on=[predecessor id]) like task-list.xml chain-commit — never goal-add-prerequisite for routine chaining; abort on a cycle (G-15). The depends_on chain serializes overlapping-file edits.</rule>
+    <rule>INTERACTIVE-ONLY at the confirm gate via text: present the plan as a `&lt;template&gt;` and idle for the user's message; never AskUserQuestion. Under auto_approve the wait is skipped.</rule>
+    <rule>DETECTED, NOT ASSUMED: emit only for categories the dossier flagged with a real violation; a clean dossier emits zero goals and reports success; never a no-op gate goal.</rule>
+    <rule>ENDS EXECUTING: the run finishes with the daemon executing the chain, or prints a named, actionable reason why not — queued-but-idle or a silent empty DAG is a failure of this stage.</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (a change-request loop, the confirm-gate wait, a clean dossier) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • COMPOSER, not engine — emit a per-category goal DAG via goal-create chains; the daemon runs /tmux:plan + /tmux:supervisor per goal. Emitting goals IS the delegation; never re-implement them.
+      • ONE goal per affected CATEGORY — validate bundles ALL the category's violated rules' resolved validate_cmd PLUS the FULL Stage-0 quality-gate list VERBATIM (test gate change-scoped) PLUS the conditional manifest/schema validators (mono-schema / db-validate) when the footprint warrants; review-kind must rules route to convention-audit investigators (&#8804;4). Bare sh-valid commands only — never prose.
+      • CONFIRM GATE is the SOLE interactive point — present the plan as text and idle for approval; honors cr.auto_approve / feature.auto_approve (default FALSE); never AskUserQuestion.
+      • PORTABILITY IS MANDATORY — every validate command / test path / layer is RESOLVED from Stage-0 TOPOLOGY / `rules match` payloads; never a `src/` skeleton literal, project name, port, runner literal, or hardcoded stack token.
+      • PHASE ordering reuses task-plan-generate.xml's PHASE_ORDER; chaining uses goal-create(depends_on=[predecessor id]) like task-list.xml chain-commit; the depends_on chain serializes overlapping-file edits; abort on a cycle (G-15).
+      • DETECTED, NOT ASSUMED — emit only for categories with a real violation; a clean dossier emits zero goals and reports success. HAND OFF via auto-start-taskvisor; the run ENDS with the daemon executing the chain or a named, actionable reason why not.
+    </critical-rules>
+  </llm>
+</stage>
