@@ -399,3 +399,34 @@ func TestCreateGoal_GeneratesValidateScript(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.Mode().Perm()&0o111 != 0, "validate.sh must be executable")
 }
+
+func TestWriteValidateScript_RejectsSyntaxError(t *testing.T) {
+	// An unbalanced '(' reproduces the goal-001 failure ("(" unexpected): a
+	// validate entry that is prose, not a runnable command, must fail fast at
+	// authoring time instead of after a full supervise→validate cycle.
+	err := WriteValidateScript(t.TempDir(), []string{"fix the parser (see note"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validate.sh syntax error")
+}
+
+func TestWriteValidateScript_AcceptsValidScript(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteValidateScript(dir, []string{"go test ./...", "grep -qn foo bar.go"})
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(dir, "validate.sh")
+	require.FileExists(t, scriptPath)
+	info, err := os.Stat(scriptPath)
+	require.NoError(t, err)
+	assert.True(t, info.Mode().Perm()&0o111 != 0, "validate.sh must be executable")
+}
+
+func TestCreateGoal_RejectsMalformedValidate(t *testing.T) {
+	_, _, err := CreateGoal(t.TempDir(), GoalSpec{
+		Description: "Bad validate",
+		Validate:    []string{"explain the fix (later"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validate.sh syntax error")
+}

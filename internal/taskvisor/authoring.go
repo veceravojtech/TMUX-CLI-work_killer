@@ -3,6 +3,7 @@ package taskvisor
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -207,7 +208,22 @@ func WriteValidateScript(goalDir string, rules []string) error {
 		b.WriteString(r)
 		b.WriteByte('\n')
 	}
-	return os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte(b.String()), 0o755)
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+	if err := os.WriteFile(scriptPath, []byte(b.String()), 0o755); err != nil {
+		return err
+	}
+	// Lint the generated script with 'sh -n' (parse-only, no execution) so a
+	// non-runnable validate entry fails fast here instead of after a full
+	// supervise→validate cycle.
+	out, lintErr := exec.Command("sh", "-n", scriptPath).CombinedOutput()
+	if lintErr != nil {
+		if _, ok := lintErr.(*exec.ExitError); ok {
+			return fmt.Errorf("validate.sh syntax error: %s", strings.TrimSpace(string(out)))
+		}
+		// sh could not be started (missing/broken binary) — fail open, do not
+		// block goal-create; the later validate run uses the same sh.
+	}
+	return nil
 }
 
 // criticalPriorityTier is the priority floor (G4) above which a goal is treated
