@@ -37,8 +37,8 @@ var (
 	// bullet counts, not just a bare `- TC-1`. Rejections are unaffected: the
 	// wrapper is optional and the line still fails unless a real token follows
 	// (mirrors tdbRe's existing `**` tolerance).
-	testCaseRe   = regexp.MustCompile(`(?m)^[ \t]*(?:-[ \t]*|\|[ \t]*)(?:[*_]{1,2}[ \t]*)?` + "`?" + `(?:Test\w+|test_\w+|test[A-Z]\w*|TC-\d+)`)
-	tdbRe        = regexp.MustCompile(`(?m)^\s*(?:[-*]\s*)?(?:(?:\*\*)?[\w /\-]+:(?:\*\*)?\s*)?(?:\*\*)?\s*(?:TBD|TODO|PLACEHOLDER|(?i:to be determined))(?:\*\*)?\s*\.?\s*$`)
+	testCaseRe = regexp.MustCompile(`(?m)^[ \t]*(?:-[ \t]*|\|[ \t]*)(?:[*_]{1,2}[ \t]*)?` + "`?" + `(?:Test\w+|test_\w+|test[A-Z]\w*|TC-\d+)`)
+	tdbRe      = regexp.MustCompile(`(?m)^\s*(?:[-*]\s*)?(?:(?:\*\*)?[\w /\-]+:(?:\*\*)?\s*)?(?:\*\*)?\s*(?:TBD|TODO|PLACEHOLDER|(?i:to be determined))(?:\*\*)?\s*\.?\s*$`)
 
 	// S9 gate-objectivity. subjectiveGateRe matches vague adjectives that can
 	// never describe a command-decidable gate. coverageClauseRe matches the
