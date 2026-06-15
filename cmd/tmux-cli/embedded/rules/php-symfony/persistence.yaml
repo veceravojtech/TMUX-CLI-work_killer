@@ -33,9 +33,8 @@
   acceptance:
     - "GIVEN domain persistence THEN it uses mapped Doctrine entities"
   validate:
-    - "composer p2:db-validate"
-    - "review: changed repositories operate on mapped entities, not raw arrays"
-  validate_kind: mixed
+    - "review: changed repositories operate on mapped entities, not raw arrays, and the project's resolved DB-schema validator (e.g. P2 `composer p2:db-validate`) stays green"
+  validate_kind: review
   phase: domain
 
 - id: PHP-PERS-002
@@ -64,9 +63,8 @@
   acceptance:
     - "GIVEN a UUID column THEN its Doctrine type is the binary UUID type"
   validate:
-    - "composer p2:db-validate"
-    - "review: new UUID columns in the diff use the uuid Doctrine type"
-  validate_kind: mixed
+    - "review: new UUID columns in the diff use the uuid Doctrine type, and the project's resolved DB-schema validator (e.g. P2 `composer p2:db-validate`) stays green"
+  validate_kind: review
   phase: domain
 
 - id: PHP-PERS-003
@@ -95,9 +93,8 @@
   acceptance:
     - "GIVEN a structured collection THEN it is a mapped child entity, not a JSON column"
   validate:
-    - "composer p2:db-validate"
-    - "review: no new JSON columns holding structured collections in the diff"
-  validate_kind: mixed
+    - "review: no new JSON columns holding structured collections in the diff, and the project's resolved DB-schema validator (e.g. P2 `composer p2:db-validate`) stays green"
+  validate_kind: review
   phase: domain
 
 - id: PHP-PERS-004
@@ -124,9 +121,8 @@
   acceptance:
     - "GIVEN an enum/VO column THEN a custom DBAL type owns the conversion"
   validate:
-    - "composer p2:db-validate"
-    - "review: new enum/VO columns in the diff are mapped via custom DBAL types"
-  validate_kind: mixed
+    - "review: new enum/VO columns in the diff are mapped via custom DBAL types, and the project's resolved DB-schema validator (e.g. P2 `composer p2:db-validate`) stays green"
+  validate_kind: review
   phase: domain
 
 - id: PHP-PERS-005
@@ -182,7 +178,7 @@
   depends_on_rules:
     - "PHP-PERS-005"
   applies_to:
-    - "migrations/**/*.php"
+    - "**/migrations/**/*.php"
     - "{src}/{infra}/**/*.php"
     - "{src}/**/*Data.php"
   detect:

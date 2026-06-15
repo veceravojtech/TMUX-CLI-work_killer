@@ -12,9 +12,9 @@
 
 # PHP-TYPE-003 is the Symfony-monorepo MIXED counterpart of the generic
 # php-pack PHP-TYPE-001 (review): same UUID-type intent, enforced with a
-# falsifiable grep signal AND a `make stan`/PHPStan machine validate
-# (validate_kind: mixed, not purely automated — PHPStan is a type analyzer
-# and this is the catalogue's sole type rule). It carries a distinct id because the falsifiability
+# falsifiable grep signal AND a static-analysis review note keyed to the
+# project's resolved analyzer entrypoint (validate_kind: mixed, not purely
+# automated — a UUID type is also an analyzer concern; this is the catalogue's sole type rule). It carries a distinct id because the falsifiability
 # selftest (go test ./cmd/tmux-cli) enforces GLOBAL id-uniqueness across every
 # pack, and the php pack already owns PHP-TYPE-001/002.
 - id: PHP-TYPE-003
@@ -42,7 +42,7 @@
   acceptance:
     - "GIVEN a UUID value THEN it is typed as a UUID value object, not an asserted string"
   validate:
-    - "composer p2:phpstan"
+    - "review: the project's resolved static-analysis entrypoint (e.g. P2 `composer p2:phpstan`) stays analyzer-clean on the changed UUID paths"
     - "No `Assert\\Uuid` / `Assert::uuid` remains where a UUID type fits on the changed UUID paths — grep returns nothing"
   validate_kind: mixed
   phase: domain

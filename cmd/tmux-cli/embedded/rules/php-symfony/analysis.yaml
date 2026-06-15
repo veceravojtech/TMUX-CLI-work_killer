@@ -2,11 +2,11 @@
 # Split per-category from the former code-rules.yaml monolith. See ../SCHEMA.md.
 #
 # The PHPStan/static-analysis quality gate: a configured, available analyzer that
-# goal validate-generation must surface via the PROJECT ENTRYPOINT
-# (composer p2:phpstan + make stan) — never the bare raw-binary phpstan
-# footgun (crashes at 256M without --memory-limit; false-positives on scoped
-# paths). It was previously undeclared, so `rules resolve` never emitted a sound
-# analyzer validate into PHP goals (backend task 188; mirror of task 183).
+# goal validate-generation must surface via the project's RESOLVED static-analysis
+# ENTRYPOINT (e.g. `composer p2:phpstan` / `make stan` — the P2 examples) — never
+# the bare raw-binary phpstan footgun (crashes at 256M without --memory-limit;
+# false-positives on scoped paths). It was previously undeclared, so `rules resolve`
+# never emitted a sound analyzer validate into PHP goals (backend task 188; mirror of task 183).
 
 - id: PHP-STAN-001
   category: analysis
@@ -27,15 +27,15 @@
   detect:
     - "a changed .php file PHPStan reports an error on"
   fix: >
-    Run the project entrypoint (composer p2:phpstan / make stan) and resolve
-    reported errors on changed code until it exits 0; never reconstruct scoped
-    vendor/bin/phpstan invocations.
+    Run the project's resolved static-analysis entrypoint (e.g. `composer p2:phpstan`
+    / `make stan`) and resolve reported errors on changed code until it exits 0;
+    never reconstruct scoped raw-binary phpstan invocations.
   autofix: none
   acceptance:
-    - "GIVEN a changed PHP file THEN composer p2:phpstan exits 0 (no analyzer errors on changed code)"
+    - "GIVEN a changed PHP file THEN the project's resolved static-analysis entrypoint (e.g. composer p2:phpstan) exits 0 (no analyzer errors on changed code)"
   validate:
     - "composer p2:phpstan"
     - "make stan"
-    - "review: changed PHP is analyzer-clean at the project's configured level — no new PHPStan errors on the changed paths"
+    - "review: changed PHP is analyzer-clean via the project's RESOLVED static-analysis ENTRYPOINT (its configured level/memory, never the bare file-scoped binary; `composer p2:phpstan` / `make stan` are the P2 examples) — no new analyzer errors on the changed paths"
   validate_kind: mixed
   phase: cross-cutting

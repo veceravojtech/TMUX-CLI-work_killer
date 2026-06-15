@@ -8,33 +8,34 @@
   category: scaffold
   scope: generic
   severity: must
-  title: "Every component manifest validates against composer p2:mono-schema"
+  title: "Every monorepo component manifest passes the resolved manifest-schema validator"
   rule: >
-    Every P2 component (contexts/<bc>, contexts/previo, projects/<app>,
-    packages/<pkg>) carries a monorepo-component.json that passes
-    composer p2:mono-schema. Whenever a component dir or its
-    monorepo-component.json is created or changed, the schema check runs and
+    In a multi-component monorepo, every component (a bounded context, the
+    shared kernel, a deployable, a shared package) carries a component manifest
+    that passes the monorepo's resolved manifest-schema validator (e.g. P2's
+    `monorepo-component.json` validated by `composer p2:mono-schema`). Whenever a
+    component dir or its manifest is created or changed, the schema check runs and
     must exit 0.
   why: >
-    P2 requires every component to carry a valid monorepo-component.json; an
-    unvalidated manifest scaffolds a component the monorepo tooling cannot wire,
-    surfacing only later as a build/runtime break.
+    A monorepo requires every component to carry a valid manifest; an unvalidated
+    manifest scaffolds a component the monorepo tooling cannot wire, surfacing
+    only later as a build/runtime break.
   applies_to:
     - "**/monorepo-component.json"
     - "contexts/*/composer.json"
     - "projects/*/composer.json"
     - "packages/*/composer.json"
   detect:
-    - "a new or changed monorepo-component.json"
+    - "a new or changed component manifest (e.g. monorepo-component.json)"
     - "a new component dir whose manifest has not been schema-checked"
   fix: >
-    Run composer p2:mono-schema and fix the manifest until it exits 0.
+    Run the monorepo's resolved manifest-schema validator (e.g. P2
+    `composer p2:mono-schema`) and fix the manifest until it exits 0.
   autofix: none
   acceptance:
-    - "GIVEN a new or changed monorepo-component.json THEN composer p2:mono-schema exits 0"
-    - "GIVEN a new component dir THEN it carries a monorepo-component.json that passes composer p2:mono-schema"
+    - "GIVEN a new or changed component manifest THEN the monorepo's resolved manifest-schema validator exits 0"
+    - "GIVEN a new component dir THEN it carries a component manifest that passes the resolved manifest-schema validator"
   validate:
-    - "composer p2:mono-schema"
-    - "review: every new/changed component dir carries a monorepo-component.json and composer p2:mono-schema exits 0"
-  validate_kind: mixed
+    - "review: every new/changed component dir carries a component manifest that passes the monorepo's resolved manifest-schema validator (e.g. P2 `composer p2:mono-schema`) — exits 0"
+  validate_kind: review
   phase: scaffold
