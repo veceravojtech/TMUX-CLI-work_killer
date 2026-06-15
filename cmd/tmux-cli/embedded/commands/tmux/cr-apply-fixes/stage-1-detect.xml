@@ -14,9 +14,10 @@
 
   <substep n="1.2" title="Resolve the scope into rules-check flags">
     <action>Resolve the Stage-0 SCOPE token into `tmux-cli rules check` flags: empty &#8594; no flag (the default working tree vs HEAD); a git range (e.g. `main..HEAD`) &#8594; `--diff &lt;range&gt;`; a PR ref &#8594; resolve the PR to its merge-base range or its changed-file list via the host VCS, then pass `--diff &lt;range&gt;` (or `--files &lt;paths&gt;`); explicit paths &#8594; `--files &lt;paths&gt;`. Record the resolved flag form and a one-line rationale.</action>
-    <action>Derive the CHANGED FOOTPRINT (the changed file paths) from the resolved scope — `tmux-cli rules check` derives it itself, but capture the same path set here (e.g. `git diff --name-only &lt;range&gt;`) so substep 1.4 can change-scope the quality gates to exactly that footprint.</action>
+    <action critical="true">INCLUDE UNTRACKED WORKING-TREE FILES — a committed-range diff (`BASE...HEAD`) MISSES untracked NEW files, so `rules check --diff &lt;range&gt;` over them evaluates an EMPTY diff and returns a FALSE "no rules apply" pass (the langflow-run footgun). Capture untracked paths via `git status --porcelain` (the `??` entries) PLUS the unstaged + staged diff, and when any exist pass the UNION as `--files &lt;paths&gt;` so the check sees the new files. NEVER trust a committed-range result when working-tree/untracked files are part of the change.</action>
+    <action>Derive the CHANGED FOOTPRINT as the UNION of untracked + unstaged + staged + committed-range paths (e.g. `git status --porcelain` + `git diff --name-only`) — the full set of files the change touches, tracked or not — so substep 1.4 change-scopes the quality gates to exactly that footprint.</action>
     <check condition="the resolved scope yields zero changed files">
-      <action>There is nothing to review. Emit an EMPTY violations dossier with the note "no changed files in scope — nothing to review" and hand it to Stage 2 (which will report clean and emit zero goals). Do NOT crash.</action>
+      <action>Emit an EMPTY violations dossier ("no changed files in scope — nothing to review") and hand it to Stage 2 ONLY after confirming there are genuinely NO working-tree changes (no untracked `??`, no unstaged/staged diff). An empty COMMITTED-range diff while untracked files EXIST is NOT clean — the untracked files ARE the change; re-scope via `--files` and proceed, never report a false pass. Do NOT crash.</action>
     </check>
   </substep>
 

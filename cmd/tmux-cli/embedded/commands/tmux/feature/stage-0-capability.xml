@@ -37,6 +37,7 @@
       <action>Apply greenfield DEFAULTS and mark each as a default (not a detected value): SOURCE ROOTS = ["src"]; LAYER NAMES = none declared; ROOT NAMESPACE = empty; QUALITY-GATE COMMANDS = none. Record that these are skeleton defaults to be confirmed at Stage 2, NOT detected project facts.</action>
     </check>
     <rule critical="true">NEVER hardcode a source root, layer name, root namespace, quality-gate command, port, lang, or framework. Every such value is either resolved from the loaded packs/manifests above or is an explicitly-flagged greenfield default. No project name appears anywhere.</rule>
+    <rule critical="true">READ EVERY RESOLVED PACK IN FULL — reading a SUBSET is a DEFECT. Count the files each `tmux-cli rules resolve` prints (convention + code-rules) and READ ALL of them; skimming two and skipping the rest silently drops the rules/conventions those files carry — the exact cause of "missed the rules dimension" failures. The emitted CODE RULES pointers MUST list EVERY printed code-rule path (never a chosen subset); Stages 1/3/4 gate on the FULL set, and the quality-gate command list must reflect every gate the packs prescribe.</rule>
   </substep>
 
   <substep n="0.4" title="Emit resolved capability + topology context block">
