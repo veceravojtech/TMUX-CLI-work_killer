@@ -192,6 +192,74 @@ func TestEnsureWorktree_SymlinksControlPlane(t *testing.T) {
 	assert.Equal(t, "hi", string(got))
 }
 
+func TestEnsureWorktree_CopiesClaudeCommands(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+
+	// Base has the installed command set; .claude is git-excluded so `worktree add`
+	// would NOT carry it into the checkout — the daemon must copy it in.
+	baseTmux := filepath.Join(dir, ".claude", "commands", "tmux")
+	require.NoError(t, os.MkdirAll(filepath.Join(baseTmux, "worker"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseTmux, "supervisor.xml"), []byte("<sup/>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(baseTmux, "worker", "investigate-worker.xml"), []byte("<wk/>"), 0o644))
+
+	fake := &fakeGitRunner{sideEffect: func(args []string) {
+		if argsContain(args, "worktree", "add") {
+			_ = os.MkdirAll(wtPath, 0o755)
+		}
+	}}
+	d.SetGitRunnerFunc(fake.run)
+
+	_, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err)
+
+	// The supervisor command (and nested subdir commands) must resolve in the worktree cwd.
+	got, err := os.ReadFile(filepath.Join(wtPath, ".claude", "commands", "tmux", "supervisor.xml"))
+	require.NoError(t, err, "/tmux:supervisor must be present in the worktree")
+	assert.Equal(t, "<sup/>", string(got))
+	nested, err := os.ReadFile(filepath.Join(wtPath, ".claude", "commands", "tmux", "worker", "investigate-worker.xml"))
+	require.NoError(t, err, "nested subdir commands must be copied too")
+	assert.Equal(t, "<wk/>", string(nested))
+}
+
+func TestEnsureWorktree_ReuseSelfHealsMissingCommands_PreservesEdits(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+
+	// Base command set.
+	baseTmux := filepath.Join(dir, ".claude", "commands", "tmux")
+	require.NoError(t, os.MkdirAll(baseTmux, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseTmux, "supervisor.xml"), []byte("<sup-base/>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(baseTmux, "task-list.xml"), []byte("<base-tasklist/>"), 0o644))
+
+	// A worktree from before the fix: it exists, lacks supervisor.xml, but already
+	// holds a goal-edited task-list.xml mirror that must NOT be clobbered.
+	wtTmux := filepath.Join(wtPath, ".claude", "commands", "tmux")
+	require.NoError(t, os.MkdirAll(wtTmux, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wtTmux, "task-list.xml"), []byte("<goal-EDITED/>"), 0o644))
+
+	fake := &fakeGitRunner{}
+	d.SetGitRunnerFunc(fake.run)
+
+	cwd, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err)
+	assert.Equal(t, wtPath, cwd)
+	assert.Equal(t, 0, fake.count("worktree", "add"), "existing worktree reused, not re-added")
+
+	// Missing command filled in...
+	got, err := os.ReadFile(filepath.Join(wtTmux, "supervisor.xml"))
+	require.NoError(t, err, "missing supervisor.xml must be filled on reuse")
+	assert.Equal(t, "<sup-base/>", string(got))
+	// ...but the goal's edited mirror preserved.
+	edited, err := os.ReadFile(filepath.Join(wtTmux, "task-list.xml"))
+	require.NoError(t, err)
+	assert.Equal(t, "<goal-EDITED/>", string(edited), "reuse must NOT overwrite a goal-edited command file")
+}
+
 // --- mergeWorktreeBack -----------------------------------------------------
 
 // primeWorktree sets a goal's runtime as if ensureWorktree had created a worktree.

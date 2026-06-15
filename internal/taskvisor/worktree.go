@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -231,6 +232,12 @@ func (d *Daemon) ensureWorktree(goal *Goal, parallel bool) (string, error) {
 	if fi, err := os.Stat(wtPath); err == nil && fi.IsDir() {
 		rt.WorktreeDir = wtPath
 		rt.Branch = branch
+		// Self-heal: a worktree created before this command-copy existed (or by an
+		// older binary) lacks the slash-command set. Fill in any MISSING command
+		// files without overwriting a scoped goal's edited command mirror.
+		if err := d.copyClaudeCommands(wtPath, false); err != nil {
+			return "", err
+		}
 		return wtPath, nil
 	}
 
@@ -247,10 +254,77 @@ func (d *Daemon) ensureWorktree(goal *Goal, parallel bool) (string, error) {
 	if err := d.symlinkControlPlane(wtPath); err != nil {
 		return "", err
 	}
+	if err := d.copyClaudeCommands(wtPath, true); err != nil {
+		return "", err
+	}
 
 	rt.WorktreeDir = wtPath
 	rt.Branch = branch
 	return wtPath, nil
+}
+
+// copyClaudeCommands materializes the .claude/commands/tmux/ slash-command set
+// into a freshly-created worktree by copying the canonical installed tree from
+// base. `git worktree add` carries NONE of these files in because .claude is
+// git-excluded (internal/setup gitexclude: "/.claude/commands/tmux/"), so a
+// worktree checkout has no command definitions and a supervisor window launched
+// with cwd=worktree fails every `/tmux:supervisor <goal>` with "Unknown command"
+// — looping STUCK→recover forever (see ensureWorktree's dispatch cwd). Copying
+// the base set makes the commands resolve in the worktree cwd. The copy stays
+// git-excluded (the same exclude applies inside the worktree), so it is never
+// committed to the goal branch nor merged back into base.
+//
+// Called from the creation path with overwrite=true (a just-`worktree add`ed,
+// pristine tree — nothing to clobber) and from the reuse path with
+// overwrite=false (fill MISSING files only): a scoped goal whose deliverable IS a
+// .claude/commands/tmux/*.xml file edits its worktree command mirror (the
+// embedded↔.claude dual-write), so a reused worktree must never have that
+// in-flight edit overwritten. Best-effort: a missing base source dir (Commands
+// disabled / not yet set up) is a silent no-op.
+func (d *Daemon) copyClaudeCommands(wtPath string, overwrite bool) error {
+	srcRoot := filepath.Join(d.workDir, ".claude", "commands", "tmux")
+	if fi, err := os.Stat(srcRoot); err != nil || !fi.IsDir() {
+		return nil // base has no installed command set — nothing to mirror
+	}
+	dstRoot := filepath.Join(wtPath, ".claude", "commands", "tmux")
+	return copyTree(srcRoot, dstRoot, overwrite)
+}
+
+// copyTree recursively copies the regular files and directories under srcRoot
+// into dstRoot, creating parents as needed. Symlinks and other non-regular
+// entries are skipped (the command set is plain files). When overwrite is false,
+// a destination file that already exists is left untouched (preserving a goal's
+// edited command mirror).
+func copyTree(srcRoot, dstRoot string, overwrite bool) error {
+	return filepath.WalkDir(srcRoot, func(path string, de fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcRoot, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dstRoot, rel)
+		if de.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		if !de.Type().IsRegular() {
+			return nil
+		}
+		if !overwrite {
+			if _, err := os.Stat(dst); err == nil {
+				return nil // preserve an existing (possibly goal-edited) command file
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, data, 0o644)
+	})
 }
 
 // symlinkControlPlane points <worktree>/.tmux-cli at <base>/.tmux-cli so worker
