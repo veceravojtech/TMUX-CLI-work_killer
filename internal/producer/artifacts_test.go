@@ -97,34 +97,49 @@ func TestUploadArtifact_HappyPath(t *testing.T) {
 	assert.Equal(t, "log", gotRole)
 }
 
-func TestUploadArtifact_SignsExactMultipartBytes(t *testing.T) {
+// TestUploadArtifact_SignsContentDigest pins the upload's signing contract to the
+// deployed backend (goal-010): the client advertises X-Content-SHA256 = lowercase
+// hex SHA-256 of the FILE bytes, and the signature verifies over X-Timestamp +
+// that digest (NOT the empty body and NOT the multipart bytes). The multipart body
+// is still sent in full so the backend can re-hash $_FILES and confirm the match.
+func TestUploadArtifact_SignsContentDigest(t *testing.T) {
+	const fileContent = "the artifact bytes whose digest is signed\n"
 	var (
-		gotBody []byte
-		gotSig  string
-		gotTS   string
+		gotBody   []byte
+		gotSig    string
+		gotTS     string
+		gotDigest string
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
 		gotSig = r.Header.Get("X-Signature")
 		gotTS = r.Header.Get("X-Timestamp")
+		gotDigest = r.Header.Get("X-Content-SHA256")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"id":1,"sha256":"x"}`)
 	}))
 	defer srv.Close()
 
 	c, pub := newTestClient(t, srv)
-	path := writeTempFile(t, "data.bin", "the multipart bytes that must be signed")
+	path := writeTempFile(t, "data.bin", fileContent)
 
 	_, err := c.UploadArtifact(context.Background(), "9", path, "")
 	require.NoError(t, err)
 
-	// The signature must verify over X-Timestamp + the EXACT received body bytes
-	// (the multipart payload), proving it covers the multipart body and not JSON.
+	// The digest header is the lowercase-hex SHA-256 of the file content.
+	wantSum := sha256.Sum256([]byte(fileContent))
+	wantDigest := hex.EncodeToString(wantSum[:])
+	assert.Equal(t, wantDigest, gotDigest, "X-Content-SHA256 must be hex SHA-256 of the file bytes")
+
 	sig, err := base64.StdEncoding.DecodeString(gotSig)
 	require.NoError(t, err)
-	msg := gotTS + string(gotBody)
-	assert.True(t, ed25519.Verify(pub, []byte(msg), sig), "X-Signature must verify over X-Timestamp + raw multipart body")
-	// And it really was a multipart body (not an accidental JSON path).
+	// Verifies over timestamp+digest (the backend's reconstruction when the header is present)...
+	assert.True(t, ed25519.Verify(pub, []byte(gotTS+gotDigest), sig),
+		"X-Signature must verify over X-Timestamp + X-Content-SHA256 digest")
+	// ...and must NOT verify over the multipart bytes (the old, broken signing).
+	assert.False(t, ed25519.Verify(pub, []byte(gotTS+string(gotBody)), sig),
+		"X-Signature must NOT cover the multipart body")
+	// The multipart body is nonetheless sent in full.
 	assert.Contains(t, string(gotBody), "Content-Disposition: form-data; name=\"file\"")
 }
 

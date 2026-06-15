@@ -38,6 +38,49 @@ func withTaskServer(t *testing.T, status int, respBody string) (*Server, *http.R
 	return newReportServer(t), last
 }
 
+// capturedReq records the PATCH the read-modify-write EditTask issues after its
+// leading GET, so a test can assert the merged body / path the backend receives.
+type capturedReq struct {
+	method string
+	path   string
+	body   []byte
+}
+
+// editDetailJSON is the current content EditTask's leading GET reads before
+// merging a partial edit into the full-replacement PATCH body.
+const editDetailJSON = `{"id":42,"status":"new","category":"general","severity":"info",` +
+	`"title":"Old title","description":"Old description","proposedFix":"Old fix",` +
+	`"expectedGreenState":"Old green","payload":{"existing":"kept"},"dependsOn":[],"events":[]}`
+
+// withTaskEditServer stands up a server for EditTask's read-modify-write flow: the
+// leading GET returns editDetailJSON; the following PATCH returns patchStatus +
+// patchBody and is captured into the returned *capturedReq.
+func withTaskEditServer(t *testing.T, patchStatus int, patchBody string) (*Server, *capturedReq) {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	cap := &capturedReq{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, editDetailJSON)
+			return
+		}
+		cap.body, _ = io.ReadAll(r.Body)
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		w.WriteHeader(patchStatus)
+		_, _ = io.WriteString(w, patchBody)
+	}))
+	t.Cleanup(srv.Close)
+
+	withReportHook(t, func(producer.Config) *producer.Client {
+		return producer.NewClientForTest(srv.URL, priv, srv.Client())
+	})
+	return newReportServer(t), cap
+}
+
 // --- task-list ---------------------------------------------------------------
 
 func TestTaskList_HappyPath(t *testing.T) {
@@ -275,33 +318,28 @@ func TestTaskEdit_HappyPath(t *testing.T) {
 	assert.Equal(t, "/api/v1/tasks/42", last.URL.Path)
 }
 
-func TestTaskEdit_SendsOnlyProvidedFields(t *testing.T) {
-	// withTaskServer records only method/path/query (the body is drained by its
-	// handler), so stand up a dedicated server that decodes the PATCH body.
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	var sent map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		require.NoError(t, json.Unmarshal(body, &sent))
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"id":42,"status":"claimed","title":"t","severity":"warning"}`)
-	}))
-	t.Cleanup(srv.Close)
-	withReportHook(t, func(producer.Config) *producer.Client {
-		return producer.NewClientForTest(srv.URL, priv, srv.Client())
-	})
-	s := newReportServer(t)
+// TestTaskEdit_MergesProvidedOntoCurrent: a partial edit through the MCP tool is
+// merged onto the task's current content and PATCHed as a complete body — the
+// provided fields take the new value, every other field (including the existing
+// payload) is re-sent at its current value so the full-replacement backend keeps it.
+func TestTaskEdit_MergesProvidedOntoCurrent(t *testing.T) {
+	s, cap := withTaskEditServer(t, http.StatusOK, `{"id":42,"status":"new","title":"t","severity":"warning"}`)
 
 	out, err := s.TaskEdit(context.Background(), TaskEditInput{ID: "42", Title: "t", Severity: "warning"})
 	require.NoError(t, err)
 	require.NotNil(t, out)
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal(cap.body, &sent))
+	// Provided fields take the new value.
 	assert.Equal(t, "t", sent["title"])
 	assert.Equal(t, "warning", sent["severity"])
-	for _, k := range []string{"description", "proposedFix", "expectedGreenState", "category", "payload"} {
-		_, has := sent[k]
-		assert.False(t, has, "%s must be omitted when not provided", k)
-	}
+	// Unchanged fields are re-sent at their current value (lossless full replacement).
+	assert.Equal(t, "Old description", sent["description"])
+	assert.Equal(t, "Old fix", sent["proposedFix"])
+	assert.Equal(t, "Old green", sent["expectedGreenState"])
+	assert.Equal(t, "general", sent["category"])
+	assert.Equal(t, "kept", sent["payload"].(map[string]any)["existing"])
 }
 
 func TestTaskEdit_Rejections(t *testing.T) {
@@ -338,7 +376,8 @@ func TestTaskEdit_PayloadCountsAsProvided(t *testing.T) {
 }
 
 func TestTaskEdit_TerminalStateRejected(t *testing.T) {
-	s, _ := withTaskServer(t, http.StatusUnprocessableEntity, `{"error":"invalid_transition"}`)
+	// The GET succeeds (a terminal task is still readable); the PATCH is rejected.
+	s, _ := withTaskEditServer(t, http.StatusUnprocessableEntity, `{"error":"not_editable"}`)
 	out, err := s.TaskEdit(context.Background(), TaskEditInput{ID: "42", Description: "new"})
 	assert.Nil(t, out)
 	require.Error(t, err)
@@ -356,7 +395,8 @@ func TestTaskEdit_ForbiddenAndNotFound(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, _ := withTaskServer(t, tc.code, `{}`)
+			// GET succeeds; the edit failure is surfaced from the PATCH.
+			s, _ := withTaskEditServer(t, tc.code, `{}`)
 			out, err := s.TaskEdit(context.Background(), TaskEditInput{ID: "42", Description: "new"})
 			assert.Nil(t, out)
 			require.Error(t, err)

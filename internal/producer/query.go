@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -42,10 +43,16 @@ type Task struct {
 	Description        string     `json:"description"`
 	ProposedFix        string     `json:"proposedFix"`
 	ExpectedGreenState string     `json:"expectedGreenState"`
-	ClaimedBy          string     `json:"claimedBy"`
-	ClaimedAt          string     `json:"claimedAt"`
-	CreatedAt          string     `json:"createdAt"`
-	UpdatedAt          string     `json:"updatedAt"`
+	// Payload is the task's structured payload. The backend exposes it ONLY on the
+	// detail surface (GET /api/v1/tasks/{id}), so it decodes to nil from the list
+	// endpoint and is populated from a GetTask. EditTask reads it back to preserve
+	// the payload across a partial content edit (the backend edit is a full
+	// replacement, so an omitted payload would be reset to empty).
+	Payload   map[string]any `json:"payload,omitempty"`
+	ClaimedBy string         `json:"claimedBy"`
+	ClaimedAt string         `json:"claimedAt"`
+	CreatedAt string         `json:"createdAt"`
+	UpdatedAt string         `json:"updatedAt"`
 	// DependsOn is the task's prerequisite ids; the backend emits them as JSON
 	// numbers, so FlexibleID is used (mirroring ID/InstanceID). Ready is the
 	// backend-computed gate: false means the task is blocked on an unresolved
@@ -267,15 +274,67 @@ func (c *Client) UpdateTaskStatus(ctx context.Context, id string, p UpdateStatus
 	return &out, nil
 }
 
-// EditTask amends a filed task's content via PATCH /api/v1/tasks/{id}. It maps
-// the documented failures to sentinels: 403 -> ErrForbidden, 404 ->
+// fullEditContent is the COMPLETE editable-content body PATCH /api/v1/tasks/{id}
+// requires. The backend's UpdateTaskContentRequest DTO is a full replacement:
+// category/severity are required and title/description/proposedFix/
+// expectedGreenState are NotBlank, so every field must be present — an omitted
+// field is reset (to blank, which the NotBlank rule then rejects with a 422). No
+// omitempty: each field is always sent, even when its value is the empty/zero
+// value, so the wire body is genuinely complete.
+type fullEditContent struct {
+	Category           string         `json:"category"`
+	Severity           string         `json:"severity"`
+	Title              string         `json:"title"`
+	Description        string         `json:"description"`
+	ProposedFix        string         `json:"proposedFix"`
+	ExpectedGreenState string         `json:"expectedGreenState"`
+	Payload            map[string]any `json:"payload"`
+	DependsOn          []string       `json:"dependsOn"`
+}
+
+// EditTask amends a filed task's content via PATCH /api/v1/tasks/{id}. The backend
+// endpoint is a FULL-REPLACEMENT edit, so EditTask first GETs the task's current
+// content and overlays p onto it: every field the caller did not set is sent at
+// its current value, giving the MCP tool true partial-edit semantics ("only the
+// provided fields change") on top of a full-replacement backend — and crucially
+// preserving payload and dependsOn, which an omitted field would otherwise reset.
+//
+// It maps the documented failures to sentinels: 403 -> ErrForbidden, 404 ->
 // ErrTaskNotFound, 422 -> ErrInvalidTransition (terminal-state edit rejected by
 // the backend). A nil receiver is a no-op.
 func (c *Client) EditTask(ctx context.Context, id string, p EditTaskParams) (*Task, error) {
 	if c == nil {
 		return nil, nil
 	}
-	body, err := json.Marshal(p)
+
+	// Read the current content first so the partial edit can be merged into a
+	// complete body. GetTask already maps 404 -> ErrTaskNotFound.
+	cur, err := c.GetTask(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	full := fullEditContent{
+		Category:           firstNonBlank(p.Category, cur.Category),
+		Severity:           firstNonBlank(p.Severity, cur.Severity),
+		Title:              firstNonBlank(p.Title, cur.Title),
+		Description:        firstNonBlank(p.Description, cur.Description),
+		ProposedFix:        firstNonBlank(p.ProposedFix, cur.ProposedFix),
+		ExpectedGreenState: firstNonBlank(p.ExpectedGreenState, cur.ExpectedGreenState),
+		Payload:            cur.Payload,
+		DependsOn:          flexIDStrings(cur.DependsOn),
+	}
+	// A payload is replaced only when the caller explicitly provides one; otherwise
+	// the current payload is preserved. nil marshals to JSON null which the DTO
+	// rejects, so an absent payload is normalized to an empty object.
+	if p.Payload != nil {
+		full.Payload = p.Payload
+	}
+	if full.Payload == nil {
+		full.Payload = map[string]any{}
+	}
+
+	body, err := json.Marshal(full)
 	if err != nil {
 		return nil, err
 	}
@@ -296,6 +355,27 @@ func (c *Client) EditTask(ctx context.Context, id string, p EditTaskParams) (*Ta
 		return nil, err
 	}
 	return &out, nil
+}
+
+// firstNonBlank returns next when it has non-whitespace content, else cur. It
+// implements EditTask's overlay rule: a provided field replaces the current value,
+// a blank/omitted one preserves it.
+func firstNonBlank(next, cur string) string {
+	if strings.TrimSpace(next) != "" {
+		return next
+	}
+	return cur
+}
+
+// flexIDStrings renders a task's prerequisite ids as the numeric-string list the
+// edit DTO accepts (each element matches /^\d+$/). It always returns a non-nil
+// slice so the dependsOn key marshals to [] (not null) when there are no deps.
+func flexIDStrings(ids []FlexibleID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id.String())
+	}
+	return out
 }
 
 // ReasonParams is the JSON body for the deny and force-resolve endpoints — a
@@ -432,18 +512,23 @@ func (c *Client) Link(ctx context.Context, id, prerequisiteID string) (*Task, er
 // sent and no Content-Type set). It is a thin wrapper over doSignedRaw that
 // pins the JSON content type, so every existing JSON caller is byte-identical.
 func (c *Client) doSigned(ctx context.Context, method, path string, query url.Values, body []byte) (*http.Response, error) {
-	return c.doSignedRaw(ctx, method, path, query, body, "application/json")
+	// JSON path: the bytes on the wire ARE the bytes signed (body), so the backend
+	// reconstructs timestamp+getContent() byte-for-byte. No extra headers.
+	return c.doSignedRaw(ctx, method, path, query, body, "application/json", body, nil)
 }
 
 // doSignedRaw is the content-type-aware core of doSigned: it builds, signs, and
 // sends an authenticated request, setting the caller-supplied contentType on the
-// body (when body != nil). The Ed25519 signature covers the EXACT body bytes
-// (fmt.Sprintf("%d", ts)+string(body)) so the caller MUST pass the same bytes it
-// wants on the wire. It exists so a multipart upload can pass its
-// boundary-carrying w.FormDataContentType() — which doSigned's hardcoded
-// application/json cannot express — while keeping the JSON path unchanged. body
-// may be nil (no body sent and no Content-Type set, e.g. a GET).
-func (c *Client) doSignedRaw(ctx context.Context, method, path string, query url.Values, body []byte, contentType string) (*http.Response, error) {
+// wire body (when body != nil) plus any extraHeaders. The Ed25519 signature covers
+// fmt.Sprintf("%d", ts)+string(signBody) — which is DELIBERATELY decoupled from the
+// wire body so the multipart upload path can sign over a digest the backend can
+// reconstruct: PHP leaves getContent() EMPTY for a multipart/form-data POST (the
+// body is parsed into $_FILES, never php://input), so that upload sends an
+// X-Content-SHA256 header (via extraHeaders) and signs over that digest string
+// (signBody), which the backend's authenticator verifies as timestamp+digest. The
+// JSON path passes signBody==body (wire and signed bytes coincide) and no extra
+// headers. body may be nil (no body sent and no Content-Type set, e.g. a GET).
+func (c *Client) doSignedRaw(ctx context.Context, method, path string, query url.Values, body []byte, contentType string, signBody []byte, extraHeaders map[string]string) (*http.Response, error) {
 	u := c.baseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -461,9 +546,12 @@ func (c *Client) doSignedRaw(ctx context.Context, method, path string, query url
 		req.Header.Set("Content-Type", contentType)
 	}
 	ts := time.Now().Unix()
-	req.Header.Set("X-Signature", c.sign(ts, body))
+	req.Header.Set("X-Signature", c.sign(ts, signBody))
 	req.Header.Set("X-Timestamp", strconv.FormatInt(ts, 10))
 	req.Header.Set("X-Fingerprint", c.fingerprint)
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

@@ -322,18 +322,42 @@ func TestUpdateTaskStatus_ErrorMapping(t *testing.T) {
 	}
 }
 
-func TestEditTask_SendsBodyAndDecodes(t *testing.T) {
-	pub, priv := testKeypair(t)
-	var sent map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// editCurrentTaskJSON is the detail body the GET inside EditTask reads to seed the
+// full-replacement merge. It carries a non-empty payload and one prerequisite so
+// the "preserved across a partial edit" assertions are meaningful.
+const editCurrentTaskJSON = `{"id":42,"status":"new","category":"general","severity":"info",` +
+	`"title":"Old title","description":"Old description","proposedFix":"Old fix",` +
+	`"expectedGreenState":"Old green","payload":{"existing":"kept"},"dependsOn":[7],"events":[]}`
+
+// editTestServer mounts a server that answers EditTask's leading GET with
+// editCurrentTaskJSON and captures the PATCH that follows. patchBody is the raw
+// merged body; patchPath is its escaped path. The PATCH responds with reply.
+func editTestServer(t *testing.T, pub ed25519.PublicKey, reply string, patchBody *[]byte, patchPath *string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, editCurrentTaskJSON)
+			return
+		}
 		assert.Equal(t, http.MethodPatch, r.Method)
-		assert.Equal(t, "/api/v1/tasks/42", r.URL.Path)
 		body, _ := io.ReadAll(r.Body)
 		verifySig(t, pub, r, body)
-		require.NoError(t, json.Unmarshal(body, &sent))
+		if patchBody != nil {
+			*patchBody = body
+		}
+		if patchPath != nil {
+			*patchPath = r.URL.EscapedPath()
+		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"id":42,"status":"claimed","description":"new"}`)
+		_, _ = io.WriteString(w, reply)
 	}))
+}
+
+func TestEditTask_MergesOntoCurrentContentAndDecodes(t *testing.T) {
+	pub, priv := testKeypair(t)
+	var raw []byte
+	srv := editTestServer(t, pub, `{"id":42,"status":"new","description":"new"}`, &raw, nil)
 	defer srv.Close()
 
 	c := newClient(srv.URL, priv, srv.Client())
@@ -345,42 +369,51 @@ func TestEditTask_SendsBodyAndDecodes(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, task)
 	assert.Equal(t, "new", task.Description)
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal(raw, &sent))
+	// Changed fields take the new value.
 	assert.Equal(t, "new", sent["description"])
 	assert.Equal(t, "warning", sent["severity"])
-	pl, ok := sent["payload"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "v", pl["k"])
+	assert.Equal(t, "v", sent["payload"].(map[string]any)["k"])
+	// Unchanged fields are sent at their CURRENT value (full replacement).
+	assert.Equal(t, "Old title", sent["title"])
+	assert.Equal(t, "general", sent["category"])
+	assert.Equal(t, "Old fix", sent["proposedFix"])
+	assert.Equal(t, "Old green", sent["expectedGreenState"])
 }
 
-func TestEditTask_OmitsEmptyFields(t *testing.T) {
-	_, priv := testKeypair(t)
-	var sent map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		require.NoError(t, json.Unmarshal(body, &sent))
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"id":42,"status":"claimed","title":"t"}`)
-	}))
+// TestEditTask_PreservesUnchangedFields is the core lossless guarantee: a
+// title-only edit must re-send every other field — including the existing payload
+// and dependsOn — at its current value, so the full-replacement backend does not
+// reset them.
+func TestEditTask_PreservesUnchangedFields(t *testing.T) {
+	pub, priv := testKeypair(t)
+	var raw []byte
+	srv := editTestServer(t, pub, `{"id":42,"status":"new","title":"t"}`, &raw, nil)
 	defer srv.Close()
 
 	c := newClient(srv.URL, priv, srv.Client())
 	_, err := c.EditTask(context.Background(), "42", EditTaskParams{Title: "t"})
 	require.NoError(t, err)
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal(raw, &sent))
 	assert.Equal(t, "t", sent["title"])
-	for _, k := range []string{"description", "proposedFix", "expectedGreenState", "severity", "category", "payload"} {
-		_, has := sent[k]
-		assert.False(t, has, "%s must be omitted when empty", k)
-	}
+	assert.Equal(t, "Old description", sent["description"])
+	assert.Equal(t, "Old fix", sent["proposedFix"])
+	assert.Equal(t, "Old green", sent["expectedGreenState"])
+	assert.Equal(t, "general", sent["category"])
+	assert.Equal(t, "info", sent["severity"])
+	// The pre-existing payload and prerequisite survive a partial edit.
+	assert.Equal(t, "kept", sent["payload"].(map[string]any)["existing"])
+	assert.Equal(t, []any{"7"}, sent["dependsOn"])
 }
 
 func TestEditTask_PathEscapesID(t *testing.T) {
-	_, priv := testKeypair(t)
+	pub, priv := testKeypair(t)
 	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.EscapedPath()
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"id":"a b","status":"claimed"}`)
-	}))
+	srv := editTestServer(t, pub, `{"id":"a b","status":"new"}`, nil, &gotPath)
 	defer srv.Close()
 
 	c := newClient(srv.URL, priv, srv.Client())
@@ -389,6 +422,8 @@ func TestEditTask_PathEscapesID(t *testing.T) {
 	assert.Equal(t, "/api/v1/tasks/a%20b", gotPath)
 }
 
+// TestEditTask_ErrorMapping covers failures on the PATCH: the GET succeeds (a
+// claimed/terminal task is still readable) and the edit itself is rejected.
 func TestEditTask_ErrorMapping(t *testing.T) {
 	cases := []struct {
 		name string
@@ -403,6 +438,11 @@ func TestEditTask_ErrorMapping(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, priv := testKeypair(t)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					w.WriteHeader(http.StatusOK)
+					_, _ = io.WriteString(w, editCurrentTaskJSON)
+					return
+				}
 				w.WriteHeader(tc.code)
 			}))
 			defer srv.Close()
@@ -412,6 +452,22 @@ func TestEditTask_ErrorMapping(t *testing.T) {
 			assert.True(t, errors.Is(err, tc.want), "want %v, got %v", tc.want, err)
 		})
 	}
+}
+
+// TestEditTask_NotFoundOnGet: editing an unknown task fails on the leading GET,
+// surfacing ErrTaskNotFound before any PATCH is attempted.
+func TestEditTask_NotFoundOnGet(t *testing.T) {
+	_, priv := testKeypair(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method, "no PATCH must be sent when the task is missing")
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, priv, srv.Client())
+	task, err := c.EditTask(context.Background(), "42", EditTaskParams{Title: "t"})
+	assert.Nil(t, task)
+	assert.True(t, errors.Is(err, ErrTaskNotFound), "want ErrTaskNotFound, got %v", err)
 }
 
 func TestEditTask_NilReceiver(t *testing.T) {

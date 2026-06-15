@@ -58,24 +58,31 @@ type DownloadResult struct {
 // optionally tagged with role. A nil receiver is a no-op returning (nil, nil),
 // matching the other producer methods.
 //
-// The multipart body is FULLY buffered into a bytes.Buffer and the writer is
-// Closed (flushing the trailing boundary) BEFORE buf.Bytes() is read, so the
-// exact bytes that are signed are the exact bytes that are sent — the backend
-// reconstructs and verifies the signature over the raw request body, and any
-// divergence (boundary, field ordering) would break verification. The
-// Content-Type carries the random boundary via w.FormDataContentType(), which is
-// why this cannot reuse doSigned's hardcoded application/json (hence
-// doSignedRaw). It maps 413 -> ErrArtifactTooLarge, 415 ->
-// ErrUnsupportedArtifactType, 404 -> ErrTaskNotFound.
+// Signature note: PHP parses a multipart/form-data POST into $_FILES and leaves
+// php://input empty, so the backend cannot reconstruct the raw body to verify a
+// signature over it (signing the multipart bytes is the cause of the upload 401).
+// Instead the backend's authenticator binds the signature to an X-Content-SHA256
+// digest header: this client computes the lowercase-hex SHA-256 of the FILE bytes
+// (the exact bytes the controller re-hashes from $_FILES), sends it as
+// X-Content-SHA256, and signs over timestamp+digest (signBody=digest). The
+// multipart body is still sent in full so the controller can read $_FILES and
+// confirm the bytes hash to the advertised digest. The Content-Type carries the
+// random boundary via w.FormDataContentType(), which is why this cannot reuse
+// doSigned's hardcoded application/json (hence doSignedRaw). It maps 413 ->
+// ErrArtifactTooLarge, 415 -> ErrUnsupportedArtifactType, 404 -> ErrTaskNotFound.
 func (c *Client) UploadArtifact(ctx context.Context, taskID, filePath, role string) (*Artifact, error) {
 	if c == nil {
 		return nil, nil
 	}
-	f, err := os.Open(filePath)
+	// Read the file fully so its content can be hashed (for the X-Content-SHA256
+	// digest) and written into the multipart body from the same bytes — the digest
+	// MUST match what the backend re-hashes from the received file.
+	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:]) // lowercase hex, matching PHP hash('sha256', ...)
 
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -83,7 +90,7 @@ func (c *Client) UploadArtifact(ctx context.Context, taskID, filePath, role stri
 	if err != nil {
 		return nil, err
 	}
-	if _, err := io.Copy(fw, f); err != nil {
+	if _, err := fw.Write(content); err != nil {
 		return nil, err
 	}
 	// role is free-form (not enum-gated); send the field only when non-empty.
@@ -98,7 +105,10 @@ func (c *Client) UploadArtifact(ctx context.Context, taskID, filePath, role stri
 		return nil, err
 	}
 
-	resp, err := c.doSignedRaw(ctx, http.MethodPost, "/api/v1/tasks/"+url.PathEscape(taskID)+"/artifacts", nil, buf.Bytes(), w.FormDataContentType())
+	// Sign over timestamp+digest and advertise the digest header; the backend
+	// verifies the signature against the header and re-hashes the uploaded bytes to
+	// confirm they match (see the signature note above).
+	resp, err := c.doSignedRaw(ctx, http.MethodPost, "/api/v1/tasks/"+url.PathEscape(taskID)+"/artifacts", nil, buf.Bytes(), w.FormDataContentType(), []byte(digest), map[string]string{"X-Content-SHA256": digest})
 	if err != nil {
 		return nil, err
 	}
