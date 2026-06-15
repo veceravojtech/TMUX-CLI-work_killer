@@ -19,26 +19,26 @@ import (
 // TaskView is the agent-facing projection of producer.Task. IDs are rendered as
 // strings (the backend emits numbers); empty fields are omitted.
 type TaskView struct {
-	ID                 string         `json:"id" jsonschema:"Backend task id"`
-	Fingerprint        string         `json:"fingerprint,omitempty" jsonschema:"Fingerprint of the machine that reported the task"`
-	InstanceID         string         `json:"instance_id,omitempty"`
-	InstanceName       string         `json:"instance_name,omitempty"`
-	Category           string         `json:"category,omitempty"`
-	Severity           string         `json:"severity,omitempty"`
-	Status             string         `json:"status" jsonschema:"Lifecycle status (new, claimed, in_progress, resolved, failed, denied, archived)"`
-	Priority           int            `json:"priority" jsonschema:"Manual priority (higher = sooner); use as the goal priority when converting this task to a goal"`
-	Project            string         `json:"project,omitempty" jsonschema:"Project lane this task belongs to"`
-	Title              string         `json:"title,omitempty"`
-	Description        string         `json:"description,omitempty"`
-	ProposedFix        string         `json:"proposed_fix,omitempty"`
-	ExpectedGreenState string         `json:"expected_green_state,omitempty"`
-	Payload            map[string]any `json:"payload,omitempty" jsonschema:"Structured payload (goal_id, cycle, log excerpts, ...); surfaced on detail/edit responses, omitted from the list"`
-	ClaimedBy          string         `json:"claimed_by,omitempty" jsonschema:"Fingerprint of the machine that claimed the task"`
-	ClaimedAt          string         `json:"claimed_at,omitempty"`
-	CreatedAt          string         `json:"created_at,omitempty"`
-	UpdatedAt          string         `json:"updated_at,omitempty"`
-	DependsOn          []string       `json:"depends_on,omitempty" jsonschema:"Prerequisite task ids this task depends on"`
-	Ready              bool           `json:"ready" jsonschema:"Backend-computed readiness; false means the task is blocked on an unresolved prerequisite"`
+	ID                 string   `json:"id" jsonschema:"Backend task id"`
+	Fingerprint        string   `json:"fingerprint,omitempty" jsonschema:"Fingerprint of the machine that reported the task"`
+	InstanceID         string   `json:"instance_id,omitempty"`
+	InstanceName       string   `json:"instance_name,omitempty"`
+	Category           string   `json:"category,omitempty"`
+	Severity           string   `json:"severity,omitempty"`
+	Status             string   `json:"status" jsonschema:"Lifecycle status (new, claimed, in_progress, resolved, failed, denied, archived)"`
+	Priority           int      `json:"priority" jsonschema:"Manual priority (higher = sooner); use as the goal priority when converting this task to a goal"`
+	Project            string   `json:"project,omitempty" jsonschema:"Project lane this task belongs to"`
+	Title              string   `json:"title,omitempty"`
+	Description        string   `json:"description,omitempty"`
+	ProposedFix        string   `json:"proposed_fix,omitempty"`
+	ExpectedGreenState string   `json:"expected_green_state,omitempty"`
+	Payload            any      `json:"payload,omitempty" jsonschema:"Structured payload (goal_id, cycle, log excerpts, ...); surfaced on detail/edit responses, omitted from the list"`
+	ClaimedBy          string   `json:"claimed_by,omitempty" jsonschema:"Fingerprint of the machine that claimed the task"`
+	ClaimedAt          string   `json:"claimed_at,omitempty"`
+	CreatedAt          string   `json:"created_at,omitempty"`
+	UpdatedAt          string   `json:"updated_at,omitempty"`
+	DependsOn          []string `json:"depends_on,omitempty" jsonschema:"Prerequisite task ids this task depends on"`
+	Ready              bool     `json:"ready" jsonschema:"Backend-computed readiness; false means the task is blocked on an unresolved prerequisite"`
 }
 
 // descriptionPreviewLen caps the description excerpt returned in a list row so a

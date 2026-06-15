@@ -48,11 +48,16 @@ type Task struct {
 	// endpoint and is populated from a GetTask. EditTask reads it back to preserve
 	// the payload across a partial content edit (the backend edit is a full
 	// replacement, so an omitted payload would be reset to empty).
-	Payload   map[string]any `json:"payload,omitempty"`
-	ClaimedBy string         `json:"claimedBy"`
-	ClaimedAt string         `json:"claimedAt"`
-	CreatedAt string         `json:"createdAt"`
-	UpdatedAt string         `json:"updatedAt"`
+	//
+	// Typed `any`, NOT map[string]any: the backend column is a PHP array that
+	// serializes to a JSON object when associative but to a JSON array `[]` when
+	// empty/list-shaped — which is the default for any task filed without a payload.
+	// Decoding `[]` into a map errors, so this must accept either shape.
+	Payload   any    `json:"payload,omitempty"`
+	ClaimedBy string `json:"claimedBy"`
+	ClaimedAt string `json:"claimedAt"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 	// DependsOn is the task's prerequisite ids; the backend emits them as JSON
 	// numbers, so FlexibleID is used (mirroring ID/InstanceID). Ready is the
 	// backend-computed gate: false means the task is blocked on an unresolved
@@ -282,14 +287,14 @@ func (c *Client) UpdateTaskStatus(ctx context.Context, id string, p UpdateStatus
 // omitempty: each field is always sent, even when its value is the empty/zero
 // value, so the wire body is genuinely complete.
 type fullEditContent struct {
-	Category           string         `json:"category"`
-	Severity           string         `json:"severity"`
-	Title              string         `json:"title"`
-	Description        string         `json:"description"`
-	ProposedFix        string         `json:"proposedFix"`
-	ExpectedGreenState string         `json:"expectedGreenState"`
-	Payload            map[string]any `json:"payload"`
-	DependsOn          []string       `json:"dependsOn"`
+	Category           string   `json:"category"`
+	Severity           string   `json:"severity"`
+	Title              string   `json:"title"`
+	Description        string   `json:"description"`
+	ProposedFix        string   `json:"proposedFix"`
+	ExpectedGreenState string   `json:"expectedGreenState"`
+	Payload            any      `json:"payload"`
+	DependsOn          []string `json:"dependsOn"`
 }
 
 // EditTask amends a filed task's content via PATCH /api/v1/tasks/{id}. The backend

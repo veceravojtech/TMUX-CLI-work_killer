@@ -693,7 +693,20 @@ func TestTaskGet_SurfacesPayload(t *testing.T) {
 	out, err := s.TaskGet(context.Background(), TaskGetInput{ID: "21"})
 	require.NoError(t, err)
 	require.NotNil(t, out)
-	require.NotNil(t, out.Task.Payload)
-	assert.Equal(t, "g-1", out.Task.Payload["goal_id"])
-	assert.EqualValues(t, 3, out.Task.Payload["cycle"])
+	pl, ok := out.Task.Payload.(map[string]any)
+	require.True(t, ok, "object payload decodes to a map")
+	assert.Equal(t, "g-1", pl["goal_id"])
+	assert.EqualValues(t, 3, pl["cycle"])
+}
+
+// TestTaskGet_ArrayPayloadDoesNotError guards the regression where Payload was a
+// map[string]any: the backend serializes an empty/unset payload as a JSON array
+// `[]` (its default for tasks filed without one), which must decode without error.
+func TestTaskGet_ArrayPayloadDoesNotError(t *testing.T) {
+	s, _ := withTaskServer(t, http.StatusOK,
+		`{"id":22,"status":"new","payload":[],"events":[]}`)
+	out, err := s.TaskGet(context.Background(), TaskGetInput{ID: "22"})
+	require.NoError(t, err, "an array-shaped payload must not break decoding")
+	require.NotNil(t, out)
+	assert.Equal(t, "22", out.Task.ID)
 }
