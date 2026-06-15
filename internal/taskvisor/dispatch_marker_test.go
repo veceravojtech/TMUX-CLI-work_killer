@@ -1,7 +1,10 @@
 package taskvisor
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/console/tmux-cli/internal/testutil"
@@ -267,6 +270,92 @@ func TestResetGoal_ClearsNextDispatch(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, GoalPending, gf.Goals[0].Status)
 	assert.Empty(t, gf.Goals[0].NextDispatch, "a reset goal starts fresh — no routing marker")
+}
+
+// writeEscalationMd writes a goal-scoped escalation.md mirroring the supervisor's
+// exact schema (see supervisor.xml <escalation-routing>): a "## Escalations"
+// header, an "escalation_count: <N>" line, and one "- need: \"...\"" entry block
+// per need. This is the marker the daemon's pendingPrereqEscalation gate reads.
+func writeEscalationMd(t *testing.T, dir, goalID string, count int, needs []string) {
+	t.Helper()
+	goalDir, err := EnsureGoalDir(dir, goalID)
+	require.NoError(t, err)
+	var b strings.Builder
+	b.WriteString("## Escalations\n")
+	b.WriteString(fmt.Sprintf("escalation_count: %d\n", count))
+	for i, n := range needs {
+		b.WriteString(fmt.Sprintf("- need: %q\n  from: execute-1  cycle: %d\n", n, i+2))
+	}
+	p := filepath.Join(goalDir, "escalation.md")
+	require.NoError(t, os.WriteFile(p, []byte(b.String()), 0o644))
+}
+
+// TestPrereqEscalationRoutesThroughPlan is the task-159 regression: when an
+// UNHANDLED prerequisite-goal escalation is pending (escalation.md count >
+// Goal.EscalationCount with a concrete need), dispatchCandidate must route the
+// next cycle through the full plan/generation path (/tmux:plan) instead of the
+// skip-plan dispatchRetry (/tmux:supervisor) — even with NextDispatch=implementer
+// and an existing tasks.yaml, the EXACT bug state that re-ran the doomed validate
+// until code-exhaustion. Mirrors TestDispatchCandidate_ImplementerMarkerUsesRetry.
+func TestPrereqEscalationRoutesThroughPlan(t *testing.T) {
+	t.Run("unhandled escalation overrides implementer skip-plan route", func(t *testing.T) {
+		d, exec, dir := setupDaemon(t)
+		d.session = testSession
+		d.mode = modeActive
+
+		// Exact bug state: code-defect implementer re-pend that WOULD skip-plan.
+		gf := markerGoalsFile(Goal{
+			ID: "goal-064", Description: "green deliverable, doomed broad validate", Status: GoalPending,
+			CodeRetries: 2, MaxCodeRetries: 3, // code budget consumed
+			NextDispatch:    dispatchImplementer,
+			EscalationCount: 0, // nothing wired yet — the file count is strictly greater
+		})
+		writeGoals(t, dir, gf)
+		_, err := EnsureGoalDir(dir, "goal-064")
+		require.NoError(t, err)
+		writeGoalTasksYaml(t, dir, "goal-064", markerTasksYaml)
+		writeTaskContext(t, dir, ".tmux-cli/research/ctx-marker.md", "# Task ctx")
+		writeEscalationMd(t, dir, "goal-064", 1, []string{"remediate pre-existing baseline debt"})
+
+		sent := markerCaptureMocks(exec, "@99", "supervisor-064")
+		d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
+
+		require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
+
+		require.Len(t, *sent, 1, "dispatch should send exactly one command")
+		assert.Contains(t, (*sent)[0], "/tmux:plan",
+			"a pending prerequisite escalation must force the full-plan path, not skip-plan retry")
+		assert.NotContains(t, (*sent)[0], "/tmux:supervisor",
+			"the doomed code-retry/skip-plan route must be suppressed while an escalation is unhandled")
+	})
+
+	t.Run("no escalation file keeps retry route", func(t *testing.T) {
+		d, exec, dir := setupDaemon(t)
+		d.session = testSession
+		d.mode = modeActive
+
+		// Identical fixture WITHOUT escalation.md — the gate is dormant and the
+		// existing implementer/skip-plan route is byte-identical to today.
+		gf := markerGoalsFile(Goal{
+			ID: "goal-064", Description: "code-defect retry", Status: GoalPending,
+			CodeRetries: 2, MaxCodeRetries: 3,
+			NextDispatch: dispatchImplementer,
+		})
+		writeGoals(t, dir, gf)
+		_, err := EnsureGoalDir(dir, "goal-064")
+		require.NoError(t, err)
+		writeGoalTasksYaml(t, dir, "goal-064", markerTasksYaml)
+		writeTaskContext(t, dir, ".tmux-cli/research/ctx-marker.md", "# Task ctx")
+
+		sent := markerCaptureMocks(exec, "@99", "supervisor-064")
+		d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
+
+		require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
+
+		require.Len(t, *sent, 1)
+		assert.Equal(t, "/tmux:supervisor goal-064", (*sent)[0],
+			"with no escalation.md the implementer marker must keep today's retry route")
+	})
 }
 
 // TestBounceToGeneration_SetsGenerationMarker covers the marker's WRITE side

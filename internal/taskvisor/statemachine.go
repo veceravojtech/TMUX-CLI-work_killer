@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -234,6 +235,18 @@ func (d *Daemon) dispatchCandidate(goal *Goal, goals *GoalsFile) error {
 		d.currentGoal = goal.ID
 	}
 	if goal.NextDispatch == dispatchGeneration {
+		return d.dispatch(goal, goals)
+	}
+	// Task 159: an UNHANDLED prerequisite-goal escalation (escalation.md count >
+	// Goal.EscalationCount with a concrete need) must route the next cycle
+	// through the full plan/generation path so the planner can create/wire the
+	// prerequisite — NOT the skip-plan dispatchRetry that re-runs the identical
+	// doomed validate until code-exhaustion. Gated AFTER dispatchGeneration (both
+	// route to d.dispatch) and BEFORE the implementer/heuristic branches, exactly
+	// where the bug chose dispatchRetry. Additive: dormant when no escalation is
+	// pending, so the existing routing stays byte-identical.
+	if d.pendingPrereqEscalation(goal) {
+		log.Printf("%s: unhandled prerequisite escalation pending — routing through plan (not retry/skip-plan)", goal.ID)
 		return d.dispatch(goal, goals)
 	}
 	if goal.NextDispatch == dispatchImplementer && d.tasksYamlExists(goal.ID) {
@@ -1545,4 +1558,70 @@ func (d *Daemon) persistAfterAdvance(goals *GoalsFile, completedID string) error
 		}
 	}
 	return SaveGoals(d.workDir, goals)
+}
+
+// pendingPrereqEscalation reports whether the goal has an UNHANDLED
+// prerequisite-goal escalation recorded in its goal-scoped escalation.md (task
+// 159). "Unhandled" needs TWO self-clearing signals so the gate cannot livelock:
+// the file's escalation_count (supervisor-written, monotonic) must be STRICTLY
+// GREATER than Goal.EscalationCount (the WIRED counter, incremented by
+// GoalAddPrerequisite when generation honors a need), AND at least one concrete
+// "- need:" entry must remain. Goal.EscalationCount alone is wrong (0 when
+// nothing is wired); the file count alone is insufficient (a stale count with
+// cleared entries must not re-route forever). Fail-safe: a missing or unparseable
+// file is treated as NOT pending (returns false, never panics) so the gate stays
+// dormant and routing is byte-identical to today.
+func (d *Daemon) pendingPrereqEscalation(goal *Goal) bool {
+	path := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "escalation.md")
+	count, needs, err := parseEscalationMd(path)
+	if err != nil {
+		return false
+	}
+	return count > goal.EscalationCount && needs > 0
+}
+
+// parseEscalationMd reads a supervisor-written escalation.md and returns the
+// escalation_count and the number of CONCRETE "- need:" entries. It tolerates the
+// supervisor's exact schema without assuming YAML structure: prefix-match on
+// trimmed lines for "escalation_count:" (last one wins) and "- need:". A need is
+// concrete when its quoted/bare value is non-empty and not a contentless
+// placeholder (none/n/a/tbd/fix it, case-insensitive). Any I/O or parse failure
+// returns a non-nil err with zero counts so the caller treats it as not-pending.
+func parseEscalationMd(path string) (count int, needs int, err error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "escalation_count:"):
+			v := strings.TrimSpace(strings.TrimPrefix(trimmed, "escalation_count:"))
+			if n, convErr := strconv.Atoi(v); convErr == nil {
+				count = n
+			}
+		case strings.HasPrefix(trimmed, "- need:"):
+			v := strings.TrimSpace(strings.TrimPrefix(trimmed, "- need:"))
+			v = strings.Trim(v, `"'`)
+			v = strings.TrimSpace(v)
+			if isConcreteNeed(v) {
+				needs++
+			}
+		}
+	}
+	return count, needs, nil
+}
+
+// isConcreteNeed reports whether an escalation need= value names a buildable
+// prerequisite rather than a contentless placeholder. Mirrors the supervisor's
+// own contentless-need rejection (supervisor.xml step 5 ESCALATE branch).
+func isConcreteNeed(v string) bool {
+	if v == "" {
+		return false
+	}
+	switch strings.ToLower(v) {
+	case "none", "n/a", "na", "tbd", "fix it":
+		return false
+	}
+	return true
 }
