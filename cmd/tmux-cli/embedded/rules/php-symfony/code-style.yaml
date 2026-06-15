@@ -1,0 +1,37 @@
+# Pack: php-symfony — code-style rules (category: code-style).
+# Split per-category from the former code-rules.yaml monolith. See ../SCHEMA.md.
+#
+# The ECS/code-style quality gate: a configured, available tool (ecs.php +
+# composer p2:cs-check + vendor/bin/ecs) that goal validate-generation must
+# surface alongside phpstan (types.yaml) and mono-schema (scaffold.yaml) — it was
+# previously undeclared, so `rules resolve` never emitted it into goal validates.
+
+- id: PHP-STYLE-002
+  category: code-style
+  scope: generic
+  severity: must
+  title: "PHP changes are ECS-clean — code style passes the project's Easy Coding Standard"
+  rule: >
+    Every changed PHP file conforms to the project's Easy Coding Standard
+    ruleset (ecs.php). Whenever PHP is added or changed, the ECS gate runs and
+    must exit 0 before the change is committed.
+  why: >
+    ECS is a configured, available quality gate; leaving it undeclared lets
+    code-style violations pass goal validation and reach the trunk, caught only
+    by a post-hoc manual be-checks run (backend task 183).
+  applies_to:
+    - "{src}/**/*.php"
+  detect:
+    - "a changed .php file that ECS would reformat (vendor/bin/ecs check reports a diff)"
+  fix: >
+    Run vendor/bin/ecs check --fix (composer p2:cs-fix) and commit the formatted
+    result until vendor/bin/ecs check exits 0.
+  autofix: safe
+  acceptance:
+    - "GIVEN a changed PHP file THEN vendor/bin/ecs check exits 0"
+  validate:
+    - "vendor/bin/ecs check"
+    - "composer p2:cs-check"
+    - "review: the diff is ECS-clean — no code-style violations remain on the changed PHP paths"
+  validate_kind: mixed
+  phase: cross-cutting

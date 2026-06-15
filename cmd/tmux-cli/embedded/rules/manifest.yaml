@@ -105,3 +105,4 @@ packs:
       - i18n.yaml
       - types.yaml
       - scaffold.yaml
+      - code-style.yaml
