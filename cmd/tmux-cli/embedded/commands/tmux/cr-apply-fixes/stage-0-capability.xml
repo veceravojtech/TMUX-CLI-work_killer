@@ -30,12 +30,22 @@
     <rule critical="true">NEVER hardcode a source root, layer name, root namespace, quality-gate command, port, runner name, lang, or framework. Every such value is either resolved from the loaded packs/manifests above or is an explicitly-flagged greenfield default. No project name appears anywhere.</rule>
   </substep>
 
+  <substep n="0.3a" title="Strict execution-environment resolution — so every emitted fix-goal's validate runs where the toolchain lives">
+    <action>Resolve the EXECUTION ENVIRONMENT the daemon uses to run each fix-goal's `validate.sh`. The daemon resolves it DETERMINISTICALLY from `docs/architecture/test-environment.md` (its ExecRuntime source: a `Run Target:` line + the published ports &#8594; the app / node container services) and threads it into EVERY goal.md, wrapping PHP/Node toolchain commands into their container when RUN_TARGET=docker (per CMD-CONV); host/file commands (grep, sh, find, curl-against-a-published-port) stay bare. Read that file and extract RUN_TARGET (docker | local), the APP service + any NODE service, and the published host ports.</action>
+    <action>INDEPENDENTLY detect containerization — do NOT trust a missing/stale env file: a `docker-compose.yml` / `compose.yaml` is present, AND/OR the host LACKS the resolved toolchain (`command -v composer` / the resolved runner / `node` returns nothing while the tool lives in a compose service). Either signal means the toolchain runs IN A CONTAINER, not on the host.</action>
+    <check condition="the repo is containerized (compose present or host-tool-absent) BUT docs/architecture/test-environment.md is ABSENT, declares local, or carries no Run Target">
+      <action>HARD STOP — do NOT proceed to emit fix-goals. Print a named, actionable reason: "Containerized repo but docs/architecture/test-environment.md is missing/incomplete &#8212; the daemon will resolve RUN_TARGET=local and run each goal's validate.sh VERBATIM ON THE HOST, where bare `composer` / `vendor/bin/*` exit-127, red-failing every fix-goal before any real check runs. Create/fix docs/architecture/test-environment.md with `Run Target: docker` + the published ports before emitting goals." Never ship host-bare validates into a containerized repo.</action>
+    </check>
+    <rule critical="true">ENVIRONMENT IS STRICTLY PROVIDED TO EVERY GOAL: the resolved EXEC ENVIRONMENT (RUN_TARGET + container services + published ports) is emitted in the Stage-0 context block and is the env the daemon threads into EVERY emitted fix-goal. Validates stay BARE (CMD-CONV) ONLY BECAUSE this stage GUARANTEED the env is resolved; NEVER emit goals when the env is unresolved in a containerized repo &#8212; host-bare validates exit-127 regardless of code correctness.</rule>
+  </substep>
+
   <substep n="0.4" title="Emit resolved capability + topology context block">
     <action>Compose ONE structured context block carrying everything the later stages consume:</action>
     <emit>
       • SCOPE: the raw $ARGUMENTS scope token (empty &#8594; working-tree default) for Stage 1 to resolve into `tmux-cli rules check` flags.
       • SIGNALS: lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows — each with its source (detected / greenfield-default) and rationale for any filled-in unknown.
       • TOPOLOGY: source roots, layer names, root namespace, and the FULL quality-gate command list (static-analysis, lint/style, tests, plus any architecture/boundary, manifest/schema, and db-schema gates the packs prescribe) — each tagged detected-from-packs vs greenfield-default.
+      • EXEC ENVIRONMENT: RUN_TARGET (docker | local) + the app / node container services + the published host ports (0.3a) — the env the daemon threads into EVERY fix-goal so its validate runs where the toolchain lives (validates stay bare; the daemon wraps toolchain commands into their container in docker mode).
       • CODE RULES: the resolved code-rule file paths (the catalogue Stage 1 checks against), or "none".
       • SETTINGS: relevant .tmux-cli/setting.yaml values incl. `cr.auto_approve` / `feature.auto_approve`, or "absent".
     </emit>
