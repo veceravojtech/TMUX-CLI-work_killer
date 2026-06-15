@@ -1,5 +1,5 @@
 <stage n="2" title="Architecture recommendation" interactive="true">
-  <objective>The SOLE interactive stage of /tmux:feature. Using the Stage-0 resolved context block (SIGNALS / TOPOLOGY / CODE-RULES) and the Stage-1 dossier (incl. its REQUIRED EXEMPLARS / PRIOR ART + GUIDANCE DOCS sections), propose the feature's architecture as 1&#8211;3 options phrased BY DDD ROLE using the resolved layer/namespace tokens (never project literals), each MODELED ON the nearest-analogue exemplar (PRIMARY: preserve its existing code style/naming even when imperfect) and grounded in the guidance docs that dictate the build location, record the chosen option as an ADR built from `templates/_base/adr.md`, and BLOCK autonomous Stages 3&#8211;5 until the user approves &#8212; honoring an explicit `feature.auto_approve` flag for unattended runs. This stage ALSO resolves TESTS_MODE (whether tests are a deliverable for this run: `required` default | `off`) from `feature.tests` plus an optional approval-reply override, and carries it forward in the approved-decision block. COMPOSER, not engine: this stage recommends and records a decision; it never re-implements plan/supervisor/investigate logic.</objective>
+  <objective>The SOLE interactive stage of /tmux:feature. Using the Stage-0 resolved context block (SIGNALS / TOPOLOGY / CODE-RULES) and the Stage-1 dossier (incl. its REQUIRED EXEMPLARS / PRIOR ART + GUIDANCE DOCS sections), propose the feature's architecture as 1&#8211;3 options phrased BY DDD ROLE using the resolved layer/namespace tokens (never project literals), each MODELED ON the nearest-analogue exemplar (PRIMARY: preserve its existing code style/naming even when imperfect) and grounded in the guidance docs that dictate the build location, derive a CONCRETE NAMING MANIFEST (per-artifact names led by the exemplar's naming, keeping the resolved conventions) and present it at the gate so the user can CONFIRM or correct the names before any code is written, record the chosen option as an ADR built from `templates/_base/adr.md`, and BLOCK autonomous Stages 3&#8211;5 until the user approves &#8212; honoring an explicit `feature.auto_approve` flag for unattended runs. This stage ALSO resolves TESTS_MODE (whether tests are a deliverable for this run: `required` default | `off`) from `feature.tests` plus an optional approval-reply override, and carries it forward in the approved-decision block. COMPOSER, not engine: this stage recommends and records a decision; it never re-implements plan/supervisor/investigate logic.</objective>
 
   <substep n="2.1" title="Ingest resolved context">
     <action>Read the Stage-0 emitted context block VERBATIM &#8212; do NOT re-probe the filesystem and do NOT re-run `tmux-cli rules resolve`; every signal/token is already resolved upstream.</action>
@@ -35,9 +35,16 @@
     </check>
   </substep>
 
-  <substep n="2.3" title="Present options + approval gate">
+  <substep n="2.2a" title="Derive the Proposed Naming Manifest (concrete names, LED by existing code)">
+    <action>For the RECOMMENDED option, derive a CONCRETE per-artifact NAMING MANIFEST — one row per NEW artifact the feature introduces (aggregate / command / handler / query-service / domain-event / controller-action / contract / persistence-adapter / [test]). Each row is {DDD role, proposed concrete name, the exemplar counterpart it mirrors, target file path per the GUIDANCE DOCS}.</action>
+    <action critical="true">DERIVE NAMES FROM THE EXISTING CODE: apply the EXEMPLAR's observed naming pattern (the `&lt;role&gt; → &lt;name pattern&gt;` carried in the dossier) to THIS feature's roles — the existing sibling LEADS the naming (e.g. an existing `ConfirmBookingHandler` / `ConfirmBookingCommand` / `BookingConfirmed` leads a new `CancelBookingHandler` / `CancelBookingCommand` / `BookingCancelled`). KEEP CONVENTIONS: every derived name ALSO satisfies the resolved naming conventions / code-rule packs. PRIMARY: preserve the exemplar's existing style even when imperfect for discretionary choices; a name that would VIOLATE a resolved naming-convention rule is the ONE place you diverge to the rule. PORTABILITY: every name is derived from the exemplar + resolved tokens — NEVER a hardcoded project literal, and emit no project name.</action>
+    <action>When the dossier's EXEMPLARS = "none / net-new": derive the manifest from the resolved naming-convention packs alone (be creative + KEEP the conventions) and FLAG each row net-new (no exemplar counterpart).</action>
+    <action>Include the `[test]` artifact row(s) ONLY when TESTS_MODE=required; under TESTS_MODE=off omit the test rows from the manifest (no test deliverable to name).</action>
+  </substep>
+
+  <substep n="2.3" title="Present options + naming manifest + approval gate">
     <check condition="feature.auto_approve is true (resolved in 2.1)">
-      <action>UNATTENDED path: auto-select the RECOMMENDED option, log the auto-selection + rationale, and SKIP the wait &#8212; proceed directly to substep 2.4 to write the ADR with Status=Accepted. TESTS_MODE stays the 2.1-resolved setting.yaml value (there is no reply, so no `--no-tests` / `--tests` override under auto_approve). The ADR is still mandatory under auto_approve.</action>
+      <action>UNATTENDED path: auto-select the RECOMMENDED option, log the auto-selection + rationale, and SKIP the wait &#8212; proceed directly to substep 2.4 to write the ADR with Status=Accepted. TESTS_MODE stays the 2.1-resolved setting.yaml value (there is no reply, so no `--no-tests` / `--tests` override under auto_approve). The Naming Manifest from 2.2a is auto-accepted AS PROPOSED (the exemplar-led names; no `--rename` override under auto_approve) and still frozen into the ADR. The ADR is still mandatory under auto_approve.</action>
     </check>
     <check condition="feature.auto_approve is false (default)">
       <action>Print the options + trade-offs and the reply contract using this presentation template, then idle for the user's reply:</action>
@@ -57,19 +64,26 @@ Option 2: &lt;DDD-role phrasing; mirrors &lt;exemplar&gt;&gt;
 Option 3: &lt;DDD-role phrasing; mirrors &lt;exemplar&gt;&gt;
   Trade-offs: &lt;one line&gt;
 
-Reply to approve and unblock the autonomous Stages 3&#8211;5:
-  approve                  &#8594; accept the RECOMMENDED option (Option 1), tests = default
-  approve &lt;N&gt;              &#8594; accept Option N, tests = default
-  approve [N] --no-tests   &#8594; accept + run WITHOUT a test deliverable (TESTS_MODE=off) for this feature
-  approve [N] --tests      &#8594; accept + force the test-first deliverable (TESTS_MODE=required) for this feature
-  &lt;change request&gt;         &#8594; revise the options and re-present (stays blocked)
+Proposed names (Option 1 — LED by &lt;exemplar&gt;; keeps conventions):
+  &lt;role&gt;              &#8594; &lt;ProposedName&gt;        (cf. &lt;exemplar counterpart&gt;)   @ &lt;target file path&gt;
+  &lt;role&gt;              &#8594; &lt;ProposedName&gt;        (cf. &lt;exemplar counterpart&gt;)   @ &lt;target file path&gt;
+  ... one row per NEW artifact ([test] rows only when tests = required) ...
+
+Reply to approve and unblock the autonomous Stages 3&#8211;5 (suffixes combine, in any order):
+  approve                       &#8594; accept the RECOMMENDED option (Option 1) + the proposed names, tests = default
+  approve &lt;N&gt;                   &#8594; accept Option N (re-derives + re-presents ITS proposed names to confirm; stays blocked)
+  approve [N] --rename Old=New[,Old2=New2]  &#8594; accept with the listed name overrides applied (checked vs the resolved conventions)
+  approve [N] --no-tests        &#8594; accept + run WITHOUT a test deliverable (TESTS_MODE=off) for this feature
+  approve [N] --tests           &#8594; accept + force the test-first deliverable (TESTS_MODE=required) for this feature
+  &lt;change request&gt;              &#8594; revise the options and/or names and re-present (stays blocked)
       </template>
       <action>Wait for the user's approval message. Do NOTHING until it arrives &#8212; idle is the trigger.</action>
-      <check condition="reply is 'approve' or 'approve &lt;N&gt;' (optionally with a trailing --no-tests / --tests suffix)">
-        <action>Record the chosen option (RECOMMENDED on bare 'approve'; Option N on 'approve N'). Resolve TESTS_MODE for this run from the suffix: a `--no-tests` suffix &#8594; `off`; a `--tests` suffix &#8594; `required`; NO suffix &#8594; the 2.1 setting.yaml default. Proceed to substep 2.4.</action>
+      <check condition="reply is 'approve' or 'approve &lt;N&gt;' (optionally with trailing --rename Old=New[,...] and/or --no-tests / --tests suffixes, in any order)">
+        <action>Record the chosen option (RECOMMENDED on bare 'approve'; Option N on 'approve N'). Resolve TESTS_MODE for this run from the suffix: a `--no-tests` suffix &#8594; `off`; a `--tests` suffix &#8594; `required`; NO suffix &#8594; the 2.1 setting.yaml default.</action>
+        <action>NAMING MANIFEST resolution: if the chosen option N differs from the RECOMMENDED option whose manifest was shown, RE-DERIVE the Naming Manifest for option N (substep 2.2a), RE-PRESENT it, and STAY BLOCKED until an approve for the shown manifest arrives — NEVER build with un-shown names. Apply any `--rename Old=New[,Old2=New2]` overrides to the manifest; for EACH override, check the new name against the resolved naming-convention / code-rule packs and FLAG (do not silently drop) a divergence — the user's explicit name WINS, but warn that the Stage-4/5 code-rule gate still binds. If TESTS_MODE resolved to `off`, drop the `[test]` rows from the manifest. The resulting manifest is the FINAL APPROVED naming. Proceed to substep 2.4.</action>
       </check>
-      <check condition="reply is a change request (not an approval)">
-        <action>Revise the options per the feedback, re-present via the template, and STAY BLOCKED. Loop until an approval arrives &#8212; never auto-advance.</action>
+      <check condition="reply is a change request (not an approval) — about the options AND/OR the proposed names">
+        <action>Revise the options and/or the Naming Manifest per the feedback (re-run 2.2a if names changed), re-present via the template, and STAY BLOCKED. Loop until an approval arrives &#8212; never auto-advance.</action>
       </check>
       <check condition="reply is unrecognized">
         <action>Re-print the option list and idle again.</action>
@@ -85,11 +99,11 @@ Reply to approve and unblock the autonomous Stages 3&#8211;5:
       &#8226; `{{status}}` &#8212; Accepted (the option is now approved, or auto-selected under auto_approve);
       &#8226; `{{date}}` &#8212; today's date;
       &#8226; `{{bc_name}}` &#8212; the resolved bounded-context / module name from the TOPOLOGY tokens;
-      &#8226; Context / Decision Drivers / Decision &#8212; the dossier facts and resolved rules that drove the choice, INCLUDING the cited exemplar (the existing similar feature the architecture is modeled on, with file refs), the STYLE decision ("preserve existing style even if imperfect; resolved gates still bind"), and the GUIDANCE DOCS that dictated the build location;
+      &#8226; Context / Decision Drivers / Decision &#8212; the dossier facts and resolved rules that drove the choice, INCLUDING the cited exemplar (the existing similar feature the architecture is modeled on, with file refs), the STYLE decision ("preserve existing style even if imperfect; resolved gates still bind"), the GUIDANCE DOCS that dictated the build location, and the FINAL APPROVED NAMING MANIFEST (the confirmed concrete per-artifact names + their exemplar counterparts + target paths) as a table under Decision &#8212; this is the frozen naming Stages 3&#8211;4 use verbatim;
       &#8226; Consequences (Positive / Negative / Neutral) &#8212; the chosen option's trade-offs;
       &#8226; Alternatives Considered &#8212; the rejected options with their reason-rejected (or "none viable" for the single-option case).</action>
     <action>Write the ADR under `docs/architecture/` (the repo's existing ADR home) as `adr-&lt;number&gt;-&lt;slug&gt;.md`, unless the resolved convention pack declares a different ADR location &#8212; in which case honor the pack's location. Create `docs/architecture/` if it does not exist.</action>
-    <action>Emit the approved-decision context block that Stage 3 consumes: the chosen option (by DDD role), the ADR path, the resolved tokens it was grounded in, the CITED EXEMPLAR(s) + naming pattern + the STYLE MANDATE (preserve existing even if imperfect), the GUIDANCE DOCS + the build location they dictate, AND `TESTS_MODE=&lt;required|off&gt;` (the resolved test mode for this run). Hand it to Stage 3. Record the chosen TESTS_MODE in the ADR as a one-line note under Decision ("Test strategy: tests required (test-first deliverable) | tests off (eval-only, non-deliverable &#8212; all non-test gates still enforced)") so the test decision is auditable alongside the architecture.</action>
+    <action>Emit the approved-decision context block that Stage 3 consumes: the chosen option (by DDD role), the ADR path, the resolved tokens it was grounded in, the CITED EXEMPLAR(s) + naming pattern + the STYLE MANDATE (preserve existing even if imperfect), the GUIDANCE DOCS + the build location they dictate, the FINAL APPROVED NAMING MANIFEST (the frozen concrete per-artifact names Stages 3&#8211;4 use verbatim), AND `TESTS_MODE=&lt;required|off&gt;` (the resolved test mode for this run). Hand it to Stage 3. Record the chosen TESTS_MODE in the ADR as a one-line note under Decision ("Test strategy: tests required (test-first deliverable) | tests off (eval-only, non-deliverable &#8212; all non-test gates still enforced)") so the test decision is auditable alongside the architecture.</action>
     <rule critical="true">Stages 3&#8211;5 stay BLOCKED until this substep completes &#8212; the approved ADR is the gate. Under interactive runs the gate opens only on the user's approval; under `auto_approve` it opens on the auto-selected RECOMMENDED option. Either way the ADR is written, so the decision is auditable.</rule>
   </substep>
 
@@ -111,6 +125,7 @@ Reply to approve and unblock the autonomous Stages 3&#8211;5:
       &#8226; auto_approve defaults to FALSE when setting.yaml or the key is absent.
       &#8226; TESTS_MODE is resolved HERE: `feature.tests` (default `required`, `off` to opt out) plus an optional `--no-tests` / `--tests` approval-reply override; emit it in the approved-decision block and record it in the ADR. `off` drops only the test deliverable &#8212; all non-test gates still apply downstream.
       &#8226; EVERY option is MODELED ON the cited exemplar (the nearest similar existing feature) and grounded in the GUIDANCE DOCS that dictate the build location; the presentation + ADR SHOW that lineage. PRIMARY: preserve the exemplar's existing code style/naming even when imperfect (resolved gates still bind). No exemplar &#8594; take the resolved conventions, best-effort, flagged net-new.
+      &#8226; PROPOSED NAMING MANIFEST (2.2a) is derived LED by the exemplar's naming (keeping the resolved conventions) and PRESENTED at the gate; the user confirms or overrides (`approve --rename Old=New`, checked vs the conventions) BEFORE any code is written; the FINAL approved names FREEZE into the ADR + the emitted block for Stages 3&#8211;4 to use verbatim. Under auto_approve the proposed names are auto-accepted. `[test]` rows only when TESTS_MODE=required.
     </critical-rules>
   </llm>
 </stage>
