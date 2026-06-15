@@ -546,3 +546,33 @@
     - "review: changed test files sit at the tests/ path mirroring the source path of the class they cover"
   validate_kind: review
   phase: final
+
+- id: PHP-CPLX-001
+  category: complexity
+  scope: generic
+  severity: should
+  title: "Keep methods shallow and short — guard clauses over nested pyramids, extract small helpers"
+  rule: >
+    Methods stay shallow and short: prefer guard-clause early returns over nested
+    if/else pyramids, and extract a well-named private method when a method grows
+    past one cohesive unit of work or nests beyond ~3 levels.
+  why: >
+    Deep nesting and long methods hide branches and breed untested paths; small,
+    well-named units are individually testable and reviewable.
+  applies_to:
+    - "{src}/**/*.php"
+  detect:
+    - "methods nesting if/foreach/while beyond ~3 levels, or long methods spanning several cohesive units of work"
+  fix: >
+    Replace nested if/else pyramids with guard-clause early returns and extract a
+    well-named private method per cohesive unit of work.
+  autofix: none
+  acceptance:
+    - "GIVEN a changed method THEN it nests no deeper than ~3 levels and reads as one cohesive unit, with deeper or longer logic extracted into well-named private helpers"
+  validate:
+    - "review: changed methods avoid >3 levels of nesting; long methods are decomposed into well-named private helpers; guard clauses replace nested if/else pyramids"
+  validate_kind: review
+  phase: cross-cutting
+  examples:
+    bad: 'if ($a) { if ($b) { if ($c) { if ($d) { doWork(); } } } }'
+    good: 'if (!$a) { return; } if (!$b) { return; } if (!$c) { return; } if (!$d) { return; } doWork();'
