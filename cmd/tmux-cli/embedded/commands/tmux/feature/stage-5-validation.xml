@@ -6,6 +6,7 @@
     <action>From the Stage 0 capability block: TOPOLOGY — the RESOLVED validation commands (static analysis / unit / deptrac / e2e) and test roots. These are the commands /tmux:investigate runs; never substitute a literal.</action>
     <action>From the Stage 3 feature spec + Stage 3b Test Plan: the acceptance criteria and the per-unit {Layer, Driver, Test path} rows — the observable behaviors validation must cover.</action>
     <action>From the Stage 4 handoff: the emitted goal ids (the goal DAG) and the resolved validation commands per goal. These name WHAT is being validated and which goal.md `## Investigation Config` /tmux:investigate consumes.</action>
+    <action>From the Stage 2 approved-decision block: TESTS_MODE (`required` | `off`). When `required`, the per-goal configs carry the test-layer validators (unit / integration / e2e). When `off`, there is NO test-layer validator — each goal's config carries the static-analysis + lint/style gates, the conditional manifest/schema validators, the Stage-1 code-rule gate (machine validate_cmd + MUST review-kind convention-audit), AND the no-test-artifact guard. Validate exactly the commands Stage 4 emitted — never re-add a test gate Stage 4 deliberately omitted under `off`.</action>
     <check condition="the Stage 4 handoff names zero emitted goals">
       <action>There is nothing to validate. Print a named, actionable reason ("Stage 5: Stage 4 emitted no goals — nothing to validate; re-run Stage 4.") and STOP gracefully (never crash, never fabricate a verdict).</action>
     </check>
@@ -30,6 +31,7 @@
     <rule>PORTABILITY: the validation commands /tmux:investigate runs are RESOLVED from the Stage 0 TOPOLOGY (static analysis / unit / deptrac / e2e) — never a hardcoded runner name, port, project name, or `src/` skeleton literal (feature.xml:25).</rule>
     <rule>READ-ONLY: validation modifies no project files — /tmux:investigate's only writes are corrections/cycle-N.md and the goal-validation-done signal; this stage only reads and surfaces verdicts.</rule>
     <rule>AUTONOMOUS STAGE: resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user (feature.xml is interactive ONLY at Stage 2).</rule>
+    <rule>TESTS_MODE=off: validate exactly what Stage 4 emitted — the static-analysis + lint/style gates, conditional schema validators, the Stage-1 code-rule gate (incl. the MUST review-kind convention-audit), and the no-test-artifact guard. There is NO test-layer investigator; never re-introduce a test gate Stage 4 omitted. Rule enforcement is identical to `required` mode — only the test deliverable is absent.</rule>
     <rule>SURFACE, DON'T RE-RUN: aggregate the per-goal /tmux:investigate verdicts into one feature-level pass/fail and surface it; on fail, relay the failing commands + recorded corrections and let the daemon's retry/bounce path own re-implementation — never loop here.</rule>
     <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
   </execution-rules>
@@ -40,6 +42,7 @@
       • PORTABILITY IS MANDATORY — the validation commands are RESOLVED from Stage 0 TOPOLOGY (static analysis / unit / deptrac / e2e); never a hardcoded runner name, port, project name, or `src/` skeleton literal.
       • READ-ONLY validation — no project file is modified; /tmux:investigate's only writes are corrections/cycle-N.md and goal-validation-done; this stage reads and surfaces.
       • SURFACE the aggregated verdict — feature passes only when every emitted goal's /tmux:investigate verdict is pass; on fail relay failing commands + corrections and let the daemon's retry/bounce path own re-implementation.
+      • TESTS_MODE=off — validate the static-analysis + lint/style gates, schema validators, the Stage-1 code-rule gate (incl. MUST review-kind convention-audit), and the no-test-artifact guard; NO test-layer investigator. Rule enforcement is identical to `required`; only the test deliverable is absent.
       • AUTONOMOUS stage — resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user.
     </critical-rules>
   </llm>

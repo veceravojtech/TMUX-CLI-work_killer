@@ -1,12 +1,14 @@
 <stage n="2" title="Architecture recommendation" interactive="true">
-  <objective>The SOLE interactive stage of /tmux:feature. Using the Stage-0 resolved context block (SIGNALS / TOPOLOGY / CODE-RULES) and the Stage-1 dossier, propose the feature's architecture as 1&#8211;3 options phrased BY DDD ROLE using the resolved layer/namespace tokens (never project literals), record the chosen option as an ADR built from `templates/_base/adr.md`, and BLOCK autonomous Stages 3&#8211;5 until the user approves &#8212; honoring an explicit `feature.auto_approve` flag for unattended runs. COMPOSER, not engine: this stage recommends and records a decision; it never re-implements plan/supervisor/investigate logic.</objective>
+  <objective>The SOLE interactive stage of /tmux:feature. Using the Stage-0 resolved context block (SIGNALS / TOPOLOGY / CODE-RULES) and the Stage-1 dossier (incl. its REQUIRED EXEMPLARS / PRIOR ART + GUIDANCE DOCS sections), propose the feature's architecture as 1&#8211;3 options phrased BY DDD ROLE using the resolved layer/namespace tokens (never project literals), each MODELED ON the nearest-analogue exemplar (PRIMARY: preserve its existing code style/naming even when imperfect) and grounded in the guidance docs that dictate the build location, record the chosen option as an ADR built from `templates/_base/adr.md`, and BLOCK autonomous Stages 3&#8211;5 until the user approves &#8212; honoring an explicit `feature.auto_approve` flag for unattended runs. This stage ALSO resolves TESTS_MODE (whether tests are a deliverable for this run: `required` default | `off`) from `feature.tests` plus an optional approval-reply override, and carries it forward in the approved-decision block. COMPOSER, not engine: this stage recommends and records a decision; it never re-implements plan/supervisor/investigate logic.</objective>
 
   <substep n="2.1" title="Ingest resolved context">
     <action>Read the Stage-0 emitted context block VERBATIM &#8212; do NOT re-probe the filesystem and do NOT re-run `tmux-cli rules resolve`; every signal/token is already resolved upstream.</action>
     <action>Extract TOPOLOGY: SOURCE ROOTS, LAYER NAMES, ROOT NAMESPACE, and the QUALITY-GATE COMMANDS &#8212; each tagged detected-from-packs vs greenfield-default. These resolved tokens are the ONLY vocabulary the options may use for layers/namespaces.</action>
     <action>Extract the CODE RULES pointers (resolved code-rule / convention file paths) and READ every referenced pack file &#8212; these are the grounding source for the DDD roles the options are phrased in (e.g. aggregate, command handler, query service, domain repository, domain event, shared-kernel contract, app entry-point role).</action>
     <action>Read the Stage-1 dossier: the existing code, contracts, and seams the feature touches.</action>
+    <action>Ingest the Stage-1 dossier's REQUIRED sections: `EXEMPLARS / PRIOR ART` — the 1–2 nearest-analogue existing features (architecture skeleton + naming pattern + the STYLE MANDATE) — and `GUIDANCE DOCS` — the related AGENTS.md/CLAUDE.md/README/docs/architecture/ADR/nearby `*.md` and their where/how-to-build excerpts. These are the PRIMARY grounding for the options' structure, naming, and build location. When EXEMPLARS = "none / net-new", fall back to the resolved convention/code-rule packs (be creative + take the rules, best-effort) and FLAG the option as net-new.</action>
     <action>Read `.tmux-cli/setting.yaml` from the project root (model the read on Stage 0 / task-list.xml step 0). Resolve `feature.auto_approve` &#8212; when the file or the key is ABSENT, treat it as false (the SOLE interactive stage stays interactive unless explicitly told otherwise). Modeled on plan.xml's AUTO_APPROVE.</action>
+    <action>From the SAME `.tmux-cli/setting.yaml`, resolve `feature.tests` into the run's DEFAULT TESTS_MODE: `off` (synonyms `none` / `false` &#8594; `off`); anything else &#8212; `required`, `true`, absent file, absent key, or unknown &#8594; `required` (the conservative default keeps the test-first deliverable). This is only the DEFAULT; the approval reply (2.3) may override it for this run. Under `auto_approve` there is no reply, so this setting.yaml value stands.</action>
     <rule critical="true">NEVER read or reference the stale monolithic `ddd-conventions.md` &#8212; it is a gitignored legacy artifact. Ground every role in the resolved split convention/code-rule packs that arrived via the Stage-0 CODE-RULES pointers.</rule>
     <check condition="the Stage-0 context block or Stage-1 dossier is absent">
       <action>This stage runs strictly downstream of Stages 0&#8211;1 &#8212; if their emitted context is missing, print "Stage 2 cannot run: Stage 0/1 context block missing &#8212; run /tmux:feature from Stage 0" and STOP gracefully (do NOT improvise the upstream stages).</action>
@@ -21,7 +23,8 @@
       &#8226; the cross-context contract shape (the shared-kernel contract role), when contexts interact;
       &#8226; domain events emitted (the domain-event / EventRecord role), if any;
       &#8226; the persistence seam (the infrastructure / framework-adapter role under the resolved namespace).</action>
-    <action>Give each option a one-line TRADE-OFFS statement. Tag EXACTLY ONE option RECOMMENDED with a one-line rationale tied to the resolved rules and the dossier.</action>
+    <action critical="true">GROUND EVERY OPTION IN PRIOR ART: each option must CITE the nearest-analogue exemplar(s) from the dossier and phrase the new feature's structure + CONCRETE NAMING as "mirrors `&lt;exemplar&gt;`: `&lt;role&gt;` → `&lt;observed name pattern&gt;`". PRIMARY: preserve the exemplar's existing code style/naming/structure even when imperfect — do NOT "improve", normalize, or re-style it; the resolved rule/lint gates still bind, so an exemplar quirk that would VIOLATE a gate is the ONE place you diverge (follow the rule there). Each option must also state the build LOCATION it places the feature in, justified by the GUIDANCE DOCS (cite the AGENTS.md/CLAUDE.md/ADR line that dictates it). When the dossier's EXEMPLARS = "none / net-new", say so in the option and ground it in the resolved conventions (be creative + take the rules), flagged net-new.</action>
+    <action>Give each option a one-line TRADE-OFFS statement. Tag EXACTLY ONE option RECOMMENDED with a one-line rationale tied to the resolved rules, the cited exemplar, and the dossier.</action>
     <action>Resolve every architectural fork to the highest-quality in-scope option and record the one-line rationale &#8212; never expand the feature's scope to fit an option.</action>
     <rule critical="true">PORTABILITY: phrase every option BY DDD ROLE using the resolved LAYER NAMES / ROOT NAMESPACE tokens. Emit NO project name and NO project literals; never hardcode a php-symfony (or any stack's) literal, and never reference a literal `php-symfony/code-rules.yaml` &#8212; the resolved code-rules pack arrives via the Stage-0 CODE-RULES pointers.</rule>
     <check condition="the Stage-1 dossier admits exactly one sane architecture">
@@ -34,7 +37,7 @@
 
   <substep n="2.3" title="Present options + approval gate">
     <check condition="feature.auto_approve is true (resolved in 2.1)">
-      <action>UNATTENDED path: auto-select the RECOMMENDED option, log the auto-selection + rationale, and SKIP the wait &#8212; proceed directly to substep 2.4 to write the ADR with Status=Accepted. The ADR is still mandatory under auto_approve.</action>
+      <action>UNATTENDED path: auto-select the RECOMMENDED option, log the auto-selection + rationale, and SKIP the wait &#8212; proceed directly to substep 2.4 to write the ADR with Status=Accepted. TESTS_MODE stays the 2.1-resolved setting.yaml value (there is no reply, so no `--no-tests` / `--tests` override under auto_approve). The ADR is still mandatory under auto_approve.</action>
     </check>
     <check condition="feature.auto_approve is false (default)">
       <action>Print the options + trade-offs and the reply contract using this presentation template, then idle for the user's reply:</action>
@@ -43,22 +46,27 @@
 
 Feature: &lt;feature description from Stage 0&gt;
 Resolved layers: &lt;resolved LAYER NAMES&gt;   Root namespace: &lt;resolved ROOT NAMESPACE&gt;
+Modeled on (prior art): &lt;exemplar feature(s) + file refs, or "none — net-new"&gt;   Style: preserve existing (mirror exemplar even if imperfect)
+Guidance docs: &lt;AGENTS.md/CLAUDE.md/ADR/README paths that dictate build location&gt;
+Tests: &lt;TESTS_MODE default from feature.tests: required | off&gt;   (append --no-tests or --tests to any approve to override for THIS run)
 
-Option 1 (RECOMMENDED): &lt;DDD-role phrasing&gt;
+Option 1 (RECOMMENDED): &lt;DDD-role phrasing; mirrors &lt;exemplar&gt; — &lt;role→name pattern&gt;; build at &lt;location per guidance&gt;&gt;
   Trade-offs: &lt;one line&gt;
-Option 2: &lt;DDD-role phrasing&gt;
+Option 2: &lt;DDD-role phrasing; mirrors &lt;exemplar&gt;&gt;
   Trade-offs: &lt;one line&gt;
-Option 3: &lt;DDD-role phrasing&gt;
+Option 3: &lt;DDD-role phrasing; mirrors &lt;exemplar&gt;&gt;
   Trade-offs: &lt;one line&gt;
 
 Reply to approve and unblock the autonomous Stages 3&#8211;5:
-  approve         &#8594; accept the RECOMMENDED option (Option 1)
-  approve &lt;N&gt;     &#8594; accept Option N
-  &lt;change request&gt; &#8594; revise the options and re-present (stays blocked)
+  approve                  &#8594; accept the RECOMMENDED option (Option 1), tests = default
+  approve &lt;N&gt;              &#8594; accept Option N, tests = default
+  approve [N] --no-tests   &#8594; accept + run WITHOUT a test deliverable (TESTS_MODE=off) for this feature
+  approve [N] --tests      &#8594; accept + force the test-first deliverable (TESTS_MODE=required) for this feature
+  &lt;change request&gt;         &#8594; revise the options and re-present (stays blocked)
       </template>
       <action>Wait for the user's approval message. Do NOTHING until it arrives &#8212; idle is the trigger.</action>
-      <check condition="reply is 'approve' or 'approve &lt;N&gt;'">
-        <action>Record the chosen option (RECOMMENDED on bare 'approve'; Option N on 'approve N') and proceed to substep 2.4.</action>
+      <check condition="reply is 'approve' or 'approve &lt;N&gt;' (optionally with a trailing --no-tests / --tests suffix)">
+        <action>Record the chosen option (RECOMMENDED on bare 'approve'; Option N on 'approve N'). Resolve TESTS_MODE for this run from the suffix: a `--no-tests` suffix &#8594; `off`; a `--tests` suffix &#8594; `required`; NO suffix &#8594; the 2.1 setting.yaml default. Proceed to substep 2.4.</action>
       </check>
       <check condition="reply is a change request (not an approval)">
         <action>Revise the options per the feedback, re-present via the template, and STAY BLOCKED. Loop until an approval arrives &#8212; never auto-advance.</action>
@@ -77,11 +85,11 @@ Reply to approve and unblock the autonomous Stages 3&#8211;5:
       &#8226; `{{status}}` &#8212; Accepted (the option is now approved, or auto-selected under auto_approve);
       &#8226; `{{date}}` &#8212; today's date;
       &#8226; `{{bc_name}}` &#8212; the resolved bounded-context / module name from the TOPOLOGY tokens;
-      &#8226; Context / Decision Drivers / Decision &#8212; the dossier facts and resolved rules that drove the choice;
+      &#8226; Context / Decision Drivers / Decision &#8212; the dossier facts and resolved rules that drove the choice, INCLUDING the cited exemplar (the existing similar feature the architecture is modeled on, with file refs), the STYLE decision ("preserve existing style even if imperfect; resolved gates still bind"), and the GUIDANCE DOCS that dictated the build location;
       &#8226; Consequences (Positive / Negative / Neutral) &#8212; the chosen option's trade-offs;
       &#8226; Alternatives Considered &#8212; the rejected options with their reason-rejected (or "none viable" for the single-option case).</action>
     <action>Write the ADR under `docs/architecture/` (the repo's existing ADR home) as `adr-&lt;number&gt;-&lt;slug&gt;.md`, unless the resolved convention pack declares a different ADR location &#8212; in which case honor the pack's location. Create `docs/architecture/` if it does not exist.</action>
-    <action>Emit the approved-decision context block that Stage 3 consumes: the chosen option (by DDD role), the ADR path, and the resolved tokens it was grounded in. Hand it to Stage 3.</action>
+    <action>Emit the approved-decision context block that Stage 3 consumes: the chosen option (by DDD role), the ADR path, the resolved tokens it was grounded in, the CITED EXEMPLAR(s) + naming pattern + the STYLE MANDATE (preserve existing even if imperfect), the GUIDANCE DOCS + the build location they dictate, AND `TESTS_MODE=&lt;required|off&gt;` (the resolved test mode for this run). Hand it to Stage 3. Record the chosen TESTS_MODE in the ADR as a one-line note under Decision ("Test strategy: tests required (test-first deliverable) | tests off (eval-only, non-deliverable &#8212; all non-test gates still enforced)") so the test decision is auditable alongside the architecture.</action>
     <rule critical="true">Stages 3&#8211;5 stay BLOCKED until this substep completes &#8212; the approved ADR is the gate. Under interactive runs the gate opens only on the user's approval; under `auto_approve` it opens on the auto-selected RECOMMENDED option. Either way the ADR is written, so the decision is auditable.</rule>
   </substep>
 
@@ -101,6 +109,8 @@ Reply to approve and unblock the autonomous Stages 3&#8211;5:
       &#8226; The chosen option is recorded as an ADR built from `templates/_base/adr.md`, written under `docs/architecture/` with Status=Accepted.
       &#8226; Stages 3&#8211;5 stay BLOCKED until the ADR is written &#8212; gated on user approval, or on `feature.auto_approve` for unattended runs (ADR still mandatory).
       &#8226; auto_approve defaults to FALSE when setting.yaml or the key is absent.
+      &#8226; TESTS_MODE is resolved HERE: `feature.tests` (default `required`, `off` to opt out) plus an optional `--no-tests` / `--tests` approval-reply override; emit it in the approved-decision block and record it in the ADR. `off` drops only the test deliverable &#8212; all non-test gates still apply downstream.
+      &#8226; EVERY option is MODELED ON the cited exemplar (the nearest similar existing feature) and grounded in the GUIDANCE DOCS that dictate the build location; the presentation + ADR SHOW that lineage. PRIMARY: preserve the exemplar's existing code style/naming even when imperfect (resolved gates still bind). No exemplar &#8594; take the resolved conventions, best-effort, flagged net-new.
     </critical-rules>
   </llm>
 </stage>

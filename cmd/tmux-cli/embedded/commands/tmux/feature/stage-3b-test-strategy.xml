@@ -6,6 +6,7 @@
     <action>Extract the SIGNALS fields by name: `has_database`, `has_frontend`, `frontend_mode`, `n_auth_flows`, `run_target`.</action>
     <action>Extract `e2e_runner_available` from the context block — it is NOT a Signals field; Stage 0 probed it separately (Playwright/Cypress config presence) and carries it in the block. READ it here; never re-probe.</action>
     <action>Extract TOPOLOGY: source roots, layer names, the resolved test roots, and the resolved runner / fixture commands (`{{e2e_runner}}` / `{{fixture_command}}` from discovery). These supply the per-row test path and driver command — never a literal.</action>
+    <action>Extract TESTS_MODE (`required` | `off`) handed in by Stage 3. It selects the Test Plan's NATURE, not its rows: when `required` (default) every row is a test DELIVERABLE (the rendering below is unchanged). When `off` the Test Plan is an EVAL-ONLY coverage map — STILL classify every unit (3b.2) and STILL map each to a {layer, driver, test path} so Stage 4 phasing and coverage reasoning stay intact, but mark every row's Driver "eval-only (ephemeral; deleted before completion — NOT a deliverable)" and do NOT mark any unit TDD test-first. NO row is ever dropped in either mode; the difference is deliverable-vs-eval-only, never presence-vs-absence.</action>
     <action>Enumerate the feature's acceptance units from the prior stages' acceptance criteria. Each acceptance criterion that asserts one observable behavior is ONE acceptance unit to classify.</action>
     <check condition="zero acceptance units (empty feature spec)">
       <action>Emit an EMPTY Test Plan table plus a one-line note ("No acceptance units to classify — Test Plan intentionally empty."). Do NOT fabricate rows. Proceed without crashing.</action>
@@ -24,7 +25,7 @@
   <substep n="3b.3" title="Select layer + driver (decision table)">
     <action>For each classified unit, select its {layer, driver} from this decision table. Every gate reads a resolved capability signal — never a literal.</action>
     <decision-table>
-      <rule>BE-logic → Unit layer, TDD driver: write the failing unit test FIRST, drive red→green (test-first ordering per AGENTS.md). The failing unit test precedes the implementation; this is the test-first / TDD contract.</rule>
+      <rule>BE-logic → Unit layer, TDD driver: write the failing unit test FIRST, drive red→green (test-first ordering per AGENTS.md). The failing unit test precedes the implementation; this is the test-first / TDD contract. APPLIES ONLY when TESTS_MODE=required; when TESTS_MODE=off the BE-logic unit is eval-only (Unit layer recorded for coverage, Driver "eval-only", NO test-first ordering).</rule>
       <rule>infra / persistence → Integration layer, real-dependency driver: exercise the real dependency — a real DB when `has_database` resolves true. If `has_database` is unknown, match conservatively and still route to Integration (the UNKNOWN-matches-conservatively convention).</rule>
       <rule>full-stack OR FE behavior AND `has_frontend` true AND `e2e_runner_available` true → E2E layer, Playwright driver using the resolved `{{e2e_runner}}` (never a literal runner name). Reuse the auth `storageState` fixture when `n_auth_flows >= 1` — i.e. the emitted `n_auth_flows` count meets the manifest's `min_auth_flows` ≥ 1 threshold (the `frontend-auth` pack gate). When `n_auth_flows &lt; 1`, run the E2E WITHOUT storageState reuse — emit no storageState fixture.</rule>
       <rule>FE-testable unit with NO browser runner (`has_frontend` true AND `e2e_runner_available` false), OR any full-stack unit without a browser surface (`has_frontend` false) → E2E layer, API / HTTP-level E2E fallback driver. This fallback is EXPLICIT and recorded in the row with its reason — it is NEVER a silent skip.</rule>
@@ -35,6 +36,7 @@
 
   <substep n="3b.4" title="Emit the Test Plan">
     <action>Render a markdown Test Plan table — ONE row per acceptance unit — with columns: `| Acceptance unit | Class | Layer | Driver | Test path |`.</action>
+    <action>When TESTS_MODE=off, prefix the table with a one-line header note ("_TESTS_MODE=off — eval-only coverage map; no test deliverable. All non-test gates (static-analysis, lint/style, manifest/schema, code-rule) still apply per goal._") and set every row's Driver to "eval-only (ephemeral; deleted before completion)". Keep the Class / Layer / Test path columns populated for coverage and Stage 4 phasing — only the deliverable nature changes.</action>
     <action>Resolve each row's Test path from the TOPOLOGY test roots (unit / integration / E2E roots) and each row's driver command from the resolved `{{e2e_runner}}` / `{{fixture_command}}` discovery vars — never a literal path, port, or runner name.</action>
     <action>For every E2E row, state the driver explicitly: Playwright (when `e2e_runner_available`) or the HTTP-level fallback (when not). For Playwright rows with `n_auth_flows >= 1`, note storageState reuse; otherwise note no storageState reuse.</action>
     <action>Hand the rendered Test Plan table to the Stage 3 docs output for the downstream stages to consume.</action>
@@ -45,6 +47,7 @@
     <rule>NO SILENT SKIP: an FE-testable unit with no browser runner falls back to API / HTTP-level E2E, explicitly recorded with its reason — it is never omitted from the Test Plan.</rule>
     <rule>SELF-CONTAINED: this shard resolves nothing on its own — it consumes Stage 0's emitted context block (SIGNALS + `e2e_runner_available` + TOPOLOGY) and never re-probes the filesystem.</rule>
     <rule>SIGNAL NAMING: the emitted count is `n_auth_flows`; the manifest gate is `min_auth_flows` — reference both correctly (compare the `n_auth_flows` count against the `min_auth_flows` ≥ 1 threshold).</rule>
+    <rule>TESTS_MODE selects the Test Plan's nature, never its row set: `required` → test deliverables (test-first for BE-logic); `off` → eval-only coverage map (Driver "eval-only", no test-first ordering). No unit is dropped in either mode, and the off-mode plan still carries Class / Layer / Test path for coverage + Stage 4 phasing.</rule>
     <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
   </execution-rules>
 
@@ -55,6 +58,7 @@
       • ONE Test Plan row per acceptance unit, each classified exactly once and mapped to exactly one {layer, driver, test path}.
       • BE-logic is test-first (TDD): the failing unit test precedes implementation, red→green.
       • Playwright E2E is gated on `has_frontend` AND `e2e_runner_available`; storageState reuse is gated on `n_auth_flows >= 1` (`min_auth_flows` threshold); otherwise fall back to HTTP-level E2E — never a silent skip.
+      • TESTS_MODE governs the Test Plan's NATURE only: `required` → test deliverables (BE-logic test-first); `off` → eval-only coverage map (Driver "eval-only", no test-first ordering). NO unit is dropped in either mode.
       • Zero acceptance units → empty Test Plan + a note, never a crash.
     </critical-rules>
   </llm>
