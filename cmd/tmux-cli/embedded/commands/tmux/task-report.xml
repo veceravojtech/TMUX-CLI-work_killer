@@ -14,6 +14,7 @@
     <mandate>NEVER use a category or severity outside the closed sets in step 3 — the backend rejects them with NO coercion</mandate>
     <mandate>NEVER modify any project file — the only writes allowed are OUTBOX_DIR drafts on submission failure</mandate>
     <mandate>One report per invocation — never batch multiple distinct problems into one report; tell the user to re-invoke for the second problem</mandate>
+    <mandate>When the task being filed has prerequisites (a phase chain, a "then/after &lt;X&gt;" clause, or a reference to a prerequisite task/goal), depends_on MUST be populated with the prerequisite task ids before submit — a dependent task is NEVER filed standalone</mandate>
   </llm>
 
   <flow>
@@ -91,6 +92,10 @@
       <substep n="3.6" title="expected_green_state">
         <rule>An observable, checkable condition — a command that passes, a log line that appears, a status that changes. Prefer a runnable command in backticks.</rule>
       </substep>
+      <substep n="3.7" title="depends_on — prerequisite edges (REQUIRED when prerequisites exist)">
+        <rule>Scan PROBLEM + conversation for prerequisites: an explicit "after/then task &lt;id&gt;", a phase-chain reference, or a named prerequisite goal/task. If any exist, depends_on MUST list their backend task ids — filing a dependent task standalone is forbidden. When none exist, omit depends_on.</rule>
+        <rule>Mechanism: pass the depends_on array to the task-report MCP tool at submit, or add edges post-submit with task-link (prerequisite_id per edge). The backend gates claiming on unresolved prerequisites and computes ready.</rule>
+      </substep>
     </step>
 
     <step n="4" title="Assemble optional payload">
@@ -99,7 +104,7 @@
     </step>
 
     <step n="5" title="Submit">
-      <action>Call the task-report MCP tool with: category, severity, title, description, proposed_fix, expected_green_state, payload.</action>
+      <action>Call the task-report MCP tool with: category, severity, title, description, proposed_fix, expected_green_state, depends_on (when prerequisites were derived in 3.7 — omit otherwise), payload. When depends_on edges are not accepted at submit, add them post-submit with task-link (prerequisite_id per edge).</action>
       <check condition="tool returns an invalid-input error">
         <action>The error names the failing field(s). Fix exactly those fields per step 3 and resubmit ONCE. If it fails again, fall through to the outbox branch — and append a final line `## Invalid Fields: {comma-separated field names from the last error}` to the draft, so the retry re-derives them instead of resubmitting a payload the backend already rejected (a verbatim retry of an invalid draft can never succeed).</action>
       </check>
