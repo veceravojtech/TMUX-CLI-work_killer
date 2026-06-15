@@ -263,7 +263,7 @@ func TestMergeWorktreeBack_EmptyDiff_NoCommitNoMerge(t *testing.T) {
 	assert.Equal(t, 1, fake.count("worktree", "remove", "--force"))
 }
 
-func TestMergeWorktreeBack_Conflict_FailsGoalCleanly(t *testing.T) {
+func TestMergeWorktreeBack_Conflict_KeepsGoalDone(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	mkGitRepo(t, dir)
 	primeWorktree(d, "goal-001")
@@ -290,18 +290,35 @@ func TestMergeWorktreeBack_Conflict_FailsGoalCleanly(t *testing.T) {
 
 	failed, err := d.finalizeWorktreeOnDone(gf, &gf.Goals[0])
 	require.NoError(t, err)
-	assert.True(t, failed, "merge conflict must fail the goal")
+	assert.False(t, failed, "a post-validation merge-back conflict must NOT fail a validated goal")
 
-	assert.Equal(t, GoalFailed, gf.Goals[0].Status)
+	// The goal is already validated + committed: keep it Done.
+	assert.Equal(t, GoalDone, gf.Goals[0].Status)
 	assert.Equal(t, 1, fake.count("rebase", "--abort"), "rebase aborted (no partial state)")
 	assert.Equal(t, 0, fake.count("merge", "--ff-only"), "base must NOT be merged into on conflict")
+	// Worktree + branch are PRESERVED so the manual merge is performable.
+	assert.Equal(t, 0, fake.count("worktree", "remove", "--force"), "worktree preserved for manual merge")
+	assert.Equal(t, 0, fake.count("branch", "-D"), "branch preserved for manual merge")
 
+	// A needs-merge marker surfaces the conflict for manual resolution.
+	markerPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "needs-merge.md")
+	marker, err := os.ReadFile(markerPath)
+	require.NoError(t, err, "needs-merge.md marker must be written")
+	assert.Contains(t, string(marker), "internal/shared.go", "conflicting path recorded in marker")
+
+	// No VerdictFail signal — the goal did not fail.
 	sig, err := LoadSignal(dir, "goal-001")
 	require.NoError(t, err)
-	valSig, ok := sig.(*ValidatorSignal)
-	require.True(t, ok)
-	assert.Equal(t, VerdictFail, valSig.Verdict)
-	assert.Contains(t, valSig.NextAction, "internal/shared.go", "conflicting path surfaced")
+	if valSig, ok := sig.(*ValidatorSignal); ok {
+		assert.NotEqual(t, VerdictFail, valSig.Verdict, "no VerdictFail signal on merge-back conflict")
+	}
+
+	// And reportFailedGoals files nothing for a Done goal — no spurious critical task.
+	d.reportFailedGoals(gf)
+	d.reportedFailuresMu.Lock()
+	reported := d.reportedFailures["goal-001"]
+	d.reportedFailuresMu.Unlock()
+	assert.False(t, reported, "a Done goal is never reported as failed")
 }
 
 func TestMergeWorktreeBack_SerializedUnderLock(t *testing.T) {

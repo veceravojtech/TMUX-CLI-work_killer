@@ -353,18 +353,18 @@ func TestFinalizeWorktreeOnDone_MergeConflict_StillHandled(t *testing.T) {
 
 	failed, err := d.finalizeWorktreeOnDone(gf, &gf.Goals[0])
 	require.NoError(t, err)
-	assert.True(t, failed, "merge conflict still fails the goal")
-	assert.Equal(t, GoalFailed, gf.Goals[0].Status)
+	assert.False(t, failed, "a post-validation merge-back conflict does not fail a validated goal")
+	assert.Equal(t, GoalDone, gf.Goals[0].Status)
 	assert.Equal(t, 1, fake.count("rebase", "--abort"), "conflict path still aborts cleanly")
 	assert.Equal(t, 0, fake.count("merge", "--ff-only"), "no FF on conflict")
 	assert.False(t, integrationCalled, "integration never runs when the rebase conflicts (no FF)")
 
+	// No VerdictFail signal is written on the merge-back conflict path.
 	sig, err := LoadSignal(dir, "goal-001")
 	require.NoError(t, err)
-	valSig, ok := sig.(*ValidatorSignal)
-	require.True(t, ok)
-	assert.Equal(t, VerdictFail, valSig.Verdict)
-	assert.Contains(t, valSig.NextAction, "internal/shared.go", "conflicting path still surfaced")
+	if valSig, ok := sig.(*ValidatorSignal); ok {
+		assert.NotEqual(t, VerdictFail, valSig.Verdict, "no VerdictFail signal on merge-back conflict")
+	}
 }
 
 // --- advanceToNextGoal resume suppression ---------------------------------

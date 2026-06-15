@@ -942,7 +942,7 @@ func TestCrashRecovery_NoRunningGoals_NoNotification(t *testing.T) {
 	}
 }
 
-func TestFinalizeWorktreeOnDone_MergeConflict_GoalFailedNotification(t *testing.T) {
+func TestFinalizeWorktreeOnDone_MergeConflict_NoGoalFailedNotification(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
@@ -997,18 +997,14 @@ func TestFinalizeWorktreeOnDone_MergeConflict_GoalFailedNotification(t *testing.
 	goal := &gf.Goals[0]
 	failed, err := d.finalizeWorktreeOnDone(gf, goal)
 	require.NoError(t, err)
-	assert.True(t, failed, "should report failed=true for merge conflict")
+	assert.False(t, failed, "a post-validation merge-back conflict must not fail a validated goal")
+	assert.Equal(t, GoalDone, gf.Goals[0].Status, "goal stays Done on merge-back conflict")
 
-	var foundNotif bool
 	for _, call := range exec.Calls {
-		if call.Method == "SendMessageWithDelay" && call.Arguments.Get(1) == "@0" {
+		if call.Method == "SendMessageWithDelay" {
 			msg := call.Arguments.String(2)
-			if strings.Contains(msg, "[TASKVISOR:GOAL-FAILED") &&
-				strings.Contains(msg, "reason=merge-conflict") &&
-				strings.Contains(msg, "cascade=2") {
-				foundNotif = true
-			}
+			assert.NotContains(t, msg, "[TASKVISOR:GOAL-FAILED",
+				"must NOT send a GOAL-FAILED notification on a merge-back conflict")
 		}
 	}
-	assert.True(t, foundNotif, "must send GOAL-FAILED with reason=merge-conflict and cascade=2")
 }

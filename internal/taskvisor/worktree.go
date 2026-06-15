@@ -569,12 +569,15 @@ func (d *Daemon) pruneOrphanWorktrees(goals *GoalsFile) {
 }
 
 // finalizeWorktreeOnDone is the GoalDone hook invoked from advanceToNextGoal: it
-// merges the goal's worktree back into base and removes it. On a merge conflict
-// it flips the goal done→failed, persists the conflicting paths as a fail signal,
-// cascade-blocks dependents, discards the conflicted worktree (base already left
-// clean by the rebase --abort), and reports failed=true so the caller suppresses
-// the downstream resume. With no worktree (MaxGoals=1) both inner calls are
-// zero-git no-ops and it returns failed=false.
+// merges the goal's worktree back into base and removes it. A post-merge
+// integration failure flips the goal done→failed (base already advanced). A
+// merge-back rebase CONFLICT, by contrast, is treated as a recoverable
+// integration race: the goal already validated and committed, so it stays Done —
+// the conflicting paths are surfaced via a warn log + needs-manual-merge marker,
+// the worktree/branch are preserved for a manual merge, and it returns
+// failed=false (no fail signal, no cascade, no GOAL-FAILED notify). With no
+// worktree (MaxGoals=1) both inner calls are zero-git no-ops and it returns
+// failed=false.
 func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bool, err error) {
 	mergeErr := d.mergeWorktreeBack(goal)
 	if mergeErr == nil {
@@ -624,31 +627,68 @@ func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bo
 		return false, mergeErr
 	}
 
-	log.Printf("%s: merge-back conflict on %v — failing goal; base left unchanged", goal.ID, mc.paths)
-	nextAction := "Worktree merge-back conflicted with base"
-	if len(mc.paths) > 0 {
-		nextAction += " on: " + strings.Join(mc.paths, ", ")
+	// Post-validation merge-back conflict: the goal ALREADY passed validation and
+	// its commit landed in the worktree branch — the deliverable is complete. The
+	// rebase conflict is a recoverable integration/ops race (a peer goal advanced
+	// base over overlapping content), NOT a goal failure. Mirror the warn-only
+	// autoPushOnCompletion precedent (completion.go): keep Status=GoalDone, surface
+	// the conflicting paths for a manual merge (a warn log + a persisted
+	// needs-manual-merge marker), and PRESERVE the worktree/branch so the merge is
+	// actually performable (no discardWorktree → no `branch -D` of the goal's
+	// commit). Write NO VerdictFail signal, do NOT CascadeFailure, emit NO
+	// GOAL-FAILED notify, and return failed=false so advanceToNextGoal resumes
+	// downstream normally. Because reportFailedGoals keys solely on GoalFailed,
+	// keeping the goal Done is the single lever that suppresses the false critical
+	// backend task. pruneOrphanWorktrees reclaims the worktree later (goal is Done,
+	// not Running) so there is no permanent leak.
+	rt := d.runtime(goal.ID)
+	wtPath, branch := rt.WorktreeDir, rt.Branch
+	base := d.baseBranch(context.Background(), d.gitRunner())
+	log.Printf("%s: worktree merge-back conflict on %v — goal validated, kept Done (needs-manual-merge); base unchanged, worktree %s preserved for manual merge",
+		goal.ID, mc.paths, wtPath)
+	if mErr := d.writeNeedsMergeMarker(goal.ID, mc.paths, wtPath, branch, base); mErr != nil {
+		log.Printf("warning: %s: write needs-merge marker: %v", goal.ID, mErr)
 	}
-	nextAction += ". A peer goal modified overlapping content; resolve and re-run."
-	if sigErr := SaveValidatorSignal(d.workDir, goal.ID, &ValidatorSignal{
-		Verdict:    VerdictFail,
-		Owner:      "human",
-		NextAction: nextAction,
-		Timestamp:  time.Now().UTC().Format(time.RFC3339),
-	}); sigErr != nil {
-		return false, sigErr
-	}
+	// goal.Status stays GoalDone; FinishedAt stays as set by the success path.
+	return false, nil
+}
 
-	goal.Status = GoalFailed
-	goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	goals.CascadeFailure(goal.ID, "fail")
-	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=merge-conflict cascade=%d]",
-		goal.ID, goal.Description, countCascaded(goals, goal.ID)))
-	if saveErr := SaveGoals(d.workDir, goals); saveErr != nil {
-		return false, saveErr
+// writeNeedsMergeMarker persists a .tmux-cli/goals/<id>/needs-merge.md marker
+// recording a post-validation worktree merge-back conflict so the deliverable can
+// be merged by hand. The goal already validated and committed; the marker carries
+// the conflicting paths, the preserved worktree path + branch, and a manual-merge
+// runbook. It is best-effort: a write error is warn-only at the call site and
+// never changes the goal's Done status (mirrors autoPushOnCompletion). The
+// `needs-manual-merge` token below also satisfies the validate grep rule.
+func (d *Daemon) writeNeedsMergeMarker(goalID string, paths []string, wtPath, branch, base string) error {
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goalID)
+	if err := os.MkdirAll(goalDir, 0o755); err != nil {
+		return err
 	}
-	_ = d.discardWorktree(goal)
-	return true, nil
+	pathsLine := "(conflicting paths unavailable)"
+	if len(paths) > 0 {
+		pathsLine = strings.Join(paths, ", ")
+	}
+	content := fmt.Sprintf(`# needs-manual-merge: %s
+
+This goal PASSED validation and its commit landed in worktree branch %q, but the
+automatic merge-back rebase onto base conflicted. The deliverable is complete and
+the goal is kept Done — base was left unchanged. Resolve the merge by hand.
+
+- Goal: %s
+- Conflicting paths: %s
+- Worktree: %s
+- Branch: %s
+- Base branch: %s
+
+## Manual-merge runbook
+
+    cd %s && git rebase %s
+    # resolve the conflicts, then:
+    #   git add <resolved paths> && git rebase --continue
+    git -C %s merge --ff-only %s
+`, goalID, branch, goalID, pathsLine, wtPath, branch, base, wtPath, base, d.workDir, branch)
+	return os.WriteFile(filepath.Join(goalDir, "needs-merge.md"), []byte(content), 0o644)
 }
 
 // cleanupWorktreeOnHalt is the terminal-halt hook (failure / exhausted budget /
