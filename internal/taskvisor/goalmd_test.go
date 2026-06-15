@@ -10,6 +10,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestWriteGoalMD_BehaviorGoalAlwaysHasReasoningInvestigator locks RC-1: a
+// behavior-bearing goal (non-gate phase, has acceptance criteria) must ALWAYS
+// carry a reasoning (spawning) investigator, so it can never pass on static
+// analysis alone. This reproduces the goal-001 shape: TESTS_MODE=off, all-static
+// validate rules, source under contexts/<ctx>/src (so producesAppCode's src/
+// prefix never fires and no own-suite gate is added) — which previously yielded a
+// "pure static-analysis goal, zero spawns" verdict with no functional review.
+func TestWriteGoalMD_BehaviorGoalAlwaysHasReasoningInvestigator(t *testing.T) {
+	root := t.TempDir()
+	goalDir := filepath.Join(root, ".tmux-cli", "goals", "goal-001")
+	require.NoError(t, os.MkdirAll(goalDir, 0o755))
+
+	acceptance := []string{
+		"Given a query for property X when invoked then only that property's reservations are returned",
+		"Given an actor NOT entitled to the property when invoked then access is denied / nothing is returned",
+	}
+	validate := []string{
+		"docker compose exec -T php composer phpstan",
+		"docker compose exec -T php composer cs-check",
+		"docker compose exec -T php composer deptrac",
+	}
+	require.NoError(t, WriteGoalMD(goalDir, "MCP reservation read query service",
+		"application", "", acceptance, validate, nil,
+		"contexts/reservation/src/Application/Dedicated/Mcp/Reservation", "", nil))
+
+	data, err := os.ReadFile(filepath.Join(goalDir, "goal.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "- type: code-review",
+		"behavior-bearing goal must carry a mandatory functional code-review investigator (never all-static)")
+}
+
 func TestWriteGoalMD_AllSections(t *testing.T) {
 	dir := t.TempDir()
 	err := WriteGoalMD(dir, "Fix prices", "", "", []string{"Price matches API", "No rounding errors"}, []string{"go test ./...", "curl check"}, nil, "We need accurate pricing", "UI redesign", nil)

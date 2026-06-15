@@ -99,6 +99,10 @@ var investigatorTypePriority = map[string]int{
 	// 4th quality gate. Both surviving the cap is the B2b/B3 compose contract.
 	"emission-check":     -1,
 	"own-suite-green":    -1,
+	// code-review is the mandatory functional/acceptance review (RC-1). Pinned at
+	// -1 so the >4 truncation never drops the only behavioral gate on a goal whose
+	// other investigators are all static analysis.
+	"code-review":        -1,
 	"test-execution":     0,
 	"quality-gate":       1,
 	"architecture-check": 2,
@@ -386,6 +390,38 @@ func ownSuiteGateInvestigator(scope []string) Investigator {
 		Pass:     "phpunit exits 0 for the goal's integration+functional scope",
 		Fail:     "non-zero phpunit exit ⇒ code-defect (owner=implementer)",
 	}
+}
+
+// functionalReviewInvestigator builds the mandatory functional acceptance review
+// (RC-1). It is a reasoning (code-review) investigator with NO command, so
+// IsPureCommand is false and investigate.xml ALWAYS spawns it — a behavior-bearing
+// goal can therefore never pass on static analysis alone (the goal-001 "pure
+// static-analysis, zero spawns" hole). Independent of TESTS_MODE: with tests off
+// this review is the ONLY behavioral gate, so its Pass explicitly covers any
+// authorization / deny-path / data-isolation criterion.
+func functionalReviewInvestigator(scope []string) Investigator {
+	return Investigator{
+		Name:  "Functional acceptance review",
+		Type:  "code-review",
+		Paths: scope,
+		Pass:  "every acceptance criterion is satisfied by the implementation — including any authorization / deny-path / data-isolation criterion — verified by reading the code, not just clean static analysis",
+		Fail:  "an acceptance criterion is unmet or an authorization/deny-path control is missing ⇒ code-defect (owner=implementer)",
+	}
+}
+
+// hasReasoningInvestigator reports whether list contains at least one reasoning
+// (spawning) investigator — one IsPureCommand rejects (code-review,
+// convention-audit, own-suite-green, emission-check, a semantic Pass, or any
+// investigator with no command). A behavior-bearing goal with NONE would validate
+// on static analysis alone; WriteGoalMD injects functionalReviewInvestigator to
+// guarantee at least one.
+func hasReasoningInvestigator(list []Investigator) bool {
+	for _, inv := range list {
+		if !IsPureCommand(inv) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasInvestigatorType reports whether list already contains an investigator of

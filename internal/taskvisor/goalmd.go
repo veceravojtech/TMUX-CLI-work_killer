@@ -91,6 +91,23 @@ func WriteGoalMD(goalDir, description, phase, lane string, acceptance, validate 
 		}
 	}
 
+	// Mandatory functional review (RC-1): a behavior-bearing goal (non-gate, with
+	// acceptance criteria) must ALWAYS carry a reasoning investigator so it can
+	// never pass on static analysis alone — the goal-001 "pure static-analysis,
+	// zero spawns" hole, which the own-suite gate above MISSES for monorepo layouts
+	// (source under contexts/<ctx>/src, so producesAppCode's src/ prefix never
+	// fires) and for TESTS_MODE=off goals (no suite to run). Appended AFTER the
+	// own-suite gate so an existing reasoning investigator (own-suite-green,
+	// emission-check, or a planner-supplied code-review) already satisfies the
+	// guarantee without duplication; the re-cap keeps total <=4 with code-review's
+	// -1 priority pinning it past truncation. With tests off this review is the
+	// ONLY behavioral gate, so it explicitly covers any authorization/deny-path
+	// criterion.
+	if phase != "gate" && len(acceptance) > 0 && !hasReasoningInvestigator(list) {
+		scope := DeliverablesFromGoal(Goal{Acceptance: acceptance, Validate: validate})
+		list = capInvestigators(append(list, functionalReviewInvestigator(scope)))
+	}
+
 	renderInvestigationConfig(&b, list, ResolveExecRuntime(ownSuiteFSRoot(goalDir)))
 
 	// C10: incremental re-validation reuses a prior cycle's pass when its input

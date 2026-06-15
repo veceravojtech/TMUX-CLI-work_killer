@@ -1089,7 +1089,10 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdict
 		return d.advanceToNextGoal(goals, goal.ID, false)
 	}
 
-	if err := d.writeCorrectionFile(goalDir, cycleNum, valSig); err != nil {
+	// rawCaptured=true: the findingless branch above primed NextAction with the
+	// daemon framing + RAW validate output, which writeCorrectionFile classifies
+	// (env/infra noise → ops, never blamed on the implementer).
+	if err := d.writeCorrectionFile(goalDir, cycleNum, valSig, true); err != nil {
 		return err
 	}
 
@@ -1207,7 +1210,9 @@ func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *Valida
 	if valSig != nil {
 		sig.Findings = valSig.Findings
 	}
-	if err := d.writeCorrectionFile(goalDir, cycleNum, sig); err != nil {
+	// rawCaptured=false: the spec-defect framing is already an actionable planner
+	// instruction, not raw captured output — write it verbatim (no synthetic finding).
+	if err := d.writeCorrectionFile(goalDir, cycleNum, sig, false); err != nil {
 		return err
 	}
 	// writeCorrectionFile's XOR suppresses the NextAction framing once structured
