@@ -30,7 +30,14 @@ var (
 	codeRefRe    = regexp.MustCompile(`\S+\.\w+:\d+(-\d+)?`)
 	givenRe      = regexp.MustCompile(`(?i)\bgiven\b.*\bwhen\b.*\bthen\b`)
 	checkboxRe   = regexp.MustCompile(`(?m)^- \[[ x]\] `)
-	testCaseRe   = regexp.MustCompile(`(?m)^[ \t]*(?:-[ \t]*|\|[ \t]*)` + "`?" + `(?:Test\w+|test_\w+|test[A-Z]\w*|TC-\d+)`)
+	// testCaseRe counts named test cases in a Test Plan. The token (TestXxx /
+	// test_xxx / testXxx / TC-N) must lead a `-`/`|` bullet, but a markdown
+	// emphasis wrapper (**bold** / *italic* / _underscore_) and/or one backtick
+	// between the bullet and the token is tolerated — a readable `- **TC-1 ...`
+	// bullet counts, not just a bare `- TC-1`. Rejections are unaffected: the
+	// wrapper is optional and the line still fails unless a real token follows
+	// (mirrors tdbRe's existing `**` tolerance).
+	testCaseRe   = regexp.MustCompile(`(?m)^[ \t]*(?:-[ \t]*|\|[ \t]*)(?:[*_]{1,2}[ \t]*)?` + "`?" + `(?:Test\w+|test_\w+|test[A-Z]\w*|TC-\d+)`)
 	tdbRe        = regexp.MustCompile(`(?m)^\s*(?:[-*]\s*)?(?:(?:\*\*)?[\w /\-]+:(?:\*\*)?\s*)?(?:\*\*)?\s*(?:TBD|TODO|PLACEHOLDER|(?i:to be determined))(?:\*\*)?\s*\.?\s*$`)
 
 	// S9 gate-objectivity. subjectiveGateRe matches vague adjectives that can
@@ -169,7 +176,7 @@ func checkTestPlan(sections map[string]string, result *SpecValidationResult) {
 	if len(cases) == 0 {
 		result.Gaps = append(result.Gaps, SpecGap{
 			ID:      "S3",
-			Message: "Test Plan has no specific test cases — list TestXxx entries with expected behavior",
+			Message: "Test Plan has no specific test cases — lead each bullet with a TestXxx / test_xxx / TC-N token then the expected behavior (bold/backtick wrappers are fine: `- **TC-1** …`)",
 		})
 	}
 }

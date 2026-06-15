@@ -480,6 +480,13 @@ func TestTestCaseRe_AcceptedForms(t *testing.T) {
 		"  - TestNested",
 		"| TestFoo | returns X |",
 		"- TC-1: grep returns zero",
+		// markdown emphasis wrappers between the bullet and the token (the
+		// readable forms a spec naturally uses) must still count.
+		"- **TC-1 testFooDeniesUnentitledActor** given …",
+		"- **testCreateUser** succeeds",
+		"- __TestCreateUser__",
+		"- *TestFoo*",
+		"- **`testFoo`** returns X",
 	}
 	for _, in := range accepted {
 		assert.True(t, testCaseRe.MatchString(in), "expected match: %q", in)
@@ -492,6 +499,10 @@ func TestTestCaseRe_RejectedForms(t *testing.T) {
 		"- tests should pass",
 		"| Normal request | valid | 200 | n/a |",
 		"| Scenario | Input | Output |",
+		// an emphasis wrapper does NOT manufacture a token — a real
+		// TestXxx/test_xxx/testXxx/TC-N must still follow it.
+		"- **testing** the cache",
+		"- **Given** an actor when … then …",
 	}
 	for _, in := range rejected {
 		assert.False(t, testCaseRe.MatchString(in), "expected NO match: %q", in)
