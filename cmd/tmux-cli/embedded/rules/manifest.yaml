@@ -106,3 +106,4 @@ packs:
       - types.yaml
       - scaffold.yaml
       - code-style.yaml
+      - analysis.yaml

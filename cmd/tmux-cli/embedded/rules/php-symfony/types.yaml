@@ -42,7 +42,7 @@
   acceptance:
     - "GIVEN a UUID value THEN it is typed as a UUID value object, not an asserted string"
   validate:
-    - "vendor/bin/phpstan analyse"
+    - "composer p2:phpstan"
     - "No `Assert\\Uuid` / `Assert::uuid` remains where a UUID type fits on the changed UUID paths — grep returns nothing"
   validate_kind: mixed
   phase: domain

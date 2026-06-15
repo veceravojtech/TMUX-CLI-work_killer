@@ -1,0 +1,41 @@
+# Pack: php-symfony — static-analysis rules (category: analysis).
+# Split per-category from the former code-rules.yaml monolith. See ../SCHEMA.md.
+#
+# The PHPStan/static-analysis quality gate: a configured, available analyzer that
+# goal validate-generation must surface via the PROJECT ENTRYPOINT
+# (composer p2:phpstan + make stan) — never the bare raw-binary phpstan
+# footgun (crashes at 256M without --memory-limit; false-positives on scoped
+# paths). It was previously undeclared, so `rules resolve` never emitted a sound
+# analyzer validate into PHP goals (backend task 188; mirror of task 183).
+
+- id: PHP-STAN-001
+  category: analysis
+  scope: generic
+  severity: must
+  title: "PHP changes are analyzer-clean — PHPStan passes at the project's configured level via the project entrypoint"
+  rule: >
+    Every changed PHP file passes the project's PHPStan analyzer (its configured
+    level/baseline/ignore/memory) run through the project entrypoint, before
+    commit.
+  why: >
+    PHPStan is a configured, available gate; leaving it undeclared (or emitting
+    the bare raw-binary phpstan invocation, which crashes at 256M and
+    false-positives on scoped paths) lets type/analysis defects reach trunk
+    (backend task 188).
+  applies_to:
+    - "{src}/**/*.php"
+  detect:
+    - "a changed .php file PHPStan reports an error on"
+  fix: >
+    Run the project entrypoint (composer p2:phpstan / make stan) and resolve
+    reported errors on changed code until it exits 0; never reconstruct scoped
+    vendor/bin/phpstan invocations.
+  autofix: none
+  acceptance:
+    - "GIVEN a changed PHP file THEN composer p2:phpstan exits 0 (no analyzer errors on changed code)"
+  validate:
+    - "composer p2:phpstan"
+    - "make stan"
+    - "review: changed PHP is analyzer-clean at the project's configured level — no new PHPStan errors on the changed paths"
+  validate_kind: mixed
+  phase: cross-cutting
