@@ -235,25 +235,33 @@
   category: naming
   scope: generic
   severity: should
-  title: "Name a class after its domain concept; folder/namespace matches"
+  title: "Name a class after its domain concept; folder/namespace matches and is not repeated in the name"
   rule: >
     Class names spell out the domain concept they model (e.g.
     `BookingAddressFieldVisibilityOption`, not `AddrOpt`); the containing
-    folder/namespace mirrors the concept.
+    folder/namespace mirrors the concept AND the class name does NOT repeat that
+    namespace/folder qualifier — the location lives in the namespace, the class
+    names the concept. `…\Mcp\Reservation\McpReservation` stutters → `Reservation`;
+    `…\Dedicated\Campaign\CampaignReservationsQueryService` → `ReservationsQueryService`.
   why: >
-    Concept-named classes are findable and self-documenting; abbreviations rot.
+    Concept-named classes are findable and self-documenting; abbreviations rot, and
+    a prefix/suffix that just echoes the namespace stutters (`Mcp\…\McpReservation`)
+    and adds noise the location already carries.
   adapted_from: "PHP-NAME-001"
   applies_to:
     - "{src}/**/*.php"
   detect:
     - "abbreviated or generic class names (Manager, Helper, Util) for domain concepts"
+    - "a class name whose prefix or suffix merely echoes an ancestor namespace/folder segment (namespace stutter, e.g. `Mcp\\…\\McpReservation`)"
   fix: >
-    Rename the class (and folder) to the full domain concept.
+    Rename the class to the full domain concept; DROP any prefix/suffix that just
+    repeats the namespace/folder qualifier (keep the folder — it is the location).
   autofix: structural
   acceptance:
     - "GIVEN a new class THEN its name states the domain concept unabbreviated"
+    - "GIVEN a class in a qualified namespace/folder THEN its name does NOT repeat that qualifier (no namespace stutter)"
   validate:
-    - "review: new classes in the diff are concept-named, no generic Manager/Helper/Util names"
+    - "review: new classes in the diff are concept-named (no generic Manager/Helper/Util names) and NO name repeats its namespace/folder qualifier (no stutter, e.g. `…\\Mcp\\Reservation\\McpReservation`)"
   validate_kind: review
   phase: cross-cutting
 
