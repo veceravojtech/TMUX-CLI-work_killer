@@ -61,6 +61,51 @@ func TestRunValidateScript_ExitNonZero(t *testing.T) {
 	assert.Contains(t, stderr, "test failed")
 }
 
+func TestRunValidateScript_RunnerMissing_127(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	// Exit 127 = the script invoked a runner that is not on PATH ("command not
+	// found"). This is an infra/exec error, NOT a red suite — it must map to the
+	// runner-missing reason so the goal's code budget is never charged (goal-009).
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		return "", "fake-runner: command not found", 127, nil
+	})
+
+	goal := &Goal{ID: "goal-001"}
+	passed, reason, stderr, err := d.runValidateScript(goal)
+
+	require.NoError(t, err)
+	assert.False(t, passed)
+	assert.Equal(t, "runner-missing", reason, "exit 127 is a missing runner, not a red suite")
+	assert.Contains(t, stderr, "command not found")
+}
+
+func TestRunValidateScript_RunnerMissing_126(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	scriptPath := filepath.Join(goalDir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	// Exit 126 = the runner exists but is not executable — same infra/exec class.
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		return "", "fake-runner: Permission denied", 126, nil
+	})
+
+	goal := &Goal{ID: "goal-001"}
+	passed, reason, _, err := d.runValidateScript(goal)
+
+	require.NoError(t, err)
+	assert.False(t, passed)
+	assert.Equal(t, "runner-missing", reason, "exit 126 (not executable) maps to the same infra/exec class as 127")
+}
+
 func TestRunValidateScript_Timeout(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	d.scriptTimeout = 100 * time.Millisecond
@@ -258,6 +303,54 @@ func TestCheckProgress_SupervisorDone_ValidateShFail_NoValidateMd(t *testing.T) 
 	data, readErr := os.ReadFile(correctionPath)
 	require.NoError(t, readErr)
 	assert.Contains(t, string(data), "validation error details")
+}
+
+func TestCheckProgress_SupervisorDone_ValidateShExit127_NoCodeRetryDecrement(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.runtime("goal-001").phase = phaseSupervising
+	d.validatorSendDelay = 0
+	writeGuardFile(t, dir)
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test goal", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3, CodeRetries: 3, MaxCodeRetries: 3},
+		},
+	}
+	writeGoals(t, dir, gf)
+	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
+	}))
+
+	// The 127 halt returns BEFORE validator dispatch, so the only windows traffic
+	// is the pre-runValidateScript kill lookups plus the advanceToNextGoal →
+	// deactivateOnCompletion tail (notifyCompletion + teardown). setupDeactivateMocks
+	// programs an unbounded ListWindows return that absorbs all of them; no new
+	// windows are created on the halt path.
+	setupDeactivateMocks(exec, testSession, "@9")
+
+	// validate.sh invokes a runner that is not on PATH → exit 127. This is infra,
+	// not a red suite: it must NOT burn the per-goal code budget (the goal-009 bug).
+	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
+		return "", "tmux-cli-fake: command not found", 127, nil
+	})
+
+	goal := &gf.Goals[0]
+	err = d.checkProgress(goal, gf)
+	require.NoError(t, err)
+
+	reloaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+	assert.Equal(t, GoalFailed, reloaded.Goals[0].Status, "exit 127 terminally fails the goal on cycle 1")
+	assert.Equal(t, 3, reloaded.Goals[0].CodeRetries, "code budget UNCHANGED — a missing runner is not a code defect")
+	assert.Equal(t, "runner-missing", reloaded.Goals[0].FailedBy, "failure reason is the infra/exec class")
 }
 
 func TestCheckProgress_SupervisorDone_NoValidateSh(t *testing.T) {

@@ -37,6 +37,11 @@ const (
 	scriptReasonLockError     = "lock-error"
 	scriptReasonExecError     = "exec-error"
 	scriptReasonTimeout       = "timeout"
+	// scriptReasonRunnerMissing classifies a validate.sh that exited 127 (command
+	// not found) or 126 (not executable) — the script's RUNNER is missing/unusable,
+	// an infra/exec error, not a red suite. Routed to a terminal halt that charges
+	// NO code-retry budget (goal-009: a missing runner used to burn 3→2→1→0).
+	scriptReasonRunnerMissing = "runner-missing"
 )
 
 func defaultScriptRunner(ctx context.Context, scriptPath, dir string, env []string) (stdout, stderr string, exitCode int, err error) {
@@ -119,6 +124,12 @@ func (d *Daemon) runValidateScript(goal *Goal) (passed bool, reason, stderr stri
 	reason = fmt.Sprintf("exit-%d", exitCode)
 	if ctx.Err() == context.DeadlineExceeded {
 		reason = scriptReasonTimeout
+	} else if exitCode == 127 || exitCode == 126 {
+		// 127 = command not found, 126 = found but not executable: the script's
+		// runner is missing/unusable (infra), NOT a red suite. Placed AFTER the
+		// DeadlineExceeded check so a timeout kill that surfaces 126/127 stays
+		// classified as a timeout (timeout keeps precedence).
+		reason = scriptReasonRunnerMissing
 	}
 	log.Printf("%s: validate.sh did not pass (%s, timeout budget %s)", goal.ID, reason, d.scriptTimeout)
 

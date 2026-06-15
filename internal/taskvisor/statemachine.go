@@ -338,6 +338,14 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	}
 	rt.scriptPassed = passed
 	rt.scriptReason = reason
+	// A missing/unusable validate.sh runner (exit 127/126) is an infra/exec error,
+	// not a code defect. It MUST be intercepted BEFORE the stderr→handleFailedCycle
+	// shortcut below, because exit 127 emits "command not found" to stderr and would
+	// otherwise be swallowed as a code-defect — burning the per-goal code budget
+	// (goal-009). haltRunnerMissing terminally fails the goal charging NO retry.
+	if !passed && reason == scriptReasonRunnerMissing {
+		return d.haltRunnerMissing(goal, goals, stderr)
+	}
 	if stderr != "" && !d.hasValidateMd(goal.ID) {
 		return d.handleFailedCycle(goal, goals, stderr, "code-defect")
 	}
@@ -1331,6 +1339,72 @@ func (d *Daemon) haltRetryCeiling(goal *Goal, goals *GoalsFile) error {
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
 	}
+	return d.advanceToNextGoal(goals, goal.ID, false)
+}
+
+// haltRunnerMissing is the infra/exec route for a validate.sh that exited 127
+// (command not found) / 126 (not executable): the script's RUNNER is missing or
+// unusable. It charges NO retry budget — re-dispatching identical work cannot
+// install a missing binary — terminally fails the goal on cycle 1 with the
+// runner-missing reason, synthesizes an (error, ops) infra signal naming the
+// missing runner, and routes through the existing reportFailedGoals auto-report
+// path. Modeled on haltBlockedEnv (signal synth + SOFT cascade) and
+// haltRetryCeiling (GoalFailed + notify + advanceToNextGoal). GoalFailed is
+// terminal (not GoalBlocked+precondition) because a missing runner cannot
+// self-heal — a §5 auto-resume park would hot-loop re-dispatch — and GoalFailed
+// is the only state reportFailedGoals auto-reports. Contains NO CodeRetries
+// decrement: that is the whole point (goal-009).
+func (d *Daemon) haltRunnerMissing(goal *Goal, goals *GoalsFile, stderr string) error {
+	if err := d.demoteSoloLane(goal, goals, "runner missing"); err != nil {
+		return err
+	}
+
+	// Derive the missing-runner detail from the script's stderr (already clamped to
+	// 500 chars by runValidateScript). Fall back to a generic message when stderr is
+	// empty (e.g. a bare exit 127 with no output).
+	runner := strings.TrimSpace(stderr)
+	if runner == "" {
+		runner = "validate.sh exited 127/126 — its runner command is missing or not executable"
+	}
+	remedy := fmt.Sprintf("Install/repair the validate.sh runner on the daemon host, then re-run the goal: %s", runner)
+
+	sig := &ValidatorSignal{
+		Verdict: VerdictError,
+		Class:   "env-config",
+		Owner:   "ops",
+		Remedy:  remedy,
+		Findings: []ValidationFinding{{
+			Rule:         "validate.sh runner",
+			Status:       VerdictError,
+			FailureClass: "env-config",
+			Owner:        "ops",
+			Detail:       runner,
+		}},
+		NextAction: remedy,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := SaveValidatorSignal(d.workDir, goal.ID, sig); err != nil {
+		return err
+	}
+
+	// SOFT cascade (env-config): a missing runner is an operator-fixable infra
+	// defect, so dependents stay GoalPending and resume if an operator installs the
+	// runner and re-runs — they are not hard-blocked (mirrors haltBlockedEnv).
+	goals.CascadeFailure(goal.ID, "env-config")
+
+	goal.Status = GoalFailed
+	goal.FailedBy = scriptReasonRunnerMissing
+	goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+
+	log.Printf("[BLOCKED - OPERATOR ACTION REQUIRED] %s: validate.sh runner missing — %s (failed on cycle 1, code budget %d intact, auto-reported)",
+		goal.ID, runner, goal.CodeRetries)
+	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=runner-missing cascade=%d]",
+		goal.ID, goal.Description, countCascaded(goals, goal.ID)))
+
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+	d.resolveTaskOnTerminal(goal, "failed", failResolution(goal, "env-config"))
 	return d.advanceToNextGoal(goals, goal.ID, false)
 }
 
