@@ -144,9 +144,14 @@
   acceptance:
     - "GIVEN a controller action THEN it constructs no entity and calls no persistence API directly"
   validate:
-    - "review: changed controllers contain no entity construction or direct persistence calls"
-  validate_kind: review
+    - "review: changed controllers construct no entities directly (new <Entity>())"
+    - "grep -REn '->(persist|flush)\\s*\\(' <changed *Controller.php> returns nothing"
+  validate_kind: mixed
   phase: application
+  signal: '->persist\s*\(|->flush\s*\('
+  examples:
+    bad: '$this->entityManager->persist($thread);'
+    good: '$threadService->createThread($request->toCommand());'
 
 - id: PHP-DATE-001
   category: dates
