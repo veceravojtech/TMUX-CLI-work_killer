@@ -166,6 +166,7 @@ func TestTaskArtifactRoundTrip(t *testing.T) {
 	list, err := s.TaskArtifactList(context.Background(), TaskArtifactListInput{ID: "55"})
 	require.NoError(t, err)
 	require.Len(t, list.Artifacts, 1)
+	assert.Equal(t, 1, list.Total, "total reflects the number of artifacts attached")
 	assert.Equal(t, aid, list.Artifacts[0].ID)
 	assert.Equal(t, want, list.Artifacts[0].Sha256)
 	assert.Equal(t, "application/octet-stream", list.Artifacts[0].MimeType)
@@ -241,6 +242,32 @@ func TestTaskArtifactList_RejectsBlankId(t *testing.T) {
 	assert.Nil(t, out)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "id")
+}
+
+// TestTaskArtifactList_TotalIsArtifactCount: the tool reports total as the number
+// of artifacts returned, even when the backend response omits a total field (the
+// list is unpaginated, so the count is authoritative client-side).
+func TestTaskArtifactList_TotalIsArtifactCount(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// No "total" key — the client must derive it from the artifacts slice.
+		_, _ = io.WriteString(w, `{"artifacts":[`+
+			`{"id":1,"filename":"a.log","sha256":"aa","size":1,"role":"log","mimeType":"text/plain","createdAt":"t"},`+
+			`{"id":2,"filename":"b.log","sha256":"bb","size":2,"role":"log","mimeType":"text/plain","createdAt":"t"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	withReportHook(t, func(producer.Config) *producer.Client {
+		return producer.NewClientForTest(srv.URL, priv, srv.Client())
+	})
+	s := newReportServer(t)
+
+	out, err := s.TaskArtifactList(context.Background(), TaskArtifactListInput{ID: "7"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Len(t, out.Artifacts, 2)
+	assert.Equal(t, 2, out.Total, "total derived from the artifact count, not the omitted backend field")
 }
 
 func TestTaskArtifactGet_RejectsBlankFields(t *testing.T) {

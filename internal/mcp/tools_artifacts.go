@@ -147,11 +147,15 @@ func (s *Server) TaskArtifactList(ctx context.Context, in TaskArtifactListInput)
 	if err != nil {
 		return nil, err
 	}
-	out := &TaskArtifactListOutput{Total: list.Total}
+	out := &TaskArtifactListOutput{}
 	out.Artifacts = make([]ArtifactView, 0, len(list.Artifacts))
 	for _, a := range list.Artifacts {
 		out.Artifacts = append(out.Artifacts, toArtifactView(a))
 	}
+	// The artifact list is the complete (unpaginated) set, so total is the count we
+	// return — authoritative client-side regardless of whether the backend echoes a
+	// total field.
+	out.Total = len(out.Artifacts)
 	return out, nil
 }
 

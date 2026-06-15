@@ -684,3 +684,16 @@ func TestTaskGet_SurfacesDependsOnAndReady(t *testing.T) {
 	assert.False(t, out.Task.Ready)
 	assert.Equal(t, []string{"12", "13"}, out.Task.DependsOn)
 }
+
+// TestTaskGet_SurfacesPayload decodes the detail-only payload field into the view
+// so an agent can read a task's structured payload (goal_id, cycle, log excerpts).
+func TestTaskGet_SurfacesPayload(t *testing.T) {
+	s, _ := withTaskServer(t, http.StatusOK,
+		`{"id":21,"status":"new","payload":{"goal_id":"g-1","cycle":3},"events":[]}`)
+	out, err := s.TaskGet(context.Background(), TaskGetInput{ID: "21"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.Task.Payload)
+	assert.Equal(t, "g-1", out.Task.Payload["goal_id"])
+	assert.EqualValues(t, 3, out.Task.Payload["cycle"])
+}
