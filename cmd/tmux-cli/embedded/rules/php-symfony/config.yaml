@@ -1,6 +1,8 @@
 # Pack: php-symfony — config rules (category: config).
 # Split per-category from the former code-rules.yaml monolith. See ../SCHEMA.md.
-# Globs here are literal config paths (.env, config/**) — no {src}/{infra} tokens.
+# Globs are depth-agnostic config paths (**/.env, **/config/**) so they match per-context
+# config in a monorepo (contexts/*/app/.env, contexts/*/app/config/**) as well as a flat
+# project's root config — no {src}/{infra} tokens.
 
 - id: PHP-CFG-001
   category: config
@@ -8,28 +10,40 @@
   severity: must
   title: "Env vars belong in `.env` with dev defaults; secrets never committed"
   rule: >
-    New configuration enters through env vars declared in the root .env with
+    New configuration enters through env vars declared in the owning .env with
     safe dev defaults; real secrets live in the deployment secret store /
-    vault, never in committed files.
+    vault, never in committed files. Each var is declared ONCE (no duplicate
+    `KEY=` lines). When the project AGGREGATES per-component .env files into a
+    root/aggregated .env (a monorepo), the per-component .env is the source of
+    truth and the aggregated .env is kept in sync — regenerated AND committed
+    together, never left stale.
   why: >
     One declared surface for configuration; committed secrets are a breach,
-    undeclared env vars are a 3am outage.
+    undeclared env vars are a 3am outage. A duplicate KEY= silently shadows
+    itself, and a per-component var that never reaches the aggregated root .env
+    is present in dev yet missing in the deployable — the exact stale-merge bug.
   adapted_from: "PHP-CFG-001"
   applies_to:
-    - ".env"
-    - ".env.test"
-    - "config/**"
+    - "**/.env"
+    - "**/.env.test"
+    - "**/config/**"
   detect:
     - "getenv/parameter access for a var not declared in .env"
     - "secret-looking literals in committed config"
+    - "a `^KEY=` declaration repeated (duplicate) within a changed .env"
+    - "a var added to a per-component .env but not propagated to the aggregated root .env (stale merge)"
   fix: >
-    Declare the var in .env with a dev default; route the real value through
-    the secret store.
+    Declare the var ONCE in the owning .env with a dev default; route the real
+    value through the secret store; remove any duplicate `KEY=` lines. In a
+    monorepo, after editing the per-component .env regenerate the aggregated
+    root .env via the project's resolved merge command and commit BOTH the
+    component .env and the regenerated root .env together.
   autofix: none
   acceptance:
-    - "GIVEN a new env var THEN it is declared in .env with a dev default and no committed secret value"
+    - "GIVEN a new env var THEN it is declared once in the owning .env with a dev default and no committed secret value"
+    - "GIVEN a monorepo aggregating per-component .env into a root .env THEN a per-component change is propagated to the root .env (no stale merge) and both are committed together"
   validate:
-    - "composer p2:env-merge"
-    - "review: new env vars declared in .env; no secret values committed in the diff"
+    - "! awk -F= '/^[A-Z_][A-Z0-9_]*=/{c[$1]++} END{for(k in c) if(c[k]>1){print k; e=1} exit e}' <changed .env>"
+    - "review: new env vars declared ONCE in the owning .env with dev defaults and no committed secrets; AND when the project aggregates per-component .env files into a root/aggregated .env, the aggregation is fresh — run the project's resolved NON-MUTATING config-sync check (e.g. in a P2 monorepo `composer p2:env-merge --check`) to confirm no drift, then commit the source .env and the regenerated aggregate together"
   validate_kind: mixed
   phase: deployment
