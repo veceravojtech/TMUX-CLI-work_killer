@@ -26,7 +26,7 @@
   adapted_from: "PHP-I18N-001"
   applies_to:
     - "{src}/**/*.php"
-    - "templates/**/*.twig"
+    - "**/templates/**/*.twig"
   detect:
     - "literal user-facing strings in controllers/templates"
     - "user-facing exceptions built with sprintf/string concat"

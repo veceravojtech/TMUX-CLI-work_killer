@@ -26,7 +26,7 @@
     the single source of truth.
   adapted_from: "PHP-ARCH-001"
   applies_to:
-    - "templates/**/*.twig"
+    - "**/templates/**/*.twig"
     - "{src}/**/View/**/*.php"
   detect:
     - "conditional business rules computed inside a template"

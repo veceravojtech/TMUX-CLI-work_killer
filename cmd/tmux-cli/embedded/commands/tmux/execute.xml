@@ -23,9 +23,8 @@
     </step>
 
     <step n="1b" title="Read project context">
-      <action>Check if AGENTS.md exists in the project root. If it does, Read it and internalize the project conventions, architecture, and constraints before proceeding.</action>
-      <action>If AGENTS.md does not exist, check for CLAUDE.md instead. Read whichever is found first.</action>
-      <action>If neither exists, proceed without project context.</action>
+      <action>Discover the APPLICABLE guideline docs for SCOPE by NEAREST-WINS subtree precedence (an AGENTS.md in a subtree extends/overrides its parent within that subtree): for each path SCOPE touches, walk from that file's directory UP to the repo root collecting every AGENTS.md / CLAUDE.md on the way (nearest = most specific), plus the repo-root entry doc and any *.md they explicitly link that bears on the path. Read them ALL and internalize the conventions, architecture, and constraints before editing — never just the root AGENTS.md; the nested subtree doc is authoritative for files under it.</action>
+      <action>If no AGENTS.md / CLAUDE.md exists on any touched path, proceed without project context.</action>
       <action>If the task message (a `CODE_RULES:` block) or the spec (a `## Code Rules` section) cites Code Rules, Read every cited rule file before writing code. `must` rules are binding; deviating from a `should` rule requires a one-line justification in the completion report (§8.2 — no waivers file).</action>
       <rule>This context MUST inform your implementation decisions, code style, testing approach, and all work within SCOPE.</rule>
     </step>
@@ -48,6 +47,7 @@
       <rule>Perform the task STRICTLY within SCOPE</rule>
       <rule>Use all available tools: Read, Write, Edit, Bash, Agent, and any MCP tools needed</rule>
       <rule>Do not exceed SCOPE — if you notice adjacent issues, mention them under RISKS instead</rule>
+      <rule critical="true">NEVER edit, refactor, reformat, or "fix" pre-existing/unchanged code outside the task's changed footprint — even a rule violation or failing quality gate in a file the task did not already modify is surfaced under RISKS, never edited. Quality gates and rule checks apply ONLY to the task's own changed files; the delivered diff stays minimal and confined to SCOPE.</rule>
       <rule critical="true">Shared-DB migration safety: when your task runs ANY command that mutates the shared database schema (e.g. `doctrine:migrations:migrate`, `schema:update`, raw DDL), wrap it in the cross-process advisory lock: `flock .tmux-cli/db.lock -c '&lt;cmd&gt;'`. Per-goal worktrees isolate FILES but NOT the shared schema, so under MaxGoals&gt;1 two unwrapped migrations can race and corrupt version tracking. The lock is reentrant-safe and a no-op cost under MaxGoals=1.</rule>
       <rule critical="true">Decision-resolution policy (quality-in-scope): when work reaches a decidable fork — an "Ask First" item, a correction presenting options, or any choice between a lower-effort waiver/shortcut and a higher-quality approach — do NOT emit [EXECUTE:NEED_INPUT]. Autonomously pick the option that MAXIMIZES correctness and quality (real domain types over asserted strings, no waivers, no shortcuts, no new tech-debt) PROVIDED it does NOT expand SCOPE (no new files, features, endpoints, or surface beyond the task's stated scope), and record the chosen option + a one-line rationale in your report. A purely technical/architectural choice is NEVER user-only.</rule>
     </step>
