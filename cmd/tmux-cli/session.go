@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/console/tmux-cli/internal/producer"
 	"github.com/console/tmux-cli/internal/session"
 	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/sudo"
@@ -111,6 +112,9 @@ var listCmd = &cobra.Command{
 	Long:  `List all active sessions from the tmux server.`,
 	RunE:  runSessionList,
 }
+
+// statusJSON toggles machine-readable JSON output for `tmux-cli status`.
+var statusJSON bool
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -470,6 +474,7 @@ func init() {
 	rootCmd.AddCommand(startAttachCmd)
 	rootCmd.AddCommand(killCmd)
 	rootCmd.AddCommand(listCmd)
+	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "emit machine-readable JSON worker state instead of human output")
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(windowsCreateCmd)
 	rootCmd.AddCommand(windowsListCmd)
@@ -753,12 +758,117 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// statusJSONReport is the machine-readable snapshot emitted by
+// `tmux-cli status --json`. Field order matches the documented shape; the
+// JSON tags are the stable contract the dispatcher host-side reporter consumes.
+type statusJSONReport struct {
+	Project         string `json:"project"`
+	SessionUp       bool   `json:"sessionUp"`
+	TaskvisorActive bool   `json:"taskvisorActive"`
+	RuntimeState    string `json:"runtimeState"`
+	Activity        string `json:"activity"`
+	LaneNew         *int   `json:"laneNew"`
+}
+
+// buildStatusReport gathers this directory's worker state into a statusJSONReport
+// using the same helpers the human status path relies on. It never returns an
+// error: a missing session yields sessionUp=false / runtimeState="down".
+func buildStatusReport(cwd string) statusJSONReport {
+	executor := tmux.NewTmuxExecutor()
+
+	rep := statusJSONReport{}
+
+	// project: reuse the api-project lane resolution (empty on error).
+	if cfg, err := producer.LoadConfig(cwd); err == nil {
+		rep.Project = cfg.Project
+	}
+
+	// sessionUp: a discoverable, live tmux session for this directory.
+	sessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", cwd)
+	if sessionID != "" {
+		if up, err := executor.HasSession(sessionID); err == nil {
+			rep.SessionUp = up
+		}
+	}
+
+	// taskvisorActive: the daemon's active marker.
+	if _, err := os.Stat(filepath.Join(cwd, ".tmux-cli", "taskvisor-active")); err == nil {
+		rep.TaskvisorActive = true
+	}
+
+	// goalWindowsOpen: any supervisor/validator/execute/investigator window.
+	goalWindowsOpen := false
+	if rep.SessionUp {
+		if windows, err := executor.ListWindows(sessionID); err == nil {
+			for _, w := range windows {
+				if strings.HasPrefix(w.Name, "supervisor-") ||
+					strings.HasPrefix(w.Name, "validator-") ||
+					strings.HasPrefix(w.Name, "execute-") ||
+					strings.HasPrefix(w.Name, "investigator-") {
+					goalWindowsOpen = true
+					break
+				}
+			}
+		}
+	}
+
+	// runtimeState: paused (marker) > consuming > idle > down.
+	switch {
+	case fileExists(filepath.Join(cwd, ".tmux-cli", "PAUSED")):
+		rep.RuntimeState = "paused"
+	case rep.TaskvisorActive || goalWindowsOpen:
+		rep.RuntimeState = "consuming"
+	case rep.SessionUp:
+		rep.RuntimeState = "idle"
+	default:
+		rep.RuntimeState = "down"
+	}
+
+	// activity: the current (or first running) goal as "<id>: <description>".
+	if gf, err := taskvisor.LoadGoals(cwd); err == nil && gf != nil {
+		id := gf.CurrentGoal
+		if id == "" {
+			if running, ok := gf.FirstRunningGoalID(); ok {
+				id = running
+			}
+		}
+		if id != "" {
+			rep.Activity = id
+			for i := range gf.Goals {
+				if gf.Goals[i].ID == id {
+					if gf.Goals[i].Description != "" {
+						rep.Activity = id + ": " + gf.Goals[i].Description
+					}
+					break
+				}
+			}
+		}
+	}
+
+	// laneNew: the host reporter already has be-queue-count; leave null.
+	return rep
+}
+
+// fileExists reports whether path exists (any stat success).
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func runSessionStatus(cmd *cobra.Command, args []string) error {
 	executor := tmux.NewTmuxExecutor()
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	// Machine-readable path: emit one JSON object and return (exit 0 even when
+	// no session exists). Placed before the human session-discovery error return.
+	if statusJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(buildStatusReport(cwd))
 	}
 
 	// Discover session for this directory

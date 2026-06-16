@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -148,4 +151,126 @@ func TestEndCmd_Removed(t *testing.T) {
 	if err == nil && cmd != nil {
 		assert.NotEqual(t, "end", cmd.Use, "end command should have been removed")
 	}
+}
+
+// ============================================================================
+// status --json Tests
+// ============================================================================
+
+// TestStatusCmd_HasJSONFlag verifies the --json flag is registered on status.
+func TestStatusCmd_HasJSONFlag(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"status"})
+	require.NoError(t, err)
+	require.NotNil(t, cmd)
+
+	jsonFlag := cmd.Flags().Lookup("json")
+	require.NotNil(t, jsonFlag, "--json flag should exist on status command")
+	assert.Equal(t, "false", jsonFlag.DefValue, "--json should default to false")
+}
+
+// TestStatusReport_JSONShapeAndKeys verifies the marshaled report has exactly the
+// documented keys and the contracted types (laneNew is JSON null when nil).
+func TestStatusReport_JSONShapeAndKeys(t *testing.T) {
+	rep := statusJSONReport{
+		Project:         "cli",
+		SessionUp:       true,
+		TaskvisorActive: false,
+		RuntimeState:    "idle",
+		Activity:        "",
+		LaneNew:         nil,
+	}
+
+	data, err := json.Marshal(rep)
+	require.NoError(t, err)
+
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data, &m))
+
+	wantKeys := []string{"project", "sessionUp", "taskvisorActive", "runtimeState", "activity", "laneNew"}
+	assert.Len(t, m, len(wantKeys), "object must have exactly the documented keys")
+	for _, k := range wantKeys {
+		_, ok := m[k]
+		assert.True(t, ok, "missing key %q", k)
+	}
+	assert.IsType(t, true, m["sessionUp"])
+	assert.IsType(t, true, m["taskvisorActive"])
+	assert.IsType(t, "", m["runtimeState"])
+	assert.Nil(t, m["laneNew"], "laneNew must marshal to JSON null when nil")
+}
+
+// TestStatusReport_RuntimeStateDown verifies an empty dir (no session/markers)
+// yields runtimeState=down and does not error.
+func TestStatusReport_RuntimeStateDown(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rep := buildStatusReport(tmpDir)
+
+	assert.Equal(t, "down", rep.RuntimeState)
+	assert.False(t, rep.SessionUp)
+	assert.False(t, rep.TaskvisorActive)
+}
+
+// TestStatusReport_PausedMarkerWins verifies the PAUSED marker overrides other states.
+func TestStatusReport_PausedMarkerWins(t *testing.T) {
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, ".tmux-cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".tmux-cli", "PAUSED"), []byte(""), 0o644))
+
+	rep := buildStatusReport(tmpDir)
+
+	assert.Equal(t, "paused", rep.RuntimeState)
+}
+
+// TestStatusReport_TaskvisorActiveConsuming verifies the taskvisor-active marker
+// sets taskvisorActive and runtimeState=consuming.
+func TestStatusReport_TaskvisorActiveConsuming(t *testing.T) {
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, ".tmux-cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".tmux-cli", "taskvisor-active"), []byte(""), 0o644))
+
+	rep := buildStatusReport(tmpDir)
+
+	assert.True(t, rep.TaskvisorActive)
+	assert.Equal(t, "consuming", rep.RuntimeState)
+}
+
+// TestStatusReport_ActivityFromGoals verifies activity is "<id>: <description>"
+// from goals.yaml, and empty when no goals.yaml exists.
+func TestStatusReport_ActivityFromGoals(t *testing.T) {
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, ".tmux-cli"), 0o755))
+
+	// No goals.yaml → empty activity.
+	repNone := buildStatusReport(tmpDir)
+	assert.Equal(t, "", repNone.Activity)
+
+	goalsYAML := "current_goal: goal-003\n" +
+		"goals:\n" +
+		"  - id: goal-003\n" +
+		"    description: add status json\n" +
+		"    status: running\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".tmux-cli", "goals.yaml"), []byte(goalsYAML), 0o644))
+
+	rep := buildStatusReport(tmpDir)
+	assert.Equal(t, "goal-003: add status json", rep.Activity)
+}
+
+// TestStatusCmd_HumanOutputUnchanged verifies the no-flag path still returns the
+// existing "no tmux-cli session found" error for a dir with no session, and that
+// the human path is untouched (no JSON branch taken).
+func TestStatusCmd_HumanOutputUnchanged(t *testing.T) {
+	origJSON := statusJSON
+	statusJSON = false
+	defer func() { statusJSON = origJSON }()
+
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(origWd) }()
+
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	err = runSessionStatus(statusCmd, nil)
+	require.Error(t, err, "no-flag path must still error when no session exists")
+	assert.Contains(t, err.Error(), "no tmux-cli session found for this directory")
 }
