@@ -127,6 +127,130 @@ func TestInferMissingDeps_EmptyGoals(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+func TestOverlappingGoalsSerializeNotConcurrent(t *testing.T) {
+	// Two pending goals both editing src/Entity/ProjectBinding.php, no depends_on.
+	newOverlapping := func() *GoalsFile {
+		return &GoalsFile{
+			Goals: []Goal{
+				{
+					ID:         "goal-001",
+					Scope:      []string{"src/Entity/ProjectBinding.php"},
+					Acceptance: []string{"src/Entity/ProjectBinding.php has the binding entity"},
+					Status:     GoalPending,
+					MaxRetries: 5,
+				},
+				{
+					ID:         "goal-002",
+					Scope:      []string{"src/Entity/ProjectBinding.php"},
+					Acceptance: []string{"src/Entity/ProjectBinding.php gains a relation"},
+					Status:     GoalPending,
+					MaxRetries: 5,
+				},
+			},
+		}
+	}
+
+	t.Run("serialize", func(t *testing.T) {
+		gf := newOverlapping()
+		edges := EnforceFileOverlapDeps(gf)
+
+		require.Len(t, edges, 1)
+		assert.Equal(t, "goal-002", edges[0].From)
+		assert.Equal(t, "goal-001", edges[0].To)
+		assert.NotEmpty(t, edges[0].Stem)
+
+		g1, ok := gf.GoalByID("goal-001")
+		require.True(t, ok)
+		assert.Empty(t, g1.DependsOn, "lower-id producer gains no edge")
+
+		g2, ok := gf.GoalByID("goal-002")
+		require.True(t, ok)
+		assert.Equal(t, []string{"goal-001"}, g2.DependsOn, "higher-id dependent depends_on lower-id")
+	})
+
+	t.Run("DispatchExcludesDependent", func(t *testing.T) {
+		gf := newOverlapping()
+		EnforceFileOverlapDeps(gf)
+
+		ready := gf.DisjointReadySet(2)
+		require.Len(t, ready, 1, "dependent is dep-gated, never co-dispatched")
+		assert.Equal(t, "goal-001", ready[0].ID)
+
+		// Producer completes → dependent becomes runnable (serialized after, not deadlocked).
+		g1, ok := gf.GoalByID("goal-001")
+		require.True(t, ok)
+		g1.Status = GoalDone
+
+		ready = gf.DisjointReadySet(2)
+		require.Len(t, ready, 1)
+		assert.Equal(t, "goal-002", ready[0].ID)
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		gf := newOverlapping()
+		first := EnforceFileOverlapDeps(gf)
+		require.Len(t, first, 1)
+
+		second := EnforceFileOverlapDeps(gf)
+		assert.Empty(t, second, "second call adds zero edges")
+
+		g2, ok := gf.GoalByID("goal-002")
+		require.True(t, ok)
+		assert.Equal(t, []string{"goal-001"}, g2.DependsOn, "DependsOn unchanged on re-run")
+	})
+
+	t.Run("no-overlap-untouched", func(t *testing.T) {
+		gf := &GoalsFile{
+			Goals: []Goal{
+				{ID: "goal-001", Scope: []string{"src/Entity/Alpha.php"}, Status: GoalPending},
+				{ID: "goal-002", Scope: []string{"src/Entity/Beta.php"}, Status: GoalPending},
+			},
+		}
+		edges := EnforceFileOverlapDeps(gf)
+		assert.Empty(t, edges)
+
+		g1, _ := gf.GoalByID("goal-001")
+		g2, _ := gf.GoalByID("goal-002")
+		assert.Empty(t, g1.DependsOn)
+		assert.Empty(t, g2.DependsOn)
+	})
+
+	t.Run("already-ordered-no-cycle", func(t *testing.T) {
+		// goal-001 already depends_on goal-002, overlapping stems: adding goal-002→goal-001
+		// would create a 2-cycle. The reverse-path guard must skip it.
+		gf := &GoalsFile{
+			Goals: []Goal{
+				{
+					ID:        "goal-001",
+					Scope:     []string{"src/Entity/ProjectBinding.php"},
+					DependsOn: []string{"goal-002"},
+					Status:    GoalPending,
+				},
+				{
+					ID:     "goal-002",
+					Scope:  []string{"src/Entity/ProjectBinding.php"},
+					Status: GoalPending,
+				},
+			},
+		}
+		edges := EnforceFileOverlapDeps(gf)
+		assert.Empty(t, edges, "reverse edge skipped — no cycle")
+
+		g2, _ := gf.GoalByID("goal-002")
+		assert.Empty(t, g2.DependsOn, "no edge added to producer")
+	})
+
+	t.Run("nil-and-empty-goals", func(t *testing.T) {
+		edges := EnforceFileOverlapDeps(nil)
+		require.NotNil(t, edges)
+		assert.Empty(t, edges)
+
+		edges = EnforceFileOverlapDeps(&GoalsFile{})
+		require.NotNil(t, edges)
+		assert.Empty(t, edges)
+	})
+}
+
 func TestInferMissingDeps_SelfReference(t *testing.T) {
 	gf := &GoalsFile{
 		Goals: []Goal{

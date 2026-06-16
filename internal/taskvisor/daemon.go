@@ -600,12 +600,17 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 			f.Consumer, f.Stem, f.Producer, f.Evidence)
 	}
 
+	enforced := EnforceFileOverlapDeps(goals)
+	for _, e := range enforced {
+		log.Printf("dep enforce: %s now depends_on %s (file overlap: %s) — serialized pre-dispatch", e.From, e.To, e.Stem)
+	}
+
 	if g, ok := goals.NextPendingGoal(); ok {
 		goals.CurrentGoal = g.ID
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
-	} else if reconciled {
+	} else if reconciled || len(enforced) > 0 {
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
