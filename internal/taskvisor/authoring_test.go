@@ -351,7 +351,7 @@ func TestCreateGoal_PreconditionsPersisted(t *testing.T) {
 func TestWriteValidateScript_CreatesExecutableScript(t *testing.T) {
 	dir := t.TempDir()
 
-	err := WriteValidateScript(dir, []string{"go test ./...", "go vet ./..."})
+	err := WriteValidateScript(dir, []string{"go test ./...", "go vet ./..."}, LocalExecRuntime())
 	require.NoError(t, err)
 
 	scriptPath := filepath.Join(dir, "validate.sh")
@@ -371,7 +371,7 @@ func TestWriteValidateScript_CreatesExecutableScript(t *testing.T) {
 func TestWriteValidateScript_EmptyRulesNoFile(t *testing.T) {
 	dir := t.TempDir()
 
-	err := WriteValidateScript(dir, nil)
+	err := WriteValidateScript(dir, nil, LocalExecRuntime())
 	require.NoError(t, err)
 
 	_, statErr := os.Stat(filepath.Join(dir, "validate.sh"))
@@ -404,7 +404,7 @@ func TestWriteValidateScript_RejectsSyntaxError(t *testing.T) {
 	// An unbalanced '(' reproduces the goal-001 failure ("(" unexpected): a
 	// validate entry that is prose, not a runnable command, must fail fast at
 	// authoring time instead of after a full supervise→validate cycle.
-	err := WriteValidateScript(t.TempDir(), []string{"fix the parser (see note"})
+	err := WriteValidateScript(t.TempDir(), []string{"fix the parser (see note"}, LocalExecRuntime())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "validate.sh syntax error")
 }
@@ -412,7 +412,7 @@ func TestWriteValidateScript_RejectsSyntaxError(t *testing.T) {
 func TestWriteValidateScript_AcceptsValidScript(t *testing.T) {
 	dir := t.TempDir()
 
-	err := WriteValidateScript(dir, []string{"go test ./...", "grep -qn foo bar.go"})
+	err := WriteValidateScript(dir, []string{"go test ./...", "grep -qn foo bar.go"}, LocalExecRuntime())
 	require.NoError(t, err)
 
 	scriptPath := filepath.Join(dir, "validate.sh")
@@ -420,6 +420,59 @@ func TestWriteValidateScript_AcceptsValidScript(t *testing.T) {
 	info, err := os.Stat(scriptPath)
 	require.NoError(t, err)
 	assert.True(t, info.Mode().Perm()&0o111 != 0, "validate.sh must be executable")
+}
+
+func TestWriteValidateScript_WrapsToolchainUnderDocker(t *testing.T) {
+	dir := t.TempDir()
+	er := ExecRuntime{RunTarget: "docker", AppSvc: "app"}
+
+	err := WriteValidateScript(dir, []string{
+		"composer p2:test",
+		"grep -q wrapCommand internal/taskvisor/authoring.go",
+	}, er)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(dir, "validate.sh"))
+	require.NoError(t, err)
+	s := string(content)
+
+	// PHP toolchain command is wrapped into the app container.
+	assert.Contains(t, s, "docker compose exec -T app sh -c 'composer p2:test'")
+	// Host command stays verbatim — never wrapped.
+	assert.Contains(t, s, "grep -q wrapCommand internal/taskvisor/authoring.go")
+	assert.NotContains(t, s, "docker compose exec -T app sh -c 'grep")
+}
+
+func TestWriteValidateScript_VerbatimInLocalMode(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteValidateScript(dir, []string{"composer p2:test"}, LocalExecRuntime())
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(dir, "validate.sh"))
+	require.NoError(t, err)
+	s := string(content)
+
+	// Byte-identical to the pre-change verbatim output: bare command, no docker.
+	assert.Contains(t, s, "composer p2:test")
+	assert.NotContains(t, s, "docker compose exec")
+}
+
+func TestWriteValidateScript_IdempotentAlreadyWrapped(t *testing.T) {
+	dir := t.TempDir()
+	er := ExecRuntime{RunTarget: "docker", AppSvc: "app"}
+	prewrapped := "docker compose exec -T app sh -c 'composer p2:test'"
+
+	err := WriteValidateScript(dir, []string{prewrapped}, er)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(dir, "validate.sh"))
+	require.NoError(t, err)
+	s := string(content)
+
+	// Written once, unchanged — no double wrap.
+	assert.Contains(t, s, prewrapped)
+	assert.Equal(t, 1, strings.Count(s, "docker compose exec"), "must not double-wrap an already-wrapped command")
 }
 
 func TestCreateGoal_RejectsMalformedValidate(t *testing.T) {

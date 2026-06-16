@@ -186,7 +186,12 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 	if err := WriteGoalMD(goalDir, spec.Description, spec.Phase, lane, spec.Acceptance, spec.Validate, spec.Preconditions, spec.Context, spec.NotInScope, spec.Investigators); err != nil {
 		return "", false, fmt.Errorf("write goal.md: %w", err)
 	}
-	if err := WriteValidateScript(goalDir, spec.Validate); err != nil {
+	// Resolve the project's exec runtime (docker vs local, from
+	// docs/architecture/test-environment.md) so validate.sh's toolchain commands
+	// are wrapped into their container the same way investigator commands are.
+	// AppSvc/NodeSvc are never hardcoded — they come only from ResolveExecRuntime.
+	er := ResolveExecRuntime(workDir)
+	if err := WriteValidateScript(goalDir, spec.Validate, er); err != nil {
 		return "", false, fmt.Errorf("write validate.sh: %w", err)
 	}
 
@@ -198,14 +203,22 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 // failing command fails the whole validation. P7's GateTerminalPass requires
 // this script to exit 0 for a terminal pass — without it, every LLM-validator
 // pass is downgraded to error/ops and burns ValidationRetries.
-func WriteValidateScript(goalDir string, rules []string) error {
+//
+// Each rule is routed through wrapCommand(r, er) — the same daemon-side runtime
+// normalisation investigator commands already get in goal.md — so a goal that
+// emits a bare PHP/Node toolchain command (CMD-CONV "emit bare, daemon wraps")
+// is compiled into `docker compose exec -T <svc> sh -c '...'` when the project
+// declares Run Target: docker. Local mode and host commands pass through
+// unchanged (wrapCommand is a no-op for er.RunTarget != "docker" and for the
+// host class), so non-docker projects are byte-identical to before.
+func WriteValidateScript(goalDir string, rules []string, er ExecRuntime) error {
 	if len(rules) == 0 {
 		return nil
 	}
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\nset -e\n")
 	for _, r := range rules {
-		b.WriteString(r)
+		b.WriteString(wrapCommand(r, er))
 		b.WriteByte('\n')
 	}
 	scriptPath := filepath.Join(goalDir, "validate.sh")
