@@ -103,8 +103,20 @@
       <rule>Payload is bounded: ≤10KB total; truncate excerpts rather than dropping the submission.</rule>
     </step>
 
+    <step n="4b" title="Resolve target project lane">
+      <action>Call the projects-list MCP tool to enumerate the available project lanes (each lane NAME + its addresses). Read-only; the result names which checkouts exist locally.</action>
+      <action>AUTO-RESOLVE: if the PROBLEM — or the title/description derived from it in step 3 — names a tmux-cli internal component (daemon, taskvisor, validator, supervisor, plan, investigate, execute, rules, windows, goals), set project=cli. This fires in EVERY context, including autonomous callers, because keyword matching is deterministic and prompt-free.</action>
+      <check condition="ambiguous (could be the caller's OWN project OR tmux-cli infra) AND interactive reporter use ONLY — invoked directly by a human as /tmux:task-report, NOT reached via the &lt;error-reporting&gt; delegation path or /tmux:task-list consume's cross-project rung, AND interactive prompting is not blocked">
+        <action>Present the projects-list lanes and ask the user to pick the target lane; set project to the chosen lane. This is the ONLY interactive point in this step.</action>
+        <action>If the user gives no answer, fall through to DEFAULT (keep the caller's own lane).</action>
+      </check>
+      <action>DEFAULT: otherwise keep the caller's own project lane — leave project unset/unchanged, exactly as today's behavior.</action>
+      <rule critical="true">AUTONOMOUS-SAFETY: autonomous callers (the shared &lt;error-reporting&gt; procedure, /tmux:task-list consume's cross-project filing) traverse keyword-auto-resolve → DEFAULT ONLY; the ambiguous-lane ask branch MUST NOT fire for them. NEVER inject an unconditional AskUserQuestion.</rule>
+      <rule>If projects-list returns an error or an empty list, fall back to DEFAULT (caller's own lane); never block submit on lane resolution.</rule>
+    </step>
+
     <step n="5" title="Submit">
-      <action>Call the task-report MCP tool with: category, severity, title, description, proposed_fix, expected_green_state, depends_on (when prerequisites were derived in 3.7 — omit otherwise), payload. When depends_on edges are not accepted at submit, add them post-submit with task-link (prerequisite_id per edge).</action>
+      <action>Call the task-report MCP tool with: category, severity, title, description, proposed_fix, expected_green_state, depends_on (when prerequisites were derived in 3.7 — omit otherwise), project (the lane resolved in step 4b — omit to keep the caller's default lane), payload. When depends_on edges are not accepted at submit, add them post-submit with task-link (prerequisite_id per edge).</action>
       <check condition="tool returns an invalid-input error">
         <action>The error names the failing field(s). Fix exactly those fields per step 3 and resubmit ONCE. If it fails again, fall through to the outbox branch — and append a final line `## Invalid Fields: {comma-separated field names from the last error}` to the draft, so the retry re-derives them instead of resubmitting a payload the backend already rejected (a verbatim retry of an invalid draft can never succeed).</action>
       </check>
