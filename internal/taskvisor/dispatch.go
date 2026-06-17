@@ -322,6 +322,19 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 		return nil
 	}
 
+	// Git-freshness preflight (goal-005): fetch origin and refuse to dispatch a
+	// diverged checkout. Runs AFTER the precondition block and BEFORE
+	// ensureWorktree so a refused dispatch creates no window and consumes no
+	// worktree. A no-op when taskvisor.git_freshness is off (d.gitFreshness false,
+	// e.g. direct-construct dispatch tests). On a diverged/fetch-fail it blocks the
+	// goal and returns nil; only an infra error (signal/goals write) returns err.
+	if err := d.gitFreshnessGate(goal, goals); err != nil {
+		return err
+	}
+	if goal.Status == GoalBlocked {
+		return nil
+	}
+
 	// Per-goal worktree isolation (E1-1a), gated on MaxGoals>1. At MaxGoals=1 this
 	// returns d.workDir with NO git call; at MaxGoals>1 it materializes (or reuses)
 	// .tmux-cli-worktrees/<id> and returns its path so the supervisor — and the
@@ -470,6 +483,16 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	allNames := d.collectManagedNames(goal.ID)
 	if err := d.waitWindowsGone(allNames, 5*time.Second); err != nil {
 		return fmt.Errorf("waitWindowsGone: %w", err)
+	}
+
+	// Git-freshness preflight (goal-005): same gate as dispatch(), before
+	// ensureWorktree, so a retry against a now-diverged checkout blocks rather
+	// than rebuilding on a stale base.
+	if err := d.gitFreshnessGate(goal, goals); err != nil {
+		return err
+	}
+	if goal.Status == GoalBlocked {
+		return nil
 	}
 
 	// Reuse (or create) this goal's worktree for the retry cycle (E1-1a). ensureWorktree

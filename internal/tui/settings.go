@@ -58,6 +58,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.auto_commit", label: "Taskvisor Auto-Commit", kind: "bool", value: settings.Taskvisor.AutoCommitEnabled()},
 			{key: "plan.audit", label: "Plan Audit", kind: "bool", value: settings.Plan.AuditEnabled()},
 			{key: "taskvisor.auto_push", label: "Taskvisor Auto-Push", kind: "bool", value: settings.Taskvisor.AutoPush},
+			{key: "taskvisor.git_freshness", label: "Taskvisor Git-Freshness", kind: "bool", value: settings.Taskvisor.GitFreshnessEnabled()},
 		},
 	}
 }
@@ -243,6 +244,9 @@ func (m Model) ToSettings() *setup.Settings {
 		case "taskvisor.auto_commit":
 			v := item.value
 			s.Taskvisor.AutoCommit = &v
+		case "taskvisor.git_freshness":
+			v := item.value
+			s.Taskvisor.GitFreshness = &v
 		case "plan.audit":
 			v := item.value
 			s.Plan.Audit = &v

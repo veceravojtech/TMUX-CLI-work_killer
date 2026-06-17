@@ -170,6 +170,12 @@ type Daemon struct {
 	// does NOT seed it; Run() overrides it from taskvisor.auto_push. Warn-only by
 	// contract — a push failure never alters goal status or daemon flow.
 	autoPush bool
+	// gitFreshness gates the pre-dispatch git-freshness preflight
+	// (gitFreshnessGate): before a goal is dispatched the daemon fetches origin
+	// and refuses to dispatch a diverged checkout. Zero-value false so a
+	// direct-construct Daemon (dispatch unit tests) never touches the git runner;
+	// seeded from taskvisor.git_freshness (GitFreshnessEnabled) ONLY in Run().
+	gitFreshness bool
 	// autoResumeInterval paces resumeDownstreamLoop, the §5 background poll that
 	// re-evaluates precondition-blocked goals. Independent of pollInterval; seeded
 	// from taskvisor.auto_resume_interval_sec (default 30s) at construction/Run.
@@ -356,6 +362,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.restartOnStaleBinary = settings.Taskvisor.RestartOnStaleBinary
 		d.autoCommit = settings.Taskvisor.AutoCommitEnabled()
 		d.autoPush = settings.Taskvisor.AutoPush
+		d.gitFreshness = settings.Taskvisor.GitFreshnessEnabled()
 	}
 
 	// Backend failure reporting (goal-008/009). Config is read independently of

@@ -3,11 +3,14 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/console/tmux-cli/internal/producer"
+	"github.com/console/tmux-cli/internal/setup"
+	"github.com/console/tmux-cli/internal/taskvisor"
 )
 
 // This file adds the task *query* tools (task-list, task-get, task-claim,
@@ -329,6 +332,17 @@ func (s *Server) TaskClaim(ctx context.Context, in TaskClaimInput) (*TaskClaimOu
 	}
 	if err := rejectIfNotIn("severity", in.Severity, producer.ValidSeverities); err != nil {
 		return nil, err
+	}
+
+	// Git-freshness preflight (goal-005): refuse to claim a backend task onto a
+	// diverged checkout. Best-effort — a settings-load failure skips the gate (a
+	// claim is never blocked on a config-read error), and a bare working dir with
+	// no upstream SKIPs inside PreflightGitFreshness, keeping existing claim tests
+	// green. Runs after filter validation, before the producer client is built.
+	if settings, lerr := setup.LoadSettings(s.workingDir); lerr == nil && settings.Taskvisor.GitFreshnessEnabled() {
+		if _, ferr := taskvisor.PreflightGitFreshness(ctx, nil, s.workingDir, filepath.Base(s.workingDir)); ferr != nil {
+			return nil, ferr
+		}
 	}
 
 	client, err := s.taskClient()

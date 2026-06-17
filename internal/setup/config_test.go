@@ -826,6 +826,74 @@ func TestTaskvisorSettings_AutoCommitEnabled_NilSafe(t *testing.T) {
 	assert.True(t, ts.AutoCommitEnabled(), "nil pointer must read as enabled")
 }
 
+// TestDefaultSettings_GitFreshness_True pins the new-project default: the
+// git-freshness preflight is ON (goal-005).
+func TestDefaultSettings_GitFreshness_True(t *testing.T) {
+	s := DefaultSettings()
+	require.NotNil(t, s.Taskvisor.GitFreshness)
+	assert.True(t, *s.Taskvisor.GitFreshness)
+	assert.True(t, s.Taskvisor.GitFreshnessEnabled())
+}
+
+// TestTaskvisorSettings_GitFreshnessEnabled_NilSafe pins the accessor's
+// nil-safety for hand-constructed Settings{} (tests, partial yaml decodes).
+func TestTaskvisorSettings_GitFreshnessEnabled_NilSafe(t *testing.T) {
+	var ts TaskvisorSettings
+	assert.True(t, ts.GitFreshnessEnabled(), "nil pointer must read as enabled")
+}
+
+// TestLoadSettings_LegacyMissing_GitFreshness_True proves a legacy setting.yaml
+// without the git_freshness key loads with the preflight ENABLED (nil → true
+// backfill, mirroring the AutoCommit idiom) and that the save-back persists the
+// key explicitly so the file self-documents after one load.
+func TestLoadSettings_LegacyMissing_GitFreshness_True(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  dispatch_timeout: 3600
+  poll_interval: 5
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Taskvisor.GitFreshness, "nil must be backfilled to a true-pointer")
+	assert.True(t, *s.Taskvisor.GitFreshness)
+	assert.True(t, s.Taskvisor.GitFreshnessEnabled(), "legacy yaml must default git-freshness ON")
+
+	raw, err := os.ReadFile(settingFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "git_freshness: true", "save-back must persist the backfilled key")
+}
+
+// TestSaveSettings_GitFreshnessRoundTrip proves an explicit git_freshness: false
+// opt-out survives the backfill and the save-back round-trip untouched.
+func TestSaveSettings_GitFreshnessRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  git_freshness: false
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Taskvisor.GitFreshness)
+	assert.False(t, *s.Taskvisor.GitFreshness)
+	assert.False(t, s.Taskvisor.GitFreshnessEnabled(), "explicit false must opt out")
+
+	// Round-trip: load again after the save-back — false must survive.
+	s2, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.False(t, s2.Taskvisor.GitFreshnessEnabled(), "opt-out must survive the save-back round-trip")
+}
+
 // TestLoadSettings_PlanAuditDefaultsOnWhenAbsent proves a legacy setting.yaml
 // with a plan: block but no audit key loads with the blind plan audit ENABLED
 // (nil → true backfill, mirroring the AutoCommit idiom) and that the save-back

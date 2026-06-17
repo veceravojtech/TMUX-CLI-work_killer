@@ -141,6 +141,14 @@ type TaskvisorSettings struct {
 	// nil is backfilled to true by LoadSettings (mirroring the TransientRetry
 	// idiom). Read via AutoCommitEnabled(), never directly.
 	AutoCommit *bool `yaml:"auto_commit"`
+	// GitFreshness gates the pre-dispatch / pre-claim git-freshness preflight
+	// (goal-005): before a goal is dispatched or a backend task is claimed, the
+	// daemon fetches origin and refuses to start work on a diverged checkout. A
+	// *bool (not plain bool), byte-for-byte mirroring AutoCommit, so a legacy
+	// setting.yaml predating the key (nil) is distinguishable from an explicit
+	// `git_freshness: false` opt-out: nil is backfilled to true by LoadSettings.
+	// Read via GitFreshnessEnabled(), never directly.
+	GitFreshness *bool `yaml:"git_freshness"`
 }
 
 // AutoCommitEnabled reports whether completion-time auto-commit is on. Nil
@@ -148,6 +156,13 @@ type TaskvisorSettings struct {
 // only an explicit false opts out.
 func (t TaskvisorSettings) AutoCommitEnabled() bool {
 	return t.AutoCommit == nil || *t.AutoCommit
+}
+
+// GitFreshnessEnabled reports whether the pre-dispatch/pre-claim git-freshness
+// preflight is on. Nil (a hand-constructed Settings{} or a pre-backfill legacy
+// decode) defaults ON; only an explicit false opts out.
+func (t TaskvisorSettings) GitFreshnessEnabled() bool {
+	return t.GitFreshness == nil || *t.GitFreshness
 }
 
 // WorkerBudgetSec is the per-worker time budget in seconds, mirroring the
@@ -213,6 +228,7 @@ type Settings struct {
 
 func DefaultSettings() *Settings {
 	autoCommit := true
+	gitFreshness := true
 	planAudit := true
 	return &Settings{
 		Hooks: HooksSettings{
@@ -260,6 +276,7 @@ func DefaultSettings() *Settings {
 			TransientRetryBackoffMs:   500,
 			MaxWallClockSec:           14400,
 			AutoCommit:                &autoCommit,
+			GitFreshness:              &gitFreshness,
 		},
 	}
 }
@@ -303,6 +320,12 @@ func LoadSettings(projectRoot string) (*Settings, error) {
 	if s.Taskvisor.AutoCommit == nil {
 		autoCommit := true
 		s.Taskvisor.AutoCommit = &autoCommit
+	}
+	// Backfill git_freshness for a legacy setting.yaml predating the key: nil
+	// means pre-feature (default ON), while an explicit false survives untouched.
+	if s.Taskvisor.GitFreshness == nil {
+		gitFreshness := true
+		s.Taskvisor.GitFreshness = &gitFreshness
 	}
 	// Backfill plan.audit for a legacy setting.yaml predating the key: nil
 	// means pre-feature (default ON), while an explicit false survives untouched.
