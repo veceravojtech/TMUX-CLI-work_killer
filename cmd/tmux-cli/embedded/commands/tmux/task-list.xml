@@ -89,6 +89,7 @@ age = humanized now − created_at (e.g. 3d, 5h).</template>
       </substep>
       <substep n="3.1" title="Claim BEFORE any work">
         <action>Call task-claim with FILTERS (category/severity).</action>
+        <note id="zombie-reconcile-preflight">task-claim runs a zombie-reconcile preflight FIRST (before the task-225 git-freshness gate and before claiming): any goal stuck `running` whose worker tmux session died while the daemon stayed alive is auto re-pended (or failed if its retry budget is spent) so it stops head-of-line-blocking the queue — startup crash-recovery never re-fires for a live daemon whose session died, so the claim path self-heals it. The preflight is best-effort and reuses the exact crash-recovery liveness/cleanup logic; it never blocks a claim, never increments retries, and runs before git-freshness so local self-healing happens even on a diverged checkout (reconcile is neither a claim nor a dispatch, so "nothing claimed on refusal" still holds).</note>
         <check condition="claimed == false">
           <action>Print: "Nothing claimable (filters: {FILTERS})." and exit the consume loop.</action>
         </check>

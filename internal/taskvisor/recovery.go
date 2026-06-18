@@ -280,11 +280,24 @@ func liveGoalWindows(windows []tmux.WindowInfo, running []*Goal, mg int) []strin
 // idempotent across recovery cycles); any other remove error is logged but never
 // fatal, so a marker-delete failure cannot abort recovery of the remaining goals.
 func (d *Daemon) clearOrphanedGoalMarkers(goalID string) {
+	clearGoalRuntimeMarkers(d.workDir, goalID)
+}
+
+// clearGoalRuntimeMarkers is the free-function core of clearOrphanedGoalMarkers:
+// it idempotently deletes the same four stale runtime handles (the per-goal
+// supervisor-window + current-cycle markers and the top-level
+// taskvisor-current-goal + taskvisor-current-cycle pointers) for goalID under
+// workDir. Extracted so the consume-path zombie reconcile (zombie_reconcile.go)
+// can clean up an orphaned goal with byte-identical semantics to startup crash
+// recovery — detection and cleanup can never drift between the two entry points.
+// It deliberately NEVER removes taskvisor-active (the daemon stays active);
+// os.IsNotExist is tolerated and any other remove error is logged but non-fatal.
+func clearGoalRuntimeMarkers(workDir, goalID string) {
 	paths := []string{
-		filepath.Join(d.workDir, ".tmux-cli", "goals", goalID, "supervisor-window"),
-		filepath.Join(d.workDir, ".tmux-cli", "goals", goalID, "current-cycle"),
-		filepath.Join(d.workDir, ".tmux-cli", "taskvisor-current-goal"),
-		filepath.Join(d.workDir, ".tmux-cli", "taskvisor-current-cycle"),
+		filepath.Join(workDir, ".tmux-cli", "goals", goalID, "supervisor-window"),
+		filepath.Join(workDir, ".tmux-cli", "goals", goalID, "current-cycle"),
+		filepath.Join(workDir, ".tmux-cli", "taskvisor-current-goal"),
+		filepath.Join(workDir, ".tmux-cli", "taskvisor-current-cycle"),
 	}
 	for _, p := range paths {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {

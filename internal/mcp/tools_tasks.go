@@ -334,6 +334,16 @@ func (s *Server) TaskClaim(ctx context.Context, in TaskClaimInput) (*TaskClaimOu
 		return nil, err
 	}
 
+	// Zombie-reconcile preflight (goal-006): before claiming, re-pend (or fail)
+	// any GoalRunning goal whose worker tmux session died while the daemon lived —
+	// such a zombie head-of-line-blocks the queue, and startup crashRecovery never
+	// re-fires for a live daemon. Runs BEFORE git-freshness so local self-healing
+	// happens even on a diverged checkout; it is neither a claim nor a dispatch, so
+	// "nothing claimed/dispatched on refusal" still holds. Best-effort: any
+	// tmux/goals error is swallowed (the wrapper self-logs) and never blocks a
+	// claim, mirroring the git-freshness best-effort block below.
+	_, _ = taskvisor.ReconcileZombieGoalsForSession(s.workingDir, s.executor)
+
 	// Git-freshness preflight (goal-005): refuse to claim a backend task onto a
 	// diverged checkout. Best-effort — a settings-load failure skips the gate (a
 	// claim is never blocked on a config-read error), and a bare working dir with
