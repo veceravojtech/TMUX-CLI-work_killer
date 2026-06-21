@@ -475,3 +475,44 @@
     - "review: changed Application use cases name their role — command handler (write, illustrative *Handler) vs query service (read, illustrative *QueryService impl *QueryContract), resolved from project vocabulary"
   validate_kind: review
   phase: architecture
+
+- id: PHP-ARCH-016
+  category: architecture
+  scope: generic
+  severity: should
+  title: "Application read-model / query types name the concept, not a DTO or role suffix"
+  rule: >
+    An Application-layer read model or query-result type names the domain concept it
+    represents, and a query input type names what identifies the lookup — not the DDD
+    role or the namespace folder it lives in. A suffix that merely echoes the role or
+    directory (e.g. a *DTO result, or a *Query input whose prefix already says what it
+    keys on) is the smell; mirror the slice exemplar's concept vocabulary instead.
+    Phrased by concept, not suffix — a name whose suffix only repeats its layer or role
+    violates the rule.
+  why: >
+    Concept-named read models read like the ubiquitous language at call sites; a
+    role- or folder-echoing suffix is noise the namespace already conveys and obscures
+    which domain concept the data carries.
+  applies_to:
+    - "{src}/**/Application/**/*.php"
+  detect:
+    - "a query-result / read-model type suffixed with its role or layer (e.g. *DTO) instead of the concept it carries"
+    - "a query input type whose suffix repeats what its prefix already identifies"
+    - "an Application read-model name that echoes the namespace folder rather than the domain concept"
+  fix: >
+    Rename the read model / query type to the domain concept it represents (illustrative:
+    a ReservationDTO result becomes Reservation; a ReservationIdQuery input becomes the
+    concept that identifies it), dropping the role- or folder-echoing suffix.
+  autofix: structural
+  examples:
+    bad: "class ReservationDTO"
+    good: "class Reservation"
+  acceptance:
+    - "GIVEN an Application read-model / query-result type THEN its name states the domain concept, not a role or layer suffix"
+    - "GIVEN an Application query input type THEN its name states what identifies the lookup, not a redundant role suffix"
+  validate:
+    - "review: changed Application read-model / query types name the domain concept they carry (illustrative: a *DTO result becomes the concept, a redundant *Query input suffix is dropped), resolved from project vocabulary"
+  adapted_from: PHP-ARCH-015
+  origin: "review feedback on a reservation read slice asked to drop result/query type suffixes that merely echo the DDD role or namespace folder"
+  validate_kind: review
+  phase: architecture
