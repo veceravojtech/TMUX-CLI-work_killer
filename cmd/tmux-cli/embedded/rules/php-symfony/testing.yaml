@@ -1,0 +1,33 @@
+- id: PHP-TEST-006
+  category: testing
+  scope: generic
+  severity: should
+  title: "Property/tenant-scoped query needs a test that proves cross-property isolation"
+  rule: >
+    A query service whose contract takes a propertyId / tenant id must be
+    covered by a test whose fixtures span at least two distinct propertyId
+    values, and that asserts a row belonging to a foreign property is excluded
+    from the result for the queried property. A single-property fixture is
+    insufficient: it cannot distinguish a correct property filter from a missing
+    or broken one.
+  why: >
+    With only one property in the fixture, a query that forgot its property
+    filter returns the same rows as one that applies it, so the test passes
+    even when cross-property isolation is broken and another tenant's data can
+    leak. A second property in the data is what makes the isolation assertion
+    falsifiable.
+  applies_to:
+    - "{src}/**/Application/**/*Query*.php"
+    - "{src}/**/Application/**/*QueryService.php"
+    - "tests/**/*QueryServiceTest.php"
+    - "tests/**/*QueryTest.php"
+  acceptance:
+    - "GIVEN a query service whose contract takes a propertyId/tenant id, WHEN its test is reviewed, THEN the fixtures contain rows for at least two distinct propertyId values"
+    - "GIVEN such a test, THEN it asserts that a row belonging to a foreign property is excluded from the result returned for the queried property"
+    - "GIVEN a query with no propertyId/tenant parameter, THEN the rule is inert"
+  validate:
+    - "review: every property/tenant-scoped query service changed in the diff has a test whose fixtures span >=2 distinct propertyId values"
+    - "review: that test asserts a foreign-property row is excluded from the result for the queried property"
+    - "review: the rule stays inert for queries that take no propertyId/tenant id"
+  validate_kind: review
+  phase: testing

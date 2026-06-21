@@ -107,3 +107,4 @@ packs:
       - scaffold.yaml
       - code-style.yaml
       - analysis.yaml
+      - testing.yaml
