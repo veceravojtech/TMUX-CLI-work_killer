@@ -57,6 +57,14 @@ full-aggregate writes are impossible.
 `src/Application/<Module>/` holds the use cases and **must not** contain a
 repository with save/delete/update methods (those belong to Domain).
 
+**Place each `Application/<Module>` in the context that owns its concept.** A
+module's read models, query services and repositories belong in the bounded context
+that ALREADY holds the `Application/<Concept>` for its dominant returned aggregate /
+`*Id` / DTO — author `Guest` under customer, `Invoice` under invoicing, `Partner`
+under crm, never under whatever context is convenient. A green deptrac slice does
+not authorize a misplaced concept (deptrac checks dependency direction only); the
+catalogue rule PHP-ARCH-017 carries this ownership check.
+
 - **Query services** (`Query/`) are read-only. Each query service has its **own**
   query-repository interface declared in the Application layer — it does **not**
   reuse the Domain repository. Query services are standalone (they never call each

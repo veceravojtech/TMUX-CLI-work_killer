@@ -516,3 +516,52 @@
   origin: "review feedback on a reservation read slice asked to drop result/query type suffixes that merely echo the DDD role or namespace folder"
   validate_kind: review
   phase: architecture
+
+- id: PHP-ARCH-017
+  category: architecture
+  scope: generic
+  severity: should
+  title: "Place a module in the bounded context that owns its concept"
+  rule: >
+    A module's read models, query services and repositories live in the bounded
+    context that OWNS their concept — not merely a context they happen to compile
+    under. Apply this DETERMINISTIC owning-context heuristic: the owning context is
+    the one that ALREADY contains an Application/<Concept> module for the module's
+    dominant returned aggregate / *Id / DTO concept (worked examples: property owns
+    ObjectKind / GuestCategory / StayPackage; customer owns Guest; invoicing owns
+    Invoice; crm owns Partner — resolve the actual owner from project discovery, not
+    this list). Decide the host_context from the module's path and the owning_context
+    from where the dominant concept's Application/<Concept> already lives: if
+    host_context != owning_context the placement is VIOLATED; if host_context ==
+    owning_context it is COMPLIANT. This holds EVEN WHEN deptrac is green — deptrac
+    checks dependency DIRECTION only, so a self-contained module built on shared-kernel
+    types passes regardless of host context; the catalogue, not deptrac, carries this
+    ownership check. If no context yet holds Application/<Concept>, the concept is
+    ownerless: guide creating the module in the context whose ubiquitous language owns
+    it rather than flagging a false violation.
+  why: >
+    A concept authored under the wrong context compiles and passes deptrac yet
+    fragments the domain — Guest/Invoice/Partner read-models stranded under reservation
+    read clean but split ownership across contexts. Catching the misplacement at
+    architecture-review time avoids the costly multi-module relocation a human reviewer
+    would otherwise force later.
+  applies_to:
+    - "{src}/**/Application/**/*.php"
+    - "{src}/Domain/**/*.php"
+    - "{src}/{infra}/**/*.php"
+  detect:
+    - "a read model / query service / repository whose dominant concept's Application/<Concept> already lives in a DIFFERENT context (host_context != owning_context)"
+    - "a module authored under the context it was convenient to build in rather than the one whose ubiquitous language owns its dominant aggregate / *Id / DTO"
+    - "a concept-misplacement that deptrac passes because it only uses shared-kernel types (green direction, wrong host)"
+  fix: >
+    Relocate the module's read models, query services and repositories into the
+    owning context — the one that already holds Application/<Concept> for the dominant
+    returned aggregate / *Id / DTO concept. If the concept is ownerless, create the
+    module in the context whose ubiquitous language owns it.
+  acceptance:
+    - "GIVEN a module whose host_context == owning_context (the context already holds Application/<Concept> for its dominant aggregate) THEN compliant"
+    - "GIVEN a module whose host_context != owning_context (e.g. a Guest read-model under reservation while customer owns Guest) THEN violated, citing the owning context"
+  validate:
+    - "review: each changed read-model / query-service / repository lives in the context that owns its dominant concept — owning_context = the one already holding Application/<Concept> for the dominant returned aggregate / *Id / DTO (resolved from project discovery); host_context != owning_context is VIOLATED, host_context == owning_context is COMPLIANT, even when deptrac is green"
+  validate_kind: review
+  phase: architecture

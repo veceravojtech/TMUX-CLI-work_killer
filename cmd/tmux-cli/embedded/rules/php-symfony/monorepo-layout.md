@@ -77,6 +77,12 @@ ruleset:
   guess.
 - Shared concepts live in exactly one place (`contexts/previo/src` for domain
   language, `packages/*` for cross-cutting libraries), so duplication can't drift.
+- **Place a module in the context that owns its concept.** Author a module's read
+  models, query services and repositories in the bounded context that ALREADY holds
+  the `Application/<Concept>` module for its dominant aggregate / `*Id` / DTO (e.g.
+  `Guest` under customer, `Invoice` under invoicing, `Partner` under crm) — never in
+  whatever context is convenient to build under. deptrac green does not excuse a
+  misplaced concept: it checks dependency direction only (see PHP-ARCH-017).
 
 The code rules in this pack glob onto these paths via the discovery-resolved
 `{src}`/`{infra}` tokens (see `../SCHEMA.md`), NOT hardcoded prefixes: `{src}`
