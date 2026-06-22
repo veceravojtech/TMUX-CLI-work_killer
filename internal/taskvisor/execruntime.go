@@ -13,9 +13,10 @@ import (
 // single, deterministic source of truth for command runtime. Distinct from
 // goalRuntime, which is per-goal in-flight cycle state.
 type ExecRuntime struct {
-	RunTarget string // "docker" | "local"
-	AppSvc    string // PHP/app compose service (docker mode), default "app"
-	NodeSvc   string // Node/Playwright compose service (docker + frontend), else ""
+	RunTarget      string // "docker" | "local"
+	AppSvc         string // PHP/app compose service (docker mode), default "app"
+	NodeSvc        string // Node/Playwright compose service (docker + frontend), else ""
+	ComposeProject string // main stack's docker compose project name (docker mode); "" on local/legacy no-project path
 }
 
 // LocalExecRuntime is the no-op default: commands run unchanged on the host.
@@ -43,7 +44,83 @@ func ResolveExecRuntime(projectRoot string) ExecRuntime {
 	if playwrightApplicable(body) {
 		er.NodeSvc = "e2e"
 	}
+	er.ComposeProject = resolveComposeProject(projectRoot, body)
 	return er
+}
+
+// resolveComposeProject derives the main stack's docker compose project name from
+// the BASE checkout (never the worktree cwd): projectRoot is routed through
+// NormalizeProjectDir first so a per-goal worktree path maps back to base and the
+// name stays STABLE across worktrees. Precedence mirrors AppSvc resolution —
+// documented field in test-environment.md > COMPOSE_PROJECT_NAME in the main .env
+// > normalized base-dir basename — so explicit operator intent overrides the
+// basename heuristic. Each candidate is normalized; an all-invalid basename yields
+// "" (falls back to the bare legacy wrap, no regression).
+func resolveComposeProject(projectRoot, body string) string {
+	base := NormalizeProjectDir(projectRoot)
+	if name := normalizeComposeName(composeProjectFromDocumentedField(body)); name != "" {
+		return name
+	}
+	if name := normalizeComposeName(composeProjectFromEnvFile(base)); name != "" {
+		return name
+	}
+	return normalizeComposeName(filepath.Base(base))
+}
+
+// composeProjectFromDocumentedField returns the compose project name an operator
+// explicitly declares via a "Compose Project:" field in test-environment.md, else
+// "". Mirrors appServiceFromDocumentedField: split on the FIRST ':' (the colon may
+// sit inside markdown bold), strip the `*_\`` wrappers, take the first field.
+func composeProjectFromDocumentedField(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.Contains(strings.ToLower(line), "compose project") {
+			continue
+		}
+		idx := strings.Index(line, ":")
+		if idx < 0 {
+			continue
+		}
+		val := strings.Trim(line[idx+1:], "*_` \t")
+		fields := strings.Fields(val)
+		if len(fields) == 0 {
+			continue
+		}
+		return fields[0]
+	}
+	return ""
+}
+
+// composeProjectFromEnvFile reads <base>/.env and returns the value of a
+// COMPOSE_PROJECT_NAME assignment (tolerant of a leading `export ` and surrounding
+// single/double quotes), else "" when the file is absent/unreadable or the key is
+// not set. Line-based parsing — no dotenv dependency.
+func composeProjectFromEnvFile(base string) string {
+	data, err := os.ReadFile(filepath.Join(base, ".env"))
+	if err != nil {
+		return ""
+	}
+	const key = "COMPOSE_PROJECT_NAME="
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		t = strings.TrimSpace(strings.TrimPrefix(t, "export "))
+		if !strings.HasPrefix(t, key) {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(t[len(key):]), `"'`)
+	}
+	return ""
+}
+
+// normalizeComposeName lowercases s and keeps only [a-z0-9_-], then trims any
+// leading '_'/'-' — the docker compose project-name normalization (compose-go).
+func normalizeComposeName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimLeft(b.String(), "_-")
 }
 
 // runTargetIsDocker is true when test-environment.md declares "Run Target: docker"

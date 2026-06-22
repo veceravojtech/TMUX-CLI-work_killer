@@ -27,7 +27,7 @@ func wrapCommand(cmd string, er ExecRuntime) string {
 	}
 	switch classify(t) {
 	case classPHP:
-		return dockerExec(er.AppSvc, t)
+		return dockerExec(er.ComposeProject, er.AppSvc, t)
 	case classNode:
 		if er.NodeSvc == "" {
 			// A Node tool with no Node service should not have been emitted
@@ -35,16 +35,23 @@ func wrapCommand(cmd string, er ExecRuntime) string {
 			// rather than silently route it into the PHP container.
 			return cmd
 		}
-		return dockerExec(er.NodeSvc, t)
+		return dockerExec(er.ComposeProject, er.NodeSvc, t)
 	default:
 		return cmd
 	}
 }
 
 // dockerExec wraps cmd to run inside service svc. sh -c handles &&, pipes and
-// argument quoting uniformly inside the container.
-func dockerExec(svc, cmd string) string {
-	return "docker compose exec -T " + svc + " sh -c " + shSingleQuote(cmd)
+// argument quoting uniformly inside the container. When project is non-empty it
+// pins the run to that compose project (`-p <project>`) so a worktree-cwd validate
+// targets the MAIN running stack instead of a worktree-named project with no
+// services; an empty project keeps the output byte-identical to the legacy form.
+func dockerExec(project, svc, cmd string) string {
+	pin := ""
+	if project != "" {
+		pin = "-p " + project + " "
+	}
+	return "docker compose " + pin + "exec -T " + svc + " sh -c " + shSingleQuote(cmd)
 }
 
 // classify keys off the first real command token, skipping leading VAR=val

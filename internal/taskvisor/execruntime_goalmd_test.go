@@ -21,7 +21,7 @@ func dockerGoalDir(t *testing.T, runTarget string) (root, goalDir string) {
 }
 
 func TestWriteGoalMD_DockerWrapsInvestigatorCommands(t *testing.T) {
-	_, goalDir := dockerGoalDir(t, "docker")
+	root, goalDir := dockerGoalDir(t, "docker")
 	invs := []Investigator{
 		{Name: "Quality", Type: "quality-gate", Commands: []string{"vendor/bin/phpstan analyse"}, Pass: "p", Fail: "f"},
 		{Name: "Tests", Type: "test-execution", Commands: []string{"vendor/bin/phpunit"}, Pass: "p", Fail: "f"},
@@ -29,8 +29,10 @@ func TestWriteGoalMD_DockerWrapsInvestigatorCommands(t *testing.T) {
 	require.NoError(t, WriteGoalMD(goalDir, "G", "", "", []string{"AC"}, []string{"v"}, nil, "", "", invs))
 	out, err := os.ReadFile(filepath.Join(goalDir, "goal.md"))
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "docker compose exec -T app sh -c 'vendor/bin/phpstan analyse'")
-	assert.Contains(t, string(out), "docker compose exec -T app sh -c 'vendor/bin/phpunit'")
+	// TempDir basename is a counter — compute the pinned project name, don't hardcode.
+	proj := normalizeComposeName(filepath.Base(root))
+	assert.Contains(t, string(out), "docker compose -p "+proj+" exec -T app sh -c 'vendor/bin/phpstan analyse'")
+	assert.Contains(t, string(out), "docker compose -p "+proj+" exec -T app sh -c 'vendor/bin/phpunit'")
 }
 
 func TestWriteGoalMD_LocalLeavesCommandsBare(t *testing.T) {
@@ -57,8 +59,9 @@ func TestEnsureInvestigationConfig_DockerWrapsInvestigatorCommands(t *testing.T)
 
 	out, err := os.ReadFile(filepath.Join(goalDir, "goal.md"))
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "docker compose exec -T app sh -c",
-		"docker-mode investigator commands must be wrapped to run in the app container")
+	proj := normalizeComposeName(filepath.Base(root))
+	assert.Contains(t, string(out), "docker compose -p "+proj+" exec -T app sh -c",
+		"docker-mode investigator commands must be wrapped to run in the pinned app container")
 }
 
 func TestEnsureInvestigationConfig_LocalLeavesCommandsBare(t *testing.T) {

@@ -28,6 +28,20 @@ func TestWrapCommand_DockerNode(t *testing.T) {
 		wrapCommand("npx playwright test", er))
 }
 
+func TestWrapCommand_DockerPinsComposeProject(t *testing.T) {
+	er := ExecRuntime{RunTarget: "docker", AppSvc: "app", NodeSvc: "e2e", ComposeProject: "previo2"}
+	assert.Equal(t, "docker compose -p previo2 exec -T app sh -c 'composer install'",
+		wrapCommand("composer install", er))
+	assert.Equal(t, "docker compose -p previo2 exec -T e2e sh -c 'npx playwright test'",
+		wrapCommand("npx playwright test", er))
+}
+
+func TestWrapCommand_DockerNoProject_BareFormatUnchanged(t *testing.T) {
+	er := ExecRuntime{RunTarget: "docker", AppSvc: "app"} // ComposeProject empty
+	assert.Equal(t, "docker compose exec -T app sh -c 'composer install'",
+		wrapCommand("composer install", er))
+}
+
 func TestWrapCommand_DockerNode_NoNodeSvc_Unchanged(t *testing.T) {
 	er := ExecRuntime{RunTarget: "docker", AppSvc: "app"} // NodeSvc empty
 	assert.Equal(t, "npx playwright test", wrapCommand("npx playwright test", er))

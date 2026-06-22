@@ -98,6 +98,52 @@ func TestResolveExecRuntime_DocumentedFieldWinsOverPublishedPorts(t *testing.T) 
 	assert.Equal(t, "php", ResolveExecRuntime(root).AppSvc)
 }
 
+func TestResolveExecRuntime_ComposeProjectFromBasename(t *testing.T) {
+	root := t.TempDir()
+	writeTestEnvMD(t, root, "**Run Target:** docker\n**Playwright Status:** not applicable\n")
+	er := ResolveExecRuntime(root)
+	want := normalizeComposeName(filepath.Base(root))
+	assert.NotEmpty(t, want)
+	assert.Equal(t, want, er.ComposeProject)
+}
+
+func TestResolveExecRuntime_ComposeProjectFromEnvFile(t *testing.T) {
+	root := t.TempDir()
+	writeTestEnvMD(t, root, "**Run Target:** docker\n**Playwright Status:** not applicable\n")
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("COMPOSE_PROJECT_NAME=previo2\n"), 0o644))
+	assert.Equal(t, "previo2", ResolveExecRuntime(root).ComposeProject)
+}
+
+func TestResolveExecRuntime_ComposeProjectFromDocumentedField(t *testing.T) {
+	root := t.TempDir()
+	// Documented field wins over the (differing) basename heuristic.
+	writeTestEnvMD(t, root, "**Run Target:** docker\n**Compose Project:** previo2\n**Playwright Status:** not applicable\n")
+	er := ResolveExecRuntime(root)
+	assert.Equal(t, "previo2", er.ComposeProject)
+	assert.NotEqual(t, normalizeComposeName(filepath.Base(root)), er.ComposeProject)
+}
+
+func TestResolveComposeProject_StableAcrossWorktree(t *testing.T) {
+	base := t.TempDir()
+	projectRoot := filepath.Join(base, ".tmux-cli-worktrees", "goal-005")
+	got := resolveComposeProject(projectRoot, "")
+	assert.Equal(t, normalizeComposeName(filepath.Base(base)), got)
+	assert.NotEqual(t, "goal-005", got)
+}
+
+func TestResolveExecRuntime_LocalHasNoComposeProject(t *testing.T) {
+	root := t.TempDir()
+	writeTestEnvMD(t, root, "**Run Target:** local\n")
+	er := ResolveExecRuntime(root)
+	assert.Equal(t, "local", er.RunTarget)
+	assert.Equal(t, "", er.ComposeProject)
+}
+
+func TestNormalizeComposeName_Lowercases(t *testing.T) {
+	assert.Equal(t, "myapp", normalizeComposeName("My.App"))
+	assert.Equal(t, "foo-1", normalizeComposeName("_foo-1"))
+}
+
 func TestResolveExecRuntime_NoServiceDefaultsApp(t *testing.T) {
 	root := t.TempDir()
 	writeTestEnvMD(t, root, `**Run Target:** docker
