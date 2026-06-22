@@ -153,7 +153,22 @@ func runTaskvisorGoalReset(cmd *cobra.Command, args []string) error {
 		if !ok {
 			return fmt.Errorf("goal not found: %s", goalID)
 		}
-		if g.Status != taskvisor.GoalFailed && g.Status != taskvisor.GoalDone {
+		switch g.Status {
+		case taskvisor.GoalFailed, taskvisor.GoalDone:
+			// accepted — unchanged terminal-status reset path.
+		case taskvisor.GoalRunning:
+			// A phantom-running goal (no live owning window after a restart) is
+			// safe to re-pend in one command; one that still owns a live worker
+			// window stays refused unless --force, so we never yank a live worker.
+			if !resetForce && goalOwnsLiveWindowFn(cwd, goalID) {
+				return fmt.Errorf("goal %s is running and still owns a live worker window; pass --force to reset it anyway", goalID)
+			}
+			// Window-less or forced — accepted. ResetGoal only re-pends a
+			// terminal-status goal, so flip running→done first and let ResetGoal
+			// perform the full clean re-pend (zeroing retries/counters/timestamps)
+			// as the single source of truth — no duplicated field-clearing here.
+			g.Status = taskvisor.GoalDone
+		default:
 			return fmt.Errorf("goal is not in failed or done status (current: %s)", g.Status)
 		}
 
@@ -167,6 +182,31 @@ func runTaskvisorGoalReset(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Goal reset to pending: %s\n", goalID)
 	return nil
 }
+
+// goalOwnsLiveWindow reports whether goalID still owns ≥1 live namespace window
+// in the project's tmux session. It resolves the session by TMUX_CLI_PROJECT_PATH
+// and reuses the goalSkipWindowsToKill predicate (which already spares the bare
+// window-0 "supervisor"). Fail-safe direction: an unresolved session or a
+// ListWindows error returns false (treat as window-less — the recover-friendly
+// case), so a positive result is only ever a CONFIRMED live window.
+func goalOwnsLiveWindow(cwd, goalID string) bool {
+	executor := tmux.NewTmuxExecutor()
+	sessionID, err := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", cwd)
+	if err != nil || sessionID == "" {
+		return false
+	}
+	windows, err := executor.ListWindows(sessionID)
+	if err != nil {
+		return false
+	}
+	return len(goalSkipWindowsToKill(windows, goalID)) > 0
+}
+
+// goalOwnsLiveWindowFn is the indirection the reset handler invokes for the
+// running-goal liveness check; the unit test swaps it to simulate live/dead
+// windows with no real tmux server (mirrors reportWorkerCrashFn in recovery.go).
+// Production never reassigns it.
+var goalOwnsLiveWindowFn = goalOwnsLiveWindow
 
 func runTaskvisorGoalPriority(cmd *cobra.Command, args []string) error {
 	cwd, err := taskvisorProjectRoot()

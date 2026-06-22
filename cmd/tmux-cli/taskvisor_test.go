@@ -455,6 +455,107 @@ func TestGoalResetCmd_NotFound(t *testing.T) {
 	})
 }
 
+// TestGoalResetForceWindowlessRunning pins the running-goal recovery paths added
+// to runTaskvisorGoalReset: a phantom-running goal (no live owning window) resets
+// in one command, --force overrides a live window, a live-window running goal is
+// refused without --force, and a pending goal still hits the preserved message.
+// goalOwnsLiveWindowFn and resetForce are swapped per sub-test (restored via defer)
+// so no real tmux server is needed.
+func TestGoalResetForceWindowlessRunning(t *testing.T) {
+	saveRunningGoal := func(t *testing.T, dir string) {
+		gf := &taskvisor.GoalsFile{
+			Goals: []taskvisor.Goal{
+				{ID: "goal-001", Description: "Running goal", Status: taskvisor.GoalRunning, Retries: 1, MaxRetries: 3, FinishedAt: "2026-05-20T15:00:00Z"},
+			},
+		}
+		require.NoError(t, taskvisor.SaveGoals(dir, gf))
+	}
+
+	t.Run("windowless-running resets without --force", func(t *testing.T) {
+		origFn, origForce := goalOwnsLiveWindowFn, resetForce
+		defer func() { goalOwnsLiveWindowFn, resetForce = origFn, origForce }()
+		goalOwnsLiveWindowFn = func(cwd, goalID string) bool { return false }
+		resetForce = false
+
+		withTempCwd(t, func(dir string) {
+			saveRunningGoal(t, dir)
+
+			output := captureStdout(t, func() {
+				err := runTaskvisorGoalReset(nil, []string{"goal-001"})
+				require.NoError(t, err)
+			})
+			assert.Contains(t, output, "reset")
+
+			loaded, err := taskvisor.LoadGoals(dir)
+			require.NoError(t, err)
+			assert.Equal(t, taskvisor.GoalPending, loaded.Goals[0].Status)
+			assert.Equal(t, 0, loaded.Goals[0].Retries)
+			assert.Equal(t, "", loaded.Goals[0].FinishedAt)
+		})
+	})
+
+	t.Run("forced running resets despite live window", func(t *testing.T) {
+		origFn, origForce := goalOwnsLiveWindowFn, resetForce
+		defer func() { goalOwnsLiveWindowFn, resetForce = origFn, origForce }()
+		goalOwnsLiveWindowFn = func(cwd, goalID string) bool { return true }
+		resetForce = true
+
+		withTempCwd(t, func(dir string) {
+			saveRunningGoal(t, dir)
+
+			err := runTaskvisorGoalReset(nil, []string{"goal-001"})
+			require.NoError(t, err)
+
+			loaded, err := taskvisor.LoadGoals(dir)
+			require.NoError(t, err)
+			assert.Equal(t, taskvisor.GoalPending, loaded.Goals[0].Status)
+		})
+	})
+
+	t.Run("live-window running refused without --force", func(t *testing.T) {
+		origFn, origForce := goalOwnsLiveWindowFn, resetForce
+		defer func() { goalOwnsLiveWindowFn, resetForce = origFn, origForce }()
+		goalOwnsLiveWindowFn = func(cwd, goalID string) bool { return true }
+		resetForce = false
+
+		withTempCwd(t, func(dir string) {
+			saveRunningGoal(t, dir)
+
+			err := runTaskvisorGoalReset(nil, []string{"goal-001"})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "force")
+
+			loaded, err := taskvisor.LoadGoals(dir)
+			require.NoError(t, err)
+			assert.Equal(t, taskvisor.GoalRunning, loaded.Goals[0].Status)
+		})
+	})
+
+	t.Run("pending still refused", func(t *testing.T) {
+		origFn, origForce := goalOwnsLiveWindowFn, resetForce
+		defer func() { goalOwnsLiveWindowFn, resetForce = origFn, origForce }()
+		goalOwnsLiveWindowFn = func(cwd, goalID string) bool { return false }
+		resetForce = false
+
+		withTempCwd(t, func(dir string) {
+			gf := &taskvisor.GoalsFile{
+				Goals: []taskvisor.Goal{
+					{ID: "goal-001", Description: "Pending goal", Status: taskvisor.GoalPending},
+				},
+			}
+			require.NoError(t, taskvisor.SaveGoals(dir, gf))
+
+			err := runTaskvisorGoalReset(nil, []string{"goal-001"})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not in failed or done status")
+
+			loaded, err := taskvisor.LoadGoals(dir)
+			require.NoError(t, err)
+			assert.Equal(t, taskvisor.GoalPending, loaded.Goals[0].Status)
+		})
+	})
+}
+
 func TestGoalStopCmd_FilesPresent(t *testing.T) {
 	withTempCwd(t, func(dir string) {
 		tmuxDir := filepath.Join(dir, ".tmux-cli")

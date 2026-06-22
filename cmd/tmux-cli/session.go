@@ -275,7 +275,7 @@ var taskvisorGoalDeleteCmd = &cobra.Command{
 
 var taskvisorGoalResetCmd = &cobra.Command{
 	Use:   "reset [goal-id]",
-	Short: "Reset a failed or done goal back to pending",
+	Short: "Reset a failed or done goal back to pending (also recovers a window-less running goal, or any running goal with --force)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTaskvisorGoalReset,
 }
@@ -357,6 +357,7 @@ var (
 var (
 	taskvisorRun    bool
 	skipReason      string
+	resetForce      bool
 	goalDescription string
 	goalAcceptance  []string
 	goalValidate    []string
@@ -439,6 +440,7 @@ func init() {
 	taskvisorGoalCmd.AddCommand(taskvisorGoalAddCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalListCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalDeleteCmd)
+	taskvisorGoalResetCmd.Flags().BoolVar(&resetForce, "force", false, "Force reset a running goal even if it still owns a live worker window")
 	taskvisorGoalCmd.AddCommand(taskvisorGoalResetCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalPriorityCmd)
 	taskvisorGoalSkipCmd.Flags().StringVar(&skipReason, "reason", "manually skipped", "Reason for skipping")
