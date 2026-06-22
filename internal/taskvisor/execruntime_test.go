@@ -66,3 +66,46 @@ func TestResolveExecRuntime_AppServiceFromPublishedPorts(t *testing.T) {
 `)
 	assert.Equal(t, "php", ResolveExecRuntime(root).AppSvc)
 }
+
+func TestResolveExecRuntime_AppServiceFromDocumentedField(t *testing.T) {
+	root := t.TempDir()
+	writeTestEnvMD(t, root, `**Run Target:** docker
+**Runtime Container:** php
+**Playwright Status:** not applicable
+`)
+	assert.Equal(t, "php", ResolveExecRuntime(root).AppSvc)
+}
+
+func TestResolveExecRuntime_DocumentedFieldArbitraryName(t *testing.T) {
+	root := t.TempDir()
+	writeTestEnvMD(t, root, `**Run Target:** docker
+**APP service:** web-app
+**Playwright Status:** not applicable
+`)
+	assert.Equal(t, "web-app", ResolveExecRuntime(root).AppSvc)
+}
+
+func TestResolveExecRuntime_DocumentedFieldWinsOverPublishedPorts(t *testing.T) {
+	root := t.TempDir()
+	writeTestEnvMD(t, root, `**Run Target:** docker
+**Runtime Container:** php
+**Playwright Status:** not applicable
+
+| Service | Host Port | Container Port | Purpose |
+|---------|-----------|----------------|---------|
+| app | 8080 | 80 | HTTP app |
+`)
+	assert.Equal(t, "php", ResolveExecRuntime(root).AppSvc)
+}
+
+func TestResolveExecRuntime_NoServiceDefaultsApp(t *testing.T) {
+	root := t.TempDir()
+	writeTestEnvMD(t, root, `**Run Target:** docker
+**Playwright Status:** not applicable
+
+| Service | Host Port | Container Port | Purpose |
+|---------|-----------|----------------|---------|
+| nginx | 8080 | 80 | web |
+`)
+	assert.Equal(t, "app", ResolveExecRuntime(root).AppSvc)
+}

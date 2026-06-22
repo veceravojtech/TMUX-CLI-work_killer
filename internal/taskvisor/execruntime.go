@@ -35,7 +35,9 @@ func ResolveExecRuntime(projectRoot string) ExecRuntime {
 		return LocalExecRuntime()
 	}
 	er := ExecRuntime{RunTarget: "docker", AppSvc: "app"}
-	if svc := appServiceFromPublishedPorts(body); svc != "" {
+	if svc := appServiceFromDocumentedField(body); svc != "" {
+		er.AppSvc = svc
+	} else if svc := appServiceFromPublishedPorts(body); svc != "" {
 		er.AppSvc = svc
 	}
 	if playwrightApplicable(body) {
@@ -76,6 +78,36 @@ func appServiceFromPublishedPorts(body string) string {
 		case "app", "php":
 			return strings.ToLower(cells[0])
 		}
+	}
+	return ""
+}
+
+// appServiceFromDocumentedField returns the app/PHP compose service name an
+// operator explicitly declares via the documented "Runtime Container:" / "APP
+// service:" field in test-environment.md, honored VERBATIM (casing preserved),
+// else "" so the caller falls through to the published-ports heuristic and then
+// the "app" default. This explicit declaration takes precedence over the
+// name-matching published-ports row. The colon may sit inside markdown bold
+// (`**Runtime Container:** php`), so we split on the FIRST ':' in the line — the
+// bold-close `**` lands in the value and is stripped along with the other
+// wrapper runes; the first whitespace-delimited token then drops any trailing
+// parenthetical (e.g. `php (php-fpm)` -> `php`).
+func appServiceFromDocumentedField(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		low := strings.ToLower(line)
+		if !strings.Contains(low, "runtime container") && !strings.Contains(low, "app service") {
+			continue
+		}
+		idx := strings.Index(line, ":")
+		if idx < 0 {
+			continue
+		}
+		val := strings.Trim(line[idx+1:], "*_` \t")
+		fields := strings.Fields(val)
+		if len(fields) == 0 {
+			continue
+		}
+		return fields[0]
 	}
 	return ""
 }

@@ -221,6 +221,23 @@ func (d *Daemon) writeValidatorWindowMarker(goalID, name string) error {
 	return nil
 }
 
+// regenerateValidateScript rewrites the goal's validate.sh from the in-memory
+// (authoritative) goal.Validate rules and a freshly resolved ExecRuntime,
+// mirroring the create-time call in authoring.go. It exists so a runtime
+// correction (e.g. the docker app compose service resolved from
+// test-environment.md) propagates into the command wrap on every (re-)dispatch
+// rather than reusing a stale cached script. WriteValidateScript is a no-op for
+// an empty rule list, so a goal with no validate rules is unaffected. Runs
+// inside the goals-lock context of its callers (it only writes a file under the
+// goal dir; no new lock).
+func (d *Daemon) regenerateValidateScript(goal *Goal) error {
+	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
+	if err := WriteValidateScript(goalDir, goal.Validate, ResolveExecRuntime(d.workDir)); err != nil {
+		return fmt.Errorf("regenerate validate.sh: %w", err)
+	}
+	return nil
+}
+
 func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	// B4: repair-at-dispatch. A planner re-write of goal.md can strip the
 	// `## Investigation Config` section post-creation; re-assert it (>=2
@@ -247,6 +264,15 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 		}
 		d.specRepairs++
 		log.Printf("[spec-drift] %s: goal.md repaired from goals.yaml", goal.ID)
+	}
+
+	// Regenerate validate.sh from the in-memory goal.Validate + a freshly
+	// resolved ExecRuntime so a runtime correction (e.g. the docker app service
+	// resolved from test-environment.md) takes effect on re-dispatch instead of
+	// reusing a stale cached wrap. Runs after the spec-drift repair so the script
+	// reflects the same authoritative rules the repaired goal.md does.
+	if err := d.regenerateValidateScript(goal); err != nil {
+		return err
 	}
 
 	if err := d.writeDispatchMd(goal); err != nil {
@@ -452,6 +478,13 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 		}
 		d.specRepairs++
 		log.Printf("[spec-drift] %s: goal.md repaired from goals.yaml (retry)", goal.ID)
+	}
+
+	// Regenerate validate.sh on retry-dispatch too — crash-recovery re-dispatch
+	// routes through either dispatch() or dispatchRetry(), so both paths must
+	// refresh the wrap or a stale cached app-service name leaks into the retry.
+	if err := d.regenerateValidateScript(goal); err != nil {
+		return err
 	}
 
 	if err := d.writeDispatchMd(goal); err != nil {
