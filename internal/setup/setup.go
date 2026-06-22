@@ -46,5 +46,9 @@ func Run(cfg *SetupConfig) error {
 		return fmt.Errorf("ensure git exclude: %w", err)
 	}
 
+	if err := SeedClaudeBypass(); err != nil {
+		return fmt.Errorf("seed claude bypass: %w", err)
+	}
+
 	return nil
 }
