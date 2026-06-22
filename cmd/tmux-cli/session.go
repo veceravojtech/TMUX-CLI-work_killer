@@ -301,6 +301,13 @@ var taskvisorRestartCmd = &cobra.Command{
 	RunE:  runTaskvisorRestart,
 }
 
+var taskvisorConcurrencyCmd = &cobra.Command{
+	Use:   "concurrency",
+	Short: "Get or set the live in-flight goal cap (runtime override; applies on the next tick, no restart)",
+	Args:  cobra.NoArgs,
+	RunE:  runTaskvisorConcurrency,
+}
+
 var taskvisorGoalSkipCmd = &cobra.Command{
 	Use:   "skip [goal-id]",
 	Short: "Skip a running goal (mark as done)",
@@ -373,6 +380,10 @@ var (
 	revalChangedFiles []string
 
 	inlineCycleN int
+
+	concSet int
+	concInc bool
+	concDec bool
 )
 
 func init() {
@@ -437,6 +448,12 @@ func init() {
 
 	taskvisorCmd.AddCommand(taskvisorStartCmd)
 	taskvisorCmd.AddCommand(taskvisorRestartCmd)
+
+	taskvisorConcurrencyCmd.Flags().IntVar(&concSet, "set", 0, "Set the in-flight goal cap to N (N>=1)")
+	taskvisorConcurrencyCmd.Flags().BoolVar(&concInc, "inc", false, "Increment the current cap by 1")
+	taskvisorConcurrencyCmd.Flags().BoolVar(&concDec, "dec", false, "Decrement the current cap by 1 (floored at 1)")
+	taskvisorConcurrencyCmd.MarkFlagsMutuallyExclusive("set", "inc", "dec")
+	taskvisorCmd.AddCommand(taskvisorConcurrencyCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalAddCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalListCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalDeleteCmd)
@@ -1356,6 +1373,66 @@ func runTaskvisorStart(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("Taskvisor start signal written — daemon will activate on next poll")
+	return nil
+}
+
+// effectiveConcurrency resolves the current effective in-flight goal cap for the
+// given project root, mirroring the daemon's (d *Daemon) maxGoals() precedence:
+// a valid runtime override (integer >= 1) wins, otherwise the setting.yaml
+// supervisor.max_goals value, defaulting to 1 when unset/<=0/unreadable.
+func effectiveConcurrency(root string) int {
+	if n, ok := taskvisor.ReadConcurrencyOverride(root); ok {
+		return n
+	}
+	s, err := setup.LoadSettings(root)
+	if err != nil || s == nil || s.Supervisor.MaxGoals <= 0 {
+		return 1
+	}
+	return s.Supervisor.MaxGoals
+}
+
+// runTaskvisorConcurrency gets or sets the live in-flight goal cap via the
+// `.tmux-cli/taskvisor-concurrency` runtime override. The daemon's maxGoals()
+// reads this file every tick, so a change applies on the next tick without a
+// restart (raising it dispatches more ready disjoint goals; lowering it stops
+// new dispatch while in-flight goals drain — never killed). With no flag it
+// prints the current effective cap (read-only). --set/--inc/--dec are mutually
+// exclusive; the override floors at 1 on the write path.
+func runTaskvisorConcurrency(cmd *cobra.Command, args []string) error {
+	root, err := taskvisorProjectRoot()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	current := effectiveConcurrency(root)
+
+	switch {
+	case cmd.Flags().Changed("set"):
+		if concSet < 1 {
+			return fmt.Errorf("--set must be >= 1 (got %d)", concSet)
+		}
+		if err := taskvisor.WriteConcurrencyOverride(root, concSet); err != nil {
+			return fmt.Errorf("write concurrency override: %w", err)
+		}
+		fmt.Printf("concurrency cap set to %d — daemon applies it on the next tick\n", concSet)
+	case concInc:
+		n := current + 1
+		if err := taskvisor.WriteConcurrencyOverride(root, n); err != nil {
+			return fmt.Errorf("write concurrency override: %w", err)
+		}
+		fmt.Printf("concurrency cap set to %d — daemon applies it on the next tick\n", n)
+	case concDec:
+		n := current - 1
+		if n < 1 {
+			n = 1
+		}
+		if err := taskvisor.WriteConcurrencyOverride(root, n); err != nil {
+			return fmt.Errorf("write concurrency override: %w", err)
+		}
+		fmt.Printf("concurrency cap set to %d — daemon applies it on the next tick\n", n)
+	default:
+		fmt.Printf("%d\n", current)
+	}
 	return nil
 }
 

@@ -81,6 +81,40 @@ func TestDisjointReadySet_TwoDisjoint_BothAdmitted(t *testing.T) {
 	assert.Equal(t, "goal-002", got[1].ID)
 }
 
+// TestDisjointReadySet_FourDisjoint_AllAdmitted is the field-scenario regression
+// guard (task 243): four pending, dependency-free, pairwise-disjoint, non-stack,
+// non-migrating goals must ALL be admitted at maxGoals=4 — the budget fills to
+// max_goals, in goal-file order.
+func TestDisjointReadySet_FourDisjoint_AllAdmitted(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/a/**"}},
+		{ID: "goal-002", Status: GoalPending, Scope: []string{"internal/b/**"}},
+		{ID: "goal-003", Status: GoalPending, Scope: []string{"internal/c/**"}},
+		{ID: "goal-004", Status: GoalPending, Scope: []string{"internal/d/**"}},
+	}}
+	got := gf.DisjointReadySet(4)
+	require.Len(t, got, 4)
+	assert.Equal(t, "goal-001", got[0].ID)
+	assert.Equal(t, "goal-002", got[1].ID)
+	assert.Equal(t, "goal-003", got[2].ID)
+	assert.Equal(t, "goal-004", got[3].ID)
+}
+
+// TestDisjointReadySet_FourDisjoint_BudgetCapsBelowN: the same four disjoint
+// goals are bounded below N — at maxGoals=2 exactly the first two are admitted.
+func TestDisjointReadySet_FourDisjoint_BudgetCapsBelowN(t *testing.T) {
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/a/**"}},
+		{ID: "goal-002", Status: GoalPending, Scope: []string{"internal/b/**"}},
+		{ID: "goal-003", Status: GoalPending, Scope: []string{"internal/c/**"}},
+		{ID: "goal-004", Status: GoalPending, Scope: []string{"internal/d/**"}},
+	}}
+	got := gf.DisjointReadySet(2)
+	require.Len(t, got, 2)
+	assert.Equal(t, "goal-001", got[0].ID)
+	assert.Equal(t, "goal-002", got[1].ID)
+}
+
 func TestDisjointReadySet_TwoOverlapping_OnlyFirstAdmitted(t *testing.T) {
 	gf := &GoalsFile{Goals: []Goal{
 		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/a/**"}},

@@ -124,11 +124,19 @@ func SupervisorWindowForGoal(goalID string) string {
 	return supervisorWindow(goalID, 2)
 }
 
-// maxGoals reads Supervisor.MaxGoals from setting.yaml, defaulting to 1 when the
-// setting is unset, <=0, or unreadable. It is the only impurity behind the
-// naming helpers; the daemon resolves it once per lifecycle operation and
-// threads the int into the pure helpers above.
+// maxGoals resolves the in-flight goal cap. It consults the runtime concurrency
+// override file FIRST — a valid override (integer ≥ 1) wins so an operator can
+// raise/lower concurrency on a running daemon without a restart, and the change
+// applies on the very next tick (tick() calls maxGoals() for both the free
+// budget and every DisjointReadySet argument). When no valid override exists it
+// falls back, byte-identically, to Supervisor.MaxGoals from setting.yaml,
+// defaulting to 1 when the setting is unset, <=0, or unreadable. It is the only
+// impurity behind the naming helpers; the daemon resolves it once per lifecycle
+// operation and threads the int into the pure helpers above.
 func (d *Daemon) maxGoals() int {
+	if n, ok := ReadConcurrencyOverride(d.workDir); ok {
+		return n
+	}
 	s, err := setup.LoadSettings(d.workDir)
 	if err != nil || s == nil || s.Supervisor.MaxGoals <= 0 {
 		return 1
