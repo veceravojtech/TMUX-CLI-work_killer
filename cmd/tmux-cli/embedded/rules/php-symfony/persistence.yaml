@@ -128,7 +128,7 @@
 - id: PHP-PERS-005
   category: persistence
   scope: generic
-  severity: should
+  severity: must
   title: "DAO references a foreign aggregate by typed Id + #[PersistentReference], not a concrete entity"
   rule: >
     An AggregateData DAO that needs another aggregate holds that aggregate's typed
@@ -202,7 +202,7 @@
 - id: PHP-PERS-007
   category: persistence
   scope: generic
-  severity: should
+  severity: must
   title: "Split the aggregate's mutable persistence-DAO from its readonly input/output DTO; expose children as DTOs"
   rule: >
     An aggregate keeps two distinct types: a mutable persistence-DAO (the
@@ -239,5 +239,47 @@
   validate:
     - "review: the aggregate's mutable persistence-DAO (ORM carrier) and its readonly input/output DTO are distinct types, identified by role rather than by *Data/*DTO suffix"
     - "review: child entities of the aggregate are exposed only as DTOs in the diff, never returned whole"
-  validate_kind: review
+    - "review: a Domain aggregate holds its state in a #[AggregateDAO] <X>Data DAO exposed as a readonly <X>DTO (getData(): <X>DTO), not loose VO/scalar properties promoted into the aggregate"
+  validate_kind: mixed
   phase: domain
+  signal: '(private|protected)\s+(readonly\s+)?[A-Z][A-Za-z0-9]*(Address|Email|Name|Status|Money|Price|Amount|Quantity|Phone|Period)\s+\$'
+  examples:
+    bad: 'private EmailAddress $email, private FullName $fullName, private UserStatus $status'
+    good: 'private readonly UserId $id, #[AggregateDAO] private readonly UserData $data'
+
+- id: PHP-PERS-008
+  category: persistence
+  scope: generic
+  severity: must
+  title: "A shared aggregate Id lives under its owning module, not a flat DataType/ root"
+  rule: >
+    A shared aggregate identifier (e.g. <X>Id) lives under the bounded module that
+    OWNS the aggregate — {src}/Domain/<Module>/<X>Id.php — alongside the aggregate,
+    its #[AggregateDAO] <X>Data DAO and readonly <X>DTO. It is NOT parked in a flat
+    cross-cutting {src}/DataType/ root that pools every aggregate's Ids together and
+    erases module ownership. The suffix *Id is the illustrative shared-identifier
+    name; the location is what this rule enforces.
+  why: >
+    A flat DataType/ root holding every aggregate's Id severs the identifier from the
+    module that owns its concept, inviting cross-module coupling and obscuring which
+    aggregate an Id belongs to. Co-locating the Id with its aggregate keeps the
+    module a self-contained ownership unit and the dependency direction explicit.
+  applies_to:
+    - "{src}/DataType/**/*Id.php"
+  detect:
+    - "a shared aggregate Id class defined under a flat {src}/DataType/ root instead of {src}/Domain/<Module>/"
+    - "an <X>Id pooled in a cross-cutting DataType/ directory, detached from the aggregate that owns it"
+  fix: >
+    Move the <X>Id class into the owning module at {src}/Domain/<Module>/<X>Id.php,
+    beside its aggregate, #[AggregateDAO] <X>Data DAO and readonly <X>DTO.
+  autofix: structural
+  acceptance:
+    - "GIVEN a shared aggregate Id THEN it resides under {src}/Domain/<Module>/, not a flat DataType/ root"
+  validate:
+    - "review: a shared aggregate Id lives under {src}/Domain/<Module>/<X>Id.php beside its aggregate, not a flat {src}/DataType/ root"
+  validate_kind: mixed
+  phase: domain
+  signal: '(final\s+)?class\s+[A-Z][A-Za-z0-9]*Id\b'
+  examples:
+    bad: 'final class UserId extends AbstractIntId'
+    good: 'final class UserData extends AbstractData'

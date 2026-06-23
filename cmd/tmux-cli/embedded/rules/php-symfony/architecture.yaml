@@ -565,3 +565,44 @@
     - "review: each changed read-model / query-service / repository lives in the context that owns its dominant concept — owning_context = the one already holding Application/<Concept> for the dominant returned aggregate / *Id / DTO (resolved from project discovery); host_context != owning_context is VIOLATED, host_context == owning_context is COMPLIANT, even when deptrac is green"
   validate_kind: review
   phase: architecture
+
+- id: PHP-ARCH-018
+  category: architecture
+  scope: generic
+  severity: must
+  title: "A domain event's payload is a readonly <X>EventRecord snapshot implementing the aggregate's event interface, not scalar fields"
+  rule: >
+    A domain event carries its state as a single readonly <X>EventRecord snapshot
+    value object and implements the aggregate's <Aggregate>EventInterface — it does
+    NOT promote loose scalar fields (string/int/float/bool/array) into the event
+    constructor as its payload. The <X>EventRecord names are illustrative; the
+    binding shape is "one readonly snapshot record + aggregate event interface",
+    never a bag of primitives. This sharpens PHP-ARCH-013 (which forbids embedding
+    the live aggregate) to also forbid the opposite failure: a flat scalar payload
+    that no record type or event interface governs.
+  why: >
+    A scalar-bag event payload has no named contract: consumers bind to positional
+    primitives, the snapshot is untyped, and nothing ties the event to its aggregate.
+    A single readonly <X>EventRecord plus the <Aggregate>EventInterface makes the
+    published contract explicit, serializable, and routable per aggregate.
+  applies_to:
+    - "{src}/**/Event/*.php"
+    - "{src}/**/*Event.php"
+  detect:
+    - "a domain event constructor promoting loose scalar fields (public readonly string/int/float/bool/array) as its payload instead of a single readonly <X>EventRecord"
+    - "a domain event that carries no <X>EventRecord snapshot and does not implement an <Aggregate>EventInterface"
+  fix: >
+    Replace the scalar constructor fields with a single readonly <X>EventRecord
+    snapshot value object and have the event implement the aggregate's
+    <Aggregate>EventInterface.
+  autofix: structural
+  acceptance:
+    - "GIVEN a domain event THEN its payload is a readonly <X>EventRecord snapshot and it implements <Aggregate>EventInterface, not scalar fields"
+  validate:
+    - "review: a changed domain event carries a single readonly <X>EventRecord snapshot (not scalars, not the live aggregate) AND implements its <Aggregate>EventInterface"
+  validate_kind: mixed
+  phase: domain
+  signal: 'public\s+readonly\s+(string|int|float|bool|array)\s+\$'
+  examples:
+    bad: 'public function __construct(public readonly string $userId, public readonly string $email) {}'
+    good: 'public function __construct(public readonly UserRegisteredEventRecord $record) {}'
