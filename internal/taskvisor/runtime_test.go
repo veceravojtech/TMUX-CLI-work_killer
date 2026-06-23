@@ -128,6 +128,49 @@ func TestCheckSupervising_TransitionsToValidating_PerGoal(t *testing.T) {
 	assert.Equal(t, "done", rt.lastSupervisorStatus, "the supervisor status is recorded per goal")
 }
 
+// TestCheckSupervising_SkipValidation_MarksDoneDirectly proves that with the
+// goal-validation step disabled (taskvisor.validation=false ⇒ d.skipValidation),
+// a supervisor "done" signal takes the goal straight from supervising to GoalDone
+// WITHOUT spawning a validator: no validate.sh run, no validator window created,
+// and the runtime never advances to phaseValidating. The done-path mirrors the
+// VerdictPass branch (status done, FinishedAt stamped, advance to the next goal).
+func TestCheckSupervising_SkipValidation_MarksDoneDirectly(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.skipValidation = true
+	d.autoCommit = false // isolate from git side-effects on the temp dir
+	d.runtime("goal-001").phase = phaseSupervising
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "test", Status: GoalRunning, MaxRetries: 3},
+			{ID: "goal-002", Description: "next", Status: GoalPending},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
+		Status: "done", Timestamp: "2026-06-03T14:30:00Z",
+	}))
+
+	// Only the two teardown kills run (execute-prefix + supervisor). NO validator
+	// mocks are programmed: if the skip path wrongly spawned a validator, the
+	// unexpected SetWindowCreateFunc/ListWindows calls would fail the mock.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
+
+	require.NoError(t, d.checkSupervisingPhase(&gf.Goals[0], gf))
+
+	assert.Equal(t, GoalDone, gf.Goals[0].Status, "skip-validation marks the goal done directly")
+	assert.NotEmpty(t, gf.Goals[0].FinishedAt, "FinishedAt is stamped on the direct done")
+	assert.NotEqual(t, phaseValidating, d.runtime("goal-001").phase, "the runtime never enters validating")
+	assert.Equal(t, "goal-002", gf.CurrentGoal, "advance re-points CurrentGoal to the next pending goal")
+}
+
 func TestCheckSupervising_DispatchTimeout_PerGoalDeadline(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	d.session = testSession

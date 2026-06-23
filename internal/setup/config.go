@@ -149,6 +149,16 @@ type TaskvisorSettings struct {
 	// `git_freshness: false` opt-out: nil is backfilled to true by LoadSettings.
 	// Read via GitFreshnessEnabled(), never directly.
 	GitFreshness *bool `yaml:"git_freshness"`
+	// Validation gates the post-execution goal validation step: when ON (the
+	// default), a goal that finishes execution is handed to the validator
+	// (validate.sh + the reasoning investigator workers) before it can reach done.
+	// When OFF, the daemon marks the goal done DIRECTLY out of the supervising
+	// phase — no validate.sh, no validator windows. A *bool (not plain bool),
+	// byte-for-byte mirroring AutoCommit, so a legacy setting.yaml predating the
+	// key (nil) is distinguishable from an explicit `validation: false` opt-out:
+	// nil is backfilled to true by LoadSettings. Read via ValidationEnabled(),
+	// never directly.
+	Validation *bool `yaml:"validation"`
 }
 
 // AutoCommitEnabled reports whether completion-time auto-commit is on. Nil
@@ -163,6 +173,13 @@ func (t TaskvisorSettings) AutoCommitEnabled() bool {
 // decode) defaults ON; only an explicit false opts out.
 func (t TaskvisorSettings) GitFreshnessEnabled() bool {
 	return t.GitFreshness == nil || *t.GitFreshness
+}
+
+// ValidationEnabled reports whether the post-execution goal validation step is on.
+// Nil (a hand-constructed Settings{} or a pre-backfill legacy decode) defaults ON;
+// only an explicit false opts out (goals are marked done directly).
+func (t TaskvisorSettings) ValidationEnabled() bool {
+	return t.Validation == nil || *t.Validation
 }
 
 // WorkerBudgetSec is the per-worker time budget in seconds, mirroring the
@@ -229,6 +246,7 @@ type Settings struct {
 func DefaultSettings() *Settings {
 	autoCommit := true
 	gitFreshness := true
+	validation := true
 	planAudit := true
 	return &Settings{
 		Hooks: HooksSettings{
@@ -277,6 +295,7 @@ func DefaultSettings() *Settings {
 			MaxWallClockSec:           14400,
 			AutoCommit:                &autoCommit,
 			GitFreshness:              &gitFreshness,
+			Validation:                &validation,
 		},
 	}
 }
@@ -326,6 +345,12 @@ func LoadSettings(projectRoot string) (*Settings, error) {
 	if s.Taskvisor.GitFreshness == nil {
 		gitFreshness := true
 		s.Taskvisor.GitFreshness = &gitFreshness
+	}
+	// Backfill validation for a legacy setting.yaml predating the key: nil means
+	// pre-feature (default ON), while an explicit false survives untouched.
+	if s.Taskvisor.Validation == nil {
+		validation := true
+		s.Taskvisor.Validation = &validation
 	}
 	// Backfill plan.audit for a legacy setting.yaml predating the key: nil
 	// means pre-feature (default ON), while an explicit false survives untouched.

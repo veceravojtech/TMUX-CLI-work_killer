@@ -59,6 +59,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "plan.audit", label: "Plan Audit", kind: "bool", value: settings.Plan.AuditEnabled()},
 			{key: "taskvisor.auto_push", label: "Taskvisor Auto-Push", kind: "bool", value: settings.Taskvisor.AutoPush},
 			{key: "taskvisor.git_freshness", label: "Taskvisor Git-Freshness", kind: "bool", value: settings.Taskvisor.GitFreshnessEnabled()},
+			{key: "taskvisor.validation", label: "Taskvisor Validation", kind: "bool", value: settings.Taskvisor.ValidationEnabled()},
 		},
 	}
 }
@@ -247,6 +248,9 @@ func (m Model) ToSettings() *setup.Settings {
 		case "taskvisor.git_freshness":
 			v := item.value
 			s.Taskvisor.GitFreshness = &v
+		case "taskvisor.validation":
+			v := item.value
+			s.Taskvisor.Validation = &v
 		case "plan.audit":
 			v := item.value
 			s.Plan.Audit = &v

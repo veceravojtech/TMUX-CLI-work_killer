@@ -176,6 +176,13 @@ type Daemon struct {
 	// direct-construct Daemon (dispatch unit tests) never touches the git runner;
 	// seeded from taskvisor.git_freshness (GitFreshnessEnabled) ONLY in Run().
 	gitFreshness bool
+	// skipValidation disables the post-execution validation step: when true a goal
+	// is marked done DIRECTLY out of the supervising phase (no validate.sh, no
+	// validator windows) instead of being handed to the validator. Zero-value
+	// false (validate as normal) so a direct-construct Daemon and every literal-
+	// Daemon unit test keep the validating transition unchanged; seeded from the
+	// INVERSE of taskvisor.validation (ValidationEnabled) ONLY in Run().
+	skipValidation bool
 	// autoResumeInterval paces resumeDownstreamLoop, the §5 background poll that
 	// re-evaluates precondition-blocked goals. Independent of pollInterval; seeded
 	// from taskvisor.auto_resume_interval_sec (default 30s) at construction/Run.
@@ -363,6 +370,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.autoCommit = settings.Taskvisor.AutoCommitEnabled()
 		d.autoPush = settings.Taskvisor.AutoPush
 		d.gitFreshness = settings.Taskvisor.GitFreshnessEnabled()
+		// validation OFF ⇒ goals are marked done directly out of supervising. The
+		// daemon field is the inverse so its zero value (false) means "validate".
+		d.skipValidation = !settings.Taskvisor.ValidationEnabled()
 	}
 
 	// Backend failure reporting (goal-008/009). Config is read independently of

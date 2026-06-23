@@ -958,3 +958,77 @@ func TestPlanSettings_AuditEnabled_NilDefaultsTrue(t *testing.T) {
 	ps.Audit = &off
 	assert.False(t, ps.AuditEnabled(), "explicit false must read as disabled")
 }
+
+// TestDefaultSettings_Validation_True proves new projects default the goal
+// validation step ON (a *bool true-pointer), mirroring the AutoCommit/GitFreshness
+// default-ON idiom.
+func TestDefaultSettings_Validation_True(t *testing.T) {
+	s := DefaultSettings()
+	require.NotNil(t, s.Taskvisor.Validation)
+	assert.True(t, *s.Taskvisor.Validation)
+	assert.True(t, s.Taskvisor.ValidationEnabled())
+}
+
+// TestTaskvisorSettings_ValidationEnabled_NilSafe pins the accessor's nil-safety
+// for hand-constructed Settings{} (tests, partial yaml decodes) and the
+// explicit-false read path.
+func TestTaskvisorSettings_ValidationEnabled_NilSafe(t *testing.T) {
+	var ts TaskvisorSettings
+	assert.True(t, ts.ValidationEnabled(), "nil pointer must read as enabled")
+
+	off := false
+	ts.Validation = &off
+	assert.False(t, ts.ValidationEnabled(), "explicit false must read as disabled")
+}
+
+// TestLoadSettings_LegacyMissing_Validation_True proves a legacy setting.yaml
+// without the validation key loads with the validation step ENABLED (nil → true
+// backfill, mirroring the AutoCommit idiom) and that the save-back persists the
+// key explicitly so the file self-documents after one load.
+func TestLoadSettings_LegacyMissing_Validation_True(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  dispatch_timeout: 3600
+  poll_interval: 5
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Taskvisor.Validation, "nil must be backfilled to a true-pointer")
+	assert.True(t, *s.Taskvisor.Validation)
+	assert.True(t, s.Taskvisor.ValidationEnabled(), "legacy yaml must default validation ON")
+
+	raw, err := os.ReadFile(settingFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "validation: true", "save-back must persist the backfilled key")
+}
+
+// TestSaveSettings_ValidationRoundTrip proves an explicit validation: false
+// opt-out survives the backfill and the save-back round-trip untouched.
+func TestSaveSettings_ValidationRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  validation: false
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Taskvisor.Validation)
+	assert.False(t, *s.Taskvisor.Validation)
+	assert.False(t, s.Taskvisor.ValidationEnabled(), "explicit false must opt out")
+
+	// Round-trip: load again after the save-back — false must survive.
+	s2, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.False(t, s2.Taskvisor.ValidationEnabled(), "opt-out must survive the save-back round-trip")
+}

@@ -332,6 +332,15 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 		return err
 	}
 
+	// taskvisor.validation=false: skip the validation step entirely (no validate.sh,
+	// no validator workers) and mark the goal done directly. Placed AFTER the
+	// supervisor teardown so the windows are still cleaned up, but BEFORE
+	// runValidateScript so neither the deterministic script nor the reasoning
+	// validator ever runs.
+	if d.skipValidation {
+		return d.markGoalDoneWithoutValidation(goal, goals)
+	}
+
 	passed, reason, stderr, err := d.runValidateScript(goal)
 	if err != nil {
 		return fmt.Errorf("validate script: %w", err)
@@ -358,6 +367,26 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	rt.phase = phaseValidating
 	rt.validateTime = d.now()
 	return nil
+}
+
+// markGoalDoneWithoutValidation transitions a goal straight from supervising to
+// done when the validation step is disabled (taskvisor.validation=false). It
+// mirrors the VerdictPass branch of checkValidatingPhase — the same durable
+// done-path (SaveGoals → autoCommit → resolveTask → advanceToNextGoal) — but
+// passes a nil validator signal: there are no findings to compact because no
+// validator ever ran.
+func (d *Daemon) markGoalDoneWithoutValidation(goal *Goal, goals *GoalsFile) error {
+	goal.Status = GoalDone
+	goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	log.Printf("%s: supervising -> done (validation disabled, %s)", goal.ID, goalDuration(goal))
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		return err
+	}
+	// Warn-only side effects after the durable SaveGoals, identical to VerdictPass:
+	// a commit/resolve failure never alters the done verdict or daemon flow.
+	d.autoCommitGoal(goal)
+	d.resolveTaskOnTerminal(goal, "resolved", doneResolution(goal, nil))
+	return d.advanceToNextGoal(goals, goal.ID, true)
 }
 
 func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
