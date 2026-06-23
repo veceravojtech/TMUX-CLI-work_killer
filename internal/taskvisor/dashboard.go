@@ -347,8 +347,41 @@ func renderGoalsSection(buf *bytes.Buffer, projectRoot string, cycleByGoal map[s
 		fmt.Fprintf(buf, "  %s%s%s\n", ansiDim, note, ansiReset)
 		return
 	}
-	fmt.Fprintf(buf, "  %s%-12s  %-28s  %-9s  %-12s  %-5s  %-5s  %-8s  %-10s  %s%s\n",
-		ansiDim, "ID", "Description", "Status", "Phase", "Lane", "Cycle", "c/s/v", "Wall", "Window", ansiReset)
+	// Render rows in effective dispatch/run order: running first, then the pending
+	// bucket sorted by Priority DESC (ties: dependency-satisfied/runnable first,
+	// then id asc), then terminal goals. This mirrors the daemon's NextPendingGoal/
+	// RunnableCandidates selection (Priority > comparator) so the board reads top-to-
+	// bottom as execution order. Display-only: reorders the local collectGoals slice,
+	// which is discarded after this render — goals.yaml is never reordered.
+	rank := func(s string) int {
+		switch s {
+		case GoalRunning:
+			return 0
+		case GoalPending:
+			return 1
+		default: // done/failed/blocked
+			return 2
+		}
+	}
+	sort.SliceStable(goals, func(i, j int) bool {
+		a, b := &goals[i], &goals[j]
+		if ra, rb := rank(a.Status), rank(b.Status); ra != rb {
+			return ra < rb
+		}
+		if a.Status == GoalPending { // dispatch order within the pending bucket
+			if a.Priority != b.Priority {
+				return a.Priority > b.Priority
+			}
+			as, bs := a.DependsOnSatisfied(goals), b.DependsOnSatisfied(goals)
+			if as != bs {
+				return as // dependency-satisfied (runnable) first
+			}
+			return a.ID < b.ID
+		}
+		return false // SliceStable keeps file order in the running/terminal buckets
+	})
+	fmt.Fprintf(buf, "  %s%-12s  %-5s  %-28s  %-9s  %-12s  %-5s  %-5s  %-8s  %-10s  %s%s\n",
+		ansiDim, "ID", "Prio", "Description", "Status", "Phase", "Lane", "Cycle", "c/s/v", "Wall", "Window", ansiReset)
 	for i := range goals {
 		g := &goals[i]
 		color := goalStatusColor(g.Status)
@@ -361,8 +394,8 @@ func renderGoalsSection(buf *bytes.Buffer, projectRoot string, cycleByGoal map[s
 			cycle = "—"
 		}
 		csv := fmt.Sprintf("%d/%d/%d", g.CodeRetries, g.SpecRetries, g.ValidationRetries)
-		fmt.Fprintf(buf, "  %s%-12s  %-28s  %-9s  %-12s  %-5s  %-5s  %-8s  %-10s  %s%s\n",
-			color, g.ID, truncate(g.Description, 28), g.Status, phase, g.LaneOrFull(),
+		fmt.Fprintf(buf, "  %s%-12s  %-5d  %-28s  %-9s  %-12s  %-5s  %-5s  %-8s  %-10s  %s%s\n",
+			color, g.ID, g.Priority, truncate(g.Description, 28), g.Status, phase, g.LaneOrFull(),
 			cycle, csv, formatElapsed(g.StartedAt, g.FinishedAt), SupervisorWindowForGoal(g.ID), ansiReset)
 	}
 }

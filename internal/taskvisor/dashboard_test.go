@@ -505,6 +505,7 @@ func TestTaskvisorDashboardRenderBoard_Populated(t *testing.T) {
 	assert.Contains(t, out, "Implement the", "description prefix should render")
 	assert.Contains(t, out, "...", "long description should be truncated")
 	assert.Contains(t, out, "supervisor-025", "bound supervisor window column")
+	assert.Contains(t, out, "Prio", "priority column header")
 	assert.Contains(t, out, "c/s/v", "retries-remaining header")
 	// goal-025 (MaxRetries 5) seeds live remaining budget to MigrateRetries(5) =
 	// Code 5 / Spec 3 / Val 2 via LoadGoals.
@@ -527,6 +528,70 @@ func TestTaskvisorDashboardRenderBoard_Populated(t *testing.T) {
 	assert.Contains(t, out, "api disabled")
 
 	mockExec.AssertExpectations(t)
+}
+
+func TestTaskvisorDashboardRenderBoard_PriorityColumnAndOrder(t *testing.T) {
+	dir := t.TempDir()
+
+	// Written in NON-priority, non-run order so the assertions prove the render
+	// sort — not incidental file order — produces the run-order layout.
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-010", Description: "Low priority pending", Status: GoalPending, Priority: 0, MaxRetries: 5},
+			{ID: "goal-037", Description: "Third priority", Status: GoalPending, Priority: 80, MaxRetries: 5},
+			{ID: "goal-001", Description: "Running goal", Status: GoalRunning, Priority: 0, MaxRetries: 5},
+			{ID: "goal-033", Description: "Top priority", Status: GoalPending, Priority: 100, MaxRetries: 5},
+			{ID: "goal-034", Description: "Second priority", Status: GoalPending, Priority: 90, MaxRetries: 5},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	var buf bytes.Buffer
+	require.NoError(t, RenderBoard(&buf, dir, nil))
+	out := buf.String()
+
+	// Priority column header + the priority values render.
+	assert.Contains(t, out, "Prio", "priority column header")
+	assert.Contains(t, out, "100", "goal-033 priority value")
+	assert.Contains(t, out, "90", "goal-034 priority value")
+	assert.Contains(t, out, "80", "goal-037 priority value")
+
+	idx := func(id string) int { return strings.Index(out, id) }
+
+	// Running goal sorts above every pending goal.
+	assert.Less(t, idx("goal-001"), idx("goal-033"), "running goal precedes all pending")
+	assert.Less(t, idx("goal-001"), idx("goal-010"), "running goal precedes the priority-0 pending")
+
+	// Pending bucket ordered by priority DESC: 033(100) > 034(90) > 037(80) > 010(0).
+	assert.Less(t, idx("goal-033"), idx("goal-034"), "priority 100 before 90")
+	assert.Less(t, idx("goal-034"), idx("goal-037"), "priority 90 before 80")
+	assert.Less(t, idx("goal-037"), idx("goal-010"), "priority 80 before priority 0")
+}
+
+func TestTaskvisorDashboardRenderBoard_PriorityTiebreakDependencySatisfied(t *testing.T) {
+	dir := t.TempDir()
+
+	// Two equal-priority pending goals: goal-051 depends on an unsatisfied (pending)
+	// goal-099, goal-050 has no deps. The dependency-satisfied (runnable) goal must
+	// sort first; remaining ties break by id asc.
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-051", Description: "Blocked dep", Status: GoalPending, Priority: 50, DependsOn: []string{"goal-099"}, MaxRetries: 5},
+			{ID: "goal-050", Description: "Runnable", Status: GoalPending, Priority: 50, MaxRetries: 5},
+			{ID: "goal-099", Description: "Unsatisfied dep", Status: GoalPending, Priority: 50, MaxRetries: 5},
+		},
+	}
+	require.NoError(t, SaveGoals(dir, gf))
+
+	var buf bytes.Buffer
+	require.NoError(t, RenderBoard(&buf, dir, nil))
+	out := buf.String()
+
+	idx := func(id string) int { return strings.Index(out, id) }
+	// goal-050 (runnable, no deps) sorts before goal-051 (its dep goal-099 unsatisfied)
+	// even though id asc alone would place goal-050 before goal-051 — assert the
+	// runnable-first tiebreak holds against the blocked one.
+	assert.Less(t, idx("goal-050"), idx("goal-051"), "dependency-satisfied goal sorts before blocked-dep goal")
 }
 
 func TestTaskvisorDashboardRenderBoard_DaemonDownMissingGoals(t *testing.T) {
