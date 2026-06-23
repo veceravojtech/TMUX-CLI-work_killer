@@ -251,6 +251,45 @@ func TestOverlappingGoalsSerializeNotConcurrent(t *testing.T) {
 	})
 }
 
+func TestEnforceFileOverlap_ExcludesToolBinaries(t *testing.T) {
+	// Two pending goals with DISJOINT scopes whose only shared validate tokens are
+	// read-only tool binaries (vendor/bin/phpunit + vendor/bin/phpstan). Before the
+	// fix these shared stems forced a false depends_on edge, serializing the plan.
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:         "goal-001",
+				Scope:      []string{"contexts/identity/**"},
+				Validate:   []string{"vendor/bin/phpunit", "vendor/bin/phpstan"},
+				Status:     GoalPending,
+				MaxRetries: 5,
+			},
+			{
+				ID:         "goal-002",
+				Scope:      []string{"contexts/dashboard/**"},
+				Validate:   []string{"vendor/bin/phpunit", "vendor/bin/phpstan"},
+				Status:     GoalPending,
+				MaxRetries: 5,
+			},
+		},
+	}
+
+	edges := EnforceFileOverlapDeps(gf)
+	assert.Empty(t, edges, "tool-binary-only overlap must not produce an enforced edge")
+
+	g1, ok := gf.GoalByID("goal-001")
+	require.True(t, ok)
+	assert.Empty(t, g1.DependsOn, "goal-001 gains no depends_on from a shared tool binary")
+
+	g2, ok := gf.GoalByID("goal-002")
+	require.True(t, ok)
+	assert.Empty(t, g2.DependsOn, "goal-002 gains no depends_on from a shared tool binary")
+
+	// Disjoint-scope goals co-schedule under MaxGoals>1 instead of serializing 1x.
+	ready := gf.DisjointReadySet(2)
+	assert.Len(t, ready, 2, "disjoint-scope goals co-schedule once the false edge is gone")
+}
+
 func TestInferMissingDeps_SelfReference(t *testing.T) {
 	gf := &GoalsFile{
 		Goals: []Goal{

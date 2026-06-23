@@ -40,6 +40,35 @@ func isPathLike(tok string) bool {
 	return strings.Contains(tok, "/") || hasKnownExtension(tok)
 }
 
+// toolBinaryNames are basenames of read-only tooling that appears in validate
+// commands (e.g. `vendor/bin/phpunit`, `bin/console`). These are shared tools,
+// not goal-produced deliverables, so they must never enter the produced-stem set
+// used for file-overlap dependency enforcement.
+var toolBinaryNames = map[string]bool{
+	"composer": true,
+	"npx":      true,
+	"phpstan":  true,
+	"phpunit":  true,
+	"ecs":      true,
+	"deptrac":  true,
+	"console":  true,
+}
+
+// isToolBinaryToken reports whether a path-like token names a read-only tool
+// binary rather than a goal-produced deliverable. It matches anything under
+// vendor/ (the composer-managed tool dir) and any token whose basename is a
+// known tool name. Pure, lock-free; assumes any leading "./" is already stripped.
+func isToolBinaryToken(s string) bool {
+	if s == "vendor" || strings.HasPrefix(s, "vendor/") {
+		return true
+	}
+	base := s
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		base = s[i+1:]
+	}
+	return toolBinaryNames[base]
+}
+
 func extractExtensionOnlyTokens(lines []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -78,6 +107,9 @@ func extractProducerStems(g *Goal) []string {
 	add := func(s string) {
 		for strings.HasPrefix(s, "./") {
 			s = s[2:]
+		}
+		if isToolBinaryToken(s) {
+			return
 		}
 		if s == "" || !isPathLike(s) || !strings.ContainsFunc(s, unicode.IsLetter) {
 			return
