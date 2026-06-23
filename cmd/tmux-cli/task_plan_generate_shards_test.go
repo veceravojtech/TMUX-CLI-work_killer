@@ -93,8 +93,8 @@ func TestShards_OneToOneReferences(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, 21, len(shardFiles), "exactly 21 shard files must exist")
-	assert.Equal(t, 21, len(stubFiles), "exactly 21 stubs must exist in the spine")
+	assert.Equal(t, 22, len(shardFiles), "exactly 22 shard files must exist")
+	assert.Equal(t, 22, len(stubFiles), "exactly 22 stubs must exist in the spine")
 
 	for _, sf := range shardFiles {
 		installedPath := strings.Replace(sf, "embedded/commands/tmux/", ".claude/commands/tmux/", 1)
