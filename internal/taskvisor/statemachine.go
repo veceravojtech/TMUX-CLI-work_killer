@@ -79,6 +79,7 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 	if d.mode != modeActive {
 		return nil
 	}
+	d.driveRecurring(goals)
 
 	// (2) Drive every in-flight goal. Snapshot the running set FIRST so the free
 	// budget in (3) reflects the tick-start in-flight count, not mid-tick
@@ -195,7 +196,7 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 	// NextPendingGoal()==false. deactivateOnCompletion self-guards on resumable
 	// parks / recoverable cascade blocks / AllResolved, so a parked-but-not-done
 	// goals.yaml stays active (the old GoalBlocked idle branch).
-	if !goals.AnyRunning() && len(goals.RunnableCandidates()) == 0 {
+	if !goals.AnyRunning() && len(goals.RunnableCandidates()) == 0 && !d.recurringActive() {
 		return d.deactivateOnCompletion(goals)
 	}
 	return nil
