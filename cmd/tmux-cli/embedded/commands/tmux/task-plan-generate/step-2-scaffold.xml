@@ -54,12 +54,14 @@
           <item id="SC-01b">Each monorepo component (contexts/*, the contexts/previo shared kernel, projects/*, packages/*) carries a schema-valid monorepo-component.json beside its composer.json (PHP-MONO-001 — the manifest the monorepo tooling wires)</item>
           <item id="SC-02">composer install completes without errors (exit code 0)</item>
           <item id="SC-03">Monorepo skeleton exists for every BC from discovery: contexts/{BC}/src/Domain/, contexts/{BC}/src/Application/, contexts/{BC}/src/Bundle/{Domain,Application}/ (Bundle is the infrastructure layer), plus contexts/{BC}/app/ for the framework layer, deployable projects/{app}/src/, and shared packages/</item>
-          <item id="SC-04">Shared-kernel context exists: contexts/previo/src/ with DataType, Event, Exception, Messaging (Share) subdirectories — the published language every other context depends on</item>
-          <item id="SC-05">bin/console boots without errors (exit code 0)</item>
+          <item id="SC-03b">The deployable app is a real Symfony app rooted at projects/{app}: projects/{app}/src/Kernel.php exists declaring namespace App\&lt;App&gt; (e.g. App\Api), alongside projects/{app}/{config,public,bin}. The repo root has NO flat src/Kernel.php and NO root App\Kernel, and root composer.json autoload maps per-package (projects/*/src, contexts/*/src, packages/*/src), never a flat "App\\": "src/"</item>
+          <item id="SC-04">Shared-kernel context contexts/previo is LAYERED, not Share-only: contexts/previo/src/Domain AND contexts/previo/src/Application both exist alongside the Share kernel (contexts/previo/src/Share with DataType, Event, Exception, Messaging) — the published language every other context depends on</item>
+          <item id="SC-05">bin/console boots without errors (exit code 0) — the booted Kernel is the deployable projects/{app}/src/Kernel.php, not a flat root app (enforced by SC-03b + SC-09b)</item>
           <item id="SC-06">vendor/bin/phpunit runs with zero tests, zero errors (exit code 0)</item>
-          <item id="SC-07">vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9 passes on empty project (exit code 0)</item>
+          <item id="SC-07">vendor/bin/phpstan analyse contexts/ projects/ packages/ --level=9 passes on empty project (exit code 0) — exercising the non-empty deployable projects/{app}/src (enforced by SC-09b), not an empty/flat root</item>
           <item id="SC-08">vendor/bin/ecs check contexts/ projects/ packages/ passes on empty project (exit code 0)</item>
           <item id="SC-09">vendor/bin/deptrac analyse passes with no violations on empty structure (exit code 0)</item>
+          <item id="SC-09b">Deptrac's Project layer (the deployable collector over projects/*/src) is NON-EMPTY: at least one projects/*/src/*.php file exists, so a deptrac run on an empty-shell monorepo (vacuous Project layer) fails this criterion instead of trivially passing</item>
           <item id="SC-10">.env.test exists with variables matching docs/architecture/test-environment.md</item>
           <item id="SC-11">phpunit.xml has separate unit and integration test suites configured</item>
           <item id="SC-12">Deptrac config has the per-context LAYER chain: Domain (depends on nothing + shared kernel), Application (depends on Domain + shared kernel), Bundle (infrastructure — depends on Domain + Application + shared kernel), app (framework — depends on Domain + Application + Bundle + shared kernel)</item>
@@ -74,19 +76,22 @@
           <item id="SC-25" condition="FRONTEND_MODE == vue">packages/ui component-library stub exists: packages/ui/package.json, src/index.ts barrel entry, and one sample SFC src/components/BaseButton.vue — the shared-component home the vue pack's reuse-existing-shared-component rule (scoped packages/ui/**) points at</item>
           <item id="SC-26" condition="FRONTEND_MODE == twig">Twig templates tree exists: templates/base.html.twig base layout plus a templates/components/ partials subtree (e.g. templates/components/button.html.twig); NO packages/ui or playwright deliverable in twig mode</item>
         </criteria>
-        <rule>All 13 criteria (plus SC-17/SC-18 when HAS_DATABASE, SC-19 when Playwright available, SC-20 when FRONTEND_MODE == vue, SC-21 when FRONTEND_MODE == vue AND N_auth_flows>=1, SC-23 when SIGNALS.has_mailer == yes, SC-24 when SIGNALS.has_messenger == yes, SC-25 when FRONTEND_MODE == vue, SC-26 when FRONTEND_MODE == twig) must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+        <rule>All 13 criteria plus SC-03b and SC-09b (plus SC-17/SC-18 when HAS_DATABASE, SC-19 when Playwright available, SC-20 when FRONTEND_MODE == vue, SC-21 when FRONTEND_MODE == vue AND N_auth_flows>=1, SC-23 when SIGNALS.has_mailer == yes, SC-24 when SIGNALS.has_messenger == yes, SC-25 when FRONTEND_MODE == vue, SC-26 when FRONTEND_MODE == twig) must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
       </substep>
 
       <substep n="2.4" title="Compose validation commands">
-        <action>Build VALIDATE array with 6 base CLI commands (+ conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24 cmds) that verify the scaffold is functional:</action>
+        <action>Build VALIDATE array with 9 base CLI commands (incl. the SC-03b no-flat-Kernel + composer negated-grep and the SC-09b Project-layer-non-empty checks) (+ conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24 cmds) that verify the scaffold is functional:</action>
         <commands>
           <cmd source="SC-02">composer install</cmd>
           <cmd source="SC-01b">sh -c 'find contexts projects packages -maxdepth 2 -name monorepo-component.json | grep -q .'</cmd>
           <cmd source="SC-05">bin/console</cmd>
+          <cmd source="SC-03b">test ! -e src/Kernel.php</cmd>
+          <cmd source="SC-03b">sh -c '! tr -d " \042" &lt; composer.json | grep -qF "App\\\\:src/"'</cmd>
           <cmd source="SC-06">vendor/bin/phpunit</cmd>
           <cmd source="SC-07">vendor/bin/phpstan analyse --level=9</cmd>
           <cmd source="SC-08">vendor/bin/ecs check contexts/ projects/ packages/</cmd>
           <cmd source="SC-09">vendor/bin/deptrac analyse</cmd>
+          <cmd source="SC-09b">sh -c 'find projects -path "*/src/*.php" | grep -q .'</cmd>
           <cmd source="SC-17" condition="HAS_DATABASE">test -x bin/ensure-test-stack.sh</cmd>
           <cmd source="SC-18" condition="HAS_DATABASE AND RUN_TARGET=docker">grep -q 'APP_ENV=test' docker-compose.yaml</cmd>
           <cmd source="SC-18" condition="HAS_DATABASE AND RUN_TARGET=local">grep -q 'APP_ENV=test' .env.test</cmd>
@@ -125,8 +130,8 @@ Test environment variables from docs/architecture/test-environment.md.
           </task>
 
           <task n="1" name="Monorepo directory skeleton">
-            <scope>Create the monorepo skeleton: per-context contexts/{BC}/src/{Domain,Application,Bundle} + contexts/{BC}/app, the contexts/previo shared kernel, deployable projects/{app}/src, and shared packages/, plus the conditional frontend skeleton — the packages/ui component-library stub (packages/ui/package.json + src/index.ts barrel + sample SFC, FRONTEND_MODE == vue) OR the Twig templates tree (templates/base.html.twig + templates/components/ partials, FRONTEND_MODE == twig), never both</scope>
-            <criteria>SC-03, SC-04, SC-25 (conditional FRONTEND_MODE == vue), SC-26 (conditional FRONTEND_MODE == twig)</criteria>
+            <scope>Create the monorepo skeleton: per-context contexts/{BC}/src/{Domain,Application,Bundle} + contexts/{BC}/app, the LAYERED contexts/previo shared kernel (contexts/previo/src/Domain + contexts/previo/src/Application alongside the contexts/previo/src/Share kernel), the deployable app rooted at projects/{app} with projects/{app}/src/Kernel.php (namespace App\&lt;App&gt;) plus projects/{app}/{config,public,bin} and NO flat root src/Kernel.php, and shared packages/, plus the conditional frontend skeleton — the packages/ui component-library stub (packages/ui/package.json + src/index.ts barrel + sample SFC, FRONTEND_MODE == vue) OR the Twig templates tree (templates/base.html.twig + templates/components/ partials, FRONTEND_MODE == twig), never both</scope>
+            <criteria>SC-03, SC-03b, SC-04, SC-25 (conditional FRONTEND_MODE == vue), SC-26 (conditional FRONTEND_MODE == twig)</criteria>
             <owns>contexts/*/src/{Domain,Application,Bundle}/, contexts/*/app/, contexts/previo/src/, projects/*/src/, packages/*/, packages/ui/** (npm package.json+src, FRONTEND_MODE==vue), templates/** (FRONTEND_MODE==twig)</owns>
             <depends_on>task-0 (needs autoloader from composer install)</depends_on>
           </task>
@@ -199,8 +204,8 @@ Test environment variables from docs/architecture/test-environment.md.
         <action>Call the goal-create MCP tool with these parameters:</action>
         <params>
           <param name="description">Create bootable TDD-ready Symfony DDD-monorepo skeleton: path-repo composer, contexts/projects/packages, quality tools</param>
-          <param name="acceptance">ACCEPTANCE array from substep 2.3 (base 13 items SC-01..SC-13, +SC-17 when HAS_DATABASE, +SC-18 when HAS_DATABASE (G2), +SC-19 when Playwright available, +SC-20 when FRONTEND_MODE == vue, +SC-21 when FRONTEND_MODE == vue AND N_auth_flows>=1 (G6), +SC-23 when SIGNALS.has_mailer == yes (G7), +SC-24 when SIGNALS.has_messenger == yes (G7), +SC-25 when FRONTEND_MODE == vue, +SC-26 when FRONTEND_MODE == twig)</param>
-          <param name="validate">VALIDATE array from substep 2.4 (6 base commands + conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24/25/26 cmds)</param>
+          <param name="acceptance">ACCEPTANCE array from substep 2.3 (base 13 items SC-01..SC-13 plus SC-03b and SC-09b, +SC-17 when HAS_DATABASE, +SC-18 when HAS_DATABASE (G2), +SC-19 when Playwright available, +SC-20 when FRONTEND_MODE == vue, +SC-21 when FRONTEND_MODE == vue AND N_auth_flows>=1 (G6), +SC-23 when SIGNALS.has_mailer == yes (G7), +SC-24 when SIGNALS.has_messenger == yes (G7), +SC-25 when FRONTEND_MODE == vue, +SC-26 when FRONTEND_MODE == twig)</param>
+          <param name="validate">VALIDATE array from substep 2.4 (9 base commands — incl. the SC-03b no-flat-Kernel + composer negated-grep and the SC-09b Project-layer-non-empty checks — + conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24/25/26 cmds)</param>
           <param name="context">CONTEXT string from substep 2.5 (purpose + fan-out hints)</param>
           <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 2.5's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
           <param name="not_in_scope">NOT_IN_SCOPE from substep 2.6</param>
