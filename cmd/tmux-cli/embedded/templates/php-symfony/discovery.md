@@ -116,6 +116,28 @@
 
 ---
 
+## 4b. Aggregate Implementation Pattern (previo2 triad)
+<!-- Extends base section 4 — Aggregate Roots and Domain Events -->
+<!-- PURPOSE: Capture HOW aggregates are implemented (not just which exist) so
+     domain-model.md can describe each aggregate as a triad and downstream
+     generation emits previo2-grade triad specs instead of classic aggregates.
+     Default to the previo2 triad for the php-symfony monorepo pack and RECORD
+     the decision so the user can confirm or override. -->
+
+1. DAO/DTO triad — does each aggregate use the root + a mutable `<X>Data` DAO (`#[AggregateDAO]`) + a readonly `<X>DTO`? (previo2 monorepo default: YES — root holds no scalars directly; state lives in `<X>Data`, reads project to `<X>DTO`.)
+   - Triad pattern: {{aggregate_triad_pattern}}
+
+2. Event payloads — do domain events carry `<X>EventRecord` snapshots implementing a per-aggregate `<Aggregate>EventInterface` (rather than scalar/flat events)? (previo2 monorepo default: YES.)
+   - EventRecord pattern: {{event_record_pattern}}
+
+3. Shared Id placement — where do shared aggregate Id value objects live? (previo2 monorepo default: `previo/src/Domain/<Module>` — i.e. `contexts/previo/src/Domain/<Module>` — not a flat per-BC `DataType/`.)
+   - Shared aggregate Id placement: {{shared_aggregate_id_placement}}
+
+4. Record the decision so it can be confirmed or overridden by the user (default: `previo2 triad`):
+   - Aggregate pattern decision: {{aggregate_pattern_decision}}
+
+---
+
 ## 6a. Symfony Architecture Decisions
 <!-- Extends base section 6 — Architecture Decisions -->
 <!-- PURPOSE: Capture Symfony-specific architectural patterns that affect code

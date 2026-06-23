@@ -11,6 +11,13 @@
 - One aggregate per transaction — prefer small aggregates referencing by ID
 - Location: `src/{BC}/Domain/`
 
+## Aggregate Implementation Triad — previo2 (PD-20, PD-21)
+- DEFAULT for monorepo (previo2) projects: describe EACH aggregate as a triad, not as a classic root holding value objects directly — so generation emits triad specs.
+- Triad = aggregate root (`<X>`) + mutable `<X>Data` DAO (`#[AggregateDAO]`, holds the persisted state) + readonly `<X>DTO` (projection returned to callers/read models).
+- Domain events carry `<X>EventRecord` snapshots (not flat scalars), each implementing a per-aggregate `<Aggregate>EventInterface` so events are typed and replayable.
+- Shared aggregate Id value objects live under `previo/src/Domain/<Module>` (i.e. `contexts/previo/src/Domain/<Module>`), NOT a flat per-BC `DataType/` — the `<X>Id` is shared-kernel, referenced cross-module.
+- Pattern decision recorded in discovery (`{{aggregate_pattern_decision}}`, default `previo2 triad`); the user confirms or overrides.
+
 ## Value Object (PD-03, PD-04, PD-05)
 - `final class` — immutable, no setters
 - Constructor validates input, throws `DomainException` on invalid state
