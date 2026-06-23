@@ -1,7 +1,7 @@
 # Makefile for tmux-cli
 # TDD-focused Go project
 
-.PHONY: help build test install clean coverage lint fmt vet verify-real check-file-lengths release
+.PHONY: help build test test-hooks install clean coverage lint fmt vet verify-real check-file-lengths release
 
 # Default target
 .DEFAULT_GOAL := help
@@ -31,6 +31,7 @@ help:
 	@echo "Available targets:"
 	@echo "  make build        - Build the tmux-cli binary"
 	@echo "  make test         - Run unit tests quickly (no external deps)"
+	@echo "  make test-hooks   - Run shell-hook tests (plain bash, no Go)"
 	@echo "  make test-tmux    - Run tmux-specific tests (requires tmux 2.0+)"
 	@echo "  make test-mcp     - Run all MCP tests (unit + integration)"
 	@echo "  make verify-mcp   - Run E2E verification of MCP concurrent servers"
@@ -79,6 +80,12 @@ test:
 	$(GOTEST) -v -short -race ./...
 	@echo "✓ All tests passed"
 
+## test-hooks: Run shell-hook tests (plain bash harness, no Go/tmux deps)
+test-hooks:
+	@echo "Running shell-hook tests..."
+	@bash scripts/hooks/tests/tmux-window-watchdog.test.sh
+	@echo "✓ Shell-hook tests passed"
+
 ## test-coverage: Run tests with coverage
 coverage:
 	@echo "Running tests with coverage..."
@@ -107,8 +114,8 @@ verify-mcp:
 	@echo "Running MCP E2E verification script..."
 	@./scripts/verify-mcp-execution.sh
 
-## test-all: Run all tests (unit + tmux + integration + MCP)
-test-all: test test-mcp
+## test-all: Run all tests (unit + hooks + tmux + integration + MCP)
+test-all: test test-hooks test-mcp
 	@echo "Running all integration tests..."
 	$(GOTEST) -v -race -tags=tmux,integration ./...
 	@echo "✓ All test suites passed"

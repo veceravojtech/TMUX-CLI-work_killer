@@ -44,6 +44,23 @@ func TestWriteHookScripts_ExecutablePermissions(t *testing.T) {
 	}
 }
 
+func TestWriteHookScripts_WritesWindowWatchdog(t *testing.T) {
+	root := t.TempDir()
+	scripts := map[string]string{
+		"tmux-window-watchdog.sh": "#!/usr/bin/env bash\n",
+	}
+
+	err := WriteHookScripts(root, scripts)
+	require.NoError(t, err)
+
+	path := filepath.Join(root, ".tmux-cli", "hooks", "tmux-window-watchdog.sh")
+	assert.FileExists(t, path)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0755), info.Mode().Perm(), "watchdog hook should be 0755")
+}
+
 func TestWriteHookScripts_CreatesDirectories(t *testing.T) {
 	root := t.TempDir()
 

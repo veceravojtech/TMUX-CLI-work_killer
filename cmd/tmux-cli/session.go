@@ -47,6 +47,9 @@ var hookSupervisorCycle string
 //go:embed embedded/tmux-unplanned-audit.sh
 var hookUnplannedAudit string
 
+//go:embed embedded/tmux-window-watchdog.sh
+var hookWindowWatchdog string
+
 //go:embed embedded/commands/tmux
 var embeddedCommands embed.FS
 
@@ -1889,6 +1892,7 @@ func runAutoSetup(projectPath string) error {
 		"no-interactive-questions.sh": hookNoInteractiveQuestions,
 		"tmux-supervisor-cycle.sh":    hookSupervisorCycle,
 		"tmux-unplanned-audit.sh":     hookUnplannedAudit,
+		"tmux-window-watchdog.sh":     hookWindowWatchdog,
 	}
 
 	cmdTemplates := buildCommandTemplates()
