@@ -84,6 +84,18 @@ What programming language and framework will this project use?
         3. Else fall back to .tmux-cli/templates/_base/ (BASE_TEMPLATE_DIR).</action>
       <action>Read TEMPLATE_DIR/discovery.md (if present) for language-specific follow-ups in later steps. If only _base/ was resolved, note that only base templates apply.</action>
 
+      <branch condition="LANG=php AND FRAMEWORK=symfony">
+        <action critical="true">Ask the §1b source-layout question from TEMPLATE_DIR/discovery.md (where source code actually lives + the infrastructure-layer directory name), then ALWAYS write docs/architecture/layout.md with a `## Layers` section — the two authoritative lines `- Source roots: &lt;comma-joined globs&gt;` and `- Infrastructure layer: &lt;dir&gt;`. This is what the code-rules engine resolves `{src}`/`{infra}` globs from (and task-plan-generate's scaffold step reads it); the write is UNCONDITIONAL for php-symfony — never skip it. Create docs/architecture/ first if absent.</action>
+        <action>Default for the P2 monorepo topology when the user has no override: `- Source roots: contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src` and `- Infrastructure layer: Bundle` (authoritative over PSR-4 detection).</action>
+        <output-format>
+## Layers
+
+- Source roots: {{layout_source_roots}}
+- Infrastructure layer: {{layout_infra_layer}}
+        </output-format>
+        <rule>layout.md is ALWAYS produced for php-symfony (no skip) — it is a discovery DOCUMENT, not source code, so this respects the discovery-produces-documents-only mandate.</rule>
+      </branch>
+
       <rule critical="true">Do NOT proceed to Step 2 until language is confirmed by the user.</rule>
     </step>
 

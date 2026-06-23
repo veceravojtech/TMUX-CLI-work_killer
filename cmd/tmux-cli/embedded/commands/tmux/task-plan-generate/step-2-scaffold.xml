@@ -31,10 +31,27 @@
         <action>Read quality tool configs from .tmux-cli/templates/php-symfony/quality-gates.md for PHPStan level 9, ECS, and Deptrac enforcement commands.</action>
       </substep>
 
+      <substep n="2.2b" title="Resolve source layout (docs/architecture/layout.md ## Layers)">
+        <action critical="true">This substep runs BEFORE any `rules match` (substep 2.6b and every later code-rule injection): it resolves the `{src}`/`{infra}` tokens the code-rules engine globs against. Read docs/architecture/layout.md and extract its `## Layers` section — the two authoritative lines `- Source roots: &lt;comma-joined globs&gt;` and `- Infrastructure layer: &lt;dir&gt;` (authoritative over PSR-4 detection).</action>
+        <branch condition="docs/architecture/layout.md is absent OR has no `## Layers` section">
+          <action>CREATE docs/architecture/layout.md with a default monorepo `## Layers` block (facet-a fail-safe — never abort). Create docs/architecture/ first if absent. Write exactly:</action>
+          <value>
+## Layers
+
+- Source roots: contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src
+- Infrastructure layer: Bundle
+          </value>
+          <action>Print: "layout.md missing — wrote default monorepo ## Layers (Source roots + Infrastructure layer=Bundle)."</action>
+        </branch>
+        <action>Bind LAYOUT_SOURCE_ROOTS (from the `- Source roots:` line) and LAYOUT_INFRA_LAYER (from the `- Infrastructure layer:` line) for the scaffold-phase `rules match` (substep 2.6b) and every downstream code-rule injection.</action>
+        <rule>This is the ONLY layout.md write generation performs — it CREATES the file only when absent (a facet-a default), never modifies an existing discovery output. The match in 2.6b depends on these tokens, so 2.2b MUST precede it.</rule>
+      </substep>
+
       <substep n="2.3" title="Compose acceptance criteria (SC-01..SC-13 + conditional SC-17..SC-24)">
         <action>Build ACCEPTANCE array with the 13 base scaffold criteria from docs/task-plan-spec.md:420-434 (plus the conditional criteria below):</action>
         <criteria>
           <item id="SC-01">Root composer.json declares path repositories for every context/project/package (path-type repositories pointing at contexts/*, projects/*, packages/*), and a per-package composer.json exists for each package</item>
+          <item id="SC-01b">Each monorepo component (contexts/*, the contexts/previo shared kernel, projects/*, packages/*) carries a schema-valid monorepo-component.json beside its composer.json (PHP-MONO-001 — the manifest the monorepo tooling wires)</item>
           <item id="SC-02">composer install completes without errors (exit code 0)</item>
           <item id="SC-03">Monorepo skeleton exists for every BC from discovery: contexts/{BC}/src/Domain/, contexts/{BC}/src/Application/, contexts/{BC}/src/Bundle/{Domain,Application}/ (Bundle is the infrastructure layer), plus contexts/{BC}/app/ for the framework layer, deployable projects/{app}/src/, and shared packages/</item>
           <item id="SC-04">Shared-kernel context exists: contexts/previo/src/ with DataType, Event, Exception, Messaging (Share) subdirectories — the published language every other context depends on</item>
@@ -64,6 +81,7 @@
         <action>Build VALIDATE array with 6 base CLI commands (+ conditional SC-17/SC-18/SC-19/SC-20/SC-21/SC-23/SC-24 cmds) that verify the scaffold is functional:</action>
         <commands>
           <cmd source="SC-02">composer install</cmd>
+          <cmd source="SC-01b">sh -c 'find contexts projects packages -maxdepth 2 -name monorepo-component.json | grep -q .'</cmd>
           <cmd source="SC-05">bin/console</cmd>
           <cmd source="SC-06">vendor/bin/phpunit</cmd>
           <cmd source="SC-07">vendor/bin/phpstan analyse --level=9</cmd>
@@ -100,9 +118,9 @@ Test environment variables from docs/architecture/test-environment.md.
           <action>Build fan-out hints for multi-task execution (4 file-disjoint tasks; task-3 conditional on HAS_DATABASE; + task-R prepended when RUN_TARGET=docker per DOCKER-RUNTIME-FRONTLOAD):</action>
 
           <task n="0" name="Composer setup" prerequisite="true">
-            <scope>Root composer.json declaring path repositories for every context/project/package + a per-package composer.json for each package + composer install</scope>
-            <criteria>SC-01, SC-02</criteria>
-            <owns>composer.json (root, path repositories), per-package composer.json (contexts/*/composer.json, projects/*/composer.json, packages/*/composer.json), composer.lock, vendor/</owns>
+            <scope>Root composer.json declaring path repositories for every context/project/package + a per-package composer.json for each package + a per-component monorepo-component.json beside each composer.json + composer install</scope>
+            <criteria>SC-01, SC-01b, SC-02</criteria>
+            <owns>composer.json (root, path repositories), per-package composer.json (contexts/*/composer.json, projects/*/composer.json, packages/*/composer.json), per-component monorepo-component.json (contexts/*/monorepo-component.json, projects/*/monorepo-component.json, packages/*/monorepo-component.json), composer.lock, vendor/</owns>
             <depends_on>none (first task)</depends_on>
           </task>
 
@@ -127,7 +145,7 @@ Test environment variables from docs/architecture/test-environment.md.
             <depends_on>task-0 (needs composer for bin/console)</depends_on>
           </task>
 
-          <rule>File-disjoint: task-0 owns every composer.json (root path-repositories + per-package), task-1 owns the contexts/projects/packages directory skeleton plus the conditional frontend skeleton (packages/ui/** when FRONTEND_MODE == vue OR templates/** when FRONTEND_MODE == twig, never both — packages/ui is an npm package with NO composer.json, so it stays out of task-0's composer path-repo set), task-2 owns config root files (incl. deptrac.yaml with its layer + package edges), task-3 owns bin/ensure-test-stack.sh. task-R (docker mode) owns docker-compose.yaml + the dev Dockerfile. Zero overlap.</rule>
+          <rule>File-disjoint: task-0 owns every composer.json (root path-repositories + per-package) and every per-component monorepo-component.json beside it, task-1 owns the contexts/projects/packages directory skeleton plus the conditional frontend skeleton (packages/ui/** when FRONTEND_MODE == vue OR templates/** when FRONTEND_MODE == twig, never both — packages/ui is an npm package with NO composer.json, so it stays out of task-0's composer path-repo set), task-2 owns config root files (incl. deptrac.yaml with its layer + package edges), task-3 owns bin/ensure-test-stack.sh. task-R (docker mode) owns docker-compose.yaml + the dev Dockerfile. Zero overlap.</rule>
           <rule>SC-05 (bin/console boots) is verified after ALL tasks complete — it depends on both Composer packages and Symfony kernel config.</rule>
         </section>
 
@@ -169,6 +187,12 @@ Test environment variables from docs/architecture/test-environment.md.
       <substep n="2.6" title="Compose not-in-scope">
         <action>Set NOT_IN_SCOPE to:</action>
         <value>Application code, domain logic, controller actions, fixtures, E2E tests, Playwright setup — all handled by subsequent goals (goal-003+).</value>
+      </substep>
+
+      <substep n="2.6b" title="Inject code rules (apply [CODE-RULE-INJECTION])">
+        <action>Bind RULE_FILES = the comma-joined scaffold manifest+composer footprint that PHP-MONO-001 targets: the per-component manifests (contexts/*/monorepo-component.json, projects/*/monorepo-component.json, packages/*/monorepo-component.json) PLUS the per-package composer.json (contexts/*/composer.json, projects/*/composer.json, packages/*/composer.json). Bind RULE_PHASE = `scaffold` (this goal's phase token — pass it VERBATIM; do NOT remap it).</action>
+        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (2.3); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (2.4); fold any `review` `validate_cmd`s into ONE convention-audit investigator (the base is 4 from 2.5, so the 2–4 CAP applies — only ADD the investigator when a `must` review rule has a NON-EMPTY runnable `validate_cmd`, dropping the lowest keep-priority base investigator per the spine; otherwise inject NO investigator and let the review rule ride its acceptance_line + goal.md pointer); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (2.5). Empty `rules` ⇒ inject nothing.</action>
+        <rule>`scaffold` IS a real Go rule phase: PHP-MONO-001 (phase=scaffold; globs **/monorepo-component.json + contexts|projects|packages/*/composer.json) matches this footprint, so its `CR-PHP-MONO-001` acceptance_line injects — GENUINE enforcement, NOT mechanical parity. Its review validate carries no runnable signal, so Go renders an empty `validate_cmd` ⇒ no validate row, no investigator, no drop. PRESERVE the 4 existing investigators.</rule>
       </substep>
 
       <substep n="2.7" title="Call goal-create MCP">

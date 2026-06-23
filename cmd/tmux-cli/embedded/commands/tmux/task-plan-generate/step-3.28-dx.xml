@@ -82,6 +82,12 @@ Depends on ALL non-gate/scaffold goals: {{CROSS_CUTTING_GOAL_IDS}} — DX is the
         </section>
       </substep>
 
+      <substep n="3.28.5b" title="Inject code rules (apply [CODE-RULE-INJECTION])">
+        <action>Bind RULE_FILES = the comma-joined DX deliverable paths (Makefile + .env.test and any composer-script wiring this goal owns). Bind RULE_PHASE = `dx` (this goal's phase token — pass it VERBATIM; do NOT remap it).</action>
+        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.28.3); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (3.28.4); fold `review` `validate_cmd`s into ONE convention-audit investigator (ADD; base is 3 from 3.28.5, so the 4th slot is free — no drop); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.28.5). Empty `rules` ⇒ inject nothing.</action>
+        <rule>The phase token `dx` is NOT in the Go `allowedPhases` enum — `rules match` returns an empty set, so this goal UNDER-injects (fail-safe: under-enforce, never wrong-enforce — mechanical parity, exactly as 3.21.7b documents for `error_handling`). Do NOT remap the phase token to a real phase to force a match. PRESERVE the 3 existing investigators.</rule>
+      </substep>
+
       <substep n="3.28.6" title="Call goal-create MCP">
         <action>Call the goal-create MCP tool with these parameters:</action>
         <params>

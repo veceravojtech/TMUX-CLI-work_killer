@@ -82,6 +82,12 @@ Event handler implementations, domain event definitions, ACL adapters, infrastru
         </section>
       </substep>
 
+      <substep n="3.24.4b" title="Inject code rules (apply [CODE-RULE-INJECTION])">
+        <action>Bind RULE_FILES = the comma-joined messenger deliverable paths (config/packages/messenger.yaml and any async transport/handler wiring this goal owns). Bind RULE_PHASE = `messenger` (this goal's phase token — pass it VERBATIM; do NOT remap it).</action>
+        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.24.3); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array; fold `review` `validate_cmd`s into ONE convention-audit investigator (ADD; base is 2 from 3.24.4, so a slot is free — no drop); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.24.4). Empty `rules` ⇒ inject nothing.</action>
+        <rule>The phase token `messenger` is NOT in the Go `allowedPhases` enum — `rules match` returns an empty set, so this goal UNDER-injects (fail-safe: under-enforce, never wrong-enforce — mechanical parity, exactly as 3.21.7b documents for `error_handling`). Do NOT remap the phase token to a real phase to force a match. PRESERVE the 2 existing investigators.</rule>
+      </substep>
+
       <substep n="3.24.5" title="Call goal-create MCP and record ID">
         <action>Call the goal-create MCP tool with these parameters:</action>
         <params>
