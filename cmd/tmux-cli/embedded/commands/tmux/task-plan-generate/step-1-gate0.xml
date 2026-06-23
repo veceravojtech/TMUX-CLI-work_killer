@@ -57,6 +57,7 @@
           <item condition="RUN_TARGET=local">Gate 0 checks PHP extensions required by the project (E-06)</item>
           <item condition="RUN_TARGET=docker">Gate 0 verifies Docker engine + Compose v2 + running daemon, can pull+run a container (E-14)</item>
           <item condition="RUN_TARGET=docker">Host PHP/extension checks deferred to in-container scaffold — not run on host (E-15)</item>
+          <item condition="RUN_TARGET=docker AND services_compose">Gate 0 preflights the host-required app web port is free (`! ss -ltn | grep -q ":&lt;APP_PORT&gt; "`, APP_PORT from test-environment.md Published Ports) before scaffold, so a bound port fails fast at the gate rather than aborting `docker compose up -d --wait` (ENV-C05)</item>
           <item always="true">After correction, Gate 0 re-runs failed checks and any checks whose inputs changed; on the final cycle before overall pass, re-run all checks for end-to-end verification. (E-07)</item>
           <item always="true">Gate 0 passes only when ALL checks are green (E-08)</item>
           <item always="true">No subsequent goal dispatched while Gate 0 is pending/failed (E-09)</item>
@@ -76,6 +77,9 @@
           <cmd source="ENV-C02">docker compose version</cmd>
           <cmd source="ENV-C03">docker info</cmd>
           <cmd source="ENV-C04">docker run --rm hello-world</cmd>
+        </commands>
+        <commands condition="RUN_TARGET=docker AND services_compose">
+          <cmd source="ENV-C05">! ss -ltn | grep -q ":&lt;APP_PORT&gt; "</cmd>
         </commands>
         <commands condition="RUN_TARGET=local">
           <cmd source="ENV-R01">php -r "echo PHP_VERSION;"</cmd>
@@ -109,6 +113,7 @@
         </commands>
         <rule>ENV-A01/ENV-A02 are always-on (both modes): they assert Gate 0 wrote a valid AGENTS.md. ENV-A02 greps the EXACT sentinel/heading strings the agents.md template writes — `&lt;!-- GATE0:BEGIN --&gt;`, `## Run Target`, `## Gate 0 Status` — do not alter these strings (contract with the agents.md template).</rule>
         <rule>In RUN_TARGET=docker mode, host PHP-world checks (ENV-R01/P01/X*) and host frontend checks (ENV-F01/F02) are deferred to the in-container scaffold (E-15); the docker block (ENV-C01..C04) proves the host can actually run containers.</rule>
+        <rule>ENV-C05 is a host-port preflight, emitted only in docker mode with compose-internal services: substitute &lt;APP_PORT&gt; with the LITERAL app web host port read from docs/architecture/test-environment.md Published Ports (the host-required port, e.g. 18080). `! ss -ltn | grep -q ":&lt;APP_PORT&gt; "` (write `ss -ltn` lowercase) exits 0 when that host port is FREE and fails fast when it is already bound — turning a would-be opaque mid-scaffold `docker compose up -d --wait` abort into a precise gate failure. It is satisfiable in-sandbox (rule below): `ss` is a local binary reading a literal port, requiring no live external service.</rule>
         <rule>DB credential variables ($DB_HOST etc.) reference values from docs/architecture/test-environment.md — never inline passwords (GM-05).</rule>
         <rule>Never include vendor/bin/* commands — those are Scaffold goal-002 (E-04).</rule>
         <rule>Every validate command MUST be satisfiable by the implementer inside its sandbox (a local binary, file, or already-present extension). A rule requiring a LIVE external service, network reachability, or a runtime secret is NOT a validate rule — emit it as a ## Preconditions line ([service] host:port or [env] VAR) for the daemon to gate, never in validate or acceptance.</rule>
@@ -231,6 +236,7 @@ AGENTS.md Bootstrap (E-16, ENV-A01/ENV-A02 — a deliverable of the Compose Read
         <section name="correction-ordering">
 Correction ordering protocol (E-13): when multiple failures are detected, apply corrections in this order:
 0. Container runtime — Docker engine, daemon, can-run-container, Compose (ENV-C01..C04) — only if RUN_TARGET=docker
+0a. Host web port — the host-required app web port must be free (ENV-C05) — only if RUN_TARGET=docker with compose services. Remedy when bound: "host port &lt;APP_PORT&gt; already bound (held by &lt;container&gt;); free it or set APP_PORT to a free port" — never free another project's port; the rebindable runtime binding (DOCKER-RUNTIME-FRONTLOAD) honors the "set APP_PORT" option by remapping the host side.
 1. System packages — PHP CLI, Composer (ENV-R01, ENV-P01) — only if RUN_TARGET=local
 2. PHP extensions — pdo_pgsql, intl, mbstring + project-specific (ENV-X01..XN) — only if RUN_TARGET=local
 3. Services — Redis, RabbitMQ (ENV-S01, ENV-S02) — only if selected and (RUN_TARGET=local OR SERVICES_EXTERNAL)
