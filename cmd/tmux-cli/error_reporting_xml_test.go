@@ -11,7 +11,7 @@ import (
 
 // exemptFromErrorReporting lists the embedded command XMLs (relative to
 // embedded/commands/tmux) that are deliberately NOT required to carry their own
-// <error-reporting> reference. The 21 task-plan-generate/step-*.xml shards load
+// <error-reporting> reference. The 22 task-plan-generate/step-*.xml shards load
 // into the SAME worker context as their parent task-plan-generate.xml (which
 // DOES carry the reference) and therefore inherit it — duplicating the element
 // per-shard would only invite drift. The list is explicit per-path (NOT a
@@ -34,6 +34,7 @@ var exemptFromErrorReporting = map[string]bool{
 	"task-plan-generate/step-3.19a-seed-admin.xml":                true,
 	"task-plan-generate/step-3.20-event-listeners.xml":            true,
 	"task-plan-generate/step-3.21-error-handling.xml":             true,
+	"task-plan-generate/step-3.21b-i18n-foundation.xml":           true,
 	"task-plan-generate/step-3.22-middleware.xml":                 true,
 	"task-plan-generate/step-3.23-api-docs.xml":                   true,
 	"task-plan-generate/step-3.24-messenger.xml":                  true,
