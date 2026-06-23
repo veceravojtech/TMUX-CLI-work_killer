@@ -29,6 +29,7 @@
           </read>
           <read file="docs/architecture/domain-model.md">
             <extract what="Per-BC domain detail">For each BC, extract: aggregate roots (### headings under BC section), value objects per aggregate, domain events per aggregate, domain services, repository interface descriptions, read model interface presence, invariants.</extract>
+            <extract what="AGGREGATE_PATTERN">Read the recorded {{aggregate_pattern_decision}} from domain-model.md's "## Aggregate Implementation Triad — previo2" section (surfaced by task-plan-discover; do NOT re-ask discovery). Set AGGREGATE_PATTERN = triad when the recorded value is the previo2 monorepo default ("previo2 triad") OR the section describes each aggregate as root + #[AggregateDAO] &lt;X&gt;Data + readonly &lt;X&gt;DTO. Set AGGREGATE_PATTERN = classic ONLY when the recorded value is explicitly "classic" (non-monorepo php). Missing/absent value ⇒ default to triad per the discovery default.</extract>
           </read>
           <read file="docs/architecture/context-mapping.md" condition="multi-BC project (BC_LIST.length > 1)">
             <extract what="Cross-BC dependencies">For each BC, extract: upstream BCs it depends on, relationship type (ACL, Published Language, Shared Kernel), event contracts, ID VO references.</extract>
@@ -91,6 +92,21 @@
             <path>contexts/previo/src/Exception/DomainException.php</path>
           </paths>
           <action>Update SHARE_OWNERSHIP for all newly claimed Share files.</action>
+          <branch condition="AGGREGATE_PATTERN == triad">
+            <action>ADDITIVELY append previo2-triad deliverable paths per aggregate — the classic paths above are PRESERVED; these emit ONLY when the discovery flag resolved to triad:</action>
+            <paths>
+              <path per="aggregate">contexts/{{BC}}/src/Domain/{{Aggregate}}Data.php</path>
+              <path per="aggregate">contexts/{{BC}}/src/Domain/{{Aggregate}}DTO.php</path>
+              <path per="aggregate">contexts/{{BC}}/src/Domain/{{Aggregate}}EventInterface.php</path>
+              <path per="event">contexts/{{BC}}/src/Domain/Event/{{Event}}EventRecord.php</path>
+            </paths>
+            <action>The shared aggregate Id and its base are Share-owned (NOT a flat per-BC DataType/). For Ids introduced by this BC and not already in SHARE_OWNERSHIP:</action>
+            <paths>
+              <path per="aggregate">contexts/previo/src/Domain/{{Module}}/{{Aggregate}}Id.php</path>
+              <path>contexts/previo/src/Share/Model/AbstractId.php</path>
+            </paths>
+            <action>Track {{Aggregate}}Id (under contexts/previo/src/Domain/{{Module}}) and the AbstractId base in SHARE_OWNERSHIP exactly like other Share types — the first BC to introduce each claims it; subsequent BCs reference it but do NOT re-list it.</action>
+          </branch>
         </substep>
 
         <substep n="3.14.4d" title="Build fan-out hints">
@@ -151,6 +167,15 @@
             <item id="PD-18" condition="shared types introduced">Shared types live in contexts/previo/src/, not duplicated per BC</item>
             <item id="PD-19" condition="published events exist">Cross-BC event DTOs live in contexts/previo/src/Event/ as Published Language</item>
             <item id="PD-20" always="true">Aggregate sizing follows one-aggregate-per-transaction — prefer small aggregates referencing by ID</item>
+            <triad-branch condition="AGGREGATE_PATTERN == triad">
+              <action>ADDITIVELY append previo2-triad acceptance — PD-01..PD-20 above are PRESERVED verbatim; emit PD-21..PD-26 ONLY when the discovery flag resolved to triad (classic projects skip this block entirely):</action>
+              <item id="PD-21">Aggregate root {{Aggregate}} holds its persisted state in a mutable {{Aggregate}}Data DAO carrying the #[AggregateDAO] attribute (contexts/{{BC}}/src/Domain/{{Aggregate}}Data.php) — NOT value objects held directly on the root</item>
+              <item id="PD-22">Aggregate exposes a readonly {{Aggregate}}DTO projection via getData(): {{Aggregate}}DTO — {{Aggregate}}DTO is a readonly class returned to callers/read models, never the mutable Data</item>
+              <item id="PD-23">Domain events carry {{Event}}EventRecord snapshots (typed payloads, not flat scalars) — contexts/{{BC}}/src/Domain/Event/{{Event}}EventRecord.php</item>
+              <item id="PD-24">Every {{Aggregate}} domain event implements the per-aggregate {{Aggregate}}EventInterface so events are typed and replayable</item>
+              <item id="PD-25">Shared aggregate Id {{Aggregate}}Id lives under contexts/previo/src/Domain/{{Module}} (shared-kernel, referenced cross-module) — NOT a flat per-BC DataType/</item>
+              <item id="PD-26">{{Aggregate}}Id extends a UUID/Int AbstractId base in contexts/previo/src/Share/Model/AbstractId.php</item>
+            </triad-branch>
           </criteria>
           <rule>Include conditional criteria only when their condition is true for this BC.</rule>
           <rule>Replace {{BC}} and {{Aggregate}} placeholders with actual BC and aggregate names from discovery.</rule>
@@ -164,6 +189,13 @@
             <cmd source="PD-13">grep -r '@ORM\|#\[ORM' contexts/{{BC}}/src/Domain/ | wc -l (must output 0)</cmd>
             <cmd source="PD-09">grep -rn 'use App\\{{BC}}\\Bundle\|use App\\{{BC}}\\Application' contexts/{{BC}}/src/Domain/ | grep -v 'Application\\ReadModel' | wc -l (must output 0)</cmd>
             <cmd source="PD-10-INV" per-invariant="true">For EACH {{BC}} invariant emit a presence pair (GM-09b/GM-09c): grep -rl 'class {{Invariant}}Checker' contexts/{{BC}}/src/Domain/Service/ (must return ≥1) and grep -rlE '{{Invariant}}(AlreadyInUse|NotFound|Invalid)Exception' contexts/{{BC}}/tests/Unit/Domain/ (must return ≥1)</cmd>
+            <triad-branch condition="AGGREGATE_PATTERN == triad">
+              <action>ADDITIVELY append previo2-triad validate commands — the classic cmds above are PRESERVED; these emit ONLY when the discovery flag resolved to triad:</action>
+              <cmd source="PD-21">grep -rl '#\[AggregateDAO\]' contexts/{{BC}}/src/Domain/{{Aggregate}}Data.php (must return ≥1 — the {{Aggregate}}Data DAO carries the AggregateDAO attribute)</cmd>
+              <cmd source="PD-22">grep -rlE 'readonly class {{Aggregate}}DTO|getData\(\): {{Aggregate}}DTO' contexts/{{BC}}/src/Domain/ (must return ≥1 — readonly DTO projection + getData accessor)</cmd>
+              <cmd source="PD-23,PD-24">grep -rl 'EventRecord' contexts/{{BC}}/src/Domain/Event/ (must return ≥1) and grep -rl 'implements {{Aggregate}}EventInterface' contexts/{{BC}}/src/Domain/Event/ (must return ≥1 — events are typed EventRecord snapshots implementing the per-aggregate EventInterface)</cmd>
+              <cmd source="PD-25,PD-26">test -f contexts/previo/src/Domain/{{Module}}/{{Aggregate}}Id.php (shared aggregate Id placement) and grep -rl 'extends AbstractId' contexts/previo/src/Domain/{{Module}}/{{Aggregate}}Id.php (must return ≥1 — Id extends the Share/Model AbstractId base)</cmd>
+            </triad-branch>
           </commands>
           <rule>The PD-09 grep excludes Application\ReadModel imports which are allowed for read model interface references from Domain services. All other Application/Bundle imports are violations.</rule>
           <rule>GM-09b/GM-09c: PD-10 invariant coverage is gated by the per-invariant presence-greps above, NOT by a coverage judgment on a green suite. Emit one PD-10-INV pair per invariant named in the {{BC}} domain model — the same set decomposed into the PD-10-INV acceptance items. A green suite with a missing presence-grep is a FAIL.</rule>
@@ -213,11 +245,17 @@ DDD aggregate/VO/event/repository-interface contract is catalogue-owned: read co
             <investigator n="4" name="DDD convention check" type="conditional" condition="AGGREGATE_COUNT > 1 or cross-BC deps exist">
               <type>convention-audit</type>
               <commands>grep -r 'private function __construct' contexts/{{BC}}/src/Domain/ (must match aggregate count), grep -rn 'final class' contexts/{{BC}}/src/Domain/ValueObject/ (must match VO count), grep -rn 'function equals' contexts/{{BC}}/src/Domain/ValueObject/ (must match VO count)</commands>
+              <triad-branch condition="AGGREGATE_PATTERN == triad">
+                <action>ADDITIVELY extend THIS investigator's Commands/Pass/Fail with previo2-triad presence greps — do NOT add a 5th investigator (keeps investigation_config within the documented 2–4 cap):</action>
+                <commands-extra>grep -rl '#\[AggregateDAO\]' contexts/{{BC}}/src/Domain/ (must match aggregate count — each {{Aggregate}}Data carries #[AggregateDAO]), grep -rl 'EventRecord' contexts/{{BC}}/src/Domain/Event/ (≥1), grep -rl '{{Aggregate}}EventInterface' contexts/{{BC}}/src/Domain/ (≥1), grep -rlE 'readonly class {{Aggregate}}DTO|getData' contexts/{{BC}}/src/Domain/ (≥1), test -f contexts/previo/src/Domain/{{Module}}/{{Aggregate}}Id.php</commands-extra>
+                <pass-extra>AND (triad) each {{Aggregate}}Data carries #[AggregateDAO], events are {{Event}}EventRecord snapshots implementing {{Aggregate}}EventInterface, a readonly {{Aggregate}}DTO exists, and {{Aggregate}}Id lives under contexts/previo/src/Domain/{{Module}}</pass-extra>
+                <fail-extra>OR (triad) a {{Aggregate}}Data lacks #[AggregateDAO], events are flat scalars without EventRecord/EventInterface, no readonly DTO, or the shared Id is misplaced</fail-extra>
+              </triad-branch>
               <pass>Private constructors on all aggregates, final on all VOs, equals() on all VOs</pass>
               <fail>Missing private constructor, non-final VO, missing equals()</fail>
             </investigator>
 
-            <rule>Minimum 3 investigators (Unit tests + Static analysis + Layer violation). Investigator 4 added when AGGREGATE_COUNT > 1 or cross-BC deps exist (GM-08).</rule>
+            <rule>Minimum 3 investigators (Unit tests + Static analysis + Layer violation). Investigator 4 added when AGGREGATE_COUNT > 1 or cross-BC deps exist (GM-08); when AGGREGATE_PATTERN == triad its Commands/Pass/Fail are EXTENDED with the triad presence greps above (never a 5th investigator). For a single-aggregate triad BC where investigator 4 is absent, the triad acceptance (PD-21..PD-26) and triad validate cmds (3.14.4f) remain the objective gate.</rule>
             <rule>Each investigator has type, commands, pass/fail criteria (GM-09).</rule>
           </section>
 

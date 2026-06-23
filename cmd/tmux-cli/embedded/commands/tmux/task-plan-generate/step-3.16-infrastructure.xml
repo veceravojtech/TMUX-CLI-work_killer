@@ -35,6 +35,7 @@
           <read file="docs/architecture/domain-model.md">
             <extract what="ENTITY_MAP">For each BC, collect all aggregate roots, entities, and value objects. Count entities per BC (aggregate roots + child entities) for fan-out heuristic.</extract>
             <extract what="VO_TYPE_MAP">For each BC, identify value objects needing custom DBAL types — those wrapping compound data (Money = amount+currency), custom formats (Email with validation), or enums. Simple ID string VOs that map to VARCHAR do not need custom types.</extract>
+            <extract what="AGGREGATE_PATTERN">Read the recorded {{aggregate_pattern_decision}} from domain-model.md's "## Aggregate Implementation Triad — previo2" section (surfaced by task-plan-discover; do NOT re-ask discovery). Set AGGREGATE_PATTERN = triad when the recorded value is the previo2 monorepo default ("previo2 triad") OR the section describes each aggregate as root + #[AggregateDAO] &lt;X&gt;Data + readonly &lt;X&gt;DTO. Set AGGREGATE_PATTERN = classic ONLY when the recorded value is explicitly "classic" (non-monorepo php). Missing/absent ⇒ default to triad per the discovery default. Must agree with the domain shard's resolution for the same project.</extract>
           </read>
           <read file="docs/architecture/context-map.md" condition="multi-BC project (BC_LIST.length > 1)">
             <extract what="CROSS_BC_DEPS">For each BC, find relationships where this BC is the consumer (downstream). Collect the upstream BC name for ACL adapter generation.</extract>
@@ -73,6 +74,11 @@
             <item id="PI-14">Integration tests run green: vendor/bin/phpunit --filter={BC}\\Bundle passes</item>
             <item id="PI-15">contexts/{BC}/config/services.yaml (or DI extension) binds interfaces to implementations</item>
             <item id="PI-16" condition="acl_list non-empty">ACL adapters exist for cross-BC dependencies: {acl_list} in contexts/{BC}/src/Bundle/Application/Acl/</item>
+            <triad-branch condition="AGGREGATE_PATTERN == triad">
+              <action>ADDITIVELY append previo2-triad infrastructure acceptance — PI-01..PI-16 above are PRESERVED; emit PI-17/PI-18 ONLY when the discovery flag resolved to triad (classic projects skip this block):</action>
+              <item id="PI-17">Doctrine XML mapping targets the {Aggregate}Data DAO (the #[AggregateDAO] class holding persisted state), NOT the aggregate root — one {Aggregate}Data.orm.xml per aggregate maps the Data, the root stays persistence-ignorant</item>
+              <item id="PI-18">Query/read-model repositories return readonly {Aggregate}DTO projections, never hydrated aggregate roots — reads project through the DTO</item>
+            </triad-branch>
           </criteria>
           <rule>Include PI-08 only when vo_type_list is non-empty. Include PI-16 only when acl_list is non-empty. All other criteria are always present.</rule>
 
@@ -82,6 +88,10 @@
             <cmd source="PI-14">vendor/bin/phpunit --filter={BC}\\Bundle</cmd>
             <cmd source="PI-03">grep -r '@ORM\|@Entity\|#\[ORM' contexts/{BC}/src/Domain contexts/{BC}/src/Application | wc -l</cmd>
             <cmd source="PI-01">test -d contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/ &amp;&amp; ls contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/*.xml | wc -l</cmd>
+            <triad-branch condition="AGGREGATE_PATTERN == triad">
+              <action>ADDITIVELY append a previo2-triad validate command — the classic cmds above are PRESERVED; emits ONLY when the discovery flag resolved to triad:</action>
+              <cmd source="PI-17">grep -rl '{Aggregate}Data' contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/ (must return ≥1 — the XML mapping targets the {Aggregate}Data DAO, the #[AggregateDAO] class, NOT the aggregate root)</cmd>
+            </triad-branch>
           </commands>
           <rule>Validate command for PI-03 must return 0 (zero annotation leaks). All other commands must exit 0.</rule>
 
@@ -145,11 +155,17 @@ ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messeng
               <name>ACL adapter presence</name>
               <type>file-check</type>
               <commands>test -d contexts/{BC}/src/Bundle/Application/Acl/ &amp;&amp; ls contexts/{BC}/src/Bundle/Application/Acl/*ACLAdapter.php | wc -l</commands>
+              <triad-branch condition="AGGREGATE_PATTERN == triad">
+                <action>ADDITIVELY extend THIS investigator's Commands/Pass/Fail with a previo2-triad DAO-mapping presence assertion — do NOT add a 5th investigator (keeps investigation_config within the documented 2–4 cap):</action>
+                <commands-extra>grep -rl '{Aggregate}Data' contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/ (must return ≥1 — the Doctrine XML maps the {Aggregate}Data DAO, the #[AggregateDAO] class, NOT the aggregate root)</commands-extra>
+                <pass-extra>AND (triad) every aggregate's Doctrine XML mapping targets its {Aggregate}Data DAO (not the root) and query repos return {Aggregate}DTO</pass-extra>
+                <fail-extra>OR (triad) a mapping still targets the aggregate root instead of {Aggregate}Data, or query repos return hydrated roots instead of DTOs</fail-extra>
+              </triad-branch>
               <pass>File count matches number of cross-BC dependencies</pass>
               <fail>Missing ACL adapter for one or more dependencies</fail>
             </investigator>
 
-            <rule>Minimum 3 investigators (Schema + Annotations + Tests). 4th (ACL) only when cross-BC deps exist (GM-08).</rule>
+            <rule>Minimum 3 investigators (Schema + Annotations + Tests). 4th (ACL) only when cross-BC deps exist (GM-08); when AGGREGATE_PATTERN == triad its Commands/Pass/Fail are EXTENDED with the triad DAO-mapping assertion above (never a 5th investigator). For a triad BC with no ACL deps where investigator 4 is absent, PI-17/PI-18 acceptance and the triad validate cmd remain the objective DAO-mapping gate.</rule>
           </section>
 
           <action>Set NOT_IN_SCOPE:</action>
