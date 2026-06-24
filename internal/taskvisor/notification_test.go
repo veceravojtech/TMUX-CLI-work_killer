@@ -950,6 +950,7 @@ func TestFinalizeWorktreeOnDone_MergeConflict_NoGoalFailedNotification(t *testin
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{
 		{
 			ID: "goal-001", Description: "merge conflict goal", Status: GoalDone,
+			Scope:      []string{"internal/foo/**"},
 			StartedAt:  "2026-06-07T10:00:00Z",
 			FinishedAt: "2026-06-07T10:30:00Z",
 		},
@@ -964,27 +965,24 @@ func TestFinalizeWorktreeOnDone_MergeConflict_NoGoalFailedNotification(t *testin
 	rt.WorktreeDir = wtDir
 	rt.Branch = "taskvisor/goal-001"
 
+	// In-scope conflict (internal/foo/bar.go ∈ goal.Scope) ⇒ BLOCK, not Done.
 	d.SetGitRunnerFunc(func(ctx context.Context, args ...string) (string, string, int, error) {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.Contains(joined, "add -A"):
 			return "", "", 0, nil
 		case strings.Contains(joined, "status --porcelain"):
-			return "", "", 0, nil
+			return "M internal/foo/bar.go\n", "", 0, nil
 		case strings.Contains(joined, "rev-parse --abbrev-ref HEAD"):
 			return "main\n", "", 0, nil
 		case strings.Contains(joined, "rev-list --count"):
 			return "1\n", "", 0, nil
-		case strings.Contains(joined, "rebase") && !strings.Contains(joined, "--abort"):
-			return "", "", 1, nil
-		case strings.Contains(joined, "ls-files --unmerged"):
-			return "internal/foo.go\n", "", 0, nil
 		case strings.Contains(joined, "rebase --abort"):
 			return "", "", 0, nil
-		case strings.Contains(joined, "worktree remove"):
-			return "", "", 0, nil
-		case strings.Contains(joined, "branch -D"):
-			return "", "", 0, nil
+		case strings.Contains(joined, "rebase main"):
+			return "", "", 1, nil
+		case strings.Contains(joined, "diff --name-only --diff-filter=U"):
+			return "internal/foo/bar.go\n", "", 0, nil
 		}
 		return "", "", 0, nil
 	})
@@ -997,8 +995,9 @@ func TestFinalizeWorktreeOnDone_MergeConflict_NoGoalFailedNotification(t *testin
 	goal := &gf.Goals[0]
 	failed, err := d.finalizeWorktreeOnDone(gf, goal)
 	require.NoError(t, err)
-	assert.False(t, failed, "a post-validation merge-back conflict must not fail a validated goal")
-	assert.Equal(t, GoalDone, gf.Goals[0].Status, "goal stays Done on merge-back conflict")
+	assert.True(t, failed, "an in-scope merge-back conflict blocks integration (failed=true suppresses resume)")
+	assert.Equal(t, GoalBlocked, gf.Goals[0].Status, "in-scope conflict ⇒ GoalBlocked, never Done")
+	assert.Equal(t, "needs-merge", gf.Goals[0].BlockedBy, "BlockedBy records the needs-merge reason")
 
 	for _, call := range exec.Calls {
 		if call.Method == "SendMessageWithDelay" {

@@ -10,7 +10,9 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -322,10 +324,13 @@ func TestFinalizeWorktreeOnDone_IntegrationFailed_DiscardsWorktree(t *testing.T)
 	assert.Empty(t, d.runtime("goal-001").WorktreeDir, "runtime worktree cleared after discard")
 }
 
-// TestFinalizeWorktreeOnDone_MergeConflict_StillHandled is a regression: adding the
-// integration branch must NOT alter the pre-existing errMergeConflict handling.
+// TestFinalizeWorktreeOnDone_MergeConflict_StillHandled: an IN-scope merge-back
+// conflict BLOCKS — no ff-merge, the integration gate never runs (no FF), the goal
+// ends GoalBlocked/needs-merge, and no VerdictFail signal is written.
 func TestFinalizeWorktreeOnDone_MergeConflict_StillHandled(t *testing.T) {
-	d, _, dir := setupDaemon(t)
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
 	mkGitRepo(t, dir)
 	// integration_cmd set, but the rebase conflicts BEFORE the FF/integration block.
 	writeSettingsIntegrationCmd(t, dir, "make test")
@@ -335,7 +340,7 @@ func TestFinalizeWorktreeOnDone_MergeConflict_StillHandled(t *testing.T) {
 	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
 		switch {
 		case argsContain(args, "status", "--porcelain"):
-			return "M internal/shared.go\n", 0
+			return "M internal/taskvisor/shared.go\n", 0
 		case argsContain(args, "rev-list", "--count"):
 			return "1\n", 0
 		case argsContain(args, "rev-parse", "--abbrev-ref", "HEAD"):
@@ -343,7 +348,7 @@ func TestFinalizeWorktreeOnDone_MergeConflict_StillHandled(t *testing.T) {
 		case argsContain(args, "rebase", "main"):
 			return "CONFLICT", 1
 		case argsContain(args, "diff", "--name-only", "--diff-filter=U"):
-			return "internal/shared.go\n", 0
+			return "internal/taskvisor/shared.go\n", 0
 		}
 		return "", 0
 	}}
@@ -352,14 +357,17 @@ func TestFinalizeWorktreeOnDone_MergeConflict_StillHandled(t *testing.T) {
 		integrationCalled = true
 		return "", "", 0, nil
 	})
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor"}}, nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	gf := &GoalsFile{Goals: []Goal{{ID: "goal-001", Status: GoalDone}}}
+	gf := &GoalsFile{Goals: []Goal{{ID: "goal-001", Status: GoalDone, Scope: []string{"internal/taskvisor/**"}}}}
 	writeGoals(t, dir, gf)
 
 	failed, err := d.finalizeWorktreeOnDone(gf, &gf.Goals[0])
 	require.NoError(t, err)
-	assert.False(t, failed, "a post-validation merge-back conflict does not fail a validated goal")
-	assert.Equal(t, GoalDone, gf.Goals[0].Status)
+	assert.True(t, failed, "an in-scope merge-back conflict blocks integration (failed=true)")
+	assert.Equal(t, GoalBlocked, gf.Goals[0].Status, "in-scope conflict ⇒ GoalBlocked, never Done")
+	assert.Equal(t, "needs-merge", gf.Goals[0].BlockedBy)
 	assert.Equal(t, 1, fake.count("rebase", "--abort"), "conflict path still aborts cleanly")
 	assert.Equal(t, 0, fake.count("merge", "--ff-only"), "no FF on conflict")
 	assert.False(t, integrationCalled, "integration never runs when the rebase conflicts (no FF)")

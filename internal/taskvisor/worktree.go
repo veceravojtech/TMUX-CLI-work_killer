@@ -565,6 +565,13 @@ func (d *Daemon) mergeWorktreeBack(goal *Goal) (integrated bool, err error) {
 			}
 		}
 
+		// Pre-merge base refresh (best-effort, gated on git_freshness): pull the
+		// freshest base from origin before the rebase so a clean integration never
+		// races a peer push it could have rebased over. Warn-only — a fetch failure
+		// never alters the always-on rebase below, which already lands the branch
+		// onto the local base and prevents most races.
+		d.refreshBase(ctx, run)
+
 		baseBranch := d.baseBranch(ctx, run)
 
 		// Nothing to land: the branch carries no commits beyond base (no edits this
@@ -574,20 +581,36 @@ func (d *Daemon) mergeWorktreeBack(goal *Goal) (integrated bool, err error) {
 		}
 
 		// Rebase the goal branch onto the (possibly peer-advanced) base, then
-		// fast-forward base. A conflict means a peer goal touched the same content:
-		// abort and fail the goal — never auto-resolve, never leave a partial merge.
+		// fast-forward base. A conflict means a peer goal touched the same content.
+		// Integrate-or-BLOCK: out-of-scope conflicts (peer config/compose churn) are
+		// auto-resolved in base's favor so the integration still lands; an IN-scope
+		// conflict (or an undeterminable empty scope) touches the goal's OWN
+		// deliverable, where resolving either way is wrong — abort and BLOCK.
 		if _, _, code, err := run(ctx, "-C", wt, "rebase", baseBranch); err != nil {
 			return fmt.Errorf("git -C %s rebase %s: %w", wt, baseBranch, err)
 		} else if code != 0 {
-			paths := unmergedPaths(ctx, run, wt)
-			_, _, _, _ = run(ctx, "-C", wt, "rebase", "--abort")
-			return errMergeConflict{paths: paths}
+			if mc := d.resolveOutOfScopeConflicts(ctx, run, wt, goal); mc != nil {
+				_, _, _, _ = run(ctx, "-C", wt, "rebase", "--abort")
+				return *mc
+			}
+			// All conflicts were out-of-scope and resolved in base's favor; the
+			// rebase completed, so fall through to the ff-merge.
 		}
 
 		if _, se, code, err := run(ctx, "-C", d.workDir, "merge", "--ff-only", branch); err != nil {
 			return fmt.Errorf("git -C %s merge --ff-only %s: %w", d.workDir, branch, err)
 		} else if code != 0 {
 			return fmt.Errorf("git merge --ff-only %s failed (exit %d): %s", branch, code, strings.TrimSpace(se))
+		}
+
+		// Post-merge HEAD assertion: GoalDone is gated on base PROVABLY containing
+		// the goal's commit (base ancestor-contains the branch tip). The ff-merge
+		// above should guarantee this; if it somehow does not (near-impossible
+		// guard), surface a needs-merge BLOCK rather than declaring the goal Done
+		// over an un-integrated commit. errMergeConflict routes finalize to the
+		// BLOCK path; didIntegrate stays false.
+		if !baseContainsCommit(ctx, run, d.workDir, branch, baseBranch) {
+			return errMergeConflict{paths: nil}
 		}
 		// The ff-merge landed the branch's commits into base: this goal integrated
 		// real changes. Recorded BEFORE the integration gate so a post-merge gate
@@ -660,6 +683,92 @@ func unmergedPaths(ctx context.Context, run GitRunnerFunc, wt string) []string {
 		}
 	}
 	return paths
+}
+
+// partitionConflicts splits conflicting paths into those that fall inside the
+// goal's declared Scope (in-scope ⇒ the goal's own deliverable ⇒ BLOCK) and
+// those outside it (peer churn, safe to resolve in base's favor). A path is
+// in-scope iff some scope stem — scopePrefix, the literal prefix before the first
+// glob metachar (scope_gate.go) — is an ancestor-or-equal of it (pathPrefix). An
+// EMPTY scope cannot prove anything out-of-scope, so EVERY path is treated as
+// in-scope: the conservative BLOCK that never strands a deliverable.
+func partitionConflicts(scope, paths []string) (inScope, outScope []string) {
+	for _, p := range paths {
+		cp := normalizeSep(p)
+		in := len(scope) == 0
+		for _, s := range scope {
+			if pathPrefix(normalizeSep(scopePrefix(s)), cp) {
+				in = true
+				break
+			}
+		}
+		if in {
+			inScope = append(inScope, p)
+		} else {
+			outScope = append(outScope, p)
+		}
+	}
+	return inScope, outScope
+}
+
+// resolveOutOfScopeConflicts handles a rebase conflict during merge-back. Each
+// round it partitions the currently-unmerged paths by goal.Scope: if ANY are
+// in-scope (or the scope is empty, or the conflict set is undeterminable) it
+// returns an errMergeConflict carrying the in-scope paths so the caller aborts
+// the rebase and BLOCKs the goal — auto-resolving the goal's OWN deliverable in
+// base's favor would strand it. If ALL conflicts are out-of-scope peer churn it
+// resolves each in base's favor (under `git rebase base`, base is HEAD ⇒ --ours)
+// then `git add`s it and runs `rebase --continue` with a non-interactive editor
+// (-c core.editor=true) so the daemon never blocks on a commit-message prompt. A
+// LATER replayed commit may conflict again, so it re-checks in a bounded loop;
+// a nil return means the rebase completed cleanly (proceed to the ff-merge).
+func (d *Daemon) resolveOutOfScopeConflicts(ctx context.Context, run GitRunnerFunc, wt string, goal *Goal) *errMergeConflict {
+	const maxRounds = 50
+	for round := 0; round < maxRounds; round++ {
+		paths := unmergedPaths(ctx, run, wt)
+		inScope, outScope := partitionConflicts(goal.Scope, paths)
+		// In-scope conflict, empty scope (everything in-scope), or an
+		// undeterminable empty conflict set ⇒ cannot safely auto-resolve ⇒ BLOCK.
+		if len(inScope) > 0 || len(outScope) == 0 {
+			return &errMergeConflict{paths: inScope}
+		}
+		// All conflicts are out-of-scope peer churn: take base's version of each.
+		for _, p := range outScope {
+			_, _, _, _ = run(ctx, "-C", wt, "checkout", "--ours", "--", p)
+			_, _, _, _ = run(ctx, "-C", wt, "add", "--", p)
+		}
+		_, _, code, err := run(ctx, "-C", wt, "-c", "core.editor=true", "rebase", "--continue")
+		if err == nil && code == 0 {
+			return nil // rebase completed — no remaining conflicts
+		}
+		// A later replayed commit conflicted again — re-partition next round.
+	}
+	return &errMergeConflict{paths: []string{"merge-back conflict-resolution exceeded bounded rounds"}}
+}
+
+// baseContainsCommit reports whether base PROVABLY contains the goal's commit:
+// `git merge-base --is-ancestor <branch> <base>` exits 0 iff the branch tip is an
+// ancestor-or-equal of base. It gates the GoalDone/didIntegrate decision so a
+// goal is never declared Done over an un-integrated commit. A runner error /
+// non-zero exit ⇒ false (cannot prove containment ⇒ caller BLOCKs).
+func baseContainsCommit(ctx context.Context, run GitRunnerFunc, workDir, branch, base string) bool {
+	_, _, code, err := run(ctx, "-C", workDir, "merge-base", "--is-ancestor", branch, base)
+	return err == nil && code == 0
+}
+
+// refreshBase best-effort fetches origin before a merge-back so the rebase lands
+// onto the freshest base. Gated on d.gitFreshness (yaml taskvisor.git_freshness,
+// default ON; daemon.go) — when disabled it is a zero-git no-op. Warn-only by
+// contract: a fetch failure never alters goal status or the always-on rebase.
+func (d *Daemon) refreshBase(ctx context.Context, run GitRunnerFunc) {
+	if !d.gitFreshness {
+		return
+	}
+	if _, se, code, err := run(ctx, "-C", d.workDir, "fetch"); err != nil {
+		log.Printf("warning: merge-back base refresh fetch: %v", err)
+	} else if code != 0 {
+		log.Printf("warning: merge-back base refresh fetch (exit %d): %s", code, strings.TrimSpace(se))
+	}
 }
 
 // discardWorktree removes a goal's worktree and branch (idempotent). A no-op with
@@ -740,13 +849,16 @@ func (d *Daemon) pruneOrphanWorktrees(goals *GoalsFile) {
 // finalizeWorktreeOnDone is the GoalDone hook invoked from advanceToNextGoal: it
 // merges the goal's worktree back into base and removes it. A post-merge
 // integration failure flips the goal done→failed (base already advanced). A
-// merge-back rebase CONFLICT, by contrast, is treated as a recoverable
-// integration race: the goal already validated and committed, so it stays Done —
-// the conflicting paths are surfaced via a warn log + needs-manual-merge marker,
-// the worktree/branch are preserved for a manual merge, and it returns
-// failed=false (no fail signal, no cascade, no GOAL-FAILED notify). With no
-// worktree (MaxGoals=1) both inner calls are zero-git no-ops and it returns
-// failed=false.
+// merge-back rebase CONFLICT is integrate-or-BLOCK: mergeWorktreeBack already
+// auto-resolved any OUT-of-scope conflict in base's favor, so a surfaced
+// errMergeConflict means an IN-scope (or undeterminable) conflict touched the
+// goal's own deliverable — neither Done nor Failed is correct. The goal is set
+// GoalBlocked / BlockedBy="needs-merge", its worktree/branch are PRESERVED, a
+// needs-merge marker is written, dependents are halted (soft cascade + the
+// GoalBlocked status), and it returns failed=true to suppress resumeDownstream —
+// all WITHOUT a VerdictFail signal or [TASKVISOR:GOAL-FAILED notify (no false
+// critical task). With no worktree (MaxGoals=1) both inner calls are zero-git
+// no-ops and it returns failed=false.
 func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bool, err error) {
 	integrated, mergeErr := d.mergeWorktreeBack(goal)
 	if mergeErr == nil {
@@ -810,30 +922,45 @@ func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bo
 		return false, mergeErr
 	}
 
-	// Post-validation merge-back conflict: the goal ALREADY passed validation and
-	// its commit landed in the worktree branch — the deliverable is complete. The
-	// rebase conflict is a recoverable integration/ops race (a peer goal advanced
-	// base over overlapping content), NOT a goal failure. Mirror the warn-only
-	// autoPushOnCompletion precedent (completion.go): keep Status=GoalDone, surface
-	// the conflicting paths for a manual merge (a warn log + a persisted
-	// needs-manual-merge marker), and PRESERVE the worktree/branch so the merge is
-	// actually performable (no discardWorktree → no `branch -D` of the goal's
-	// commit). Write NO VerdictFail signal, do NOT CascadeFailure, emit NO
-	// GOAL-FAILED notify, and return failed=false so advanceToNextGoal resumes
-	// downstream normally. Because reportFailedGoals keys solely on GoalFailed,
-	// keeping the goal Done is the single lever that suppresses the false critical
-	// backend task. pruneOrphanWorktrees reclaims the worktree later (goal is Done,
-	// not Running) so there is no permanent leak.
+	// Post-validation merge-back conflict on an IN-scope path (or an
+	// undeterminable/empty scope): the goal validated and committed, but base
+	// cannot receive its work without clobbering the goal's OWN deliverable (or a
+	// peer's). Integrate-or-BLOCK: do NEITHER Done NOR Failed — set
+	// Status=GoalBlocked / BlockedBy="needs-merge" (the existing GoalBlocked
+	// machinery, precedent BlockedBy="deps_unsatisfied" in completion.go; invent no
+	// new status), persist a needs-merge marker, and PRESERVE the worktree/branch
+	// so the deliverable's commit survives for a manual merge (no discardWorktree →
+	// no `branch -D` of the goal's commit). Write NO VerdictFail signal and emit NO
+	// [TASKVISOR:GOAL-FAILED notify (reportFailedGoals keys solely on GoalFailed, so
+	// a Blocked goal files no false critical task — the task-163 anti-false-critical
+	// intent is preserved); instead emit a NON-critical GOAL-NEEDS-MERGE notify.
+	// Soft-cascade dependents (non-fail class ⇒ no Status flip, just BlockedBy for
+	// dashboard clarity) and return failed=true so advanceToNextGoal suppresses
+	// resumeDownstream; the parent ending GoalBlocked (not Done) already halts the
+	// dependency gate. SaveGoals is REQUIRED here — the Done→Blocked status change
+	// must be durable (the old keep-Done path skipped it because status was
+	// unchanged).
 	rt := d.runtime(goal.ID)
 	wtPath, branch := rt.WorktreeDir, rt.Branch
 	base := d.baseBranch(context.Background(), d.gitRunner())
-	log.Printf("%s: worktree merge-back conflict on %v — goal validated, kept Done (needs-manual-merge); base unchanged, worktree %s preserved for manual merge",
+	log.Printf("%s: worktree merge-back conflict on %v — work NOT integrated; goal BLOCKED (needs-merge); base unchanged, worktree %s preserved for manual merge",
 		goal.ID, mc.paths, wtPath)
+	goal.Status = GoalBlocked
+	goal.BlockedBy = "needs-merge"
 	if mErr := d.writeNeedsMergeMarker(goal.ID, mc.paths, wtPath, branch, base); mErr != nil {
 		log.Printf("warning: %s: write needs-merge marker: %v", goal.ID, mErr)
 	}
-	// goal.Status stays GoalDone; FinishedAt stays as set by the success path.
-	return false, nil
+	// Soft cascade: "needs-merge" is neither "fail" nor "code-defect", so
+	// CascadeFailure leaves dependents GoalPending and only stamps BlockedBy=goal.ID
+	// (never marks them failed).
+	goals.CascadeFailure(goal.ID, "needs-merge")
+	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-NEEDS-MERGE id=%s desc=%q paths=%q]",
+		goal.ID, goal.Description, strings.Join(mc.paths, ", ")))
+	if saveErr := SaveGoals(d.workDir, goals); saveErr != nil {
+		return false, saveErr
+	}
+	// Do NOT discardWorktree — the worktree/branch hold the un-integrated commit.
+	return true, nil
 }
 
 // goalUsesWorktree reports whether the goal is running in an isolated per-goal
@@ -876,12 +1003,13 @@ func (d *Daemon) failZeroIntegration(goals *GoalsFile, goal *Goal) error {
 }
 
 // writeNeedsMergeMarker persists a .tmux-cli/goals/<id>/needs-merge.md marker
-// recording a post-validation worktree merge-back conflict so the deliverable can
-// be merged by hand. The goal already validated and committed; the marker carries
-// the conflicting paths, the preserved worktree path + branch, and a manual-merge
-// runbook. It is best-effort: a write error is warn-only at the call site and
-// never changes the goal's Done status (mirrors autoPushOnCompletion). The
-// `needs-manual-merge` token below also satisfies the validate grep rule.
+// recording an IN-scope worktree merge-back conflict so the deliverable can be
+// merged by hand. The goal validated and committed, but the work is NOT yet
+// integrated — the goal is GoalBlocked / needs-merge, not Done. The marker
+// carries the conflicting paths, the preserved worktree path + branch, and a
+// manual-merge runbook. It is best-effort: a write error is warn-only at the call
+// site and never changes the goal's status. The filename + the `needs-merge`
+// token below also satisfy the validate grep rule.
 func (d *Daemon) writeNeedsMergeMarker(goalID string, paths []string, wtPath, branch, base string) error {
 	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goalID)
 	if err := os.MkdirAll(goalDir, 0o755); err != nil {
@@ -891,11 +1019,12 @@ func (d *Daemon) writeNeedsMergeMarker(goalID string, paths []string, wtPath, br
 	if len(paths) > 0 {
 		pathsLine = strings.Join(paths, ", ")
 	}
-	content := fmt.Sprintf(`# needs-manual-merge: %s
+	content := fmt.Sprintf(`# needs-merge: %s
 
-This goal PASSED validation and its commit landed in worktree branch %q, but the
-automatic merge-back rebase onto base conflicted. The deliverable is complete and
-the goal is kept Done — base was left unchanged. Resolve the merge by hand.
+This goal is BLOCKED with BlockedBy="needs-merge": it PASSED validation and its
+commit landed in worktree branch %q, but the automatic merge-back rebase onto
+base conflicted on an in-scope path. The work is NOT yet integrated — base was
+left unchanged. Resolve the merge by hand, then re-run so the deliverable lands.
 
 - Goal: %s
 - Conflicting paths: %s

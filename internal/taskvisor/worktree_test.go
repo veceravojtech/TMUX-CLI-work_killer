@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -470,62 +472,147 @@ func TestMergeWorktreeBack_EmptyDiff_NoCommitNoMerge(t *testing.T) {
 	assert.Equal(t, 1, fake.count("worktree", "remove", "--force"))
 }
 
-func TestMergeWorktreeBack_Conflict_KeepsGoalDone(t *testing.T) {
-	d, _, dir := setupDaemon(t)
-	mkGitRepo(t, dir)
-	primeWorktree(d, "goal-001")
-
-	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+// conflictResponder builds a fakeGitRunner responder for a merge-back that
+// rebase-conflicts: dirty status, 1 commit ahead, base "main", the initial
+// `rebase main` exits 1, `diff --diff-filter=U` reports unmergedPath, and
+// `rebase --continue` exits 0 (a successful out-of-scope auto-resolve). The
+// post-merge `merge-base --is-ancestor` assertion falls through to the default
+// exit 0 (base contains the branch tip).
+func conflictResponder(unmergedPath string) func(args []string) (string, int) {
+	return func(args []string) (string, int) {
 		switch {
 		case argsContain(args, "status", "--porcelain"):
-			return "M internal/shared.go\n", 0
+			return "M internal/a.go\n", 0
 		case argsContain(args, "rev-list", "--count"):
 			return "1\n", 0
 		case argsContain(args, "rev-parse", "--abbrev-ref", "HEAD"):
 			return "main\n", 0
+		case argsContain(args, "rebase", "--continue"):
+			return "", 0 // out-of-scope resolved ⇒ rebase completes
 		case argsContain(args, "rebase", "main"):
 			return "CONFLICT", 1 // peer advanced base ⇒ conflict
 		case argsContain(args, "diff", "--name-only", "--diff-filter=U"):
-			return "internal/shared.go\n", 0
+			return unmergedPath + "\n", 0
 		}
 		return "", 0
-	}}
+	}
+}
+
+// TestMergeWorktreeBack_ConflictOutOfScopeAutoResolves: a conflict only on a path
+// OUTSIDE goal.Scope (peer compose churn) is resolved in base's favor and the
+// integration still lands — the goal stays Done and the worktree is removed.
+func TestMergeWorktreeBack_ConflictOutOfScopeAutoResolves(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	primeWorktree(d, "goal-001")
+
+	fake := &fakeGitRunner{respond: conflictResponder("docker-compose.yaml")}
 	d.SetGitRunnerFunc(fake.run)
 
-	gf := &GoalsFile{Goals: []Goal{{ID: "goal-001", Status: GoalDone}}}
+	gf := &GoalsFile{Goals: []Goal{{ID: "goal-001", Status: GoalDone, Scope: []string{"internal/taskvisor/**"}}}}
 	writeGoals(t, dir, gf)
 
 	failed, err := d.finalizeWorktreeOnDone(gf, &gf.Goals[0])
 	require.NoError(t, err)
-	assert.False(t, failed, "a post-validation merge-back conflict must NOT fail a validated goal")
+	assert.False(t, failed, "an out-of-scope conflict auto-resolves — the goal does not fail")
 
-	// The goal is already validated + committed: keep it Done.
-	assert.Equal(t, GoalDone, gf.Goals[0].Status)
-	assert.Equal(t, 1, fake.count("rebase", "--abort"), "rebase aborted (no partial state)")
-	assert.Equal(t, 0, fake.count("merge", "--ff-only"), "base must NOT be merged into on conflict")
-	// Worktree + branch are PRESERVED so the manual merge is performable.
+	assert.Equal(t, 1, fake.count("checkout", "--ours", "--", "docker-compose.yaml"), "out-of-scope path resolved in base's favor")
+	assert.Equal(t, 1, fake.count("rebase", "--continue"), "rebase continued after auto-resolve")
+	assert.Equal(t, 1, fake.count("merge", "--ff-only"), "integration lands via ff-merge")
+	assert.Equal(t, 0, fake.count("rebase", "--abort"), "no abort — the conflict was auto-resolved")
+	assert.Equal(t, GoalDone, gf.Goals[0].Status, "goal stays Done after a clean auto-resolved integration")
+	assert.Equal(t, 1, fake.count("worktree", "remove", "--force"), "worktree removed after merge")
+	assert.Empty(t, d.runtime("goal-001").WorktreeDir, "runtime worktree cleared")
+}
+
+// TestMergeWorktreeBack_ConflictInScopeBlocks: a conflict on a path INSIDE
+// goal.Scope touches the goal's own deliverable — never auto-resolve. The rebase
+// aborts, base is untouched, and the goal is BLOCKED (needs-merge), not Done, with
+// the worktree/branch preserved.
+func TestMergeWorktreeBack_ConflictInScopeBlocks(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	mkGitRepo(t, dir)
+	primeWorktree(d, "goal-001")
+
+	fake := &fakeGitRunner{respond: conflictResponder("internal/taskvisor/worktree.go")}
+	d.SetGitRunnerFunc(fake.run)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor"}}, nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	gf := &GoalsFile{Goals: []Goal{{ID: "goal-001", Status: GoalDone, Scope: []string{"internal/taskvisor/**"}}}}
+	writeGoals(t, dir, gf)
+
+	failed, err := d.finalizeWorktreeOnDone(gf, &gf.Goals[0])
+	require.NoError(t, err)
+	assert.True(t, failed, "an in-scope conflict blocks integration — failed=true suppresses resumeDownstream")
+
+	assert.Equal(t, 1, fake.count("rebase", "--abort"), "in-scope conflict aborts the rebase (no partial state)")
+	assert.Equal(t, 0, fake.count("merge", "--ff-only"), "base must NOT be merged into on an in-scope conflict")
+	assert.Equal(t, GoalBlocked, gf.Goals[0].Status, "in-scope conflict ⇒ GoalBlocked, never Done")
+	assert.Equal(t, "needs-merge", gf.Goals[0].BlockedBy, "BlockedBy records the needs-merge reason")
+	// Worktree + branch are PRESERVED so the un-integrated commit survives.
 	assert.Equal(t, 0, fake.count("worktree", "remove", "--force"), "worktree preserved for manual merge")
 	assert.Equal(t, 0, fake.count("branch", "-D"), "branch preserved for manual merge")
 
-	// A needs-merge marker surfaces the conflict for manual resolution.
 	markerPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "needs-merge.md")
 	marker, err := os.ReadFile(markerPath)
 	require.NoError(t, err, "needs-merge.md marker must be written")
-	assert.Contains(t, string(marker), "internal/shared.go", "conflicting path recorded in marker")
+	assert.Contains(t, string(marker), "internal/taskvisor/worktree.go", "conflicting path recorded in marker")
+}
 
-	// No VerdictFail signal — the goal did not fail.
+// TestMergeWorktreeBack_ConflictBlocksNeedsMerge: an in-scope conflict BLOCKS
+// without any failure surface — no VerdictFail signal, no [TASKVISOR:GOAL-FAILED
+// notify, reportFailedGoals files nothing (the goal is Blocked, not Failed), and a
+// dependent does not dispatch (parent not Done ⇒ resume suppressed).
+func TestMergeWorktreeBack_ConflictBlocksNeedsMerge(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	mkGitRepo(t, dir)
+	primeWorktree(d, "goal-001")
+
+	fake := &fakeGitRunner{respond: conflictResponder("internal/taskvisor/worktree.go")}
+	d.SetGitRunnerFunc(fake.run)
+
+	var notifies []string
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor"}}, nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		notifies = append(notifies, args.String(2))
+	}).Maybe()
+
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalDone, Scope: []string{"internal/taskvisor/**"}},
+		{ID: "goal-002", Status: GoalPending, DependsOn: []string{"goal-001"}},
+	}}
+	writeGoals(t, dir, gf)
+
+	failed, err := d.finalizeWorktreeOnDone(gf, &gf.Goals[0])
+	require.NoError(t, err)
+	assert.True(t, failed)
+
+	// No VerdictFail signal — a merge-back conflict is not a goal failure.
 	sig, err := LoadSignal(dir, "goal-001")
 	require.NoError(t, err)
 	if valSig, ok := sig.(*ValidatorSignal); ok {
 		assert.NotEqual(t, VerdictFail, valSig.Verdict, "no VerdictFail signal on merge-back conflict")
 	}
+	// No GOAL-FAILED notify (preserves the anti-false-critical intent).
+	for _, msg := range notifies {
+		assert.NotContains(t, msg, "[TASKVISOR:GOAL-FAILED", "must NOT send a GOAL-FAILED notification on a merge-back conflict")
+	}
 
-	// And reportFailedGoals files nothing for a Done goal — no spurious critical task.
+	// reportFailedGoals files nothing — the goal is Blocked, not Failed.
 	d.reportFailedGoals(gf)
 	d.reportedFailuresMu.Lock()
 	reported := d.reportedFailures["goal-001"]
 	d.reportedFailuresMu.Unlock()
-	assert.False(t, reported, "a Done goal is never reported as failed")
+	assert.False(t, reported, "a Blocked (not Failed) goal is never reported as failed")
+
+	// The dependent does not dispatch: the parent is not Done (resume suppressed).
+	assert.NotEqual(t, GoalDone, gf.Goals[0].Status)
+	assert.Equal(t, GoalPending, gf.Goals[1].Status, "soft cascade leaves the dependent pending (not failed)")
 }
 
 func TestMergeWorktreeBack_SerializedUnderLock(t *testing.T) {
