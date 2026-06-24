@@ -204,6 +204,66 @@ func (d *Daemon) isGitRepo() bool {
 	return err == nil
 }
 
+// baseRootMarker is the repo-root file used to assert that a worktree has the
+// base actually checked out. go.mod is committed and present in every real
+// checkout of this module, so its presence at <wt>/go.mod is a cheap, reliable
+// proof the worktree is not a base-less stub.
+const baseRootMarker = "go.mod"
+
+// baseCheckedOut reports whether the base is materialized in the worktree by
+// checking for the repo-root marker (go.mod). A stray/empty dir or a worktree
+// whose checkout never landed will be missing it.
+func baseCheckedOut(wtPath string) bool {
+	_, err := os.Stat(filepath.Join(wtPath, baseRootMarker))
+	return err == nil
+}
+
+// isRegisteredWorktree reports whether wtPath is a worktree git actually knows
+// about, by scanning `git worktree list --porcelain` for a matching `worktree
+// <path>` line. On any git error / non-zero exit it returns false (treat an
+// unverifiable dir as not-registered so the caller re-provisions). Routed
+// through the injected runner so tests assert without a real repo.
+func (d *Daemon) isRegisteredWorktree(ctx context.Context, run GitRunnerFunc, wtPath string) bool {
+	out, _, code, err := run(ctx, "-C", d.workDir, "worktree", "list", "--porcelain")
+	if err != nil || code != 0 {
+		return false
+	}
+	want := filepath.Clean(wtPath)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "worktree ") {
+			continue
+		}
+		p := strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		if filepath.Clean(p) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// teardownStrayWorktree removes a directory at wtPath that is NOT a usable
+// registered worktree (stray dir, or registered-but-base-less stub) so the
+// caller can re-provision it cleanly with `git worktree add`. Every removal is
+// guarded by safeToRemoveWorktree first. The `git worktree remove --force` is
+// best-effort (a stray, unregistered dir makes git exit non-zero — ignored);
+// os.RemoveAll does the real removal; `git worktree prune` clears any
+// half-registration left behind.
+func (d *Daemon) teardownStrayWorktree(ctx context.Context, run GitRunnerFunc, wtPath string) error {
+	if err := safeToRemoveWorktree(d.workDir, wtPath); err != nil {
+		return fmt.Errorf("refusing to tear down unsafe worktree path %s: %w", wtPath, err)
+	}
+	// Best-effort: a stray (unregistered) dir makes git exit non-zero — ignore it;
+	// os.RemoveAll below does the real removal.
+	_, _, _, _ = run(ctx, "-C", d.workDir, "worktree", "remove", "--force", wtPath)
+	if err := os.RemoveAll(wtPath); err != nil {
+		return fmt.Errorf("remove stray worktree dir %s: %w", wtPath, err)
+	}
+	// Best-effort: clear any half-registration the stray dir left behind.
+	_, _, _, _ = run(ctx, "-C", d.workDir, "worktree", "prune")
+	return nil
+}
+
 // ensureWorktree returns the cwd a goal's worker windows should run in.
 //
 //   - parallel==false (MaxGoals=1): returns d.workDir with NO git call and leaves
@@ -227,28 +287,50 @@ func (d *Daemon) ensureWorktree(goal *Goal, parallel bool) (string, error) {
 	wtPath := d.worktreePath(goal.ID)
 	branch := worktreeBranch(goal.ID)
 
-	// Idempotent reuse: a retry of the same goal in a later cycle keeps its
-	// existing worktree (skip `worktree add`).
-	if fi, err := os.Stat(wtPath); err == nil && fi.IsDir() {
-		rt.WorktreeDir = wtPath
-		rt.Branch = branch
-		// Self-heal: a worktree created before this command-copy existed (or by an
-		// older binary) lacks the slash-command set. Fill in any MISSING command
-		// files without overwriting a scoped goal's edited command mirror.
-		if err := d.copyClaudeCommands(wtPath, false); err != nil {
-			return "", err
-		}
-		return wtPath, nil
-	}
-
+	// ctx + runner are shared by the reuse registration-check AND the add below, so
+	// create them once before the stat block.
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
-	_, stderr, code, err := d.gitRunner()(ctx, "-C", d.workDir, "worktree", "add", "-b", branch, wtPath, "HEAD")
+	run := d.gitRunner()
+
+	// Idempotent reuse: a retry of the same goal in a later cycle keeps its
+	// existing worktree (skip `worktree add`) — but ONLY when the dir is a git-
+	// registered worktree with the base actually checked out. A stray dir or a
+	// base-less stub is torn down and re-provisioned so the goal never runs in a
+	// directory with no source tree (the silent-STUCK failure mode).
+	if fi, err := os.Stat(wtPath); err == nil && fi.IsDir() {
+		if d.isRegisteredWorktree(ctx, run, wtPath) && baseCheckedOut(wtPath) {
+			rt.WorktreeDir = wtPath
+			rt.Branch = branch
+			// Self-heal: a worktree created before this command-copy existed (or by an
+			// older binary) lacks the slash-command set. Fill in any MISSING command
+			// files without overwriting a scoped goal's edited command mirror.
+			if err := d.copyClaudeCommands(wtPath, false); err != nil {
+				return "", err
+			}
+			return wtPath, nil
+		}
+		log.Printf("%s: worktree %s exists but is not a usable registered worktree (registered/base check failed) — re-provisioning", goal.ID, wtPath)
+		if err := d.teardownStrayWorktree(ctx, run, wtPath); err != nil {
+			return "", err
+		}
+		// fall through to add
+	}
+
+	_, stderr, code, err := run(ctx, "-C", d.workDir, "worktree", "add", "-b", branch, wtPath, "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("git worktree add for %s: %w", goal.ID, err)
 	}
 	if code != 0 {
 		return "", fmt.Errorf("git worktree add for %s failed (exit %d): %s", goal.ID, code, strings.TrimSpace(stderr))
+	}
+
+	// Fail loud if the add did not actually check the base out: never hand back a
+	// base-less stub as the goal's cwd. The just-added (baseless) worktree is left
+	// on disk — self-healing on the next reuse check (registered-but-baseless →
+	// re-provision).
+	if !baseCheckedOut(wtPath) {
+		return "", fmt.Errorf("worktree provisioning failed for %s: base not checked out at %s (missing %s)", goal.ID, wtPath, baseRootMarker)
 	}
 
 	if err := d.symlinkControlPlane(wtPath); err != nil {

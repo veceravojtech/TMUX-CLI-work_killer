@@ -117,6 +117,7 @@ func TestEnsureWorktree_ParallelGoal_CreatesAndBindsCwd(t *testing.T) {
 	fake := &fakeGitRunner{sideEffect: func(args []string) {
 		if argsContain(args, "worktree", "add") {
 			_ = os.MkdirAll(wtPath, 0o755)
+			_ = os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)
 		}
 	}}
 	d.SetGitRunnerFunc(fake.run)
@@ -136,9 +137,16 @@ func TestEnsureWorktree_ReusedOnRetry(t *testing.T) {
 	mkGitRepo(t, dir)
 	goal := &Goal{ID: "goal-001"}
 	wtPath := d.worktreePath("goal-001")
-	require.NoError(t, os.MkdirAll(wtPath, 0o755)) // worktree already exists (prior cycle)
+	require.NoError(t, os.MkdirAll(wtPath, 0o755))                                                       // worktree already exists (prior cycle)
+	require.NoError(t, os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)) // base checked out
 
-	fake := &fakeGitRunner{}
+	// respond reports wtPath as a registered worktree so the reuse fast-path is taken.
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		if argsContain(args, "worktree", "list", "--porcelain") {
+			return "worktree " + wtPath + "\n", 0
+		}
+		return "", 0
+	}}
 	d.SetGitRunnerFunc(fake.run)
 
 	cwd, err := d.ensureWorktree(goal, true)
@@ -173,6 +181,7 @@ func TestEnsureWorktree_SymlinksControlPlane(t *testing.T) {
 	fake := &fakeGitRunner{sideEffect: func(args []string) {
 		if argsContain(args, "worktree", "add") {
 			_ = os.MkdirAll(wtPath, 0o755)
+			_ = os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)
 		}
 	}}
 	d.SetGitRunnerFunc(fake.run)
@@ -208,6 +217,7 @@ func TestEnsureWorktree_CopiesClaudeCommands(t *testing.T) {
 	fake := &fakeGitRunner{sideEffect: func(args []string) {
 		if argsContain(args, "worktree", "add") {
 			_ = os.MkdirAll(wtPath, 0o755)
+			_ = os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)
 		}
 	}}
 	d.SetGitRunnerFunc(fake.run)
@@ -241,8 +251,15 @@ func TestEnsureWorktree_ReuseSelfHealsMissingCommands_PreservesEdits(t *testing.
 	wtTmux := filepath.Join(wtPath, ".claude", "commands", "tmux")
 	require.NoError(t, os.MkdirAll(wtTmux, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(wtTmux, "task-list.xml"), []byte("<goal-EDITED/>"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)) // base checked out
 
-	fake := &fakeGitRunner{}
+	// respond reports wtPath registered so the reuse self-heal path is taken.
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		if argsContain(args, "worktree", "list", "--porcelain") {
+			return "worktree " + wtPath + "\n", 0
+		}
+		return "", 0
+	}}
 	d.SetGitRunnerFunc(fake.run)
 
 	cwd, err := d.ensureWorktree(goal, true)
@@ -258,6 +275,127 @@ func TestEnsureWorktree_ReuseSelfHealsMissingCommands_PreservesEdits(t *testing.
 	edited, err := os.ReadFile(filepath.Join(wtTmux, "task-list.xml"))
 	require.NoError(t, err)
 	assert.Equal(t, "<goal-EDITED/>", string(edited), "reuse must NOT overwrite a goal-edited command file")
+}
+
+// --- ensureWorktree stub re-provisioning / fail-loud ----------------------
+
+// TestEnsureWorktree_StubReprovisionsStrayDir: a dir exists at wtPath but is NOT
+// a registered worktree (empty porcelain list). It must be torn down (guarded
+// remove + RemoveAll + prune) and re-provisioned via `git worktree add`.
+func TestEnsureWorktree_StubReprovisionsStrayDir(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+	require.NoError(t, os.MkdirAll(wtPath, 0o755)) // stray dir, NOT a registered worktree
+
+	fake := &fakeGitRunner{
+		respond: func(args []string) (string, int) {
+			if argsContain(args, "worktree", "list", "--porcelain") {
+				return "", 0 // empty list ⇒ wtPath not registered
+			}
+			return "", 0
+		},
+		sideEffect: func(args []string) {
+			if argsContain(args, "worktree", "add") {
+				_ = os.MkdirAll(wtPath, 0o755)
+				_ = os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)
+			}
+		},
+	}
+	d.SetGitRunnerFunc(fake.run)
+
+	cwd, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err)
+
+	assert.Equal(t, wtPath, cwd)
+	assert.Equal(t, 1, fake.count("worktree", "add"), "stray dir must be re-provisioned via worktree add")
+	assert.GreaterOrEqual(t, fake.count("worktree", "prune"), 1, "teardown must prune half-registrations")
+	assert.Equal(t, wtPath, d.runtime("goal-001").WorktreeDir)
+}
+
+// TestEnsureWorktree_StubBaselessRegisteredReprovisions: a dir IS reported
+// registered by the porcelain list but has NO base (go.mod) — a base-less stub.
+// It must be torn down and re-provisioned.
+func TestEnsureWorktree_StubBaselessRegisteredReprovisions(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+	require.NoError(t, os.MkdirAll(wtPath, 0o755)) // registered but no go.mod
+
+	fake := &fakeGitRunner{
+		respond: func(args []string) (string, int) {
+			if argsContain(args, "worktree", "list", "--porcelain") {
+				return "worktree " + wtPath + "\n", 0 // registered...
+			}
+			return "", 0
+		},
+		sideEffect: func(args []string) {
+			if argsContain(args, "worktree", "add") {
+				_ = os.MkdirAll(wtPath, 0o755)
+				_ = os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)
+			}
+		},
+	}
+	d.SetGitRunnerFunc(fake.run)
+
+	cwd, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err)
+
+	assert.Equal(t, wtPath, cwd)
+	assert.Equal(t, 1, fake.count("worktree", "add"), "base-less registered worktree must be re-provisioned")
+	assert.True(t, baseCheckedOut(wtPath), "base present after re-provision")
+}
+
+// TestEnsureWorktree_StubFailsLoudWhenBaseAbsentAfterAdd: `git worktree add`
+// succeeds (creates the dir) but the base never lands (no go.mod). ensureWorktree
+// must fail loud with an explicit provisioning error and return an empty cwd, so
+// the goal never runs in a base-less stub.
+func TestEnsureWorktree_StubFailsLoudWhenBaseAbsentAfterAdd(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+
+	fake := &fakeGitRunner{sideEffect: func(args []string) {
+		if argsContain(args, "worktree", "add") {
+			_ = os.MkdirAll(wtPath, 0o755) // dir created but NO go.mod ⇒ base-less
+		}
+	}}
+	d.SetGitRunnerFunc(fake.run)
+
+	cwd, err := d.ensureWorktree(goal, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worktree provisioning failed for goal-001")
+	assert.Equal(t, "", cwd, "no base-less stub cwd is ever returned")
+}
+
+// TestEnsureWorktree_StubReuseValidNoReprovision: a dir that IS registered AND
+// has the base checked out is reused as-is — zero `worktree add`, zero teardown.
+func TestEnsureWorktree_StubReuseValidNoReprovision(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+	require.NoError(t, os.MkdirAll(wtPath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644))
+
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		if argsContain(args, "worktree", "list", "--porcelain") {
+			return "worktree " + wtPath + "\n", 0
+		}
+		return "", 0
+	}}
+	d.SetGitRunnerFunc(fake.run)
+
+	cwd, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err)
+
+	assert.Equal(t, wtPath, cwd)
+	assert.Equal(t, 0, fake.count("worktree", "add"), "valid worktree reused, not re-added")
+	assert.Equal(t, 0, fake.count("worktree", "prune"), "no teardown on a valid reuse")
+	assert.Equal(t, 0, fake.count("worktree", "remove", "--force"), "no teardown on a valid reuse")
 }
 
 // --- mergeWorktreeBack -----------------------------------------------------
@@ -541,6 +679,7 @@ func TestEnsureWorktree_NoSelfReference(t *testing.T) {
 	fake := &fakeGitRunner{sideEffect: func(args []string) {
 		if argsContain(args, "worktree", "add") {
 			_ = os.MkdirAll(wtPath, 0o755)
+			_ = os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)
 		}
 	}}
 	d.SetGitRunnerFunc(fake.run)
