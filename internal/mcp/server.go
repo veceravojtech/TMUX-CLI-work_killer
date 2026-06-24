@@ -307,6 +307,77 @@ func (s *Server) TaskvisorStartHandler(ctx context.Context, req *sdkmcp.CallTool
 	return result, out, nil
 }
 
+// RecurringCreateInput defines the input schema for recurring-create tool.
+type RecurringCreateInput struct {
+	Prompt string `json:"prompt" jsonschema:"The prompt to dispatch each cycle"`
+	Cycles int    `json:"cycles" jsonschema:"Total number of cycles to run (must be >= 1)"`
+}
+
+// RecurringCreateOutput defines the output schema for recurring-create tool.
+type RecurringCreateOutput struct {
+	Created bool   `json:"created" jsonschema:"True if the recurring task was created and persisted"`
+	ID      string `json:"id" jsonschema:"The id of the created recurring task"`
+}
+
+// RecurringCreateHandler is the MCP tool handler for recurring-create operation.
+func (s *Server) RecurringCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input RecurringCreateInput) (
+	*sdkmcp.CallToolResult,
+	RecurringCreateOutput,
+	error,
+) {
+	output, err := s.RecurringCreate(input)
+	if err != nil {
+		return nil, RecurringCreateOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// RecurringStatusInput defines the input schema for recurring-status tool (no parameters needed).
+type RecurringStatusInput struct{}
+
+// RecurringStatusOutput defines the output schema for recurring-status tool.
+type RecurringStatusOutput struct {
+	Active bool                     `json:"active" jsonschema:"True if a recurring task is active"`
+	Task   *taskvisor.RecurringTask `json:"task,omitempty" jsonschema:"The active recurring task state, when present"`
+}
+
+// RecurringStatusHandler is the MCP tool handler for recurring-status operation.
+func (s *Server) RecurringStatusHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input RecurringStatusInput) (
+	*sdkmcp.CallToolResult,
+	RecurringStatusOutput,
+	error,
+) {
+	output, err := s.RecurringStatus()
+	if err != nil {
+		return nil, RecurringStatusOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// RecurringStopInput defines the input schema for recurring-stop tool (no parameters needed).
+type RecurringStopInput struct{}
+
+// RecurringStopOutput defines the output schema for recurring-stop tool.
+type RecurringStopOutput struct {
+	Stopped bool `json:"stopped" jsonschema:"True if an active recurring task was stopped"`
+}
+
+// RecurringStopHandler is the MCP tool handler for recurring-stop operation.
+func (s *Server) RecurringStopHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input RecurringStopInput) (
+	*sdkmcp.CallToolResult,
+	RecurringStopOutput,
+	error,
+) {
+	output, err := s.RecurringStop()
+	if err != nil {
+		return nil, RecurringStopOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
 // GoalCreateInput defines the input schema for goal-create tool
 type GoalCreateInput struct {
 	Description string   `json:"description" jsonschema:"Goal description — what should be achieved (max 120 chars; use acceptance for detail)"`
@@ -784,6 +855,33 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.TaskvisorStartHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "recurring-create",
+		Description: "Create an active recurring-supervisor task: validates prompt/cycles, writes .tmux-cli/recurring.yaml and the recurring-active marker, and returns immediately. Fails if a recurring task is already active.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.RecurringCreateHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "recurring-status",
+		Description: "Read the current recurring-supervisor task state from .tmux-cli/recurring.yaml. Returns {active:false} when no task is present.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, s.RecurringStatusHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "recurring-stop",
+		Description: "Stop the active recurring-supervisor task: removes the recurring-active marker and flips the persisted status to stopped. Idempotent — returns without error when no task is active.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: true,
+		},
+	}, s.RecurringStopHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "goal-create",

@@ -537,6 +537,9 @@ func (d *Daemon) poll(ctx context.Context) error {
 	return d.withGoalsLock(func() error {
 		switch d.mode {
 		case modeIdle:
+			if d.recurringPickup() {
+				return nil
+			}
 			startPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-start")
 			if _, err := os.Stat(startPath); err != nil {
 				return nil
