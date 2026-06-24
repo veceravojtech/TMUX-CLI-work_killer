@@ -425,15 +425,23 @@ func (d *Daemon) runIntegrationGate(goal *Goal) error {
 // goal has no worktree (MaxGoals=1 / non-git) this is a no-op with NO lock and NO
 // git — the guard is the first statement so single-goal operation never touches
 // the merge lock.
-func (d *Daemon) mergeWorktreeBack(goal *Goal) error {
+//
+// Returns integrated=true ONLY after a real ff-merge lands the branch's commits
+// into base; false on the no-worktree guard, on ahead==0 (nothing to land), and
+// on every error return. finalizeWorktreeOnDone consults integrated (gated on
+// goalUsesWorktree) to enforce the done-without-integration invariant: a
+// non-empty-scope worktree goal that integrated zero commits is failed, not left
+// silently done.
+func (d *Daemon) mergeWorktreeBack(goal *Goal) (integrated bool, err error) {
 	rt := d.runtime(goal.ID)
 	if rt.WorktreeDir == "" || rt.WorktreeDir == d.workDir {
-		return nil
+		return false, nil
 	}
 	wt := rt.WorktreeDir
 	branch := rt.Branch
 
-	return WithMergeLock(d.workDir, func() error {
+	var didIntegrate bool
+	mergeErr := WithMergeLock(d.workDir, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
 		run := d.gitRunner()
@@ -499,6 +507,10 @@ func (d *Daemon) mergeWorktreeBack(goal *Goal) error {
 		} else if code != 0 {
 			return fmt.Errorf("git merge --ff-only %s failed (exit %d): %s", branch, code, strings.TrimSpace(se))
 		}
+		// The ff-merge landed the branch's commits into base: this goal integrated
+		// real changes. Recorded BEFORE the integration gate so a post-merge gate
+		// failure (which already advanced base) is still reported as integrated.
+		didIntegrate = true
 
 		// Post-merge integration gate (E1 P4): the FF just advanced base, so run the
 		// combined suite against the merged base while STILL holding the merge lock.
@@ -514,6 +526,7 @@ func (d *Daemon) mergeWorktreeBack(goal *Goal) error {
 		}
 		return nil
 	})
+	return didIntegrate, mergeErr
 }
 
 // baseBranch resolves the base checkout's current branch (e.g. "main"). A
@@ -653,8 +666,22 @@ func (d *Daemon) pruneOrphanWorktrees(goals *GoalsFile) {
 // worktree (MaxGoals=1) both inner calls are zero-git no-ops and it returns
 // failed=false.
 func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bool, err error) {
-	mergeErr := d.mergeWorktreeBack(goal)
+	integrated, mergeErr := d.mergeWorktreeBack(goal)
 	if mergeErr == nil {
+		// Done-without-integration invariant (worktree mode): a goal with a
+		// non-empty declared Scope whose merge-back landed ZERO commits into base
+		// produced no integrated work — surface it failed rather than leaving it
+		// silently GoalDone. Gated on goalUsesWorktree so an inline goal's
+		// integrated=false never trips this branch (its check lives at the
+		// autoCommit done-sites in the state machine). Empty-scope / genuine no-op
+		// goals are unaffected — no false positive.
+		if d.goalUsesWorktree(goal) && len(goal.Scope) > 0 && !integrated {
+			if ferr := d.failZeroIntegration(goals, goal); ferr != nil {
+				return false, ferr
+			}
+			_ = d.discardWorktree(goal)
+			return true, nil
+		}
 		_ = d.discardWorktree(goal)
 		return false, nil
 	}
@@ -725,6 +752,45 @@ func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bo
 	}
 	// goal.Status stays GoalDone; FinishedAt stays as set by the success path.
 	return false, nil
+}
+
+// goalUsesWorktree reports whether the goal is running in an isolated per-goal
+// git worktree (MaxGoals>1, git repo) rather than inline in the base tree
+// (MaxGoals=1 / non-git). It mirrors mergeWorktreeBack's WorktreeDir guard so
+// the done-without-integration invariant routes each goal to exactly ONE check:
+// worktree-mode goals key on the merge result (integrated), inline-mode goals
+// key on whether autoCommitGoal committed. The two are mutually exclusive.
+func (d *Daemon) goalUsesWorktree(goal *Goal) bool {
+	rt := d.runtime(goal.ID)
+	return rt.WorktreeDir != "" && rt.WorktreeDir != d.workDir
+}
+
+// failZeroIntegration flips a GoalDone goal whose non-empty declared Scope
+// integrated zero committed changes into base to GoalFailed, mirroring the
+// post-merge integration-failure surfacing (worktree.go integration-failed
+// block): a VerdictFail/owner=human validator signal, FinishedAt, CascadeFailure
+// of dependents, a GOAL-FAILED notify, and a durable SaveGoals. It is the single
+// shared helper for BOTH modes — the worktree branch in finalizeWorktreeOnDone
+// and the inline branches at the state-machine done-sites — so the surfacing,
+// cascade, and reporting behavior can never drift between them. Returns the
+// Signal/SaveGoals error (warn-mirror of the existing block).
+func (d *Daemon) failZeroIntegration(goals *GoalsFile, goal *Goal) error {
+	log.Printf("%s: goal has a non-empty declared scope but integrated zero committed changes — failing goal (no integrated changes)", goal.ID)
+	nextAction := "no integrated changes: goal has a non-empty declared scope but integrated zero committed changes into base; the worker's output was not committed/landed — fix and re-run."
+	if sigErr := SaveValidatorSignal(d.workDir, goal.ID, &ValidatorSignal{
+		Verdict:    VerdictFail,
+		Owner:      "human",
+		NextAction: nextAction,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+	}); sigErr != nil {
+		return sigErr
+	}
+	goal.Status = GoalFailed
+	goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	goals.CascadeFailure(goal.ID, "fail")
+	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=no-integrated-changes cascade=%d]",
+		goal.ID, goal.Description, countCascaded(goals, goal.ID)))
+	return SaveGoals(d.workDir, goals)
 }
 
 // writeNeedsMergeMarker persists a .tmux-cli/goals/<id>/needs-merge.md marker

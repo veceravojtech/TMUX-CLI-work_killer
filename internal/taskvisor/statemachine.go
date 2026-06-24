@@ -393,7 +393,17 @@ func (d *Daemon) deferValidationToSeparateGoal(goal *Goal, goals *GoalsFile) err
 	}
 	// Warn-only side effects after the durable SaveGoals, identical to VerdictPass:
 	// a commit/resolve failure never alters the done verdict or daemon flow.
-	d.autoCommitGoal(goal)
+	committed := d.autoCommitGoal(goal)
+	// Done-without-integration invariant (inline mode), defer-validation path:
+	// same gating as the VerdictPass site — a non-empty-scope inline goal that
+	// committed nothing is surfaced failed with resume suppressed. The deferred
+	// validation goal's own integration is unaffected.
+	if !d.goalUsesWorktree(goal) && len(goal.Scope) > 0 && !committed {
+		if ferr := d.failZeroIntegration(goals, goal); ferr != nil {
+			return ferr
+		}
+		return d.advanceToNextGoal(goals, goal.ID, false)
+	}
 	d.resolveTaskOnTerminal(goal, "resolved", doneResolution(goal, nil))
 	return d.advanceToNextGoal(goals, goal.ID, true)
 }
@@ -537,7 +547,20 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		}
 		// After the successful SaveGoals so a commit only happens for a durably
 		// recorded done; warn-only — never alters the verdict flow.
-		d.autoCommitGoal(goal)
+		committed := d.autoCommitGoal(goal)
+		// Done-without-integration invariant (inline mode): a non-empty-scope goal
+		// running in the base tree that committed nothing integrated no work —
+		// surface it failed rather than leaving it silently done. Gated on
+		// !goalUsesWorktree (a worktree goal always reports committed=false because
+		// autoCommitGoal runs against the clean base; its check lives in finalize)
+		// AND len(Scope)>0 (empty-scope / no-op goals are unaffected). Resume is
+		// suppressed via advanceToNextGoal(false).
+		if !d.goalUsesWorktree(goal) && len(goal.Scope) > 0 && !committed {
+			if ferr := d.failZeroIntegration(goals, goal); ferr != nil {
+				return ferr
+			}
+			return d.advanceToNextGoal(goals, goal.ID, false)
+		}
 		// Sibling of autoCommitGoal (goal-032): push the mapped backend task to
 		// resolved on this durable done. Independent + warn-only — one failing must
 		// not skip the other, and neither short-circuits the return.
@@ -822,7 +845,16 @@ func (d *Daemon) salvageLateVerdicts(goals *GoalsFile) error {
 		// Pass arm only, after the successful SaveGoals: a salvaged done gets the
 		// same per-goal commit boundary as the primary done site (warn-only).
 		if verdict == VerdictPass {
-			d.autoCommitGoal(g)
+			committed := d.autoCommitGoal(g)
+			// Done-without-integration invariant (inline mode), salvage path: this
+			// loop does NOT call advanceToNextGoal, so failZeroIntegration flips the
+			// just-salvaged done->failed in place and persists (its own SaveGoals).
+			// Gated identically to the primary done-sites.
+			if !d.goalUsesWorktree(g) && len(g.Scope) > 0 && !committed {
+				if ferr := d.failZeroIntegration(goals, g); ferr != nil {
+					return ferr
+				}
+			}
 		}
 	}
 	return nil

@@ -320,7 +320,8 @@ func TestMergeWorktreeBack_EmptyDiff_NoCommitNoMerge(t *testing.T) {
 	}}
 	d.SetGitRunnerFunc(fake.run)
 
-	require.NoError(t, d.mergeWorktreeBack(&Goal{ID: "goal-001"}))
+	_, err := d.mergeWorktreeBack(&Goal{ID: "goal-001"})
+	require.NoError(t, err)
 
 	assert.Equal(t, 0, fake.count("commit", "-m"), "no commit on empty diff")
 	assert.Equal(t, 0, fake.count("rebase"), "no rebase on empty diff")

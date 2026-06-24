@@ -117,7 +117,8 @@ func TestMergeWorktreeBack_RunsIntegrationCmd_AfterMerge(t *testing.T) {
 		return "", "", 0, nil
 	})
 
-	require.NoError(t, d.mergeWorktreeBack(&Goal{ID: "goal-001"}))
+	_, mwbErr := d.mergeWorktreeBack(&Goal{ID: "goal-001"})
+	require.NoError(t, mwbErr)
 
 	assert.Equal(t, 1, called, "integration command runs exactly once after a real FF merge")
 	assert.Equal(t, dir, gotDir, "integration command must run against the merged base (d.workDir)")
@@ -138,7 +139,7 @@ func TestMergeWorktreeBack_IntegrationNonZero_ReturnsErrIntegrationFailed(t *tes
 		return "", "tests failed\n", 1, nil
 	})
 
-	err := d.mergeWorktreeBack(&Goal{ID: "goal-001"})
+	_, err := d.mergeWorktreeBack(&Goal{ID: "goal-001"})
 	require.Error(t, err)
 
 	var ifail errIntegrationFailed
@@ -160,7 +161,8 @@ func TestMergeWorktreeBack_NoIntegrationCmd_RunnerNotCalled(t *testing.T) {
 		return "", "", 0, nil
 	})
 
-	require.NoError(t, d.mergeWorktreeBack(&Goal{ID: "goal-001"}))
+	_, mwbErr := d.mergeWorktreeBack(&Goal{ID: "goal-001"})
+	require.NoError(t, mwbErr)
 
 	assert.False(t, called, "no integration command ⇒ runner never invoked")
 	assert.Equal(t, 1, fake.count("merge", "--ff-only"), "base still fast-forwards (byte-identical to today)")
@@ -191,7 +193,8 @@ func TestMergeWorktreeBack_NoRealMerge_SkipsIntegration(t *testing.T) {
 		return "", "", 0, nil
 	})
 
-	require.NoError(t, d.mergeWorktreeBack(&Goal{ID: "goal-001"}))
+	_, mwbErr := d.mergeWorktreeBack(&Goal{ID: "goal-001"})
+	require.NoError(t, mwbErr)
 
 	assert.False(t, called, "no commits ahead ⇒ no merge ⇒ integration skipped")
 	assert.Equal(t, 0, fake.count("merge", "--ff-only"))
@@ -211,7 +214,8 @@ func TestMergeWorktreeBack_MaxGoals1_SkipsIntegration(t *testing.T) {
 		return "", "", 0, nil
 	})
 
-	require.NoError(t, d.mergeWorktreeBack(&Goal{ID: "goal-001"}))
+	_, mwbErr := d.mergeWorktreeBack(&Goal{ID: "goal-001"})
+	require.NoError(t, mwbErr)
 
 	assert.False(t, called, "no worktree (MaxGoals=1) ⇒ integration never runs")
 	assert.Equal(t, 0, len(fake.calls), "no worktree ⇒ zero git, never reaching the lock")
@@ -232,7 +236,8 @@ func TestMergeWorktreeBack_IntegrationRunsBeforeLockReleased(t *testing.T) {
 		return "", "", 0, nil
 	})
 
-	require.NoError(t, d.mergeWorktreeBack(&Goal{ID: "goal-001"}))
+	_, mwbErr := d.mergeWorktreeBack(&Goal{ID: "goal-001"})
+	require.NoError(t, mwbErr)
 	assert.True(t, heldDuringRun, "integration must run while WithMergeLock is still held (in-lock invariant)")
 }
 

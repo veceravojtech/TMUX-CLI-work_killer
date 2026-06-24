@@ -341,7 +341,8 @@ func TestGoalCommitMessage_BothPathsRenderDescriptiveSubject(t *testing.T) {
 
 	wg := scopedGoal()
 	wg.Acceptance = acceptance
-	require.NoError(t, wd.mergeWorktreeBack(wg))
+	_, wmErr := wd.mergeWorktreeBack(wg)
+	require.NoError(t, wmErr)
 
 	wtMsgs := commitMessages(wtFake)
 	require.Len(t, wtMsgs, 1, "worktree path must commit exactly once")

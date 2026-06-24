@@ -64,7 +64,7 @@ func TestMergeWorktreeBack_Conflict(t *testing.T) {
 	baseHeadBefore := runGit(t, dir, "rev-parse", "HEAD")
 
 	// Merge-back must detect the conflict, abort, and surface the path.
-	mergeErr := d.mergeWorktreeBack(goal)
+	_, mergeErr := d.mergeWorktreeBack(goal)
 	require.Error(t, mergeErr)
 	var mc errMergeConflict
 	require.True(t, errors.As(mergeErr, &mc), "want errMergeConflict, got %v", mergeErr)
@@ -126,7 +126,8 @@ func TestMergeWorktreeBack_NeverCommitsControlPlaneSymlink(t *testing.T) {
 		[]byte("package app\n\nvar X = 1\n"), 0o644))
 
 	// Drive the real merge-back (real git add -A/commit/rebase/merge --ff-only).
-	require.NoError(t, d.mergeWorktreeBack(goal))
+	_, mwbErr := d.mergeWorktreeBack(goal)
+	require.NoError(t, mwbErr)
 
 	// Regression assertions ---------------------------------------------------
 	// 1. base/.tmux-cli is STILL a real directory (NOT replaced by a symlink).

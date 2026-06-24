@@ -36,9 +36,18 @@ var backtickTokenRe = regexp.MustCompile("`([^`]+)`")
 // on the current branch (plain `git commit` — the branch is whatever
 // rev-parse --abbrev-ref HEAD would say, never an argument). An empty
 // scope-matched diff or no derivable pathspecs is a silent skip.
-func (d *Daemon) autoCommitGoal(g *Goal) {
+//
+// Returns committed=true ONLY at the two commit-success returns (whole-tree
+// fallback and scope-matched), and false at every other return (auto-commit
+// disabled, clean tree, "no in-scope changes", any git error). The done-sites
+// use this to enforce the done-without-integration invariant for INLINE goals:
+// a non-empty-scope goal that committed nothing must not stay done. The result
+// is meaningful only in inline mode — in worktree mode autoCommitGoal runs
+// against the CLEAN base workDir (the edits live in the worktree), so it always
+// returns false; callers gate the inline check on !goalUsesWorktree.
+func (d *Daemon) autoCommitGoal(g *Goal) (committed bool) {
 	if !d.autoCommit {
-		return
+		return false
 	}
 	pathspecs := scopePathspecs(g.Scope)
 	if len(pathspecs) == 0 {
@@ -54,27 +63,27 @@ func (d *Daemon) autoCommitGoal(g *Goal) {
 		out, stderr, code, err := d.autoCommitGit("-C", d.workDir, "status", "--porcelain")
 		if code != 0 || err != nil {
 			log.Printf("warning: auto-commit %s: git status failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
-			return
+			return false
 		}
 		if strings.TrimSpace(out) == "" {
 			log.Printf("%s: auto-commit skipped — clean working tree", g.ID)
-			return
+			return false
 		}
 
 		_, stderr, code, err = d.autoCommitGit("-C", d.workDir, "add", "-A")
 		if code != 0 || err != nil {
 			log.Printf("warning: auto-commit %s: git add failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
-			return
+			return false
 		}
 
 		msg := goalCommitMessage(g)
 		_, stderr, code, err = d.autoCommitGit("-C", d.workDir, "commit", "-m", msg)
 		if code != 0 || err != nil {
 			log.Printf("warning: auto-commit %s: git commit failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
-			return
+			return false
 		}
 		log.Printf("%s: auto-committed whole working tree to the current branch (%q)", g.ID, msg)
-		return
+		return true
 	}
 
 	// status --porcelain -- <pathspecs> covers untracked (??) files too, so new
@@ -82,17 +91,17 @@ func (d *Daemon) autoCommitGoal(g *Goal) {
 	out, stderr, code, err := d.autoCommitGit(append([]string{"-C", d.workDir, "status", "--porcelain", "--"}, pathspecs...)...)
 	if code != 0 || err != nil {
 		log.Printf("warning: auto-commit %s: git status failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
-		return
+		return false
 	}
 	if strings.TrimSpace(out) == "" {
 		log.Printf("%s: auto-commit skipped — no in-scope changes", g.ID)
-		return
+		return false
 	}
 
 	_, stderr, code, err = d.autoCommitGit(append([]string{"-C", d.workDir, "add", "--"}, pathspecs...)...)
 	if code != 0 || err != nil {
 		log.Printf("warning: auto-commit %s: git add failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
-		return
+		return false
 	}
 
 	// No --no-verify: operator pre-commit hooks keep their say; a hook
@@ -101,9 +110,10 @@ func (d *Daemon) autoCommitGoal(g *Goal) {
 	_, stderr, code, err = d.autoCommitGit("-C", d.workDir, "commit", "-m", msg)
 	if code != 0 || err != nil {
 		log.Printf("warning: auto-commit %s: git commit failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
-		return
+		return false
 	}
 	log.Printf("%s: auto-committed scope-matched changes to the current branch (%q)", g.ID, msg)
+	return true
 }
 
 // autoCommitGit runs one git invocation through the injectable runner seam
