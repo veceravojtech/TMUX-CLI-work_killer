@@ -129,7 +129,7 @@ func TestEnsureWorktree_ParallelGoal_CreatesAndBindsCwd(t *testing.T) {
 
 	assert.Equal(t, wtPath, cwd)
 	assert.Equal(t, 1, fake.count("worktree", "add"), "worktree add must run exactly once")
-	assert.True(t, fake.count("-b", worktreeBranch("goal-001")) == 1, "branch -b taskvisor/goal-001")
+	assert.True(t, fake.count("-B", worktreeBranch("goal-001")) == 1, "branch -B taskvisor/goal-001 (idempotent create-or-reset)")
 	assert.Equal(t, wtPath, d.runtime("goal-001").WorktreeDir)
 	assert.Equal(t, worktreeBranch("goal-001"), d.runtime("goal-001").Branch)
 }
@@ -157,6 +157,79 @@ func TestEnsureWorktree_ReusedOnRetry(t *testing.T) {
 	assert.Equal(t, wtPath, cwd)
 	assert.Equal(t, 0, fake.count("worktree", "add"), "existing worktree must be reused, not re-added")
 	assert.Equal(t, wtPath, d.runtime("goal-001").WorktreeDir)
+}
+
+// TestEnsureWorktree_PreExistingBranch: the goal branch taskvisor/<goal> already
+// exists (a leftover from a prior broken run, or a branch that survived a reuse-
+// check teardown). The OLD `worktree add -b` would hard-fail "fatal: a branch
+// named ... already exists" and wedge the goal forever. The `-B` (create-or-
+// force-reset) flag reconciles the surviving branch in one idempotent call.
+func TestEnsureWorktree_PreExistingBranch(t *testing.T) {
+	// preExistingBranchRunner fails any OLD `worktree add -b` (proving it is no
+	// longer used) and materializes the worktree on the NEW `-B` add.
+	makeFake := func(wtPath string) *fakeGitRunner {
+		return &fakeGitRunner{
+			respond: func(args []string) (string, int) {
+				if argsContain(args, "worktree", "add", "-b") {
+					return "fatal: a branch named 'taskvisor/goal-001' already exists", 128
+				}
+				return "", 0
+			},
+			sideEffect: func(args []string) {
+				if argsContain(args, "worktree", "add", "-B") {
+					_ = os.MkdirAll(wtPath, 0o755)
+					_ = os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)
+				}
+			},
+		}
+	}
+
+	t.Run("provision_path_branch_exists", func(t *testing.T) {
+		d, _, dir := setupDaemon(t)
+		mkGitRepo(t, dir)
+		goal := &Goal{ID: "goal-001"}
+		wtPath := d.worktreePath("goal-001") // no dir at wtPath
+
+		fake := makeFake(wtPath)
+		d.SetGitRunnerFunc(fake.run)
+
+		cwd, err := d.ensureWorktree(goal, true)
+		require.NoError(t, err, "pre-existing branch must not collide under -B")
+
+		assert.Equal(t, wtPath, cwd)
+		assert.Equal(t, 1, fake.count("worktree", "add"), "worktree add must run exactly once")
+		assert.Equal(t, 1, fake.count("-B", worktreeBranch("goal-001")), "must provision with -B (create-or-reset)")
+		assert.Equal(t, 0, fake.count("-b", worktreeBranch("goal-001")), "must NOT use the colliding -b")
+	})
+
+	t.Run("teardown_then_reprovision_branch_survives", func(t *testing.T) {
+		d, _, dir := setupDaemon(t)
+		mkGitRepo(t, dir)
+		goal := &Goal{ID: "goal-001"}
+		wtPath := d.worktreePath("goal-001")
+		require.NoError(t, os.MkdirAll(wtPath, 0o755)) // stray UNREGISTERED dir
+
+		fake := makeFake(wtPath)
+		// Unregistered: porcelain list returns "" so the reuse fast-path is skipped
+		// and the stray dir is torn down before the -B re-provision.
+		baseRespond := fake.respond
+		fake.respond = func(args []string) (string, int) {
+			if argsContain(args, "worktree", "list", "--porcelain") {
+				return "", 0
+			}
+			return baseRespond(args)
+		}
+		d.SetGitRunnerFunc(fake.run)
+
+		cwd, err := d.ensureWorktree(goal, true)
+		require.NoError(t, err, "surviving branch must reconcile via -B after teardown")
+
+		assert.Equal(t, wtPath, cwd)
+		assert.Equal(t, 1, fake.count("worktree", "add"), "re-provision via worktree add exactly once")
+		assert.GreaterOrEqual(t, fake.count("worktree", "prune"), 1, "teardown must prune half-registrations")
+		assert.Equal(t, 1, fake.count("-B", worktreeBranch("goal-001")), "re-provision uses -B")
+		assert.True(t, baseCheckedOut(wtPath), "base present after re-provision")
+	})
 }
 
 func TestEnsureWorktree_NotAGitRepo_FallsBackToBase(t *testing.T) {

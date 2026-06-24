@@ -317,7 +317,7 @@ func (d *Daemon) ensureWorktree(goal *Goal, parallel bool) (string, error) {
 		// fall through to add
 	}
 
-	_, stderr, code, err := run(ctx, "-C", d.workDir, "worktree", "add", "-b", branch, wtPath, "HEAD")
+	_, stderr, code, err := run(ctx, "-C", d.workDir, "worktree", "add", "-B", branch, wtPath, "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("git worktree add for %s: %w", goal.ID, err)
 	}
