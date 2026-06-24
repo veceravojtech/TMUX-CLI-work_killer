@@ -2,6 +2,7 @@
       <rule critical="true">All per-BC infrastructure goals MUST exist in goals.yaml before this step runs. If no infrastructure goals are found, ABORT with error.</rule>
       <rule critical="true">This is a SINGLE goal — never split per-BC. All fixtures load together because they share FK dependencies.</rule>
       <rule critical="true">depends_on MUST include EVERY infrastructure goal ID — dynamically collected from goals.yaml, not hardcoded (G-03).</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): emits a skeleton; concrete fields + [CODE-RULE-INJECTION] authored at dispatch by /tmux:elaborate (§6). The concrete fields this shard used to author — acceptance FX-01..FX-06, validate commands, the 3 investigators, not-in-scope, entity inventory, fixtures template — and the per-goal [CODE-RULE-INJECTION] are now authored at dispatch by /tmux:elaborate against the real tree (§6). This shard keeps ONLY enumeration: this goal exists, its phase, its depends_on, and its coarse deliverable_area. -->
 
       <substep n="3.17.1" title="Collect all infrastructure goal IDs">
         <action>Read goals.yaml from disk. Filter all goal entries where phase=infrastructure. Collect their goal IDs into INFRA_GOAL_IDS list.</action>
@@ -12,114 +13,31 @@
         <rule>This MUST be dynamic — BC count varies per project. Never hardcode goal IDs.</rule>
       </substep>
 
-      <substep n="3.17.2" title="Build entity inventory from domain model">
-        <action>Read docs/architecture/domain-model.md. Extract all aggregate/entity names across all BCs from AGGREGATE_MAP (built in Step 0).</action>
-        <action>For each entity, build fixture class path: contexts/{BC}/src/Bundle/DataFixtures/{Entity}Fixtures.php</action>
-        <action>Additionally include UserFixtures (requires UserPasswordHasherInterface injection) — one per BC that has auth-related entities, or a shared UserFixtures if auth is centralized.</action>
-        <action>Read docs/architecture/api-endpoints.md to identify which entities have list/search endpoints — these need page_size+1 records for pagination testing (FX-04).</action>
+      <substep n="3.17.2" title="Derive the coarse deliverable_area">
+        <action>Set FIXTURES_AREA = the fixtures deliverable directory in the resolved topology — contexts/{BC}/src/Bundle/DataFixtures/ (the per-BC fixtures directory the shard's old entity-inventory referenced; this single goal spans every BC's fixtures), where {BC} is the bounded-context name from the resolved conventions/topology. This is a COARSE path (the depinfer produce/consume seed + the elaborator's tree-read anchor), NOT a glob and NOT a per-file path.</action>
+        <rule>Do NOT resolve the fixtures template, read the domain model for the entity inventory, or author any acceptance/validate/investigator/not-in-scope here — those are Tier-2 (/tmux:elaborate authors them at dispatch). The roadmap skeleton commits only to the coarse deliverable_area.</rule>
       </substep>
 
-      <substep n="3.17.3" title="Resolve fixtures template">
-        <action>Attempt to read the language-specific overlay template first, then fall back to base:</action>
-        <lookup>
-          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/fixtures.md" label="overlay"/>
-          <fallback path=".tmux-cli/templates/_base/fixtures.md" label="base"/>
-        </lookup>
-        <action>Store the resolved template content as FIXTURES_TEMPLATE. Record which tier was used (overlay or base).</action>
-        <rule>Fixture class patterns (DependentFixtureInterface, idempotency strategy, CLI commands) MUST come from the resolved template, not hardcoded in this XML.</rule>
-      </substep>
-
-      <substep n="3.17.4" title="Compose acceptance criteria (FX-01..FX-06)">
-        <action>Build ACCEPTANCE array with all 6 fixture criteria from docs/task-plan-spec.md:698-706:</action>
-        <criteria>
-          <item id="FX-01">Fixture class exists for every aggregate/entity that E2E tests reference</item>
-          <item id="FX-02">Fixtures create test users matching docs/architecture/test-environment.md credentials — never hardcoded</item>
-          <item id="FX-03">Fixtures are idempotent — running doctrine:fixtures:load twice doesn't fail</item>
-          <item id="FX-04">Fixtures create page_size+1 records per entity for list/pagination tests</item>
-          <item id="FX-05">bin/console doctrine:fixtures:load --env=test runs green (exit code 0)</item>
-          <item id="FX-06">Fixtures depend on schema being created — migrations applied first via depends_on</item>
-        </criteria>
-        <rule>All 6 criteria must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
-      </substep>
-
-      <substep n="3.17.5" title="Compose validation commands">
-        <action>Build VALIDATE array with commands that verify fixtures work correctly:</action>
-        <commands>
-          <cmd source="FX-05">bin/console doctrine:fixtures:load --env=test --no-interaction</cmd>
-          <cmd source="FX-03">bin/console doctrine:fixtures:load --env=test --no-interaction (run twice for idempotency)</cmd>
-          <cmd source="FX-01">Verify fixture class count matches entity count from domain-model.md</cmd>
-        </commands>
-        <rule>Validation must prove idempotency by running the load command twice sequentially — both must exit 0.</rule>
-      </substep>
-
-      <substep n="3.17.6" title="Compose context with Investigation Config and fan-out hint">
-        <action>Build CONTEXT string with these sections:</action>
-
-        <section name="purpose">
-Fixtures goal creates test data for all entities across all bounded contexts. Single goal because fixtures share FK dependencies and must load in correct order via DependentFixtureInterface.
-All entity names from docs/architecture/domain-model.md. Test user credentials from docs/architecture/test-environment.md (never hardcoded).
-Fixture class patterns from {{FIXTURES_TEMPLATE}} (DependentFixtureInterface, #[AsFixture(group: 'test')], idempotent purge, page_size+1 records).
-Depends on ALL infrastructure goals: {{INFRA_GOAL_IDS}} — these provide Doctrine mappings, migrations, and custom DBAL types.
-        </section>
-
-        <section name="fan-out-hint">
-          <hint>single-task — all fixtures must load together since they share FK dependencies. Doctrine's DependentFixtureInterface handles internal ordering.</hint>
-        </section>
-
-        <section name="investigation-config">
-          <action>Build 3 investigators:</action>
-
-          <investigator n="1" name="Fixture load">
-            <type>command</type>
-            <commands>bin/console doctrine:fixtures:load --env=test --no-interaction</commands>
-            <pass>Exit code 0 — all fixtures loaded successfully</pass>
-            <fail>Non-zero exit, missing table, FK constraint violation, or missing service</fail>
-          </investigator>
-
-          <investigator n="2" name="Idempotency check">
-            <type>command</type>
-            <commands>Run bin/console doctrine:fixtures:load --env=test --no-interaction twice sequentially</commands>
-            <pass>Both runs exit code 0 — purge-and-reload produces identical state</pass>
-            <fail>Second run fails (constraint violation, duplicate key, or stale reference)</fail>
-          </investigator>
-
-          <investigator n="3" name="Fixture class coverage">
-            <type>file-check</type>
-            <commands>For every entity in docs/architecture/domain-model.md, verify contexts/{BC}/src/Bundle/DataFixtures/{Entity}Fixtures.php exists</commands>
-            <pass>All fixture files present — one per testable entity</pass>
-            <fail>Missing fixture class for one or more entities</fail>
-          </investigator>
-
-          <rule>Exactly 3 investigators (GM-08 allows 2-4). Each has type, commands, and pass/fail criteria (GM-09).</rule>
-        </section>
-      </substep>
-
-      <substep n="3.17.7" title="Compose not-in-scope">
-        <action>Set NOT_IN_SCOPE to:</action>
-        <value>Production seed data, performance benchmarks, event listener test data, fixture performance optimization — production seeding is a separate concern; event listener test data added by event listener goals if needed.</value>
-      </substep>
-
-      <substep n="3.17.8" title="Call goal-create MCP">
-        <action>Call the goal-create MCP tool with these parameters:</action>
+      <substep n="3.17.3" title="Call goal-create MCP (roadmap skeleton)">
+        <action>Call the goal-create MCP tool with a roadmap SKELETON:</action>
         <params>
           <param name="description">Create test fixtures for all entities with test users and pagination data</param>
-          <param name="acceptance">ACCEPTANCE array from substep 3.17.4 (exactly 6 items, FX-01..FX-06)</param>
-          <param name="validate">VALIDATE array from substep 3.17.5</param>
-          <param name="context">CONTEXT string from substep 3.17.6 (purpose + fan-out hint)</param>
-          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.17.6's 3 investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
-          <param name="not_in_scope">NOT_IN_SCOPE from substep 3.17.7</param>
+          <param name="phase">fixtures</param>
+          <param name="deliverable_area">FIXTURES_AREA (coarse, e.g. contexts/{BC}/src/Bundle/DataFixtures/)</param>
           <param name="depends_on">INFRA_GOAL_IDS — ALL infrastructure goal IDs collected in substep 3.17.1</param>
+          <param name="status">roadmap</param>
           <param name="max_retries">3</param>
         </params>
         <rule>Description is 73 characters — within the 120-char limit (MaxGoalDescriptionLength).</rule>
         <rule>max_retries=3 (G-11) — fixture issues are typically FK ordering or missing entity, fixable in few cycles.</rule>
         <rule>depends_on MUST be the FULL INFRA_GOAL_IDS list — never just the last one (G-03).</rule>
+        <rule critical="true">NO validate/acceptance/scope/context/investigation_config/not_in_scope params — this is a roadmap skeleton; /tmux:elaborate authors every concrete field at dispatch (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
 
         <check condition="goal-create returns error">
           <action>Print error with full context and ABORT.</action>
         </check>
         <check condition="goal-create succeeds">
-          <action>Print: "Fixtures created: goal-P+1 (phase=fixtures, depends_on={{INFRA_GOAL_IDS}}) with 3 investigators, single-task fan-out, max_retries=3"</action>
+          <action>Print: "Fixtures skeleton created: goal-{{ID}} (phase=fixtures, status=roadmap, depends_on={{INFRA_GOAL_IDS}}, deliverable_area={{FIXTURES_AREA}})"</action>
           <action>Proceed to next step.</action>
         </check>
       </substep>

@@ -37,6 +37,17 @@ type GoalSpec struct {
 	// here (the shared authoring core) so every creation surface — the MCP
 	// goal-create tool and any future CLI flag — enforces the same enum.
 	Lane string
+	// Status selects the creation tier. Empty (the default) creates a normal
+	// GoalPending goal exactly as before. GoalRoadmap creates a Tier-1 SKELETON:
+	// no validate/acceptance/scope/validate.sh is required or authored — the
+	// roadmap generator emits only id/description/phase/depends_on/DeliverableArea,
+	// and Tier-2 elaboration authors the concrete fields later (design §5). Any
+	// other value is rejected (running/done/failed are daemon-owned).
+	Status string
+	// DeliverableArea is the coarse roadmap-tier deliverable footprint persisted on
+	// a skeleton goal (e.g. "projects/api/src/Http/ErrorHandling/"). Ignored for
+	// normal (non-roadmap) creation.
+	DeliverableArea string
 }
 
 // validateGoalSpec enforces the core-owned authoring rules shared by every
@@ -58,7 +69,13 @@ func validateGoalSpec(spec GoalSpec) error {
 	if len(spec.Description) > 120 {
 		return fmt.Errorf("description exceeds 120 characters (got %d); use --acceptance for detailed criteria", len(spec.Description))
 	}
-	if len(spec.Validate) == 0 {
+	// Roadmap skeletons (Tier-1) legitimately carry NO validate — elaboration
+	// authors it later (design §5). Only "" (normal GoalPending) and GoalRoadmap
+	// are creatable; daemon-owned lifecycle statuses are rejected.
+	if spec.Status != "" && spec.Status != GoalRoadmap {
+		return fmt.Errorf("invalid creation status %q; only %q (roadmap skeleton) or empty (pending) may be created", spec.Status, GoalRoadmap)
+	}
+	if spec.Status != GoalRoadmap && len(spec.Validate) == 0 {
 		return fmt.Errorf("at least one validation rule is required")
 	}
 	if spec.Lane != "" && spec.Lane != LaneSolo && spec.Lane != LaneFull {
@@ -125,6 +142,14 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 		lane = AutoDeriveLane(workDir, spec, scope)
 	}
 
+	// Resolve the persisted status once (validated above): GoalRoadmap for a
+	// Tier-1 skeleton, GoalPending otherwise. Hoisted out of the lock so the
+	// post-lock goal.md/validate.sh tail can branch on it.
+	status := GoalPending
+	if spec.Status == GoalRoadmap {
+		status = GoalRoadmap
+	}
+
 	var id string
 	if err := WithGoalsLock(workDir, func() error {
 		gf, err := LoadGoals(workDir)
@@ -154,8 +179,9 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 			Description:          spec.Description,
 			Acceptance:           spec.Acceptance,
 			Validate:             spec.Validate,
+			DeliverableArea:      spec.DeliverableArea,
 			Preconditions:        spec.Preconditions,
-			Status:               GoalPending,
+			Status:               status,
 			MaxRetries:           maxRetries,
 			CodeRetries:          budget.CodeRetries,
 			SpecRetries:          budget.SpecRetries,
@@ -186,16 +212,115 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 	if err := WriteGoalMD(goalDir, spec.Description, spec.Phase, lane, spec.Acceptance, spec.Validate, spec.Preconditions, spec.Context, spec.NotInScope, spec.Investigators); err != nil {
 		return "", false, fmt.Errorf("write goal.md: %w", err)
 	}
-	// Resolve the project's exec runtime (docker vs local, from
-	// docs/architecture/test-environment.md) so validate.sh's toolchain commands
-	// are wrapped into their container the same way investigator commands are.
-	// AppSvc/NodeSvc are never hardcoded — they come only from ResolveExecRuntime.
-	er := ResolveExecRuntime(workDir)
-	if err := WriteValidateScript(goalDir, spec.Validate, er); err != nil {
-		return "", false, fmt.Errorf("write validate.sh: %w", err)
+	// A roadmap skeleton carries no validate, so there is no validate.sh to
+	// author yet — Tier-2 elaboration writes the validate rules (via goal-edit)
+	// and the daemon regenerates validate.sh from them on the goal's first
+	// dispatch (dispatch.go regenerateValidateScript). Writing an empty script
+	// here would be a misleading artifact.
+	if status != GoalRoadmap {
+		// Resolve the project's exec runtime (docker vs local, from
+		// docs/architecture/test-environment.md) so validate.sh's toolchain commands
+		// are wrapped into their container the same way investigator commands are.
+		// AppSvc/NodeSvc are never hardcoded — they come only from ResolveExecRuntime.
+		er := ResolveExecRuntime(workDir)
+		if err := WriteValidateScript(goalDir, spec.Validate, er); err != nil {
+			return "", false, fmt.Errorf("write validate.sh: %w", err)
+		}
 	}
 
 	return id, derivedScope, nil
+}
+
+// GoalEdit carries the OPTIONAL field edits applied to an existing goal by
+// EditGoal — the Tier-2 elaboration write-back primitive (design §6 step 6). Each
+// field is a POINTER so the caller expresses a tri-state per field:
+//   - nil           → leave the existing value untouched.
+//   - non-nil value → set the field to it (an empty slice or "" CLEARS it).
+//
+// This is what lets elaboration author a roadmap skeleton's concrete fields and
+// flip its status roadmap→pending in one converged call, while never disturbing
+// the daemon-owned durable state (retry counters, convergence streaks, lane,
+// depends_on) it does not name. Description is deliberately NOT editable here —
+// it is the goal's stable title; detail belongs in Acceptance/Validate.
+type GoalEdit struct {
+	Acceptance      *[]string
+	Validate        *[]string
+	Scope           *[]string
+	Status          *string
+	DeliverableArea *string
+	Phase           *string
+}
+
+// editableGoalStatuses are the ONLY statuses EditGoal (and thus the goal-edit MCP
+// tool / `taskvisor goal edit` CLI) may write. running/done/failed are
+// daemon-owned lifecycle states — an authoring tool that wrote them would corrupt
+// the daemon's runtime view of a goal — so they are rejected. roadmap/pending/
+// blocked are the authoring-tier statuses elaboration legitimately moves a goal
+// between.
+var editableGoalStatuses = map[string]bool{
+	GoalRoadmap: true,
+	GoalPending: true,
+	GoalBlocked: true,
+}
+
+// EditGoal applies the provided GoalEdit to an EXISTING goal, under the goals
+// flock, via the SAME canonical LoadGoals→edit→SaveGoals path CreateGoal uses —
+// so the dual-struct durable-field invariant and the LoadGoals retry re-seed both
+// hold (the full taskvisor.Goal is loaded and resaved; no field is dropped). It
+// is the shared core behind both the goal-edit MCP tool and the `taskvisor goal
+// edit` CLI (authoring convergence — never duplicate the apply logic in either
+// surface).
+//
+// Only fields the caller set (non-nil) are written; omitted fields are left
+// exactly as the daemon last persisted them. An explicit empty slice/string
+// CLEARS its field (e.g. dropping a stale scope). The status guard runs FIRST,
+// before the lock, so an invalid target status persists nothing.
+//
+// EditGoal intentionally does NOT regenerate validate.sh or goal.md: the daemon
+// regenerates validate.sh from the in-memory goal.Validate on every (re-)dispatch
+// (dispatch.go regenerateValidateScript), and the elaborator worker authors
+// goal.md itself (design §6 step 5). Keeping EditGoal to a goals.yaml field write
+// holds the surface minimal and single-responsibility.
+func EditGoal(workDir, goalID string, edit GoalEdit) error {
+	if edit.Status != nil && !editableGoalStatuses[*edit.Status] {
+		return fmt.Errorf("status %q is not editable; goal-edit may only set %s/%s/%s (running/done/failed are daemon-owned)",
+			*edit.Status, GoalRoadmap, GoalPending, GoalBlocked)
+	}
+
+	return WithGoalsLock(workDir, func() error {
+		gf, err := LoadGoals(workDir)
+		if err != nil {
+			return fmt.Errorf("load goals: %w", err)
+		}
+		if gf == nil {
+			return fmt.Errorf("goal not found: %s", goalID)
+		}
+		g, ok := gf.GoalByID(goalID)
+		if !ok {
+			return fmt.Errorf("goal not found: %s", goalID)
+		}
+
+		if edit.Acceptance != nil {
+			g.Acceptance = *edit.Acceptance
+		}
+		if edit.Validate != nil {
+			g.Validate = *edit.Validate
+		}
+		if edit.Scope != nil {
+			g.Scope = *edit.Scope
+		}
+		if edit.DeliverableArea != nil {
+			g.DeliverableArea = *edit.DeliverableArea
+		}
+		if edit.Phase != nil {
+			g.Phase = *edit.Phase
+		}
+		if edit.Status != nil {
+			g.Status = *edit.Status
+		}
+
+		return SaveGoals(workDir, gf)
+	})
 }
 
 // WriteValidateScript generates an executable validate.sh in goalDir from the

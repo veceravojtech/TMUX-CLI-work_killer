@@ -82,50 +82,85 @@ func TestGenerateXML_ProdDockerGoalIsAdrOnly(t *testing.T) {
 	assert.NotContains(t, content, "COMPOSE_TRIGGER = (RUN_TARGET==docker) OR ADR_PRESENT")
 }
 
-// DK-02/DK-04 source port mappings from the Published Ports block, not DOCKER_ADR_SUMMARY.
+// dockerShard reads the step-3.26 shard directly so skeleton/relocation
+// assertions are scoped to the docker goal and not tripped by sibling steps.
+func dockerShard(t *testing.T) string {
+	t.Helper()
+	return readGenerateTemplate(t, "task-plan-generate/step-3.26-docker.xml")
+}
+
+// assertRoadmapSkeleton pins the Tier-1 roadmap-skeleton contract (two-tier
+// director redesign, docs/architecture/director-two-tier-design.md §5): a
+// goal-emitting shard now passes status=roadmap + phase + a coarse
+// deliverable_area + depends_on, and authors NO concrete validate/acceptance
+// params (those are authored at dispatch by /tmux:elaborate, §6).
+func assertRoadmapSkeleton(t *testing.T, shard, phase string) {
+	t.Helper()
+	assert.Contains(t, shard, `<param name="status">roadmap`,
+		"goal-create must emit status=roadmap")
+	assert.Contains(t, shard, `<param name="phase">`+phase,
+		"skeleton must carry phase=%s", phase)
+	assert.Contains(t, shard, `<param name="deliverable_area">`,
+		"skeleton must carry a coarse deliverable_area")
+	assert.Contains(t, shard, `<param name="depends_on">`,
+		"skeleton must wire depends_on")
+	assert.NotContains(t, shard, `<param name="validate">`,
+		"roadmap skeleton must not author a validate param (Tier-2 / elaborate)")
+	assert.NotContains(t, shard, `<param name="acceptance">`,
+		"roadmap skeleton must not author an acceptance param (Tier-2 / elaborate)")
+}
+
+// Two-tier: the docker goal is now a Tier-1 roadmap skeleton; DK-02/DK-04
+// published-port mappings are authored at dispatch by /tmux:elaborate, not here.
 func TestGenerateXML_ComposePortsFromPublishedPorts(t *testing.T) {
-	content := readGenerateBundle(t)
+	shard := dockerShard(t)
 
-	// DK-02: each service + host:container mapping from PUBLISHED_PORTS.
-	assert.Contains(t, content, "host:container port mapping from the Published Ports block (PUBLISHED_PORTS)")
-	// DK-04: accessible at the published host port APP_PORT from PUBLISHED_PORTS.
-	assert.Contains(t, content, "published host port APP_PORT (from PUBLISHED_PORTS)")
-	// The old ADR-sourced DK-02 wording must be gone.
-	assert.NotContains(t, content, "includes all services from ADRs (DB, Redis, etc.) — read compose file, services match")
+	assertRoadmapSkeleton(t, shard, "docker")
+	// the concrete published-port acceptance wording must NOT be authored at Tier-1.
+	assert.NotContains(t, shard, "host:container port mapping from the Published Ports block (PUBLISHED_PORTS)")
+	assert.NotContains(t, shard, "published host port APP_PORT (from PUBLISHED_PORTS)")
 }
 
-// 3.26.5 validate curls $APP_PORT (from published ports), with no hardcoded port literal or stale $PORT.
+// Two-tier: the $APP_PORT health-check curl is a Tier-2 validate, authored at
+// dispatch — the roadmap skeleton carries no validate command at all.
 func TestGenerateXML_ValidateUsesPublishedAppPort(t *testing.T) {
-	content := readGenerateBundle(t)
+	shard := dockerShard(t)
 
-	assert.Contains(t, content, "curl -sf http://localhost:$APP_PORT/health")
-	assert.NotContains(t, content, "http://localhost:$PORT/health",
-		"the stale hardcoded $PORT reference must be replaced by $APP_PORT")
+	assertRoadmapSkeleton(t, shard, "docker")
+	assert.NotContains(t, shard, "curl -sf http://localhost:$APP_PORT/health",
+		"the health-check curl validate is authored at dispatch by /tmux:elaborate")
 }
 
-// When RUN_TARGET=docker without an ADR, DOCKER_ADR_SUMMARY is optional and base image derives from architecture files.
+// The DOCKER_ADR_SUMMARY-optional wording survives at Tier-1 (it gates emission
+// in the skip gate); the BASE_IMAGE derivation moved to /tmux:elaborate.
 func TestGenerateXML_DockerAdrSummaryOptional(t *testing.T) {
-	content := readGenerateBundle(t)
+	shard := dockerShard(t)
 
-	assert.Contains(t, content, "DOCKER_ADR_SUMMARY is OPTIONAL")
-	assert.Contains(t, content, "When RUN_TARGET=docker without an ADR, leave DOCKER_ADR_SUMMARY unset")
-	assert.Contains(t, content, "BASE_IMAGE = from DOCKER_ADR_SUMMARY when ADR_PRESENT, else the runtime/framework default")
+	// skeleton-layer assertions that STILL hold (the conditional skip gate).
+	assert.Contains(t, shard, "DOCKER_ADR_SUMMARY is OPTIONAL")
+	assert.Contains(t, shard, "When RUN_TARGET=docker without an ADR, leave DOCKER_ADR_SUMMARY unset")
+	// BASE_IMAGE derivation is Tier-2 now (authored against the real tree).
+	assert.NotContains(t, shard, "BASE_IMAGE = from DOCKER_ADR_SUMMARY when ADR_PRESENT")
 }
 
-// 3.26.7 not_in_scope preserves the production-deployment exclusions verbatim.
+// Two-tier: production-deployment not_in_scope exclusions are authored at
+// dispatch now — the roadmap skeleton emits no not_in_scope param.
 func TestGenerateXML_ProdDeployExtrasPreserved(t *testing.T) {
-	content := readGenerateBundle(t)
+	shard := dockerShard(t)
 
-	assert.Contains(t, content,
+	assertRoadmapSkeleton(t, shard, "docker")
+	assert.NotContains(t, shard, `<param name="not_in_scope">`,
+		"not_in_scope is authored at dispatch by /tmux:elaborate")
+	assert.NotContains(t, shard,
 		"production deployment orchestration (Kubernetes, Swarm), cloud provider setup, SSL/TLS configuration.")
 }
 
-// 3.26.3 defines an APP_PORT fallback to the base-URL port plus a recorded context note when the block is absent.
+// Two-tier: the APP_PORT fallback is part of validate authoring, now Tier-2.
 func TestGenerateXML_PublishedPortsFallbackToBaseUrl(t *testing.T) {
-	content := readGenerateBundle(t)
+	shard := dockerShard(t)
 
-	assert.Contains(t, content, "FALLBACK when the Published Ports block is ABSENT: set APP_PORT = the port from the base URL")
-	assert.Contains(t, content, "record a context note that ports were defaulted from the base URL")
+	assertRoadmapSkeleton(t, shard, "docker")
+	assert.NotContains(t, shard, "FALLBACK when the Published Ports block is ABSENT: set APP_PORT = the port from the base URL")
 }
 
 // The companion cheat-sheet states the dev runtime is front-loaded to goal-002

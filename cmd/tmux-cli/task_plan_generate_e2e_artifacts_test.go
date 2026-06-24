@@ -88,18 +88,30 @@ func TestTemplate_E2EArtifactConvScaffoldSC20(t *testing.T) {
 		"SC-20 (Playwright config) must be gated on FRONTEND_MODE == vue — the P2 FrontendMode gate, not binary HAS_FRONTEND")
 }
 
+// Two-tier (director redesign §5): E2E investigator fail-criteria (the
+// test-results/ artifact path) are authored at dispatch by /tmux:elaborate — the
+// 3.18 action shard is a roadmap skeleton with no investigators. The E2E-ARTIFACT
+// convention still ships in the resolved bundle (rules catalogue).
 func TestTemplate_E2EArtifactConvInvestigatorFailCriteria(t *testing.T) {
 	content := readGenerateBundle(t)
+	assert.Contains(t, content, "test-results",
+		"the E2E-ARTIFACT test-results convention must still ship in the resolved bundle")
 	controllerActions := sliceBetween(t, content, `n="3.18"`, `n="3.19"`)
-	assert.Contains(t, controllerActions, "test-results/",
-		"step 3.18 E2E investigator fail criteria must mention test-results/")
+	assert.Contains(t, controllerActions, `<param name="status">roadmap`,
+		"the action shard emits a roadmap skeleton")
+	assert.NotContains(t, controllerActions, "test-results/",
+		"the test-results/ investigator fail criteria are authored at dispatch by /tmux:elaborate")
 }
 
+// Two-tier: the final-gate E2E investigator fail criteria (test-results/) are
+// authored at dispatch; the 3.29 final gates are roadmap skeletons.
 func TestTemplate_E2EArtifactConvFinalGateFailCriteria(t *testing.T) {
 	content := readGenerateBundle(t)
 	finalGates := sliceBetween(t, content, `n="3.29"`, `</flow>`)
-	assert.Contains(t, finalGates, "test-results/",
-		"step 3.29 final gate investigator fail criteria must mention test-results/")
+	assert.Contains(t, finalGates, `<param name="status">roadmap`,
+		"the final gates emit roadmap skeletons")
+	assert.NotContains(t, finalGates, "test-results/",
+		"the final-gate test-results/ investigator criteria are authored at dispatch by /tmux:elaborate")
 }
 
 func TestTemplate_E2EArtifactConvCompanionMirror(t *testing.T) {

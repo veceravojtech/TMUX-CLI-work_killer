@@ -3,6 +3,7 @@
       <rule critical="true">This step is UNCONDITIONAL — the php-symfony pack carries PHP-I18N-001 as a `must` code-rule, so every greenfield plan establishes a single-locale translator foundation even while ADR-013 defers full i18n. Never split.</rule>
       <rule critical="true">Single-locale only (English per ADR-013): this goal establishes the translator config + a TranslatableDomainException base so user-facing strings/backend errors are translatable. It does NOT add a second locale, locale negotiation, or per-string extraction — that is the implementer's downstream concern under PHP-I18N-001.</rule>
       <rule critical="true">depends_on = [SCAFFOLD_GOAL_ID] ONLY — never the domain/error-handling goals (no rewiring; scope guard).</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): emits a skeleton; concrete fields + [CODE-RULE-INJECTION] authored at dispatch by /tmux:elaborate (§6). The concrete fields this shard used to author — acceptance I18N-01, validate commands, the 2 investigators, not-in-scope, scope, layout.md deliverable resolution — and the per-goal [CODE-RULE-INJECTION] (substep 3.21b.6b, which named PHP-I18N-001 as a genuine cross-cutting match) are now authored at dispatch by /tmux:elaborate against the real tree (§6). This shard keeps ONLY enumeration: this goal exists, its phase=cross-cutting, its depends_on, and its coarse deliverable_area. -->
 
       <substep n="3.21b.1" title="Collect scaffold goal ID">
         <action>Read goals.yaml from disk. Filter for phase=scaffold. Store the goal ID as SCAFFOLD_GOAL_ID (goal-002 in a fresh plan).</action>
@@ -13,98 +14,32 @@
         <rule>SCAFFOLD_GOAL_ID MUST be dynamically resolved from goals.yaml — never hardcoded (G-03).</rule>
       </substep>
 
-      <substep n="3.21b.2" title="Resolve shared-kernel deliverables from layout.md">
-        <action>Read docs/architecture/layout.md `## Layers` (written by discover / created by scaffold substep 2.2b). Bind SRC_ROOTS from the `- Source roots:` line. The translator foundation lives in the shared-kernel context contexts/previo (the published language every other context depends on), so its translatable-exception base is reusable repo-wide and its *.php path matches the PHP-I18N-001 `{src}/**/*.php` glob.</action>
-        <action>Bind DELIVERABLES = contexts/previo/src/Exception/TranslatableDomainException.php (translatable exception base carrying a message key, NOT sprintf'd English), config/packages/translation.yaml (single default locale = en, fallback = en), translations/ (the catalogue directory, e.g. translations/messages.en.yaml).</action>
+      <substep n="3.21b.2" title="Derive the coarse deliverable_area">
+        <action>Set I18N_FOUNDATION_AREA = the translator-foundation deliverable directory in the resolved topology — contexts/previo/src/Exception/ (the contexts/previo shared-kernel exception directory the shard's old DELIVERABLES referenced, home of the TranslatableDomainException base every other context depends on), where contexts/previo is the published shared-kernel context from the resolved conventions/topology. This is a COARSE path (the depinfer produce/consume seed + the elaborator's tree-read anchor), NOT a glob and NOT a per-file path.</action>
+        <rule>Do NOT read layout.md to bind SRC_ROOTS, resolve translation.yaml, or author any acceptance/validate/investigator/not-in-scope/scope here — those are Tier-2 (/tmux:elaborate authors them at dispatch, including the genuine PHP-I18N-001 cross-cutting injection). The roadmap skeleton commits only to the coarse deliverable_area.</rule>
       </substep>
 
-      <substep n="3.21b.3" title="Compose acceptance criteria (I18N-01)">
-        <action>Build ACCEPTANCE array with the translator-foundation criterion:</action>
-        <criteria>
-          <item id="I18N-01">PHP-I18N-001 — translator configured (single English locale per ADR-013, fallback en) and a TranslatableDomainException base exists carrying a message key; user-facing strings/backend errors resolve through the translation catalogue, not sprintf'd English</item>
-        </criteria>
-        <rule>I18N-01 is UNCONDITIONAL and explicitly names PHP-I18N-001 + translator — it is the GENUINE adoption surface for the `must` i18n rule (the cross-cutting shards 3.22/3.24/3.25/3.28 only run the injection pass for mechanical parity; their phase tokens are not rule phases).</rule>
-      </substep>
-
-      <substep n="3.21b.4" title="Compose validation commands">
-        <action>Build VALIDATE array with bare commands proving the translator foundation exists:</action>
-        <commands>
-          <cmd source="I18N-01">bin/console debug:translation en --only-missing</cmd>
-          <cmd source="I18N-01">test -f config/packages/translation.yaml</cmd>
-          <cmd source="I18N-01">test -f contexts/previo/src/Exception/TranslatableDomainException.php</cmd>
-        </commands>
-        <rule>Commands are emitted BARE (CMD-CONV): the daemon wraps them into the app container in docker mode. TranslatableDomainException presence + translator config prove the foundation; full per-string adoption is the rule's downstream concern.</rule>
-      </substep>
-
-      <substep n="3.21b.5" title="Compose context with Investigation Config">
-        <action>Build CONTEXT string with these sections:</action>
-
-        <section name="purpose">
-Translator-foundation goal (phase=cross-cutting): establish the single-locale Symfony translator (default + fallback locale = en per ADR-013) and a TranslatableDomainException base in the contexts/previo shared kernel so user-facing strings and backend errors are translatable from the start.
-This is the GENUINE adoption surface for php-symfony code-rule PHP-I18N-001 (globs {src}/**/*.php + **/templates/**/*.twig). ADR-013 defers full multi-locale i18n, but the must-rule requires the translatable boundary to exist — this goal provides it without forcing a second locale.
-Depends on the scaffold goal: {{SCAFFOLD_GOAL_ID}} — needs the bootable skeleton + contexts/previo shared kernel.
-        </section>
-
-        <section name="fan-out-hint">
-          <hint>single-task — translator config + TranslatableDomainException base + catalogue stub are tightly coupled and small.</hint>
-        </section>
-
-        <section name="investigation-config">
-          <action>Build 2 investigators:</action>
-
-          <investigator n="1" name="Translator config">
-            <type>implementation-check</type>
-            <commands>bin/console debug:translation en --only-missing &amp;&amp; test -f config/packages/translation.yaml</commands>
-            <pass>translation.yaml present with a single default/fallback locale (en); the translator service resolves the catalogue</pass>
-            <fail>Missing translation.yaml, no configured locale, or translator service unregistered</fail>
-          </investigator>
-
-          <investigator n="2" name="Translatable exception base">
-            <type>convention-audit</type>
-            <paths>contexts/previo/src/Exception/**</paths>
-            <commands>test -f contexts/previo/src/Exception/TranslatableDomainException.php</commands>
-            <pass>TranslatableDomainException base exists in the shared kernel, carrying a message key (not a sprintf'd English string)</pass>
-            <fail>No translatable exception base, or it concatenates/sprintf's user-facing English instead of carrying a message key</fail>
-          </investigator>
-
-          <rule>Exactly 2 investigators (GM-08 allows 2-4). Each has type, commands, and pass/fail criteria (GM-09). The convention-audit investigator may be MERGED/extended by [CODE-RULE-INJECTION] (substep 3.21b.6b) when the cross-cutting match returns review rules.</rule>
-        </section>
-
-        <section name="not-in-scope">
-          <value>A second locale, locale negotiation/switching, full per-string extraction across existing controllers/templates, domain/error-handling exception rewiring — the foundation establishes the translator + translatable base only; per-call-site adoption is the implementer's downstream concern under PHP-I18N-001.</value>
-        </section>
-      </substep>
-
-      <substep n="3.21b.6b" title="Inject code rules (apply [CODE-RULE-INJECTION])">
-        <action>Bind RULE_FILES = the comma-joined translator-foundation deliverable paths (contexts/previo/src/Exception/TranslatableDomainException.php + config/packages/translation.yaml + translations/). Bind RULE_PHASE = `cross-cutting` (this goal's phase token — pass it VERBATIM; do NOT remap it).</action>
-        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.21b.3); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (3.21b.4); fold `review` `validate_cmd`s into the existing convention-audit investigator (MERGE — append to its Commands; base is 2 from 3.21b.5, so the count stays legal); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.21b.5). Empty `rules` ⇒ inject nothing.</action>
-        <rule>`cross-cutting` IS a real Go rule phase: PHP-I18N-001 (phase=cross-cutting; globs {src}/**/*.php + **/templates/**/*.twig) matches the contexts/previo/src/Exception/*.php deliverable, so its `CR-PHP-I18N-001` acceptance_line injects — GENUINE enforcement, NOT mechanical parity. PRESERVE the 2 existing investigators (the convention-audit one is MERGED, never duplicated).</rule>
-      </substep>
-
-      <substep n="3.21b.7" title="Call goal-create MCP and record ID">
-        <action>Call the goal-create MCP tool with these parameters:</action>
+      <substep n="3.21b.3" title="Call goal-create MCP and record ID (roadmap skeleton)">
+        <action>Call the goal-create MCP tool with a roadmap SKELETON:</action>
         <params>
           <param name="description">Establish single-locale translator foundation + TranslatableDomainException base (PHP-I18N-001)</param>
-          <param name="acceptance">ACCEPTANCE array from substep 3.21b.3 (I18N-01) plus any CR-PHP-I18N-001 acceptance_line injected by substep 3.21b.6b</param>
-          <param name="validate">VALIDATE array from substep 3.21b.4 (3 bare commands) plus any injected validate_cmd</param>
-          <param name="context">CONTEXT string from substep 3.21b.5 (purpose + fan-out hint + not-in-scope + injected Code rules line)</param>
-          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.21b.5's 2 investigators (2-4; types from the Reference Table), as MERGED by substep 3.21b.6b.</param>
-          <param name="not_in_scope">NOT_IN_SCOPE from substep 3.21b.5</param>
-          <param name="scope">["contexts/previo/src/Exception/**", "config/packages/translation.yaml", "translations/**"] — the translator-foundation footprint (file-disjoint from domain/error-handling goals).</param>
-          <param name="depends_on">[SCAFFOLD_GOAL_ID] — the scaffold goal ID collected in substep 3.21b.1 (NEVER the domain/error-handling goals)</param>
-          <param name="max_retries">3</param>
           <param name="phase">cross-cutting</param>
+          <param name="deliverable_area">I18N_FOUNDATION_AREA (coarse, e.g. contexts/previo/src/Exception/)</param>
+          <param name="depends_on">[SCAFFOLD_GOAL_ID] — the scaffold goal ID collected in substep 3.21b.1 (NEVER the domain/error-handling goals)</param>
+          <param name="status">roadmap</param>
+          <param name="max_retries">3</param>
         </params>
         <rule>Description is 94 characters — within the 120-char limit (MaxGoalDescriptionLength).</rule>
         <rule>max_retries=3 (G-11) — a focused single-locale foundation, fixable in few cycles.</rule>
-        <rule>phase=cross-cutting on the created goal — a REAL Go rule phase, so PHP-I18N-001 genuinely injects (the whole point of this goal). It shares PHASE_ORDER rank=10 with the other cross-cutting phases (added in substep 4.2), so it orders legally.</rule>
+        <rule>phase=cross-cutting on the created goal — a REAL Go rule phase, so PHP-I18N-001 genuinely injects at dispatch (the whole point of this goal). It shares PHASE_ORDER rank=10 with the other cross-cutting phases (added in substep 4.2), so it orders legally.</rule>
+        <rule critical="true">NO validate/acceptance/scope/context/investigation_config/not_in_scope params — this is a roadmap skeleton; /tmux:elaborate authors every concrete field at dispatch (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
 
         <check condition="goal-create returns error">
           <action>Print error with full context and ABORT.</action>
         </check>
         <check condition="goal-create succeeds">
           <action>Record the returned goal ID as I18N_FOUNDATION_GOAL_ID.</action>
-          <action>Print: "Translator foundation created: goal-{{ID}} (phase=cross-cutting, depends_on=[{{SCAFFOLD_GOAL_ID}}]) with 2 investigators, single-task fan-out, max_retries=3"</action>
+          <action>Print: "Translator foundation skeleton created: goal-{{ID}} (phase=cross-cutting, status=roadmap, depends_on=[{{SCAFFOLD_GOAL_ID}}], deliverable_area={{I18N_FOUNDATION_AREA}})"</action>
           <action>Proceed to next step.</action>
         </check>
       </substep>

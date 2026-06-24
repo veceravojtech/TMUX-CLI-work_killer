@@ -4,6 +4,7 @@
       <rule critical="true">Single goal (cross-cutting infrastructure, not per-BC). phase=messenger. depends_on=ALL event listener goal IDs.</rule>
       <rule critical="true">All inputs read from docs/architecture/* files on disk — never from conversation context (G-16).</rule>
       <rule critical="true">Transport DSN is NOT hardcoded — references test-environment.md for connection details and cross-cutting.md for ADR transport choice (GM-05).</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): this shard emits a roadmap SKELETON. The concrete fields it used to author — acceptance MT-01..MT-05, validate commands, the 2 investigators, not-in-scope, deliverables — and the per-goal [CODE-RULE-INJECTION] are now authored at dispatch by /tmux:elaborate against the real tree (design §6). This shard keeps ONLY enumeration: the skip/condition gate, this goal's phase, its depends_on wiring, and its coarse deliverable_area. -->
 
       <substep n="3.24.1" title="Check async/Messenger selection from discovery output">
         <action>Read docs/architecture/cross-cutting.md from disk.</action>
@@ -29,84 +30,28 @@
         <rule>Events must exist before transport routing — Messenger transport depends on event listener goals.</rule>
       </substep>
 
-      <substep n="3.24.3" title="Compose acceptance criteria (MT-01..MT-05)">
-        <action>Build ACCEPTANCE array from MT-01 through MT-05 (docs/task-plan-spec.md:757-763):</action>
-        <criteria>
-          <item id="MT-01">messenger.yaml has transport configured per ADR choice (doctrine://default or AMQP per cross-cutting.md decision)</item>
-          <item id="MT-02">Failed message transport configured — `failed` transport present in messenger.yaml</item>
-          <item id="MT-03">Retry strategy configured with reasonable defaults (3 retries, 1000ms delay, 2x multiplier per context-mapping.md patterns)</item>
-          <item id="MT-04">`messenger:consume` command works — consumer starts and exits cleanly with --limit=1 --time-limit=5</item>
-          <item id="MT-05">Routing maps async messages to correct transport — Published Language events from contexts/previo/src/Event/ routed to async transport</item>
-        </criteria>
-        <rule>All 5 criteria must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
+      <substep n="3.24.3" title="Derive the coarse deliverable_area">
+        <action>Set MESSENGER_AREA = the cross-cutting Messenger transport/config deliverable directory in the resolved topology — config/packages/ (deployable-app config layer where messenger.yaml lives, not per-BC), from the resolved conventions/topology. This is a COARSE path (the depinfer produce/consume seed + the elaborator's tree-read anchor), NOT a glob and NOT a per-file path.</action>
+        <rule>Do NOT resolve templates, read architecture transport choices, or author any acceptance/validate/investigator/not-in-scope here — those are Tier-2 (/tmux:elaborate authors them at dispatch). The roadmap skeleton commits only to the coarse deliverable_area.</rule>
       </substep>
 
-      <substep n="3.24.4" title="Compose context with deliverables and Investigation Config">
-        <action>Build CONTEXT string with these sections:</action>
-
-        <section name="purpose">
-Messenger transport configuration for async message handling.
-Transport type decision from docs/architecture/cross-cutting.md (doctrine://default vs AMQP).
-Routing patterns from .tmux-cli/templates/php-symfony/context-mapping.md (Messenger Transport Configuration section).
-Connection details from docs/architecture/test-environment.md — never hardcode DSN values.
-        </section>
-
-        <section name="deliverables">
-          <file>config/packages/messenger.yaml — transport, routing, retry strategy, failed transport</file>
-          <file>docs/architecture/cross-cutting.md — updated with transport config decisions (if needed)</file>
-        </section>
-
-        <section name="investigation-config">
-          <action>Build exactly 2 investigators (GM-08 minimum):</action>
-
-          <investigator n="1" name="Config check">
-            <type>implementation-check</type>
-            <files>config/packages/messenger.yaml</files>
-            <commands>bin/console debug:messenger</commands>
-            <pass>Transport registered, routing configured, retry strategy present, failed transport defined</pass>
-            <fail>Missing config, invalid routing, or unregistered transport</fail>
-          </investigator>
-
-          <investigator n="2" name="Consumer test">
-            <type>test-execution</type>
-            <commands>bin/console messenger:consume async --limit=1 --time-limit=5</commands>
-            <pass>Consumer starts and exits cleanly (exit 0)</pass>
-            <fail>Consumer error, transport misconfigured, or non-zero exit</fail>
-          </investigator>
-
-          <rule>2 investigators — minimum required by GM-08. Each has type, files/commands, and pass/fail criteria (GM-09).</rule>
-        </section>
-
-        <section name="not-in-scope">
-Event handler implementations, domain event definitions, ACL adapters, infrastructure dispatch logic, production AMQP broker setup — all handled by domain, infrastructure, or event listener goals.
-        </section>
-      </substep>
-
-      <substep n="3.24.4b" title="Inject code rules (apply [CODE-RULE-INJECTION])">
-        <action>Bind RULE_FILES = the comma-joined messenger deliverable paths (config/packages/messenger.yaml and any async transport/handler wiring this goal owns). Bind RULE_PHASE = `messenger` (this goal's phase token — pass it VERBATIM; do NOT remap it).</action>
-        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.24.3); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array; fold `review` `validate_cmd`s into ONE convention-audit investigator (ADD; base is 2 from 3.24.4, so a slot is free — no drop); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.24.4). Empty `rules` ⇒ inject nothing.</action>
-        <rule>The phase token `messenger` is NOT in the Go `allowedPhases` enum — `rules match` returns an empty set, so this goal UNDER-injects (fail-safe: under-enforce, never wrong-enforce — mechanical parity, exactly as 3.21.7b documents for `error_handling`). Do NOT remap the phase token to a real phase to force a match. PRESERVE the 2 existing investigators.</rule>
-      </substep>
-
-      <substep n="3.24.5" title="Call goal-create MCP and record ID">
-        <action>Call the goal-create MCP tool with these parameters:</action>
+      <substep n="3.24.4" title="Call goal-create MCP and record ID (roadmap skeleton)">
+        <action>Call the goal-create MCP tool with a roadmap SKELETON:</action>
         <params>
           <param name="description">Messenger: configure async transport, retry strategy, and consumer worker</param>
-          <param name="acceptance">ACCEPTANCE array from substep 3.24.3 (exactly 5 items, MT-01..MT-05)</param>
-          <param name="validate">["bin/console messenger:consume async --limit=1 --time-limit=5", "bin/console debug:messenger"]</param>
-          <param name="context">CONTEXT string from substep 3.24.4 (purpose + deliverables + not-in-scope)</param>
-          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.24.4's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
-          <param name="not_in_scope">Event handler implementations, domain event definitions, ACL adapters, infrastructure dispatch logic, production AMQP broker setup</param>
-          <param name="depends_on">MESSENGER_DEPENDS_ON — ALL event listener goal IDs from substep 3.24.2</param>
-          <param name="max_retries">3</param>
           <param name="phase">messenger</param>
+          <param name="deliverable_area">MESSENGER_AREA (coarse, e.g. config/packages/)</param>
+          <param name="depends_on">MESSENGER_DEPENDS_ON — ALL event listener goal IDs from substep 3.24.2</param>
+          <param name="status">roadmap</param>
+          <param name="max_retries">3</param>
         </params>
         <rule>Description is 66 characters — well within the 120-char limit (MaxGoalDescriptionLength).</rule>
         <rule>max_retries=3 — single cross-cutting goal with focused scope (G-11).</rule>
-        <rule>validate uses --limit=1 --time-limit=5 to ensure consumer exits cleanly in CI rather than blocking indefinitely.</rule>
+        <rule>phase=messenger on the created goal.</rule>
+        <rule critical="true">NO validate/acceptance/scope/context/investigation_config/not_in_scope params — this is a roadmap skeleton; /tmux:elaborate authors every concrete field at dispatch (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
 
         <action>After successful goal-create, store returned goal ID as MESSENGER_GOAL_ID.</action>
-        <action>Print summary: "Messenger transport goal created: 1 goal (phase=messenger, depends_on=[EVENT_LISTENER_GOAL_IDS]), ID: MESSENGER_GOAL_ID"</action>
+        <action>Print summary: "Messenger transport skeleton created: 1 goal (phase=messenger, status=roadmap, depends_on=[EVENT_LISTENER_GOAL_IDS], deliverable_area={{MESSENGER_AREA}}), ID: MESSENGER_GOAL_ID"</action>
 
         <check condition="goal-create returns error">
           <action>Print error with full context and ABORT.</action>

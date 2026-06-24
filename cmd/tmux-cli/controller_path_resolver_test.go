@@ -41,24 +41,31 @@ func TestTaskPlanGenerate_NoDivergentAuthControllerPath(t *testing.T) {
 		"the legacy hardcoded auth controller path (no /Controller/ segment) must be gone")
 }
 
+// Two-tier (director redesign §5): the auth shard is now a roadmap skeleton, but
+// it still derives its coarse deliverable_area through the shared resolver, so the
+// B1 single-source invariant survives at Tier-1 (the precise per-file controller
+// deliverable is authored at dispatch by /tmux:elaborate). Scope to the whole 3.19
+// auth step (3.19 → 3.19a).
 func TestTaskPlanGenerate_AuthSectionUsesResolver(t *testing.T) {
 	content := readGenerateBundle(t)
-	block := sliceBetween(t, content, `n="3.19.4"`, `n="3.19.5"`)
+	block := sliceBetween(t, content, `n="3.19"`, `n="3.19a"`)
 	assert.Contains(t, block, "RESOLVE_CONTROLLER_PATH",
-		"the auth controller deliverable/investigator (3.19.4) must reference RESOLVE_CONTROLLER_PATH, not a literal path")
+		"the auth shard must derive its controller deliverable_area via RESOLVE_CONTROLLER_PATH, not a literal path")
 	assert.NotContains(t, block, "Infrastructure/Http/{AuthAction}Controller.php",
 		"the auth block must not restate the legacy literal controller path")
 }
 
+// Two-tier: the action shard is a roadmap skeleton; it still routes its coarse
+// controller deliverable_area through the shared resolver. The precise 5-file
+// {controller_path} deliverable is authored at dispatch by /tmux:elaborate. Scope
+// to the whole 3.18 action step (3.18 → 3.19).
 func TestTaskPlanGenerate_ActionSectionUsesResolver(t *testing.T) {
 	content := readGenerateBundle(t)
-	block := sliceBetween(t, content, `n="3.18.5"`, `n="3.18.6"`)
+	block := sliceBetween(t, content, `n="3.18"`, `n="3.19"`)
 	assert.Contains(t, block, "RESOLVE_CONTROLLER_PATH",
-		"the action context block (3.18.5) must bind the controller path via RESOLVE_CONTROLLER_PATH")
-	assert.Contains(t, block, "{controller_path}",
-		"the action deliverable n=3 and investigator file list must use the bound {controller_path}")
-	assert.NotContains(t, block, "{handler_path}",
-		"the action block must no longer use the bare Fan-Out {handler_path} for the controller")
+		"the action shard must bind the controller deliverable_area via RESOLVE_CONTROLLER_PATH")
+	assert.NotContains(t, block, "Infrastructure/Http/{AuthAction}Controller.php",
+		"the action block must not restate the legacy literal controller path")
 }
 
 func TestTaskPlanGenerate_CanonicalShapeIsControllerSubdir(t *testing.T) {

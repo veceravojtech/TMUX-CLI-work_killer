@@ -77,6 +77,12 @@ type tvGoal struct {
 
 	Phase     string   `yaml:"phase,omitempty"`
 	DependsOn []string `yaml:"depends_on,omitempty"`
+	// DeliverableArea mirrors taskvisor.Goal.DeliverableArea (same yaml key) — the
+	// coarse roadmap-tier deliverable footprint. DUAL-STRUCT (critical): without
+	// this mirror every MCP load-resave (GoalCreate, GoalEdit, GoalAddPrerequisite)
+	// silently erases a skeleton goal's deliverable_area, blinding depinfer and the
+	// Tier-2 elaborator's live-tree seed. Guarded by TestGoalTvGoalYamlTagParity.
+	DeliverableArea string `yaml:"deliverable_area,omitempty"`
 	// Priority mirrors taskvisor.Goal.Priority (same yaml key, same int type) — the
 	// dispatch-order bias RunnableCandidates sorts on (descending, stable file-order
 	// tiebreak). DUAL-STRUCT (critical): must stay in lock-step with taskvisor.Goal
@@ -188,15 +194,20 @@ func (s *Server) TaskvisorStart() (*TaskvisorStartOutput, error) {
 		return nil, fmt.Errorf("%w: goals.yaml not found", ErrInvalidInput)
 	}
 
-	hasPending := false
+	// A goals.yaml is startable when it has work the daemon can advance: a normal
+	// GoalPending goal, OR a GoalRoadmap skeleton (Tier-2 elaboration is real work —
+	// the daemon elaborates it, flipping it to pending). A roadmap-only plan (every
+	// goal a skeleton, as the director's Stage-1 generator emits) must therefore
+	// start, so this gate counts both statuses.
+	hasStartable := false
 	for _, g := range gf.Goals {
-		if g.Status == "pending" {
-			hasPending = true
+		if g.Status == taskvisor.GoalPending || g.Status == taskvisor.GoalRoadmap {
+			hasStartable = true
 			break
 		}
 	}
-	if !hasPending {
-		return nil, fmt.Errorf("%w: no pending goals in goals.yaml", ErrInvalidInput)
+	if !hasStartable {
+		return nil, fmt.Errorf("%w: no pending or roadmap goals in goals.yaml", ErrInvalidInput)
 	}
 
 	signalPath := filepath.Join(s.workingDir, ".tmux-cli", "taskvisor-start")
@@ -332,6 +343,103 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, c
 	}
 
 	return &GoalCreateOutput{ID: goalID}, nil
+}
+
+// GoalCreateRoadmap creates a Tier-1 roadmap SKELETON (design §5): a goal carrying
+// only description/phase/depends_on/deliverable_area, with status GoalRoadmap and
+// NO validate/acceptance/scope — Tier-2 elaboration authors those at dispatch. It
+// is a thin sibling of GoalCreate kept SEPARATE (rather than overloading the long
+// positional GoalCreate signature) so the dozens of existing GoalCreate call sites
+// stay untouched. The roadmap generator and the director's self-heal both reach it
+// via the goal-create tool's status=roadmap branch (GoalCreateHandler). Phase is
+// still enum-checked here for a typed ErrInvalidInput; the authoritative authoring
+// guard (incl. the roadmap "no validate required" rule) lives in taskvisor.CreateGoal.
+func (s *Server) GoalCreateRoadmap(description, phase string, dependsOn []string, deliverableArea string, priority int) (*GoalCreateOutput, error) {
+	if phase != "" && !allowedPhases[phase] {
+		names := make([]string, 0, len(allowedPhases))
+		for k := range allowedPhases {
+			names = append(names, k)
+		}
+		return nil, fmt.Errorf("%w: invalid phase %q; allowed: %s", ErrInvalidInput, phase, strings.Join(names, ","))
+	}
+
+	goalID, _, err := taskvisor.CreateGoal(s.workingDir, taskvisor.GoalSpec{
+		Description:     description,
+		Phase:           phase,
+		DependsOn:       dependsOn,
+		DeliverableArea: deliverableArea,
+		Priority:        priority,
+		Status:          taskvisor.GoalRoadmap,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err)
+	}
+	return &GoalCreateOutput{ID: goalID}, nil
+}
+
+// editableGoalStatuses is the MCP-layer mirror of taskvisor's editable-status
+// set: the thin enum check below rejects a daemon-owned status with a typed
+// ErrInvalidInput BEFORE delegating, so the wire error is consistent with the
+// rest of the MCP surface. The authoritative guard still lives in
+// taskvisor.EditGoal (protecting the CLI surface too).
+var editableGoalStatuses = map[string]bool{
+	taskvisor.GoalRoadmap: true,
+	taskvisor.GoalPending: true,
+	taskvisor.GoalBlocked: true,
+}
+
+// GoalEdit edits an EXISTING goal's authoring fields in goals.yaml — the Tier-2
+// elaboration write-back primitive (design §6). MCP-specific enum validation
+// (status guard, phase) runs here for a typed ErrInvalidInput; the shared
+// authoring core taskvisor.EditGoal owns the load-under-lock → apply → save path
+// (full taskvisor.Goal, so the dual-struct durable-field invariant holds) and the
+// authoritative status guard, converged with the `taskvisor goal edit` CLI.
+//
+// Each *pointer argument is the tri-state the elaborator needs: nil leaves the
+// field untouched, a non-nil value sets it (an empty slice/string clears it).
+func (s *Server) GoalEdit(goalID string, acceptance, validate, scope *[]string, status, deliverableArea, phase *string) (*GoalEditOutput, error) {
+	if goalID == "" {
+		return nil, fmt.Errorf("%w: goal_id is required", ErrInvalidInput)
+	}
+	if status != nil && !editableGoalStatuses[*status] {
+		return nil, fmt.Errorf("%w: status %q is not editable; goal-edit may only set %s/%s/%s (running/done/failed are daemon-owned)",
+			ErrInvalidInput, *status, taskvisor.GoalRoadmap, taskvisor.GoalPending, taskvisor.GoalBlocked)
+	}
+	if phase != nil && *phase != "" && !allowedPhases[*phase] {
+		names := make([]string, 0, len(allowedPhases))
+		for k := range allowedPhases {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("%w: invalid phase %q; allowed: %s", ErrInvalidInput, *phase, strings.Join(names, ","))
+	}
+
+	if err := taskvisor.EditGoal(s.workingDir, goalID, taskvisor.GoalEdit{
+		Acceptance:      acceptance,
+		Validate:        validate,
+		Scope:           scope,
+		Status:          status,
+		DeliverableArea: deliverableArea,
+		Phase:           phase,
+	}); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err)
+	}
+
+	// Re-read the goal so the caller (and operators) see the persisted result.
+	gf, err := tvLoadGoals(s.workingDir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to load goals.yaml: %w", ErrInvalidInput, err)
+	}
+	out := &GoalEditOutput{ID: goalID, Edited: true}
+	if gf != nil {
+		for i := range gf.Goals {
+			if gf.Goals[i].ID == goalID {
+				out.Status = gf.Goals[i].Status
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // scopeTopLevelDirs returns the sorted distinct first path segments of the

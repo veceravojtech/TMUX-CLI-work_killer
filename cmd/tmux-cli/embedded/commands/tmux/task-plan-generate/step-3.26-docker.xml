@@ -3,6 +3,7 @@
       <rule critical="true">DECOUPLED triggers, post-front-load: "run in a container for development" is handled by goal-002 task-R (early). This step is ONLY "production deployment" (Docker/deployment ADR). A project with RUN_TARGET=docker but no deployment ADR gets its dev runtime from goal-002 and SKIPS this step.</rule>
       <rule critical="true">All inputs read from docs/architecture/* files on disk (G-16), never from conversation context.</rule>
       <rule critical="true">depends_on MUST include ALL previous goal IDs from goals.yaml — Docker goal depends on the entire project (G-03).</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): this shard emits a roadmap SKELETON. The concrete fields it used to author — acceptance DK-01..DK-05, validate commands, the 3 investigators, not-in-scope, port/base-image/service architecture reads — and the per-goal [CODE-RULE-INJECTION] are now authored at dispatch by /tmux:elaborate against the real tree (design §6). This shard keeps ONLY enumeration: the skip/condition gate, this goal's phase, its depends_on wiring, and its coarse deliverable_area. -->
 
       <substep n="3.26.1" title="Determine compose trigger (RUN_TARGET=docker OR deployment ADR)">
         <action>Read docs/architecture/test-environment.md from disk. Set RUN_TARGET: test-environment.md "Run Target" == docker → set RUN_TARGET=docker, else RUN_TARGET=local. (IDENTICAL rule to substep 1.2/step 0b — do not drift. If test-environment.md is absent, treat RUN_TARGET=local.)</action>
@@ -25,82 +26,20 @@
         <rule>This MUST be a full scan of goals.yaml — not filtered by phase. Docker depends on ALL prior goals because Dockerfile/compose must account for every service, BC, and infrastructure component.</rule>
       </substep>
 
-      <substep n="3.26.3" title="Read architecture inputs">
-        <action condition="ADR_PRESENT">Read the matching ADR file(s) for specific Docker decisions: base image selection, compose service definitions, port mappings, volume mounts, production extras.</action>
-        <action>Read docs/architecture/test-environment.md for service list and connection strings (GM-05 — never hardcode credentials).</action>
-        <action>Parse the "Published Ports" block in test-environment.md (the per-service table: Service | Host Port | Container Port | Purpose, persisted by discovery / D1a) into PUBLISHED_PORTS — a per-service host:container mapping keyed by service name.</action>
-        <action>Set APP_PORT = the host port of the app/web service in PUBLISHED_PORTS. App/web service heuristic: the service whose container port matches the framework's HTTP port; when ambiguous, the service named app/web/php in cross-cutting.md (document the chosen service in goal CONTEXT so the worker picks deterministically).</action>
-        <action>FALLBACK when the Published Ports block is ABSENT: set APP_PORT = the port from the base URL in test-environment.md, and record a context note that ports were defaulted from the base URL (surface as a RISK in goal CONTEXT).</action>
-        <action>Set BASE_IMAGE = from DOCKER_ADR_SUMMARY when ADR_PRESENT, else the runtime/framework default recorded in test-environment.md/cross-cutting.md (NEVER hardcoded — GM-05).</action>
-        <action>Read docs/architecture/cross-cutting.md for infrastructure decisions (Redis, RabbitMQ, database, etc.) that must appear as services in docker-compose.yaml.</action>
-        <action>Store INFRA_SERVICES = list of infrastructure services discovered (DB, Redis, RabbitMQ, etc.).</action>
+      <substep n="3.26.3" title="Derive the coarse deliverable_area">
+        <action>Set DOCKER_AREA = the repo-root deployment-artifacts directory in the resolved topology — `./` (repo-relative root, where Dockerfile, docker-compose.yaml, and .env.example live; the docker goal is genuinely repo-wide). This is a COARSE path (the depinfer produce/consume seed + the elaborator's tree-read anchor), NOT a glob and NOT a per-file path.</action>
+        <rule>Do NOT resolve templates, read ADRs/test-environment.md for base image/ports/services, or author any acceptance/validate/investigator/not-in-scope here — those are Tier-2 (/tmux:elaborate authors them at dispatch). The roadmap skeleton commits only to the coarse deliverable_area.</rule>
       </substep>
 
-      <substep n="3.26.4" title="Compose acceptance criteria (DK-01..DK-05)">
-        <action>Build ACCEPTANCE array from DK-01..DK-05:</action>
-        <criteria>
-          <c id="DK-01">Dockerfile builds successfully — docker build . exit code 0</c>
-          <c id="DK-02">docker-compose.yaml includes each service (app + DB, Redis, etc.) with its host:container port mapping from the Published Ports block (PUBLISHED_PORTS) — read compose file, every service and mapping match</c>
-          <c id="DK-03">docker compose up starts all services — services running after up</c>
-          <c id="DK-04">Application accessible at the published host port APP_PORT (from PUBLISHED_PORTS) — curl localhost:$APP_PORT, response received</c>
-          <c id="DK-05">.env.example lists all required environment variables — compare with actual .env needs</c>
-        </criteria>
-      </substep>
-
-      <substep n="3.26.5" title="Compose validation commands">
-        <action>Build VALIDATE array:</action>
-        <validate>
-          <v>docker build .</v>
-          <v>docker compose config --quiet</v>
-          <v>docker compose up -d --wait &amp;&amp; curl -sf http://localhost:$APP_PORT/health</v>
-        </validate>
-        <rule>$APP_PORT is the host port of the app/web service from the Published Ports block (PUBLISHED_PORTS) in docs/architecture/test-environment.md — never hardcoded (GM-05); falls back to the base-URL port when the block is absent (substep 3.26.3).</rule>
-      </substep>
-
-      <substep n="3.26.6" title="Compose context with Investigation Config">
-        <action>Build CONTEXT string with three sections: Purpose, Deliverables, Investigation Config.</action>
-        <action>Purpose: "Create Docker deployment artifacts for the project. Dockerfile for application image, docker-compose.yaml for local development with all infrastructure services ({{INFRA_SERVICES}}), and .env.example documenting all required environment variables."</action>
-        <action>Deliverables: Dockerfile (multi-stage build for production), docker-compose.yaml (app + all infrastructure services), .env.example (all required env vars with placeholder values).</action>
-
-        <section name="investigation-config">
-          <action>Build 3 investigators:</action>
-
-          <investigator n="1" name="Docker build check">
-            <type>environment-check</type>
-            <commands>docker build -t app-test . &amp;&amp; echo "BUILD_OK"</commands>
-            <pass>Exit 0, BUILD_OK printed — Dockerfile builds successfully</pass>
-            <fail>Build fails — missing dependencies, invalid instructions, or copy errors</fail>
-          </investigator>
-
-          <investigator n="2" name="Compose services check">
-            <type>file-check</type>
-            <commands>docker compose config --services</commands>
-            <pass>All expected services listed (app + infrastructure services from ADRs)</pass>
-            <fail>Missing services or invalid compose configuration</fail>
-          </investigator>
-
-          <investigator n="3" name="Application accessibility check">
-            <type>integration-check</type>
-            <commands>docker compose up -d --wait &amp;&amp; curl -sf http://localhost:$APP_PORT/health &amp;&amp; docker compose down</commands>
-            <pass>Health endpoint responds — application accessible at the published host port APP_PORT</pass>
-            <fail>Application not reachable, health check fails, or services crash on startup</fail>
-          </investigator>
-
-          <rule>3 investigators for Docker goal (GM-08 minimum is 2). Each has type, commands, pass/fail criteria (GM-09).</rule>
-        </section>
-      </substep>
-
-      <substep n="3.26.7" title="Call goal-create MCP">
-        <action>Call goal-create MCP tool:</action>
+      <substep n="3.26.4" title="Call goal-create MCP (roadmap skeleton)">
+        <action>Call goal-create MCP tool with a roadmap SKELETON:</action>
 
         <params>
           <param name="description">Create Dockerfile, docker-compose.yaml, and .env.example for deployment</param>
-          <param name="acceptance">ACCEPTANCE array from substep 3.26.4 (DK-01..DK-05 — 5 items)</param>
-          <param name="validate">VALIDATE array from substep 3.26.5 (3 commands)</param>
-          <param name="context">CONTEXT string from substep 3.26.6 (purpose + deliverables)</param>
-          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.26.6's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
-          <param name="not_in_scope">Application code implementation (built by domain/infra/action goals), CI/CD pipeline configuration, production deployment orchestration (Kubernetes, Swarm), cloud provider setup, SSL/TLS configuration.</param>
+          <param name="phase">docker</param>
+          <param name="deliverable_area">DOCKER_AREA (coarse, e.g. ./ — repo-root deployment artifacts)</param>
           <param name="depends_on">ALL_PREV_GOAL_IDS — ALL goal IDs collected in substep 3.26.2</param>
+          <param name="status">roadmap</param>
           <param name="max_retries">3</param>
         </params>
 
@@ -110,7 +49,7 @@
           <action>Print error with full context and ABORT.</action>
         </check>
         <check condition="goal-create succeeds">
-          <action>Print: "Docker/deployment goal created: {{DOCKER_GOAL_ID}} (phase=docker, depends_on={{count(ALL_PREV_GOAL_IDS)}} goals [all phases]) with 3 investigators, single-task fan-out, max_retries=3"</action>
+          <action>Print: "Docker/deployment skeleton created: {{DOCKER_GOAL_ID}} (phase=docker, status=roadmap, depends_on={{count(ALL_PREV_GOAL_IDS)}} goals [all phases], deliverable_area={{DOCKER_AREA}}), max_retries=3"</action>
           <action>Proceed to next step.</action>
         </check>
 
@@ -118,5 +57,6 @@
         <rule>depends_on MUST be the FULL ALL_PREV_GOAL_IDS list — never subset or phase-filtered (G-03).</rule>
         <rule>max_retries=3 per G-11.</rule>
         <rule>phase=docker on the created goal.</rule>
+        <rule critical="true">NO validate/acceptance/scope/context/investigation_config/not_in_scope params — this is a roadmap skeleton; /tmux:elaborate authors every concrete field at dispatch (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
       </substep>
     </step>

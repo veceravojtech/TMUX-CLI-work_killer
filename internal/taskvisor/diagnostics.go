@@ -37,6 +37,8 @@ func phaseName(p phase) string {
 		return "supervising"
 	case phaseValidating:
 		return "validating"
+	case phaseElaborating:
+		return "elaborating"
 	default:
 		return "idle"
 	}

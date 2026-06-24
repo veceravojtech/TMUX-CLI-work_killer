@@ -70,6 +70,46 @@ func runTaskvisorGoalAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// runTaskvisorGoalEdit edits an existing goal's authoring fields via the shared
+// taskvisor.EditGoal core (converged with the goal-edit MCP tool). Each flag maps
+// to a tri-state GoalEdit pointer: a flag the user did NOT pass stays nil (leave
+// untouched), a flag they DID pass is applied (an empty value clears it). This is
+// what lets a Tier-2 elaboration write-back set only the fields it authored.
+func runTaskvisorGoalEdit(cmd *cobra.Command, args []string) error {
+	cwd, err := taskvisorProjectRoot()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+
+	goalID := args[0]
+	edit := taskvisor.GoalEdit{}
+	if cmd.Flags().Changed("acceptance") {
+		edit.Acceptance = &goalEditAcceptance
+	}
+	if cmd.Flags().Changed("validate") {
+		edit.Validate = &goalEditValidate
+	}
+	if cmd.Flags().Changed("scope") {
+		edit.Scope = &goalEditScope
+	}
+	if cmd.Flags().Changed("status") {
+		edit.Status = &goalEditStatus
+	}
+	if cmd.Flags().Changed("deliverable-area") {
+		edit.DeliverableArea = &goalEditDeliverableArea
+	}
+	if cmd.Flags().Changed("phase") {
+		edit.Phase = &goalEditPhase
+	}
+
+	if err := taskvisor.EditGoal(cwd, goalID, edit); err != nil {
+		return err
+	}
+
+	fmt.Printf("Goal edited: %s\n", goalID)
+	return nil
+}
+
 func runTaskvisorGoalList(cmd *cobra.Command, args []string) error {
 	cwd, err := taskvisorProjectRoot()
 	if err != nil {

@@ -2,41 +2,14 @@
       <rule critical="true">Per-BC domain goals MUST exist before this step runs. Each application goal depends_on its own BC's domain goal (G-04).</rule>
       <rule critical="true">One goal per BC, phase=application. Never batch multiple BCs into one goal.</rule>
       <rule critical="true">All inputs are read from docs/architecture/* files and templates on disk — never from conversation context (G-16).</rule>
-      <rule critical="true">description max 120 chars — detail belongs in acceptance/validate arrays.</rule>
+      <rule critical="true">description max 120 chars — detail belongs in the concrete fields /tmux:elaborate authors, never in the skeleton description.</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): this shard emits one roadmap SKELETON per BC. The concrete fields it used to author — PA-01..PA-12 acceptance, the validate commands, the 3 investigators, deliverables list, fan-out hints, not-in-scope, scope globs, goal.md body — and the per-goal [CODE-RULE-INJECTION] are now authored at dispatch by /tmux:elaborate against the real tree (design §6). This shard keeps ONLY enumeration: one goal per BC, each goal's phase, its depends_on (own BC's domain goal), and its coarse deliverable_area. -->
 
-      <substep n="3.15.1" title="Resolve service-contracts template">
-        <action>Attempt to read the language-specific overlay template first, then fall back to base:</action>
-        <lookup>
-          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/service-contracts.md" label="overlay"/>
-          <fallback path=".tmux-cli/templates/_base/service-contracts.md" label="base"/>
-        </lookup>
-        <action>Store the resolved template content as SERVICE_CONTRACTS_TEMPLATE. Record which tier was used.</action>
-        <rule>Handler injection patterns and read model interface conventions MUST come from the resolved template, not hardcoded (G-16).</rule>
+      <substep n="3.15.1" title="Resolve BC list">
+        <action>Reuse BC_LIST from Step 0 (the level-3 headings under "## Bounded Context Inventory" in docs/architecture/bounded-contexts.md). If unavailable, re-read it from disk (G-16). No service-contracts template resolution or use-case/handler extraction is needed at roadmap time — those fed concrete fields the elaborator now authors.</action>
       </substep>
 
-      <substep n="3.15.2" title="Read architecture inputs">
-        <action>Read the following files and extract structured data for the application layer loop:</action>
-        <reads>
-          <read file="docs/architecture/bounded-contexts.md">
-            <extract what="BC_LIST">All level-3 headings under "## Bounded Context Inventory" — the BC names.</extract>
-            <extract what="AGGREGATE_MAP">For each BC, the comma-separated aggregate names from "- **Aggregates:** " field.</extract>
-          </read>
-          <read file="docs/architecture/api-endpoints.md">
-            <extract what="USE_CASE_MAP">For each BC, partition endpoints into:
-              - COMMANDS: POST/PUT/PATCH/DELETE methods → command handlers (mutations)
-              - QUERIES: GET methods → query handlers (reads)
-              Store as USE_CASE_MAP[bc_name] = { commands: [...], queries: [...] }</extract>
-            <extract what="LIST_ACTIONS">GET endpoints with collection paths (no trailing ID segment) or descriptions containing "list"/"search"/"index". Tag each with BC name for read model interface detection.</extract>
-          </read>
-          <read file="docs/architecture/domain-model.md">
-            <extract what="AGGREGATE_INTERFACES">For each BC and aggregate, extract the repository interface name pattern: {Aggregate}RepositoryInterface. Also check "Read model interface (query):" fields for read model interface names.</extract>
-          </read>
-        </reads>
-        <action>For each BC, compute HANDLER_COUNT = len(commands) + len(queries).</action>
-        <action>For each BC with LIST_ACTIONS, note that ReadModelInterface + DTO + Criteria files are needed.</action>
-      </substep>
-
-      <substep n="3.15.3" title="Determine domain goal IDs for depends_on">
+      <substep n="3.15.2" title="Determine domain goal IDs for depends_on">
         <action>Read goals.yaml from disk. Filter all goal entries where phase=domain. Map each domain goal to its BC name (from the goal description or context).</action>
         <action>For each BC in BC_LIST, find its corresponding domain goal ID. Store as APP_DEPENDS_ON[bc_name] = domain_goal_id.</action>
         <check condition="any BC in BC_LIST has no matching domain goal">
@@ -46,178 +19,40 @@
         <rule>Domain goal IDs MUST be dynamically read from goals.yaml, never hardcoded or computed from position.</rule>
       </substep>
 
-      <substep n="3.15.4" title="Loop: compose and create application goals per BC">
-        <action>For each BC in BC_LIST, execute substeps 3.15.4a through 3.15.4f:</action>
+      <substep n="3.15.3" title="Loop: emit application goal skeleton per BC">
+        <action>For each BC in BC_LIST:</action>
 
-        <substep n="3.15.4a" title="Compose acceptance criteria (PA-01..PA-12)">
-          <action>Build ACCEPTANCE array with all 12 application layer criteria from docs/task-plan-spec.md:564-577, parameterized with BC name and handler count:</action>
-          <criteria>
-            <item id="PA-01">Each use case from api-endpoints.md has exactly one handler class ({{HANDLER_COUNT}} handlers for {{BC_NAME}})</item>
-            <item id="PA-02">Handlers inject repository interfaces (ports), not implementations — constructor params use {{Aggregate}}RepositoryInterface type hints</item>
-            <item id="PA-03">Zero imports from the Bundle (infrastructure) namespace in contexts/{{BC_NAME}}/src/Application/ files</item>
-            <item id="PA-04">Zero imports from HTTP/Controller namespace in contexts/{{BC_NAME}}/src/Application/ files</item>
-            <item id="PA-05">Command DTOs have no business logic — only public properties or constructor, no methods with domain operations</item>
-            <item id="PA-06">Command handlers __invoke() returns void or scalar ID type</item>
-            <item id="PA-07">Query handlers __invoke() returns DTO objects, never entities or aggregate roots</item>
-            <item id="PA-08">Unit tests mock repository/read-model interfaces, not Doctrine implementations</item>
-            <item id="PA-09">Unit tests cover: happy path, validation failure, domain exception propagation per handler</item>
-            <item id="PA-10">vendor/bin/phpunit --filter={{BC_NAME}}\\Application passes (exit 0, all green)</item>
-            <item id="PA-11">vendor/bin/phpstan analyse contexts/{{BC_NAME}}/src/Application/ --level=9 passes (exit 0, zero errors)</item>
-            <item id="PA-12">vendor/bin/deptrac analyse --filter={{BC_NAME}} passes — Application depends only on Domain + shared kernel (contexts/previo)</item>
-          </criteria>
-          <rule>All 12 criteria must be present as individual strings in the acceptance array — no omissions, no merging.</rule>
-        </substep>
+        <per-bc>
+          <action>Set APP_AREA = contexts/{{BC_NAME}}/src/Application/ — the Application layer directory for this BC in the resolved monorepo topology. COARSE deliverable path (depinfer seed + elaborator tree-read anchor), NOT a glob, NOT a per-file path.</action>
 
-        <substep n="3.15.4b" title="Compose validation commands">
-          <action>Build VALIDATE array with 3 CLI commands scoped to this BC's Application namespace:</action>
-          <commands>
-            <cmd source="PA-10">vendor/bin/phpunit --filter={{BC_NAME}}\\Application</cmd>
-            <cmd source="PA-11">vendor/bin/phpstan analyse contexts/{{BC_NAME}}/src/Application/ --level=9</cmd>
-            <cmd source="PA-12">vendor/bin/deptrac analyse --filter={{BC_NAME}}</cmd>
-          </commands>
-          <rule>Validation commands are BC-scoped — not project-wide. Each command verifies one of PA-10, PA-11, PA-12.</rule>
-        </substep>
-
-        <substep n="3.15.4c" title="Compose context with Investigation Config and fan-out hints">
-          <action>Build CONTEXT string with these sections:</action>
-
-          <section name="purpose">
-Application layer for {{BC_NAME}}: command/query handlers orchestrate domain operations via ports.
-Use cases from docs/architecture/api-endpoints.md ({{BC_NAME}} section).
-Handler injection patterns from {{SERVICE_CONTRACTS_TEMPLATE_TIER}} template (service-contracts.md).
-Domain interfaces (ports) defined in own BC's domain goal deliverables.
-Layer shape — command/query handler contract, CQRS-lite read/write split, repository-port dependency inversion, and "no domain-event dispatch in this layer" — is catalogue-owned: read code-rules php-symfony/ddd-conventions.md §Application; enforced by PHP-ARCH-002/003/004. Do not restate it inline.
-          </section>
-
-          <section name="deliverables">
-            <action>List concrete file paths per handler based on USE_CASE_MAP for this BC:</action>
-            <template>
-For each command use case:
-- contexts/{{BC_NAME}}/src/Application/Command/{{UseCaseName}}/{{UseCaseName}}Command.php (DTO)
-- contexts/{{BC_NAME}}/src/Application/Command/{{UseCaseName}}/{{UseCaseName}}Handler.php
-- contexts/{{BC_NAME}}/tests/Unit/Application/Command/{{UseCaseName}}/{{UseCaseName}}HandlerTest.php
-
-For each query use case:
-- contexts/{{BC_NAME}}/src/Application/Query/{{UseCaseName}}/{{UseCaseName}}Query.php (DTO)
-- contexts/{{BC_NAME}}/src/Application/Query/{{UseCaseName}}/{{UseCaseName}}Handler.php
-- contexts/{{BC_NAME}}/tests/Unit/Application/Query/{{UseCaseName}}/{{UseCaseName}}HandlerTest.php
-
-If BC has list/search use cases:
-- contexts/{{BC_NAME}}/src/Application/ReadModel/{{ReadModel}}ReadModelInterface.php
-- contexts/{{BC_NAME}}/src/Application/ReadModel/{{ReadModel}}DTO.php
-- contexts/{{BC_NAME}}/src/Application/ReadModel/{{ReadModel}}Criteria.php
-            </template>
-          </section>
-
-          <section name="fan-out-hints">
-            <hint>Single-task goal per BC. Handlers within one BC share the same aggregate ports — splitting would force duplicated mocking setup with no isolation benefit. Multi-task only if BC has &gt;6 handlers.</hint>
-          </section>
-
-          <section name="investigation-config">
-            <action>Build exactly 3 investigators (GM-08):</action>
-
-            <investigator n="1" name="Unit tests">
-              <type>test-execution</type>
-              <commands>vendor/bin/phpunit --filter={{BC_NAME}}\\Application</commands>
-              <pass>Exit 0 AND run is non-empty (test count present in output, NOT "No tests executed!"), all tests green — happy path, validation failure, and domain exception cases covered</pass>
-              <fail>Test failures, errors, or missing coverage for required scenarios</fail>
-            </investigator>
-
-            <investigator n="2" name="PHPStan">
-              <type>static-analysis</type>
-              <commands>vendor/bin/phpstan analyse contexts/{{BC_NAME}}/src/Application/ --level=9</commands>
-              <pass>Exit 0, zero errors — all type hints resolve, interface contracts satisfied</pass>
-              <fail>Type errors, missing return types, or unresolved interface references</fail>
-            </investigator>
-
-            <investigator n="3" name="Deptrac">
-              <type>architecture-check</type>
-              <commands>vendor/bin/deptrac analyse --filter={{BC_NAME}}</commands>
-              <pass>Exit 0 — Application layer depends only on Domain + shared kernel, zero Bundle (infrastructure) or app/controller imports</pass>
-              <fail>Dependency violation: Application importing from the Bundle (infrastructure) or app/controller namespace</fail>
-            </investigator>
-
-            <rule>Exactly 3 investigators per application goal (GM-08). Each has type, commands, pass/fail criteria (GM-09).</rule>
-          </section>
-        </substep>
-
-        <substep n="3.15.4d" title="Compose not-in-scope">
-          <action>Set NOT_IN_SCOPE to:</action>
-          <value>Doctrine mappings, database migrations, HTTP controllers, routes, domain logic, event dispatching, infrastructure implementations, Symfony service configuration — all handled by domain or infrastructure goals.</value>
-        </substep>
-
-        <substep n="3.15.4d2" title="Inject code rules (apply [CODE-RULE-INJECTION])">
-          <action>Bind RULE_FILES = the comma-joined deliverable paths for this BC's application layer (substep 3.15.4c deliverables section — the Command/Query/ReadModel handler+DTO paths). Bind RULE_PHASE = `application` (this goal's phase token — pass it VERBATIM).</action>
-          <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.15.4a); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (3.15.4b); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.15.4c) and to the goal.md written in 3.15.4f. Empty `rules` ⇒ inject nothing.</action>
-          <action>If `review` `validate_cmd`s exist, ADD ONE convention-audit investigator carrying ALL of them (3.15.4c emits exactly 3 base investigators: test-execution / static-analysis / architecture-check, so the ADD lands the 4th slot — legal, no drop). If none, emit no investigator.</action>
-          <rule>Copy pre-rendered payload fields VERBATIM — no agent-side glob/severity logic. PRESERVE the 3 existing investigators; the convention-audit is additive only.</rule>
-        </substep>
-
-        <substep n="3.15.4e" title="Call goal-create MCP">
-          <action>Call the goal-create MCP tool with these parameters:</action>
+          <action>Call the goal-create MCP tool with a roadmap SKELETON:</action>
           <params>
             <param name="description">Implement {{BC_NAME}} application layer: command/query handlers and DTOs</param>
-            <param name="acceptance">ACCEPTANCE array from substep 3.15.4a (exactly 12 items, PA-01..PA-12)</param>
-            <param name="validate">VALIDATE array from substep 3.15.4b (3 commands)</param>
-            <param name="context">CONTEXT string from substep 3.15.4c (purpose + deliverables + fan-out hints)</param>
-            <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.15.4c's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
-            <param name="not_in_scope">NOT_IN_SCOPE from substep 3.15.4d</param>
+            <param name="phase">application</param>
+            <param name="deliverable_area">APP_AREA (coarse, e.g. contexts/{{BC_NAME}}/src/Application/)</param>
             <param name="depends_on">APP_DEPENDS_ON[bc_name] — own BC's domain goal ID from goals.yaml</param>
+            <param name="status">roadmap</param>
             <param name="max_retries">3</param>
-            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in the spine &lt;conventions&gt; block. Derive from this BC's application Deliverables (substep 3.15.4c): emit ["contexts/{{BC_NAME}}/src/Application/**"] (plus any extra distinct deliverable dirs). Single-BC application namespace ⇒ disjoint from other BCs ⇒ co-schedulable under MaxGoals&gt;1.</param>
           </params>
           <rule>Description pattern "Implement {BC} application layer: command/query handlers and DTOs" stays under 120 chars for BC names up to ~40 chars.</rule>
           <rule>max_retries=3 — application goals have focused scope (single BC namespace).</rule>
+          <rule critical="true">NO acceptance/validate/scope/context/investigation_config/not_in_scope params and NO goal.md — roadmap skeleton; /tmux:elaborate authors every concrete field (PA-01..PA-12, deliverables, investigators) at dispatch against the REAL tree (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
 
           <check condition="goal-create returns error">
             <action>Print error with full context. Continue to next BC — do not abort the entire loop for a single BC failure.</action>
           </check>
           <check condition="goal-create succeeds">
-            <action>Print: "Application goal created for {{BC_NAME}}: goal-{{ID}} (phase=application, depends_on=[{{DOMAIN_GOAL_ID}}]) with 3 investigators, {{HANDLER_COUNT}} handlers, max_retries=3"</action>
+            <action>Print: "Application skeleton created for {{BC_NAME}}: goal-{{ID}} (phase=application, status=roadmap, depends_on=[{{DOMAIN_GOAL_ID}}], deliverable_area={{APP_AREA}})"</action>
           </check>
-        </substep>
-
-        <substep n="3.15.4f" title="Write goal.md">
-          <action>Write a goal.md file in the goal directory with these sections:</action>
-          <template>
-## Description
-Implement {{BC_NAME}} application layer: command/query handlers for {{HANDLER_COUNT}} use cases.
-Command handlers receive DTOs, orchestrate domain via repository interfaces, return void/scalar.
-Query handlers receive query DTOs, invoke read model interfaces, return DTOs.
-
-## Dependencies
-- {{DOMAIN_GOAL_ID}}: {{BC_NAME}} domain layer (provides aggregate interfaces and value objects)
-
-## Deliverables
-(File paths from substep 3.15.4c deliverables section)
-
-## Acceptance Criteria
-PA-01 through PA-12 (from substep 3.15.4a)
-
-## Fan-out Hints
-Single-task goal. All handlers in {{BC_NAME}} share the same aggregate ports — splitting would
-duplicate mocking setup with no isolation benefit. Multi-task only if handler count &gt; 6.
-
-## Preconditions
-(Declarative env/service gates the daemon evaluates before dispatching this goal,
-and re-evaluates on the §5 auto-resume loop. One line each:
-"- [env] VAR_NAME — remedy" or "- [service] host:port — remedy". Write "none" if
-the goal has no external precondition.)
-none
-
-## Not In Scope
-Doctrine mappings, database migrations, HTTP controllers, routes, domain logic,
-event dispatching, infrastructure implementations, Symfony service configuration.
-          </template>
-        </substep>
+        </per-bc>
       </substep>
 
-      <substep n="3.15.5" title="Report completion">
+      <substep n="3.15.4" title="Report completion">
         <action>After all BCs are processed, print summary:</action>
         <template>
-Application layer goals created: {{SUCCESS_COUNT}}/{{BC_COUNT}} BCs
+Application layer skeletons created: {{SUCCESS_COUNT}}/{{BC_COUNT}} BCs
 {{#each created}}
-  - {{bc_name}}: goal-{{id}} ({{handler_count}} handlers, depends_on=goal-{{domain_id}})
+  - {{bc_name}}: goal-{{id}} (status=roadmap, depends_on=goal-{{domain_id}})
 {{/each}}
 {{#if failures}}
 Failed BCs: {{#each failures}}{{bc_name}} ({{reason}}){{/each}}

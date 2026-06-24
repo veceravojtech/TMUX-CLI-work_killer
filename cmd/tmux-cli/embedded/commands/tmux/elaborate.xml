@@ -1,0 +1,156 @@
+<task id="elaborate" name="Tier-2 elaborator — just-in-time goal speccing against the live tree">
+  <objective>Spec ONE roadmap-status skeleton goal against the LIVE worktree the instant its deps go satisfied. Read the goal's deliverable_area + the real tree its predecessors produced, author concrete validate / acceptance / scope / goal.md against what ACTUALLY exists (validate commands authored BARE so the daemon's wrapcmd.classify() wraps them for the container runtime), run [CODE-RULE-INJECTION] against the real deliverable paths, write the fields back via the goal-edit MCP tool, and flip the goal status roadmap → pending. This is the Tier-2 half of the two-tier director flow (docs/architecture/director-two-tier-design.md §6): concrete fields are authored at the moment of MOST information, not predicted up front.</objective>
+
+  <input>
+    <arg name="$ARGUMENTS">`&lt;dispatchPath&gt; &lt;goal-id&gt;` — the daemon's dispatchElaboration sends the per-goal dispatch.md path (`.tmux-cli/goals/goal-{ns}/dispatch.md`) followed by the goal id (`goal-{ns}`). Either token pins the goal; the dispatch path is per-goal-safe (never last-writer-wins). Resolve the goal in step 0b.</arg>
+  </input>
+
+  <output>
+    <primary>The same goals.yaml goal row, rewritten via goal-edit from status: roadmap to status: pending with concrete `validate` / `acceptance` / `scope` (and a refined `deliverable_area`) authored against the real tree. The goal then flows through RunnableCandidates → implement → investigate → validate exactly as a Tier-1-born pending goal.</primary>
+    <secondary>The goal's `goal.md` authored against real files (Description, Dependencies, Deliverables, Acceptance Criteria, Test Environment, Context, Not In Scope, Investigation Config, Validation Rules) — the same body the matching task-plan-generate phase shard authors, now reading real files instead of predicting them.</secondary>
+    <secondary>On an unsatisfiable predecessor deliverable: a structured `unmet:` reason recorded for the director's self-healing pass (§8) — the goal is LEFT at status: roadmap, never half-specced.</secondary>
+  </output>
+
+  <requirements critical="true">
+    <mcp>tmux-cli MCP server REQUIRED (for goal-edit and windows-list)</mcp>
+    <known-dependency>The `goal-edit` MCP tool is built by a sibling task and referenced HERE by name only (no build coupling). It accepts `goal_id` plus the fields to write (`validate`, `acceptance`, `scope`, `deliverable_area`, `status`) — the same field names as goal-create's structured params. If goal-edit is genuinely absent at runtime, that is a harness/infra defect — follow the &lt;error-reporting&gt; procedure; never hand-edit goals.yaml as a workaround.</known-dependency>
+    <foundation>Increment-1 Go foundation has landed: `GoalRoadmap` status, `Goal.DeliverableArea`, `GoalsFile.ElaborationCandidates()`. This skill is the Tier-2 worker dispatched against a goal those selectors admitted.</foundation>
+  </requirements>
+
+  <glossary>
+    <term name="GOAL_ID">The roadmap goal being elaborated, e.g. "goal-014". Resolved in step 0b from $ARGUMENTS (the explicit goal-id token, or the `goal-{ns}` segment of the dispatch path). Pins every later goals.yaml / goal-edit reference in this flow.</term>
+    <term name="GOAL_DIR">.tmux-cli/goals/{GOAL_ID}/ — holds dispatch.md and the goal.md this skill authors.</term>
+    <term name="deliverable_area">The COARSE deliverable footprint the Tier-1 roadmap generator recorded on the skeleton goal (e.g. `projects/api/src/Http/ErrorHandling/`). The seed for the live-tree read in step 3 and the basis the elaborator REFINES into precise `scope` globs in step 5.</term>
+    <term name="BARE command">A validate command written with NO shell wrapper or chain (no `sh -c '…'`, no `&amp;&amp;` / pipes) so the daemon's wrapcmd.classify() can key off its first token (`bin/console`, `php`, `composer`, `npx`, …) and route it into the right container via `docker compose exec`. A pre-wrapped `sh -c '…'` classifies as a HOST command and defeats classify() — the exact goal-014 runner-missing defect (design §1, §7).</term>
+    <term name="deliverable-pinning">≥1 authored `validate` that FAILS CLOSED when the goal's deliverable is absent (a presence grep / file-exists), not only a behavioral test that no-ops on an empty state. The structural fix for the 009–011 false-pass class (design §6.3, §7).</term>
+    <term name="[CODE-RULE-INJECTION]">The shared code-rule → goal-field injection procedure authored ONCE in task-plan-generate.xml's &lt;rule-to-goal-injection&gt; block. This skill INVOKES it by reference against the real deliverable paths — it never re-derives the mechanic.</term>
+    <term name="unmet reason">A structured `unmet: &lt;class&gt;: &lt;detail&gt;` string (e.g. `missing-deliverable: doctrine migrations`) the elaborator records when a needed predecessor deliverable is genuinely missing — the director consumes it to insert a follow-up roadmap node (§8). The elaborator NEVER inserts the node itself.</term>
+  </glossary>
+
+  <llm critical="true">
+    <mandate>NEVER author a concrete field from prediction — read the REAL tree under deliverable_area first; if the file the field targets is not on disk, that is an unmet-dep escalation (step 7), not a guessed path</mandate>
+    <mandate>NEVER pre-wrap a validate command in `sh -c '…'` or chain it with `&amp;&amp;`/pipes — author every toolchain validate BARE so wrapcmd.classify() wraps it for the container (the goal-014 fix). The ONLY pre-wrapped commands are the Go-rendered `validate_cmd`s you COPY VERBATIM from [CODE-RULE-INJECTION]</mandate>
+    <mandate>ALWAYS include ≥1 deliverable-pinning validate that fails closed when the deliverable is absent — a goal whose validate set passes vacuously at baseline is a half-specced goal</mandate>
+    <mandate>NEVER emit a half-specced goal or a doomed validate for a missing predecessor — record an `unmet:` reason and LEAVE status at roadmap (step 7)</mandate>
+    <mandate>NEVER implement code, run migrations, or mutate the deliverable tree — this is a READ-MOSTLY worker; its only write is goal-edit (and goal.md). Reading the tree must not change it</mandate>
+    <mandate>NEVER call goal-create / goal-add-prerequisite / goal-prune — roadmap-node insertion and DAG re-wiring are the director's job (§8). This worker writes ONLY the one goal it was dispatched for, via goal-edit</mandate>
+    <mandate>Keep the spine STACK-AGNOSTIC: drive every stack specific (runtime, service names, file conventions, topology) from the resolved conventions/code-rules (the &lt;conventions&gt; block) exactly as task-plan-generate does — never hardcode php-symfony assumptions into the flow</mandate>
+    <mandate>Default service access to the compose NETWORK (no host port publish); allocate a FREE host port only when one is genuinely required (design §9)</mandate>
+    <mandate>Edit the EMBEDDED source only. NEVER hand-edit the regenerated .claude/commands/ copy</mandate>
+  </llm>
+
+  <decision-policy>
+    <rule critical="true">Decision-resolution policy (quality-in-scope). When elaboration reaches a decision point — an "Ask First" item, a fork between a lower-effort waiver/shortcut and a higher-quality field, or a choice of validate form — autonomously choose the option that MAXIMIZES correctness (real runnable commands over asserted prose, fail-closed presence checks over vacuous behavioral ones, no waivers, no shortcuts) PROVIDED it does NOT expand the goal's scope (no new deliverables beyond deliverable_area / the goal's description). Record the chosen option + a one-line rationale in goal.md's Context. Escalate to a human ONLY for user-only knowledge no file or tree inspection can supply (credentials, business intent, out-of-band facts). A purely technical/architectural choice is NEVER user-only.</rule>
+  </decision-policy>
+
+  <conventions critical="true">
+    <resolve critical="true">BINDING CONVENTIONS ARE EXTERNALIZED INTO THE RULES CATALOGUE — load them NOW, before authoring any field, exactly as task-plan-generate.xml does. Determine LANG/FRAMEWORK from the project manifest / docs/architecture/product-brief.md (never hardcode), then run via Bash: `tmux-cli rules resolve --kind=convention --lang=&lt;LANG&gt; --framework=&lt;FRAMEWORK&gt;` (omit a flag only when genuinely unknown). It prints one rule-file path per line, resolved from .tmux-cli/rules/ for THIS project's stack and capabilities (always _base; docker/database/frontend/frontend-auth packs when their signals hold; plus project-local rules under .tmux-cli/rules/local/). Read EVERY printed file. Each &lt;rule&gt; / &lt;scope-derivation&gt; / &lt;validate-acceptance-mandate&gt; element is BINDING on field authoring below — these conventions, not this skill, define the runtime form (host vs container), the service names, the stack-bring-up shape, and the emission topology. The ids CMD-CONV / HTTP-CONV / NODE-TOOL-CONV / ENSURE-STACK-CONV / HTTP-WAIT-CONV / DOCKER-RUNTIME-FRONTLOAD / E2E-* resolve to these loaded rules and govern the validate forms authored in step 4.</resolve>
+    <topology-binding critical="true">RESOLVED CONVENTIONS DEFINE THE EMISSION TOPOLOGY — but at elaboration the topology is VERIFIED against the real tree, not guessed: every authored deliverable path, acceptance-string path, scope glob, and investigator path MUST target the resolved topology AND exist on disk (or be the goal's own to-be-created deliverable). When the resolved set declares a DDD-monorepo topology, target it (contexts/&lt;bc&gt;/src/{Domain,Application,Bundle}, contexts/previo shared kernel, projects/&lt;app&gt;/src deployables) — but a path that the convention implies yet the tree does NOT contain is an unmet-dep escalation (step 7), never a committed guess. This is the design's "topology-binding enforced harder at elaboration" (§5): the flat-skeleton guess can no longer slip through because elaboration greps the actual tree.</topology-binding>
+    <resolve-code-rules>ALSO run `tmux-cli rules resolve --kind=code-rules --lang=&lt;LANG&gt; --framework=&lt;FRAMEWORK&gt;`. The returned files are the project's CODE RULES (severity must|should, applies_to globs; schema .tmux-cli/rules/SCHEMA.md). Do NOT inline their bodies — step 6 turns the rules whose globs match THIS goal's REAL deliverables into structured fields via [CODE-RULE-INJECTION].</resolve-code-rules>
+    <code-rule-injection critical="true">The [CODE-RULE-INJECTION] mechanic is authored ONCE in task-plan-generate.xml's &lt;rule-to-goal-injection&gt; block (the shared procedure: run `tmux-cli rules match --files &lt;deliverables&gt; --phase &lt;phase&gt; --json`, then COPY pre-rendered `acceptance_line` / `validate_cmd` VERBATIM into acceptance[] / validate[], fold `review` cmds into ONE convention-audit investigator under the 2–4 cap, add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` pointer line). Step 6 INVOKES that procedure by reference against the REAL deliverable paths — do NOT restate or re-derive it here. Go owns ALL glob/severity/signal routing (internal/rules/coderules.go); copy fields, never re-render.</code-rule-injection>
+    <fallback critical="true">If `tmux-cli rules resolve` fails or .tmux-cli/rules/ is missing, ABORT this elaboration with the diagnostic "rules catalogue missing — run `tmux-cli project init`, then re-dispatch" and follow the &lt;error-reporting&gt; procedure. NEVER author fields without the loaded conventions. Conservative-inclusion warnings on stderr are NOT failures — proceed with the extra packs loaded.</fallback>
+  </conventions>
+
+  <flow>
+    <step n="1" title="MCP precondition">
+      <action>Call windows-list.</action>
+      <check condition="tmux-cli not available">
+        <action>Print exactly: ERROR: tmux-cli MCP required but not available — enable it and retry.</action>
+        <action>STOP. Do not author or write anything.</action>
+      </check>
+    </step>
+
+    <step n="1b" title="Read project context">
+      <action>Discover the APPLICABLE guideline docs for the goal's deliverable_area by NEAREST-WINS subtree precedence: from the deliverable_area directory walk UP to the repo root collecting every AGENTS.md / CLAUDE.md (nearest = most specific), plus the repo-root entry doc and any *.md they link that bears on the area. Read them ALL and internalize conventions, architecture, and constraints before authoring. If none exist on the path, proceed without project context.</action>
+      <rule>This context MUST inform every authored field, the goal.md body, and the validate forms — alongside the resolved conventions from the &lt;conventions&gt; block.</rule>
+    </step>
+
+    <step n="0b" title="Resolve GOAL_ID and dispatch path">
+      <action>Parse $ARGUMENTS into its two tokens: the dispatch path (`.tmux-cli/goals/goal-{ns}/dispatch.md`) and the goal id (`goal-{ns}`). Mirror plan.xml step 0b's dispatch-path binding: prefer the `goal-{ns}` segment of the DISPATCH PATH over the global .tmux-cli/taskvisor-current-goal marker (the daemon rewrites that marker on every dispatch, so under concurrency it is last-writer-wins and may name another goal; the dispatch path you were handed is per-goal-safe). Set GOAL_ID from that segment; if the explicit goal-id token disagrees with the path segment, TRUST the path segment and note the mismatch.</action>
+      <check condition="no goal-{ns} can be resolved from either token">
+        <action>This is a malformed dispatch (harness/spec defect) — follow the &lt;error-reporting&gt; procedure and STOP. Author nothing.</action>
+      </check>
+      <action>Set GOAL_DIR = .tmux-cli/goals/{GOAL_ID}/. Read the dispatch.md if present for any per-dispatch corrections (e.g. a prior unmet reason being re-attempted).</action>
+    </step>
+
+    <step n="2" title="Read the roadmap goal">
+      <action>Read GOAL_ID's row from goals.yaml. Extract: id, description, phase, depends_on, deliverable_area.</action>
+      <check condition="goal status is not roadmap">
+        <action>The goal was already elaborated (status pending/running/done) or is a legacy fully-specced pending goal — NOTHING to do. Log "goal {GOAL_ID} is status={status}, not roadmap — nothing to elaborate" and STOP. Re-elaborating a non-roadmap goal would clobber a live spec. (A daemon that dispatched a non-roadmap goal here is a wiring defect — &lt;error-reporting&gt;.)</action>
+      </check>
+      <check condition="deliverable_area is empty">
+        <action>A roadmap goal with no deliverable_area cannot be seeded against the tree — record `unmet: missing-deliverable-area` (step 7) and STOP. Do NOT guess a footprint.</action>
+      </check>
+    </step>
+
+    <step n="3" title="Read the live tree under deliverable_area">
+      <action>Read the ACTUAL tree under deliverable_area and the wiring it touches, as the resolved conventions define that wiring for this stack (e.g. for a php-symfony docker stack: config/services.yaml, config/packages/doctrine.yaml, bin/ensure-test-stack.sh, routing — but drive WHICH files from the conventions, never hardcode). The worktree's predecessors are already merged in — that is the whole point of Tier-2 timing. Isolate deep reads in sub-agents (Agent tool) where available; instruct them to return DISTILLED summaries only (file paths, key symbols, service names, which deliverables already exist vs. are this goal's to create) — never load full file bodies into your own context.</action>
+      <action>Establish the REAL runtime from the tree + conventions: is there a running/compose-defined app service? a db service? what are the service names? This determines the validate FORM in step 4 (container-exec vs host) — observed, not predicted.</action>
+      <check condition="a predecessor deliverable this goal genuinely CONSUMES is absent from the tree">
+        <action>Do NOT author a doomed validate against it — go to step 7 (escalate as a roadmap node) with a precise `unmet:` reason.</action>
+      </check>
+    </step>
+
+    <step n="4" title="Author validate[] against reality (BARE + deliverable-pinned)">
+      <action>Author the goal's `validate[]` as ONLY commands runnable in THIS worktree against the runtime observed in step 3, each a BARE command (per the &lt;glossary&gt; BARE-command rule and the resolved CMD-CONV / ENSURE-STACK-CONV conventions):</action>
+      <rule>Runtime form is observed, not guessed: when the resolved runtime is docker, emit toolchain commands BARE (`bin/console …`, `composer …`, `npx playwright …`) so wrapcmd.classify() routes them into the container via `docker compose exec`. NEVER emit a host `bin/console` when no host toolchain exists, and NEVER pre-wrap in `sh -c` — that is the goal-014 runner-missing + classifier-defeat defect.</rule>
+      <rule critical="true">DELIVERABLE-PINNING (kills the 009–011 false-pass class, design §6.3): include ≥1 validate that FAILS CLOSED when the goal's deliverable is absent — a presence grep / file-exists over the REAL deliverable path (e.g. a fail-on-absent `grep -rqE '&lt;the deliverable's defining signal&gt;' &lt;real path&gt;`, a host command authored BARE), not only a behavioral test that no-ops on an empty state. At least one validate in the set MUST transition pass→fail purely by deleting the deliverable.</rule>
+      <rule>Port-occupancy (design §9): default every service access to the compose NETWORK — no host port published (`docker compose exec` for toolchain, `db:5432` for DB reach). Only when a host port is genuinely required (e.g. a browser-reachable dev server for E2E) probe the host for a FREE port (respecting occupied ports via the daemon's port-alloc helper where available), write that distinct non-colliding port into the worktree compose + the goal's HTTP-wait validate, and record the claim. Ports are allocated against the LIVE host at elaboration time so a collision can never be baked into the roadmap.</rule>
+    </step>
+
+    <step n="5" title="Author acceptance[], scope, and refine deliverable_area">
+      <action>acceptance[]: objective Given/When/Then criteria derived from the goal description + the real deliverables — each independently checkable.</action>
+      <action>scope: precise file/namespace globs derived from the REAL footprint discovered in step 3 (per the resolved &lt;scope-derivation&gt; convention), REFINING the coarse deliverable_area into the actual paths this goal creates/modifies. Refine deliverable_area itself if the real tree narrowed it.</action>
+    </step>
+
+    <step n="6" title="Inject code rules [CODE-RULE-INJECTION]">
+      <action>Invoke the shared [CODE-RULE-INJECTION] procedure (task-plan-generate.xml's &lt;rule-to-goal-injection&gt;, referenced via the &lt;conventions&gt; block) with `--files` = THIS goal's REAL deliverable paths (from steps 3/5) and `--phase` = the goal's phase: run `tmux-cli rules match --files &lt;real deliverables&gt; --phase &lt;phase&gt; --json`, then COPY the pre-rendered fields VERBATIM — each NON-EMPTY `acceptance_line` into acceptance[], each `automated`/`mixed` NON-EMPTY `validate_cmd` into validate[], `review` cmds folded into ONE convention-audit investigator under the 2–4 cap, and the single `Code rules: &lt;ids&gt; — read &lt;paths&gt;` pointer line into goal.md/context. Empty `rules` ⇒ inject nothing. Do NOT re-glob, re-derive severity, or re-render a command — Go owns that.</action>
+      <rule>These Go-rendered `validate_cmd`s are the ONLY pre-wrapped (`sh -c '! grep …'`) commands allowed in validate[] — they are host greps that classify as host commands and are copied verbatim, distinct from the BARE toolchain-command rule in step 4.</rule>
+    </step>
+
+    <step n="7" title="Author goal.md">
+      <action>Author GOAL_DIR/goal.md the SAME way the matching task-plan-generate phase shard (3.14–3.30, selected by the goal's phase) authors it — now reading real files instead of predicting them. Reuse that shard's section structure: Description, Dependencies, Deliverables, Acceptance Criteria, Test Environment reference, Context, Not In Scope, Investigation Config, and a `## Validation Rules` section listing the deterministic validate commands (the gate execute.xml step 4c runs). Keep the two skills convergent — elaboration is "the same authoring, deferred to dispatch against real files," not a new format.</action>
+    </step>
+
+    <step n="8" title="Write back via goal-edit and flip status">
+      <action>Call the `goal-edit` MCP tool with goal_id={GOAL_ID} and the authored fields: `validate`, `acceptance`, `scope`, refined `deliverable_area`, and `status: pending`. This single write IS the elaboration completion: the goal now carries concrete fields and re-enters RunnableCandidates for normal implement → investigate → validate flow. (The daemon-side phaseElaborating completion detection is a SEPARATE Increment-2 task; this skill's contract is "fields written + status flipped to pending".)</action>
+      <check condition="goal-edit errors after its own retries">
+        <action>A genuine MCP/infra defect — follow the &lt;error-reporting&gt; procedure. Do NOT hand-edit goals.yaml. Leave the goal at roadmap; the elaboration retries per the daemon's bounded spec_retries.</action>
+      </check>
+    </step>
+
+    <step n="9" title="Unsatisfiable dep → escalate as a roadmap node" condition="a needed predecessor deliverable is genuinely missing (from step 3 / step 7 triggers)">
+      <rule critical="true">When a needed predecessor deliverable is genuinely missing (no migration, an absent service, a topology path the conventions imply but the tree lacks), do NOT emit a doomed validate and do NOT flip status to pending. RECORD a structured `unmet: &lt;class&gt;: &lt;detail&gt;` reason (e.g. `unmet: missing-deliverable: doctrine migrations`) where the daemon/director reads elaboration outcomes, and LEAVE the goal at status: roadmap.</rule>
+      <rule critical="true">The director (§8) — NOT this worker — diagnoses the gap, authors a properly-wired follow-up roadmap node (skeleton: id, description, phase, depends_on, deliverable_area), and re-wires the DAG so depinfer/G-04/plan-audit re-run. This worker NEVER calls goal-create/goal-add-prerequisite; it only surfaces the precise, buildable `unmet:` reason so the director can insert the one missing node and continue. A vague gripe ("env broken") is useless — name the missing deliverable concretely.</rule>
+    </step>
+
+    <step n="10" title="Failure handling">
+      <rule>An elaboration that cannot proceed (can't read the tree, contradictory resolved rules, goal-edit hard-fails) routes like a SPEC failure: it is retried under the daemon's bounded spec_retries, then parked blocked / owner=human. It NEVER produces a half-specced goal — on any unrecoverable condition, leave status at roadmap and record the reason (an `unmet:` for a missing prerequisite per step 9, or follow &lt;error-reporting&gt; for a harness/infra/spec defect). A goal whose validate set would pass vacuously at baseline is a half-specced goal — never write it.</rule>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>goal-edit: the SINGLE structured write-back per elaboration (validate/acceptance/scope/deliverable_area + status: pending) — referenced by name; the sibling task owns its schema</rule>
+    <rule>goal-create / goal-add-prerequisite / goal-prune: NEVER — roadmap-node insertion and DAG re-wiring are the director's job (§8); this worker writes only the one dispatched goal</rule>
+    <rule>The tree read is READ-ONLY — never run migrations, build artifacts, or mutate the deliverable footprint to make a validate pass; author validate against the tree as it is</rule>
+    <rule>Every validate authored here is BARE (no sh -c / no chaining) EXCEPT the Go-rendered `validate_cmd`s copied verbatim from [CODE-RULE-INJECTION] — wrapcmd.classify() owns container routing</rule>
+    <rule>≥1 deliverable-pinning validate per goal — non-negotiable; it is the structural false-pass fix</rule>
+    <rule>Stack specifics flow from resolved conventions/code-rules, never hardcoded — the spine stays stack-agnostic like task-plan-generate</rule>
+    <rule>Edit the embedded source (cmd/tmux-cli/embedded/commands/tmux/elaborate.xml) only — never the regenerated .claude/commands/ copy</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      • Author concrete fields against the REAL tree, never from prediction — a missing path is an unmet-dep escalation (step 9), not a guess
+      • Validate commands are BARE so wrapcmd.classify() wraps them — never pre-wrap toolchain commands in sh -c (the goal-014 fix); the only pre-wrapped validates are the verbatim [CODE-RULE-INJECTION] greps
+      • ≥1 deliverable-pinning validate that fails closed when the deliverable is absent — kills the 009–011 false-pass class
+      • Default to the compose network; allocate a free host port only when genuinely required (design §9)
+      • Write back via goal-edit (status roadmap → pending) — never hand-edit goals.yaml; never call goal-create
+      • Unsatisfiable predecessor → record a concrete `unmet:` reason and LEAVE status roadmap for the director to insert a follow-up node (§8) — never emit a doomed/half-specced goal
+      • Keep the spine stack-agnostic — drive every stack specific from the resolved conventions/code-rules, exactly as task-plan-generate does
+      • READ-MOSTLY: the only writes are goal-edit and goal.md; reading the tree must not mutate it
+      • Edit the embedded source only — never the regenerated .claude/commands/ copy
+    </critical-rules>
+  </llm>
+</task>

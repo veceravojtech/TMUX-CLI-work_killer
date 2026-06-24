@@ -201,18 +201,21 @@ func TestMD_FanoutTableFinalQualityRowOmitsDeptrac(t *testing.T) {
 		"Final quality row must not list Deptrac (it is a separate final-gate goal)")
 }
 
+// Two-tier (director redesign §5): the per-BC infrastructure fan-out (task-0
+// shared infra + task-1..N per-aggregate + task-last migration) is re-derived at
+// dispatch by /tmux:elaborate against the REAL tree — the 3.16 infrastructure
+// shard is now a roadmap skeleton that enumerates one goal per BC and commits
+// only to a coarse deliverable_area. Fan-out hints are no longer authored at
+// Tier-1, so this guards the skeleton contract instead.
 func TestTemplate_InfraFanoutHintMentionsTaskLast(t *testing.T) {
 	content := readGenerateBundle(t)
-	var hintLine string
-	for _, line := range strings.Split(content, "\n") {
-		if strings.Contains(line, "task-0 for shared infra") {
-			hintLine = line
-			break
-		}
-	}
-	require.NotEmpty(t, hintLine, "Infrastructure xml must contain fan-out hint determination line with 'task-0 for shared infra'")
-	assert.Contains(t, hintLine, "task-last",
-		"Infrastructure fan-out hint determination must also mention task-last")
+	infra := sliceBetween(t, content, `n="3.16"`, `n="3.16a"`)
+	assert.Contains(t, infra, `<param name="status">roadmap`,
+		"the infrastructure shard emits a roadmap skeleton")
+	assert.Contains(t, infra, `<param name="phase">infrastructure`,
+		"the infrastructure skeleton carries phase=infrastructure")
+	assert.NotContains(t, infra, "task-0 for shared infra",
+		"the per-BC fan-out (task-0/task-last) is re-derived at dispatch by /tmux:elaborate, not authored at Tier-1")
 }
 
 func TestTemplate_ValidateParamMentionsConditionals(t *testing.T) {

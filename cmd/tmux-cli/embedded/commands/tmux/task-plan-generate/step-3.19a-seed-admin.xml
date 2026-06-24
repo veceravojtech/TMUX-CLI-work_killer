@@ -1,8 +1,9 @@
     <step n="3.19a" title="Generate dev-env seed-admin goal (conditional, phase=seed)">
       <rule critical="true">Runs strictly AFTER step 3.19 so every phase=auth and phase=auth-bootstrap goal ID already exists in goals.yaml.</rule>
       <rule critical="true">CONDITIONAL — emit at most ONE goal, and only when seeding was requested AND at least one auth flow exists. NEVER fold this into the test-only fixtures goal (phase=fixtures, --env=test).</rule>
-      <rule critical="true">Credentials are referenced by env-var name only (admin_identifier_env, admin_password_env) — NEVER inline a secret value in description, context, acceptance, or validate (GM-05). Seeds the dev environment ONLY — NEVER prod, NEVER --env=test.</rule>
+      <rule critical="true">Credentials are referenced by env-var name only (admin_identifier_env, admin_password_env) — NEVER inline a secret value in description (GM-05). Seeds the dev environment ONLY — NEVER prod, NEVER --env=test.</rule>
       <rule critical="true">All inputs read from docs/architecture/* files on disk (G-16), never from conversation context.</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): this shard emits a roadmap SKELETON. The concrete fields it used to author — acceptance SA-01..SA-06, validate commands, the 2 investigators, not-in-scope, context, seed-command-name template resolution — and the per-goal [CODE-RULE-INJECTION] are now authored at dispatch by /tmux:elaborate against the real tree (design §6). This shard keeps ONLY enumeration: the conditional gate, this goal's phase, its depends_on, and its coarse deliverable_area. -->
 
       <substep n="3.19a.1" title="Read seed decision and gate">
         <action>Read docs/architecture/test-environment.md. Locate the `## Bootstrap / Seed Default Admin` block. Extract seed_default_admin and the env-var NAMES admin_identifier_env, admin_password_env.</action>
@@ -27,50 +28,33 @@
           <action>ABORT with error: "Cannot generate seed-admin goal: no auth-bootstrap or auth goal found in goals.yaml — the seed depends on the User entity owner."</action>
         </check>
         <action>Set SEED_DEPENDS_ON = [SEED_DEP].</action>
+        <rule>SEED_DEP MUST be dynamically resolved from goals.yaml — never hardcoded (G-03).</rule>
       </substep>
 
-      <substep n="3.19a.3" title="Create the dev-env seed-admin goal via goal-create">
-        <action>Resolve the seed command name: default to `app:seed-admin` (Symfony `app:` namespace). If a php-symfony overlay customizes the seed command, read it from the resolved template rather than hardcoding (mirror the fixtures-template resolution pattern at 3.17.3).</action>
-        <action>Call the goal-create MCP tool with these parameters:</action>
+      <substep n="3.19a.3" title="Derive the coarse deliverable_area">
+        <action>Set SEED_AREA = the seed-admin command deliverable directory in the resolved topology — `projects/{app}/src/Command/` (the deployable-app command layer where the `app:seed-admin` console command class lives), where {app} is the deployable name from the resolved conventions/topology. This is a COARSE path (the depinfer produce/consume seed + the elaborator's tree-read anchor), NOT a glob and NOT a per-file path. Keep the `{app}` placeholder as the shard already uses it.</action>
+        <rule>Do NOT resolve the seed command name from templates, or author any acceptance/validate/investigator/context/not-in-scope here — those are Tier-2 (/tmux:elaborate authors them at dispatch). The roadmap skeleton commits only to the coarse deliverable_area.</rule>
+      </substep>
+
+      <substep n="3.19a.4" title="Create the dev-env seed-admin goal via goal-create (roadmap skeleton)">
+        <action>Call the goal-create MCP tool with a roadmap SKELETON:</action>
         <params>
           <param name="description">Seed default admin in dev via bin/console app:seed-admin</param>
-          <param name="acceptance">[
-            "SA-01: app:seed-admin console command class exists (Symfony app: namespace command)",
-            "SA-02: command reads the admin identifier and password from the named env-vars only (admin_identifier_env / admin_password_env from docs/architecture/test-environment.md) — referenced by env-var name only, never literal values",
-            "SA-03: no literal secret value appears anywhere in the source — credentials are referenced by env-var name only (GM-05)",
-            "SA-04: command is idempotent — a second run creates no duplicate admin and exits without error",
-            "SA-05: bin/console app:seed-admin --env=dev exits 0 (NEVER --env=test)",
-            "SA-06: an admin row is present in the dev database after the command runs"
-          ]</param>
-          <param name="validate">[
-            "bin/console app:seed-admin --env=dev",
-            "bin/console app:seed-admin --env=dev (second run — idempotent, exit 0, no duplicate)",
-            "assert the seeded admin row exists in the dev database after the run (e.g. bin/console dbal:run-sql to count admin users --env=dev; adapt table/column to the resolved User entity) — NEVER --env=test"
-          ]</param>
-          <param name="context">
-Seed a single default admin user into the DEV database so the running app is usable immediately after generation (the fixtures goal only seeds the --env=test database).
-This goal runs `bin/console app:seed-admin --env=dev` — NEVER --env=test, NEVER prod, and is NEVER folded into the fixtures goal.
-Admin credentials are read from the environment by NAME only: identifier from {{admin_identifier_env}}, password from {{admin_password_env}} (see docs/architecture/test-environment.md `## Bootstrap / Seed Default Admin`). Never hard-code credentials in source — referenced by env-var name only (GM-05).
-The User entity and config/packages/security.yaml are provided by the auth-bootstrap dependency (SEED_DEP) — this goal consumes them, it does not create them.
-          </param>
-          <param name="investigation_config">[
-            {name: "Seed command run", type: "command-run", paths: ["contexts/", "projects/"], commands: ["bin/console app:seed-admin --env=dev", "bin/console app:seed-admin --env=dev"], pass: "Command exits 0 on first AND second run (idempotent), and an admin row is present in the dev database afterward", fail: "Non-zero exit, duplicate admin row, or no admin row after the run"},
-            {name: "No inlined secret", type: "file-check", paths: ["contexts/", "projects/"], commands: ["grep -rn 'app:seed-admin' contexts/ projects/ to locate the command class, then confirm it reads admin_identifier_env and admin_password_env via getenv/$_ENV and contains NO literal password/secret value"], pass: "Credentials referenced by env-var name only (admin_identifier_env / admin_password_env); no literal secret value in source", fail: "A literal credential value is hardcoded in the command or related source"}
-          ]</param>
-          <param name="not_in_scope">Production seeding; role/permission seeding beyond the single default admin; test fixtures (--env=test, the fixtures goal — this is NEVER folded into the fixtures goal); creating the User entity or config/packages/security.yaml (owned by the auth-bootstrap dependency).</param>
-          <param name="depends_on">SEED_DEPENDS_ON = [SEED_DEP] from substep 3.19a.2</param>
-          <param name="max_retries">2</param>
           <param name="phase">seed</param>
+          <param name="deliverable_area">SEED_AREA (coarse, e.g. projects/{app}/src/Command/)</param>
+          <param name="depends_on">SEED_DEPENDS_ON = [SEED_DEP] from substep 3.19a.2</param>
+          <param name="status">roadmap</param>
+          <param name="max_retries">2</param>
         </params>
         <rule>phase=seed on the created goal (a new phase value, distinct from fixtures).</rule>
-        <rule>Description is 56 chars — within the 120-char limit (MaxGoalDescriptionLength). Detailed criteria live in acceptance and validate.</rule>
-        <rule>2 investigators (GM-08 minimum): one command-run (runs --env=dev + asserts the admin row), one file-check (asserts no inlined secret). NEVER add a --env=test invocation.</rule>
+        <rule>Description is 56 chars — within the 120-char limit (MaxGoalDescriptionLength).</rule>
         <rule>max_retries=2.</rule>
+        <rule critical="true">NO validate/acceptance/scope/context/investigation_config/not_in_scope params — this is a roadmap skeleton; /tmux:elaborate authors every concrete field at dispatch (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
         <check condition="goal-create returns an error">
           <action>Print the error with full context and ABORT — do not leave a partial seed goal.</action>
         </check>
         <check condition="goal-create succeeds">
-          <action>Print: "Seed-admin goal created: goal-{NNN} (phase=seed, depends_on=[{SEED_DEP}], max_retries=2) — runs bin/console app:seed-admin --env=dev, credentials by env-var name only."</action>
+          <action>Print: "Seed-admin skeleton created: goal-{NNN} (phase=seed, status=roadmap, depends_on=[{SEED_DEP}], deliverable_area={SEED_AREA}, max_retries=2)"</action>
           <action>Proceed to next step.</action>
         </check>
       </substep>

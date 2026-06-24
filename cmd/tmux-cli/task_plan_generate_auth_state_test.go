@@ -47,13 +47,19 @@ func TestTemplate_AuthStateConvScaffoldSC21(t *testing.T) {
 		"SC-21 must reference setup project")
 }
 
+// Two-tier (director redesign §5): AU-11 (the auth.setup.ts storageState setup
+// deliverable) is authored at dispatch by /tmux:elaborate — the 3.16a
+// auth-bootstrap shard is a roadmap skeleton.
 func TestTemplate_AuthStateConvBootstrapAU11(t *testing.T) {
 	content := readGenerateBundle(t)
 	step316a := sliceBetween(t, content, `n="3.16a"`, `n="3.17"`)
-	assert.Contains(t, step316a, "AU-11",
-		"step-3.16a auth-bootstrap must contain AU-11 acceptance criterion")
-	assert.Contains(t, step316a, "auth.setup.ts",
-		"AU-11 must reference auth.setup.ts deliverable")
+	assert.Contains(t, step316a, `<param name="status">roadmap`,
+		"the auth-bootstrap shard emits a roadmap skeleton")
+	// the concrete auth.setup.ts storageState-setup deliverable (AU-11) is authored
+	// at dispatch — it must NOT be authored inline by the generator. (The relocation
+	// pointer comment legitimately NAMES AU-11, so we guard on the deliverable file.)
+	assert.NotContains(t, step316a, "auth.setup.ts",
+		"the auth.setup.ts deliverable is authored at dispatch by /tmux:elaborate")
 }
 
 func TestTemplate_AuthStateConvNoHardcodedCredentials(t *testing.T) {
@@ -64,20 +70,31 @@ func TestTemplate_AuthStateConvNoHardcodedCredentials(t *testing.T) {
 		"E2E-AUTH-STATE-CONV rule must reference test-environment.md")
 }
 
+// Two-tier: the "auth-flow tests MUST NOT use storageState" preservation note is
+// part of the E2E-AUTH-STATE-CONV convention, which still ships in the resolved
+// bundle (rules catalogue) and is applied at dispatch by /tmux:elaborate. The
+// 3.19 auth step itself is now a roadmap skeleton.
 func TestTemplate_AuthStateConvPreservesAuthFlows(t *testing.T) {
 	content := readGenerateBundle(t)
+	assert.Contains(t, content, "MUST NOT use storageState",
+		"the E2E-AUTH-STATE-CONV convention (resolved into the bundle) must preserve the auth-flow no-storageState invariant")
 	step319 := sliceBetween(t, content, `n="3.19"`, `n="3.19a"`)
-	assert.Contains(t, step319, "MUST NOT use storageState",
-		"step-3.19 must contain preservation note that auth-flow tests MUST NOT use storageState")
+	assert.Contains(t, step319, `<param name="status">roadmap`,
+		"the auth shard emits a roadmap skeleton")
 }
 
+// Two-tier: the auth_required controller-action storageState/authenticated-project
+// usage is authored at dispatch by /tmux:elaborate — the 3.18 action shard is a
+// roadmap skeleton. The E2E-AUTH-STATE-CONV convention still ships in the bundle.
 func TestTemplate_AuthStateConvControllerActionUsage(t *testing.T) {
 	content := readGenerateBundle(t)
+	assert.Contains(t, content, "storageState",
+		"the E2E-AUTH-STATE-CONV convention (resolved into the bundle) must define storageState reuse")
 	step318 := sliceBetween(t, content, `n="3.18"`, `n="3.19"`)
-	assert.Contains(t, step318, "storageState",
-		"step-3.18 must reference storageState for auth_required E2E tests")
-	assert.Contains(t, step318, "authenticated",
-		"step-3.18 must reference authenticated project for auth_required actions")
+	assert.Contains(t, step318, `<param name="status">roadmap`,
+		"the action shard emits a roadmap skeleton")
+	assert.NotContains(t, step318, "storageState",
+		"the auth_required storageState usage is authored at dispatch by /tmux:elaborate, not inline here")
 }
 
 func TestTemplate_AuthStateConvStateFreshness(t *testing.T) {

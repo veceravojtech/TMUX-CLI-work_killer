@@ -22,6 +22,14 @@ const (
 	GoalDone    = "done"
 	GoalFailed  = "failed"
 	GoalBlocked = "blocked"
+	// GoalRoadmap is a SKELETON goal: it carries depends_on + phase +
+	// DeliverableArea but NO validate/acceptance/scope. The roadmap generator
+	// (task-plan-generate, roadmap-only mode) emits these; Tier-2 elaboration
+	// authors the concrete fields against the live tree the instant the goal's
+	// deps go satisfied (ElaborationCandidates), then flips it to GoalPending.
+	// A roadmap goal is INVISIBLE to RunnableCandidates (which gates on
+	// GoalPending), so it can never be dispatched to an implementer un-elaborated.
+	GoalRoadmap = "roadmap"
 
 	// PhaseFinalGate is the Phase value the planter (task-plan-generate.xml)
 	// writes for end-of-run validation gates. The stall watchdog keys on it to
@@ -43,6 +51,13 @@ const (
 	// dispatchImplementer routes the next dispatch to dispatchRetry (reuse
 	// tasks.yaml, skip planning) when the per-goal tasks.yaml still exists.
 	dispatchImplementer = "implementer"
+	// dispatchElaboration routes a GoalRoadmap candidate to the Tier-2 elaborator
+	// (/tmux:elaborate) instead of an implementer: it authors the goal's concrete
+	// validate/acceptance/scope/goal.md against the now-real tree, then flips the
+	// goal to GoalPending. dispatchCandidate selects this BY STATUS (GoalRoadmap),
+	// not by a stamped NextDispatch marker — the marker stays reserved for the
+	// implementer/generation routes.
+	dispatchElaboration = "elaboration"
 )
 
 // Goal.Lane values (G5). LaneSolo grants the cheaper single-investigator
@@ -120,6 +135,16 @@ type Goal struct {
 
 	Phase     string   `yaml:"phase,omitempty"`
 	DependsOn []string `yaml:"depends_on,omitempty"`
+
+	// DeliverableArea is the COARSE deliverable footprint of a roadmap-tier goal
+	// (e.g. "projects/api/src/Http/ErrorHandling/") — the only concrete hint a
+	// skeleton goal carries. depinfer keys produce/consume edges on it at roadmap
+	// time, and Tier-2 elaboration seeds its live-tree read from it before
+	// authoring the real validate/scope. Empty for legacy fully-specced goals
+	// (omitempty → byte-identical on-disk for pre-roadmap plans). DUAL-STRUCT:
+	// mirrored by mcp.tvGoal (tools_taskvisor.go), guarded by
+	// TestGoalTvGoalYamlTagParity.
+	DeliverableArea string `yaml:"deliverable_area,omitempty"`
 
 	// Priority biases dispatch order: RunnableCandidates sorts its output by
 	// Priority DESCENDING with a stable file-order tiebreak, so a higher-priority
@@ -538,6 +563,36 @@ func (gf *GoalsFile) RunnableCandidates() []*Goal {
 	// (default) candidate set is reordered as a no-op — preserving today's
 	// byte-identical file-order dispatch. Reorders the pointer slice only, never
 	// the backing gf.Goals.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Priority > out[j].Priority })
+	return out
+}
+
+// ElaborationCandidates returns the GoalRoadmap goals whose deps are satisfied
+// and which are not precondition-parked — the skeleton goals ready to be specced
+// against the now-real tree (Tier-2 elaboration). It is the exact sibling of
+// RunnableCandidates: same dependency + precondition gate, same Priority-desc
+// stable-file-order sort, differing ONLY in the status it admits (GoalRoadmap vs
+// GoalPending). DependsOnSatisfied is the single source of "predecessors are real
+// now", reused verbatim — an elaborator dispatched from here reads a worktree in
+// which its producers have already merged. Pure read over gf.Goals (no mutation,
+// no lock — caller holds the poll flock). Empty for any legacy fully-specced
+// goals.yaml (no GoalRoadmap rows), so it is inert until the roadmap generator
+// emits skeletons.
+func (gf *GoalsFile) ElaborationCandidates() []*Goal {
+	var out []*Goal
+	for i := range gf.Goals {
+		g := &gf.Goals[i]
+		if g.Status != GoalRoadmap {
+			continue
+		}
+		if g.BlockedByPrecondition {
+			continue
+		}
+		if !g.DependsOnSatisfied(gf.Goals) {
+			continue
+		}
+		out = append(out, g)
+	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Priority > out[j].Priority })
 	return out
 }

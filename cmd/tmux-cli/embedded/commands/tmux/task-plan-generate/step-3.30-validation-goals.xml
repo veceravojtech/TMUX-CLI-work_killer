@@ -1,48 +1,44 @@
     <step n="3.30" title="Generate per-phase validation goals (validation-as-goal)">
-      <rule critical="true">This step implements the validation-as-goal model: the HEAVY validate stack (phpunit integration, deptrac, phpstan L9, kernel boot) must NOT live inline on the implementation goals — it moves into DEDICATED validation goals emitted here. An implementation goal keeps only a LIGHT presence validate (build + file-presence greps) so the every-goal-has-≥1-validate mandate (RC-A) still holds.</rule>
+      <rule critical="true">This step implements the validation-as-goal model: the HEAVY validate stack (phpunit integration, deptrac, phpstan L9, kernel boot) lives in DEDICATED validation goals, never inline on the implementation goals. Under roadmap-only emission (two-tier, design §5) the validation goal is emitted as a SKELETON — /tmux:elaborate authors its heavy validate stack + acceptance + investigators at dispatch against the real cluster output. The impl goals' own validate (a LIGHT presence check) is likewise authored at their elaboration, so there is nothing to "move off" them at roadmap time.</rule>
       <rule critical="true">A validation goal is terminal-to-itself in the daemon: it sets `validates:` = the impl goal id it gates, so CascadeFailure short-circuits on it — a red validation goal NEVER cascade-blocks the implementer it validates nor any unrelated downstream impl goal. This is why heavy checks are safe to decouple here.</rule>
       <rule critical="true">Emit ONE validation goal per PHASE-CLUSTER (the set of impl goals sharing a phase), not one per impl goal — a single validation goal runs the phase's heavy stack against the cluster's combined deliverables.</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): this shard emits validation-goal SKELETONS. The heavy validate[]/acceptance/investigation_config they used to author are now authored at dispatch by /tmux:elaborate (§6), which authors a HEAVY stack for a goal carrying `validates:` (vs a LIGHT presence validate for an ordinary impl goal). This shard keeps ONLY enumeration: which clusters exist, each validation goal's `validates:` target, its depends_on (the whole cluster), its phase, priority, and a coarse deliverable_area. -->
 
       <substep n="3.30.1" title="Group implementation goals by phase-cluster">
         <action>Read goals.yaml from disk. Build PHASE_CLUSTERS — a map of phase → ordered list of impl goal IDs in that phase. EXCLUDE phase=gate and phase=scaffold (they carry their own gate checks) and EXCLUDE any goal already carrying `validates:` (never validate a validation goal).</action>
         <action>For each cluster, designate PRIMARY_IMPL = the first (lowest-ordinal) impl goal ID in the cluster — this becomes the validation goal's `validates:` target.</action>
         <check condition="a phase-cluster has zero heavy checks to run (pure config/docs phase)">
-          <action>Skip emitting a validation goal for that cluster — do not emit an empty-validate validation goal.</action>
+          <action>Skip emitting a validation goal for that cluster — do not emit a validation goal for a phase whose deliverables warrant no heavy stack (e.g. a pure docs/dx phase). Use the phase's nature, not an authored validate array (which does not exist at roadmap time), to decide: emit a validation goal only for phases that produce code requiring a heavy suite (domain, application, infrastructure, action, auth, event_listener, error_handling). When in doubt, emit (the elaborator can author a minimal heavy stack).</action>
         </check>
       </substep>
 
-      <substep n="3.30.2" title="Move heavy checks off the impl goals (keep light presence validate)">
-        <action>For each impl goal in a cluster, ensure its `validate[]` retains ONLY light presence checks (e.g. `go build ./...` or `composer dump-autoload`, plus `test -f`/grep file-presence on its deliverables). The heavy suite (phpunit integration, deptrac, phpstan analyse --level=9, kernel boot smoke) is what the validation goal will own — do NOT duplicate it on the impl goal.</action>
-        <rule>Every impl goal MUST still carry ≥1 validate after this move (RC-A). If trimming would empty the array, leave a single build/presence check in place.</rule>
+      <substep n="3.30.2" title="Derive the cluster's coarse deliverable_area">
+        <action>For each cluster, set VAL_AREA = a COARSE deliverable path representative of the cluster's combined footprint — the phase's deliverable root in the resolved topology (e.g. for a per-BC phase the common ancestor `contexts/`, for a cross-cutting phase the deployable's relevant dir such as `projects/{app}/src/Http/`). VAL_AREA MUST be non-empty (the elaborator requires a deliverable_area to seed its tree read; an empty one makes the validation goal un-elaboratable). It is the elaborator's anchor — the precise heavy-check footprint is the union of the cluster impl goals' real deliverables, which the elaborator reads from the cluster (the validation goal already depends_on every cluster member).</action>
+        <rule>Do NOT author any heavy validate[]/acceptance/investigators here — those are Tier-2 (/tmux:elaborate, which authors a HEAVY stack because the goal carries `validates:`). The skeleton commits only to the coarse VAL_AREA + the cluster wiring.</rule>
       </substep>
 
-      <substep n="3.30.3" title="Compose the validation goal's heavy validate[] and acceptance">
-        <action>For each cluster, build HEAVY_VALIDATE — the phase-appropriate heavy commands (e.g. `vendor/bin/phpunit --testsuite=integration`, `vendor/bin/deptrac analyse --fail-on-uncovered`, `vendor/bin/phpstan analyse --level=9`, a kernel-boot smoke test). Build ACCEPTANCE mirroring those checks ("integration suite green", "no deptrac violations", "phpstan L9 clean", "kernel boots").</action>
-        <rule>HEAVY_VALIDATE must be non-empty — a validation goal with no heavy checks is pointless (see 3.30.1 skip).</rule>
-      </substep>
-
-      <substep n="3.30.4" title="Call goal-create MCP for the validation goal">
-        <action>For each cluster, call the goal-create MCP tool with these parameters:</action>
+      <substep n="3.30.3" title="Call goal-create MCP for the validation goal (roadmap skeleton)">
+        <action>For each cluster, call the goal-create MCP tool with a roadmap SKELETON:</action>
         <params>
           <param name="description">Validate {{PHASE}} — heavy checks (phpunit/deptrac/phpstan/kernel)</param>
-          <param name="acceptance">ACCEPTANCE array from substep 3.30.3</param>
-          <param name="validate">HEAVY_VALIDATE array from substep 3.30.3</param>
-          <param name="context">CONTEXT: "Dedicated validation goal for the {{PHASE}} phase-cluster (validation-as-goal model). Runs the heavy validate stack decoupled from implementation so it never stalls an implementer's supervising cycle. Validates the cluster's combined deliverables; terminal-to-itself (a red verdict here blocks nothing downstream)."</param>
-          <param name="investigation_config">2–4 investigators of type test-execution / static-analysis / architecture-check matching HEAVY_VALIDATE (one per heavy check class).</param>
-          <param name="depends_on">ALL impl goal IDs in the cluster (PHASE_CLUSTERS[phase]) — the validation goal runs only AFTER every implementer in the phase is Done.</param>
-          <param name="priority">50 — ELEVATED above the default 0 so the validation goal is dispatched ahead of lower-priority pending work once its dependencies clear.</param>
           <param name="phase">{{PHASE}}</param>
+          <param name="deliverable_area">VAL_AREA from substep 3.30.2 (coarse cluster footprint)</param>
+          <param name="depends_on">ALL impl goal IDs in the cluster (PHASE_CLUSTERS[phase]) — the validation goal runs only AFTER every implementer in the phase is Done.</param>
+          <param name="validates">PRIMARY_IMPL (the cluster's primary impl goal id) — the discriminator the daemon reads (IsValidationGoal) to make the goal terminal-to-itself.</param>
+          <param name="priority">50 — ELEVATED above the default 0 so the validation goal is dispatched ahead of lower-priority pending work once its dependencies clear.</param>
+          <param name="status">roadmap</param>
           <param name="max_retries">3</param>
         </params>
-        <rule critical="true">The created validation goal MUST carry `validates:` = PRIMARY_IMPL (the cluster's primary impl goal id). This is the discriminator the daemon reads (IsValidationGoal) to make the goal terminal-to-itself. If the goal-create MCP tool does not accept a `validates` parameter in this runtime, set it on the goal in goals.yaml immediately after creation so the field is persisted — without it the daemon treats the goal as ordinary and the cascade isolation is lost.</rule>
+        <rule critical="true">The created validation goal MUST carry `validates:` = PRIMARY_IMPL. This is the discriminator the daemon reads (IsValidationGoal) to make the goal terminal-to-itself AND the signal /tmux:elaborate reads to author a HEAVY validate stack instead of a light presence check. If the goal-create MCP tool does not accept a `validates` parameter in this runtime, set it on the goal in goals.yaml immediately after creation so the field is persisted — without it the daemon treats the goal as ordinary and the cascade isolation is lost.</rule>
         <rule>depends_on MUST list EVERY impl goal in the cluster — never a subset (the heavy stack validates the whole cluster's combined output).</rule>
         <rule>priority elevated (≥50) and phase set to the cluster's phase so ordering verification (Step 4) keeps it adjacent to the impl goals it validates.</rule>
+        <rule critical="true">NO validate/acceptance/scope/context/investigation_config params — roadmap skeleton; /tmux:elaborate authors the heavy stack at dispatch (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
 
         <check condition="goal-create returns error">
           <action>Print error with full context and ABORT.</action>
         </check>
         <check condition="goal-create succeeds">
-          <action>Print: "Validation goal created: goal-{{VAL_GOAL_ID}} (phase={{PHASE}}, validates=goal-{{PRIMARY_IMPL}}, depends_on={{PHASE_CLUSTERS[phase]}}, priority=50) — heavy checks decoupled from implementation."</action>
+          <action>Print: "Validation skeleton created: goal-{{VAL_GOAL_ID}} (phase={{PHASE}}, status=roadmap, validates=goal-{{PRIMARY_IMPL}}, depends_on={{PHASE_CLUSTERS[phase]}}, priority=50, deliverable_area={{VAL_AREA}})"</action>
           <action>Proceed to the next cluster; when all clusters are emitted, proceed to the next step.</action>
         </check>
       </substep>

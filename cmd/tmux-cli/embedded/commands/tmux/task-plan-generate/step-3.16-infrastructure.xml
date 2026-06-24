@@ -2,214 +2,49 @@
       <rule critical="true">Steps 0-2 must have completed successfully (goal-001 and goal-002 created, plus domain and application goals for all BCs) before this step executes.</rule>
       <rule critical="true">All inputs are read from docs/architecture/* files and templates on disk — never from conversation context (G-16).</rule>
       <rule critical="true">One infrastructure goal per BC, phase=infrastructure. Each depends_on its own BC's application goal ID.</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): this shard emits one roadmap SKELETON per BC. The concrete fields it used to author — PI-01..PI-18 acceptance, the validate commands, the 3-4 investigators, fan-out hints, not-in-scope, scope globs, the triad branches — and the per-goal [CODE-RULE-INJECTION] are now authored at dispatch by /tmux:elaborate against the real tree (design §6). This shard keeps ONLY enumeration: one goal per BC, each goal's phase, its depends_on (own BC's application goal), and its coarse deliverable_area. -->
 
-      <substep n="3.16.1" title="Resolve infrastructure templates">
-        <action>Read the infrastructure layer goal template:</action>
-        <lookup>
-          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/infrastructure.md" label="overlay"/>
-          <fallback path=".tmux-cli/templates/_base/infrastructure.md" label="base"/>
-        </lookup>
-        <action>Store as INFRA_TEMPLATE. Record which tier was used.</action>
-
-        <action>Read the context-mapping template for ACL adapter patterns:</action>
-        <lookup>
-          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/context-mapping.md" label="overlay"/>
-          <fallback path=".tmux-cli/templates/_base/context-mapping.md" label="base"/>
-        </lookup>
-        <action>Store as CONTEXT_MAP_TEMPLATE. Record which tier was used.</action>
-
-        <action>Read the fixtures template for integration test setUp pattern:</action>
-        <lookup>
-          <try path=".tmux-cli/templates/{{LANG}}-{{FRAMEWORK}}/fixtures.md" label="overlay"/>
-          <fallback path=".tmux-cli/templates/_base/fixtures.md" label="base"/>
-        </lookup>
-        <action>Store as FIXTURES_TEMPLATE. Record which tier was used.</action>
+      <substep n="3.16.1" title="Resolve BC list">
+        <action>Reuse BC_LIST from Step 0 (the level-3 headings under "## Bounded Context Inventory" in docs/architecture/bounded-contexts.md). If unavailable, re-read it from disk (G-16). No template resolution or entity/VO/ACL extraction is needed at roadmap time — those fed concrete fields the elaborator now authors.</action>
       </substep>
 
-      <substep n="3.16.2" title="Read architecture inputs">
-        <action>Read the following files and extract structured data per BC:</action>
-        <reads>
-          <read file="docs/architecture/bounded-contexts.md">
-            <extract what="BC_LIST">All level-3 headings under "## Bounded Context Inventory" — the BC names. Reuse from Step 0 if available.</extract>
-          </read>
-          <read file="docs/architecture/domain-model.md">
-            <extract what="ENTITY_MAP">For each BC, collect all aggregate roots, entities, and value objects. Count entities per BC (aggregate roots + child entities) for fan-out heuristic.</extract>
-            <extract what="VO_TYPE_MAP">For each BC, identify value objects needing custom DBAL types — those wrapping compound data (Money = amount+currency), custom formats (Email with validation), or enums. Simple ID string VOs that map to VARCHAR do not need custom types.</extract>
-            <extract what="AGGREGATE_PATTERN">Read the recorded {{aggregate_pattern_decision}} from domain-model.md's "## Aggregate Implementation Triad — previo2" section (surfaced by task-plan-discover; do NOT re-ask discovery). Set AGGREGATE_PATTERN = triad when the recorded value is the previo2 monorepo default ("previo2 triad") OR the section describes each aggregate as root + #[AggregateDAO] &lt;X&gt;Data + readonly &lt;X&gt;DTO. Set AGGREGATE_PATTERN = classic ONLY when the recorded value is explicitly "classic" (non-monorepo php). Missing/absent ⇒ default to triad per the discovery default. Must agree with the domain shard's resolution for the same project.</extract>
-          </read>
-          <read file="docs/architecture/context-map.md" condition="multi-BC project (BC_LIST.length > 1)">
-            <extract what="CROSS_BC_DEPS">For each BC, find relationships where this BC is the consumer (downstream). Collect the upstream BC name for ACL adapter generation.</extract>
-          </read>
-        </reads>
-        <rule>For single-BC projects, CROSS_BC_DEPS is empty for every BC — no ACL adapters needed (D-27).</rule>
-      </substep>
-
-      <substep n="3.16.3" title="Iterate BCs and generate infrastructure goals">
+      <substep n="3.16.2" title="Iterate BCs and emit infrastructure goal skeletons">
         <action>For each BC in BC_LIST (in dependency order from bounded-contexts.md):</action>
 
         <per-bc>
-          <action>Look up this BC's application goal ID from previously generated goals. Store as APP_GOAL_ID.</action>
+          <action>Look up this BC's application goal ID from previously generated goals (goals.yaml, phase=application, this BC). Store as APP_GOAL_ID. MUST be dynamically resolved — never hardcoded (G-03).</action>
+          <action>Set INFRA_AREA = contexts/{BC}/src/Bundle/ — the Bundle (infrastructure) layer directory for this BC in the resolved monorepo topology. COARSE deliverable path (depinfer seed + elaborator tree-read anchor), NOT a glob, NOT a per-file path.</action>
 
-          <action>Collect from ENTITY_MAP: aggregate names ({aggregate_list}), entity names ({entity_list}), entity count ({entity_count}).</action>
-          <action>Collect from VO_TYPE_MAP: VOs needing DBAL types ({vo_type_list}). May be empty.</action>
-          <action>Collect from CROSS_BC_DEPS: upstream BCs this BC consumes from ({acl_list}). May be empty.</action>
-
-          <action>Determine fan-out hint: if entity_count > 3 → multi-task (task-0 for shared infra: services.yaml, base DBAL types; task-1..N per aggregate: mapping + repo + tests; task-last: migration from all mappings + ACL adapters (depends on all per-aggregate tasks)). Otherwise → single-task.</action>
-
-          <action>Build ACCEPTANCE array parameterized for this BC:</action>
-          <criteria>
-            <item id="PI-01">Doctrine XML mapping exists for every aggregate root and entity: {entity_list}</item>
-            <item id="PI-02">XML mappings live in contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/</item>
-            <item id="PI-03">No Doctrine annotations/attributes anywhere in contexts/{BC}/src/Domain/ or contexts/{BC}/src/Application/</item>
-            <item id="PI-04">Write repository implements {RepoInterface} from Domain layer</item>
-            <item id="PI-05">Write repository lives in contexts/{BC}/src/Bundle/Domain/Persistence/</item>
-            <item id="PI-06">Write repository dispatches domain events after flush (flush-then-dispatch pattern)</item>
-            <item id="PI-07">Read model repository implements Application read model interface</item>
-            <item id="PI-08" condition="vo_type_list non-empty">Custom DBAL types created for: {vo_type_list}, registered in Doctrine config</item>
-            <item id="PI-09">doctrine:schema:validate passes</item>
-            <item id="PI-10">Migration generated via doctrine:migrations:diff and applies cleanly</item>
-            <item id="PI-11">Integration tests use real test database, no mock() calls on repositories</item>
-            <item id="PI-12">Integration tests reset DB state via doctrine:fixtures:load --group=test before each test</item>
-            <item id="PI-13">Integration tests cover: persist + retrieve aggregate, query methods, edge cases</item>
-            <item id="PI-14">Integration tests run green: vendor/bin/phpunit --filter={BC}\\Bundle passes</item>
-            <item id="PI-15">contexts/{BC}/config/services.yaml (or DI extension) binds interfaces to implementations</item>
-            <item id="PI-16" condition="acl_list non-empty">ACL adapters exist for cross-BC dependencies: {acl_list} in contexts/{BC}/src/Bundle/Application/Acl/</item>
-            <triad-branch condition="AGGREGATE_PATTERN == triad">
-              <action>ADDITIVELY append previo2-triad infrastructure acceptance — PI-01..PI-16 above are PRESERVED; emit PI-17/PI-18 ONLY when the discovery flag resolved to triad (classic projects skip this block):</action>
-              <item id="PI-17">Doctrine XML mapping targets the {Aggregate}Data DAO (the #[AggregateDAO] class holding persisted state), NOT the aggregate root — one {Aggregate}Data.orm.xml per aggregate maps the Data, the root stays persistence-ignorant</item>
-              <item id="PI-18">Query/read-model repositories return readonly {Aggregate}DTO projections, never hydrated aggregate roots — reads project through the DTO</item>
-            </triad-branch>
-          </criteria>
-          <rule>Include PI-08 only when vo_type_list is non-empty. Include PI-16 only when acl_list is non-empty. All other criteria are always present.</rule>
-
-          <action>Build VALIDATE array:</action>
-          <commands>
-            <cmd source="PI-09">bin/console doctrine:schema:validate</cmd>
-            <cmd source="PI-14">vendor/bin/phpunit --filter={BC}\\Bundle</cmd>
-            <cmd source="PI-03">grep -r '@ORM\|@Entity\|#\[ORM' contexts/{BC}/src/Domain contexts/{BC}/src/Application | wc -l</cmd>
-            <cmd source="PI-01">test -d contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/ &amp;&amp; ls contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/*.xml | wc -l</cmd>
-            <triad-branch condition="AGGREGATE_PATTERN == triad">
-              <action>ADDITIVELY append a previo2-triad validate command — the classic cmds above are PRESERVED; emits ONLY when the discovery flag resolved to triad:</action>
-              <cmd source="PI-17">grep -rl '{Aggregate}Data' contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/ (must return ≥1 — the XML mapping targets the {Aggregate}Data DAO, the #[AggregateDAO] class, NOT the aggregate root)</cmd>
-            </triad-branch>
-          </commands>
-          <rule>Validate command for PI-03 must return 0 (zero annotation leaks). All other commands must exit 0.</rule>
-
-          <action>Build CONTEXT string with Investigation Config:</action>
-          <section name="purpose">
-Infrastructure (Bundle layer) goal for {BC}: Doctrine XML mappings, repository implementations, migrations, custom DBAL types, ACL adapters, and integration tests with real DB. Concrete persistence lives under contexts/{BC}/src/Bundle/{Domain,Application}; per-context wiring in contexts/{BC}/config; migrations under contexts/{BC}/migrations.
-Aggregates: {aggregate_list}. Entities: {entity_list}.
-VOs needing DBAL types: {vo_type_list} (or "none").
-Cross-BC dependencies (ACL adapters needed): {acl_list} (or "none — single-BC or no inbound deps").
-Persistence shape — flush-then-dispatch write repos, write-vs-read-query repository split, custom DBAL types, and "no Doctrine in Domain/Application" — is catalogue-owned: read code-rules php-symfony/ddd-conventions.md §Infrastructure (+ §Domain repository contract); enforced by PHP-PERS-001/002/003/004. Do not restate it inline.
-See docs/architecture/test-environment.md for DB config. Fixtures reset via doctrine:fixtures:load --group=test.
-Infrastructure template: .tmux-cli/templates/_base/infrastructure.md.
-ACL adapter pattern: .tmux-cli/templates/php-symfony/context-mapping.md (Messenger query bus).
-          </section>
-
-          <section name="fan-out-hints" condition="entity_count > 3">
-            <task n="0" name="Shared infrastructure" prerequisite="true">
-              <scope>services.yaml interface bindings, base DBAL types (if any), shared config</scope>
-              <criteria>PI-15, PI-08</criteria>
-              <owns>contexts/{BC}/config/services.yaml, contexts/{BC}/src/Bundle/Domain/Persistence/Type/</owns>
-              <depends_on>none (first task)</depends_on>
-            </task>
-            <task n="1..N" name="Per-aggregate" parallel="true">
-              <scope>XML mapping + write repo + read repo + integration tests for one aggregate</scope>
-              <criteria>PI-01, PI-02, PI-04, PI-05, PI-06, PI-07, PI-11..PI-14</criteria>
-              <owns>contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/{Aggregate}.orm.xml, contexts/{BC}/src/Bundle/Domain/Persistence/{Aggregate}Repository.php, contexts/{BC}/tests/Integration/</owns>
-              <depends_on>task-0</depends_on>
-            </task>
-            <task n="last" name="Migration + ACL" depends-on-all="true">
-              <scope>Generate migration from all mappings, ACL adapters (if any)</scope>
-              <criteria>PI-09, PI-10, PI-16</criteria>
-              <owns>contexts/{BC}/migrations/, contexts/{BC}/src/Bundle/Application/Acl/</owns>
-              <depends_on>all per-aggregate tasks (needs all mappings before diff)</depends_on>
-            </task>
-            <rule>File-disjoint: task-0 owns config/types, task-1..N own per-aggregate files, task-last owns migrations+ACL. Zero overlap.</rule>
-          </section>
-
-          <section name="investigation-config">
-            <investigator n="1" name="Schema validation">
-              <type>environment-check</type>
-              <commands>bin/console doctrine:schema:validate</commands>
-              <pass>Exit 0 — all XML mappings valid, schema in sync</pass>
-              <fail>Mapping errors or schema drift</fail>
-            </investigator>
-
-            <investigator n="2" name="No annotation leak">
-              <type>quality-gate</type>
-              <commands>grep -r '@ORM\|@Entity\|#\[ORM' contexts/{BC}/src/Domain contexts/{BC}/src/Application | wc -l</commands>
-              <pass>Count is 0 — no Doctrine annotations outside the Bundle (infrastructure) layer</pass>
-              <fail>Non-zero count — annotations found in Domain or Application layer</fail>
-            </investigator>
-
-            <investigator n="3" name="Integration tests">
-              <type>test-execution</type>
-              <commands>vendor/bin/phpunit --filter={BC}\\Bundle</commands>
-              <pass>Exit 0 AND run is non-empty (test count present, NOT "No tests executed!"), all tests green</pass>
-              <fail>Test failures or errors</fail>
-            </investigator>
-
-            <investigator n="4" type="conditional" condition="acl_list non-empty">
-              <name>ACL adapter presence</name>
-              <type>file-check</type>
-              <commands>test -d contexts/{BC}/src/Bundle/Application/Acl/ &amp;&amp; ls contexts/{BC}/src/Bundle/Application/Acl/*ACLAdapter.php | wc -l</commands>
-              <triad-branch condition="AGGREGATE_PATTERN == triad">
-                <action>ADDITIVELY extend THIS investigator's Commands/Pass/Fail with a previo2-triad DAO-mapping presence assertion — do NOT add a 5th investigator (keeps investigation_config within the documented 2–4 cap):</action>
-                <commands-extra>grep -rl '{Aggregate}Data' contexts/{BC}/src/Bundle/Domain/Persistence/Doctrine/Mapping/ (must return ≥1 — the Doctrine XML maps the {Aggregate}Data DAO, the #[AggregateDAO] class, NOT the aggregate root)</commands-extra>
-                <pass-extra>AND (triad) every aggregate's Doctrine XML mapping targets its {Aggregate}Data DAO (not the root) and query repos return {Aggregate}DTO</pass-extra>
-                <fail-extra>OR (triad) a mapping still targets the aggregate root instead of {Aggregate}Data, or query repos return hydrated roots instead of DTOs</fail-extra>
-              </triad-branch>
-              <pass>File count matches number of cross-BC dependencies</pass>
-              <fail>Missing ACL adapter for one or more dependencies</fail>
-            </investigator>
-
-            <rule>Minimum 3 investigators (Schema + Annotations + Tests). 4th (ACL) only when cross-BC deps exist (GM-08); when AGGREGATE_PATTERN == triad its Commands/Pass/Fail are EXTENDED with the triad DAO-mapping assertion above (never a 5th investigator). For a triad BC with no ACL deps where investigator 4 is absent, PI-17/PI-18 acceptance and the triad validate cmd remain the objective DAO-mapping gate.</rule>
-          </section>
-
-          <action>Set NOT_IN_SCOPE:</action>
-          <value>HTTP controllers, domain model changes, Application layer changes, E2E tests, Messenger transport config, fixtures (separate goal), hand-written migrations.</value>
-
-          <inject-code-rules title="Inject code rules (apply [CODE-RULE-INJECTION])">
-            <action>Bind RULE_FILES = the comma-joined deliverable paths for this BC's infrastructure layer (Persistence/mapping/repo/ACL/migration paths owned by this goal). Bind RULE_PHASE = `infrastructure` (this goal's phase token — pass it VERBATIM).</action>
-            <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array; copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array; add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT. Empty `rules` ⇒ inject nothing.</action>
-            <action>If `review` `validate_cmd`s exist, ADD ONE convention-audit investigator carrying ALL of them. Base set is 3 (Schema + Annotations + Tests), OR 4 when the conditional ACL file-check (investigator n=4, acl_list non-empty) is present. When base is already 4, apply the spine's 2–4 cap BEFORE adding: only when a `must` review rule applies, DROP the lowest keep-priority base investigator (drop order static-analysis → architecture-check → quality-gate → test-execution; the ACL `file-check` and `environment-check`/`quality-gate`/`test-execution` floor follow that order — never drop below 2); else do not add the investigator (review rules ride the goal.md line + spec citation).</action>
-            <rule>Copy pre-rendered payload fields VERBATIM — no agent-side glob/severity logic. PRESERVE the Schema/Annotations/Tests investigators and the ACL file-check condition; final investigation_config length stays within [2,4].</rule>
-          </inject-code-rules>
-
-          <action>Call goal-create MCP tool:</action>
+          <action>Call goal-create MCP tool with a roadmap SKELETON:</action>
           <params>
             <param name="description">Implement {BC} infrastructure: Doctrine XML mappings, repos, migration, integration tests</param>
-            <param name="acceptance">ACCEPTANCE array (14-16 items from PI-01..PI-16, conditional on vo_type_list and acl_list)</param>
-            <param name="validate">VALIDATE array (4 commands)</param>
-            <param name="context">CONTEXT string (purpose + fan-out hints if entity_count > 3)</param>
-            <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from this goal's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
-            <param name="not_in_scope">NOT_IN_SCOPE</param>
+            <param name="phase">infrastructure</param>
+            <param name="deliverable_area">INFRA_AREA (coarse, e.g. contexts/{BC}/src/Bundle/)</param>
+            <param name="depends_on">[APP_GOAL_ID] — each infrastructure goal depends on its own BC's application goal.</param>
+            <param name="status">roadmap</param>
             <param name="max_retries">3</param>
-            <param name="scope">SCOPE array — see the &lt;scope-derivation&gt; rule in the spine &lt;conventions&gt; block. Derive from this BC's infrastructure Deliverables: emit ["contexts/{BC}/src/Bundle/**","contexts/{BC}/config/**","contexts/{BC}/migrations/**"] plus any distinct mapping/migration dirs the deliverables touch. Single-BC infrastructure footprint ⇒ disjoint from other BCs ⇒ co-schedulable under MaxGoals&gt;1.</param>
           </params>
           <rule>Description is parameterized with BC name — must stay under 120 chars (MaxGoalDescriptionLength).</rule>
           <rule>max_retries=3 — infrastructure goals have focused scope per BC.</rule>
-          <rule>depends_on=[APP_GOAL_ID] — each infrastructure goal depends on its own BC's application goal.</rule>
+          <rule critical="true">NO acceptance/validate/scope/context/investigation_config/not_in_scope params — roadmap skeleton; /tmux:elaborate authors every concrete field (including PI-08/PI-16/triad conditionals against the REAL tree) at dispatch (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
 
           <check condition="goal-create returns error">
             <action>Print error with full context and ABORT.</action>
           </check>
           <check condition="goal-create succeeds">
-            <action>Print: "{BC} infrastructure created: goal-{NNN} (phase=infrastructure, depends_on=[{APP_GOAL_ID}]) with {investigator_count} investigators, fan-out={fan_out_hint}, max_retries=3"</action>
+            <action>Print: "{BC} infrastructure skeleton created: goal-{NNN} (phase=infrastructure, status=roadmap, depends_on=[{APP_GOAL_ID}], deliverable_area={INFRA_AREA})"</action>
           </check>
         </per-bc>
       </substep>
 
-      <substep n="3.16.4" title="Verify infrastructure goal count">
+      <substep n="3.16.3" title="Verify infrastructure goal count">
         <action>After all BC iterations complete, verify that exactly len(BC_LIST) infrastructure goals were created.</action>
         <check condition="goal count mismatch">
           <action>Print error: "Expected {bc_count} infrastructure goals, created {actual_count}. Missing BCs: {missing_list}"</action>
           <action>ABORT.</action>
         </check>
         <check condition="goal count matches">
-          <action>Print: "Infrastructure generation complete: {bc_count} goals created (goal-{first_id}..goal-{last_id}), all phase=infrastructure"</action>
+          <action>Print: "Infrastructure generation complete: {bc_count} goals created (goal-{first_id}..goal-{last_id}), all phase=infrastructure, status=roadmap"</action>
           <action>Proceed to Step 3.17 (Fixtures).</action>
         </check>
       </substep>

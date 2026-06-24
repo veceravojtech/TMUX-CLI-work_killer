@@ -90,12 +90,28 @@ func TestDiscoveryTemplate_SeedAdminPlaceholders(t *testing.T) {
 func TestGenerate_SeedStepEmitsDevEnvGoal(t *testing.T) {
 	step := step319a(t)
 
-	assert.Contains(t, step, "bin/console app:seed-admin --env=dev",
-		"Step 3.19a must run the seed command against the dev env")
+	// Two-tier (director redesign §5): the seed goal is a Tier-1 roadmap
+	// skeleton. The concrete `bin/console app:seed-admin --env=dev` validate
+	// command is authored at dispatch by /tmux:elaborate (§6) — but the skeleton
+	// still pins the dev-env intent in its description and carries the roadmap
+	// contract (status=roadmap + phase=seed + deliverable_area + depends_on).
+	assert.Contains(t, step, "Seed default admin in dev",
+		"the seed skeleton's description must pin the dev-env intent")
+	assert.Contains(t, step, "app:seed-admin",
+		"the seed skeleton must name the seed command in its description")
+	assert.Contains(t, step, `<param name="status">roadmap`,
+		"the seed goal is a roadmap skeleton")
+	assert.Contains(t, step, `<param name="deliverable_area">`,
+		"the seed skeleton carries a coarse deliverable_area")
+	assert.Contains(t, step, `<param name="depends_on">`,
+		"the seed skeleton wires depends_on")
 	assert.Contains(t, step, "phase=seed",
 		"the seed goal must carry phase=seed")
 	assert.Contains(t, step, "max_retries", "the seed goal must set max_retries")
 	assert.Contains(t, step, "2", "the seed goal must use max_retries=2")
+	// the concrete --env=dev validate command is Tier-2 now, never authored here.
+	assert.NotContains(t, step, "app:seed-admin --env=dev",
+		"the --env=dev validate command is authored at dispatch by /tmux:elaborate")
 }
 
 func TestGenerate_SeedStepNotEnvTest(t *testing.T) {

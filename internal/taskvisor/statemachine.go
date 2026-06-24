@@ -103,8 +103,25 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 		return nil
 	}
 
+	// (2b) Drive every mid-elaboration roadmap goal: COMPLETION when the elaborator
+	// flipped it out of GoalRoadmap (to GoalPending via goal-edit) or a fail-safe
+	// BLOCK on timeout. Runs after the running drive and before the budget is
+	// computed so freed slots are reflected this tick. Inert (empty runtime set) for
+	// any goals.yaml with no roadmap goals — byte-identical to before.
+	if changed, err := d.driveElaboratingGoals(goals); err != nil {
+		return err
+	} else if changed {
+		if err := SaveGoals(d.workDir, goals); err != nil {
+			return err
+		}
+	}
+
 	// (3) Free dispatch budget for this tick.
 	free := d.maxGoals() - len(runningAtStart)
+	// Goals mid-elaboration occupy a worker slot just like running goals, so they
+	// draw down the SAME budget — without this the daemon could over-commit slots
+	// across the impl and elaboration dispatch passes. Empty for legacy plans.
+	free -= len(d.elaboratingGoalIDs())
 
 	// (3b) Per-goal wall-clock cost ceiling (P3). Evaluated ONCE per tick at the
 	// dispatch boundary, immediately BEFORE the free-slot gate so a fully-saturated
@@ -157,6 +174,30 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 		}
 	}
 
+	// (4b) Elaboration dispatch: fill remaining budget with GoalRoadmap candidates
+	// not already mid-elaboration. Each /tmux:elaborate worker consumes a slot like
+	// an impl dispatch. ElaborationCandidates is empty for any legacy fully-specced
+	// goals.yaml, so this loop is inert until the roadmap generator emits skeletons —
+	// the property that lets the wiring ship without disturbing existing plans.
+	if free > 0 {
+		elaborating := make(map[string]bool, len(d.elaboratingGoalIDs()))
+		for _, id := range d.elaboratingGoalIDs() {
+			elaborating[id] = true
+		}
+		for _, cand := range goals.ElaborationCandidates() {
+			if free <= 0 {
+				break
+			}
+			if elaborating[cand.ID] {
+				continue
+			}
+			if err := d.dispatchElaborate(cand, goals); err != nil {
+				return err
+			}
+			free--
+		}
+	}
+
 	// Stack-gate skip counter: after the dispatch loop, count runnable
 	// stack-consuming candidates that were NOT admitted due to an in-flight
 	// stack-consumer. Keeps DisjointReadySet pure (no side-channel metadata).
@@ -195,8 +236,12 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 	// this is the same condition the old GoalDone/Failed branch reached via
 	// NextPendingGoal()==false. deactivateOnCompletion self-guards on resumable
 	// parks / recoverable cascade blocks / AllResolved, so a parked-but-not-done
-	// goals.yaml stays active (the old GoalBlocked idle branch).
-	if !goals.AnyRunning() && len(goals.RunnableCandidates()) == 0 && !d.recurringActive() {
+	// goals.yaml stays active (the old GoalBlocked idle branch). Roadmap work keeps
+	// the daemon active too: an un-elaborated candidate or a goal mid-elaboration is
+	// pending work, so neither may trip teardown (both empty for legacy plans).
+	if !goals.AnyRunning() && len(goals.RunnableCandidates()) == 0 &&
+		len(goals.ElaborationCandidates()) == 0 && len(d.elaboratingGoalIDs()) == 0 &&
+		!d.recurringActive() {
 		return d.deactivateOnCompletion(goals)
 	}
 	return nil
@@ -234,6 +279,14 @@ func (d *Daemon) dispatchCandidate(goal *Goal, goals *GoalsFile) error {
 	if cur, ok := goals.GoalByID(goals.CurrentGoal); !ok || cur.Status != GoalRunning {
 		goals.CurrentGoal = goal.ID
 		d.currentGoal = goal.ID
+	}
+	// A GoalRoadmap candidate routes to Tier-2 elaboration, never to an
+	// implementer. The normal dispatch loop draws from RunnableCandidates
+	// (GoalPending only), so a roadmap goal does not reach here through that path;
+	// this is a defense-in-depth guard for any caller that hands dispatchCandidate
+	// a roadmap goal directly (documents the design §4.3 status routing).
+	if goal.Status == GoalRoadmap {
+		return d.dispatchElaborate(goal, goals)
 	}
 	if goal.NextDispatch == dispatchGeneration {
 		return d.dispatch(goal, goals)

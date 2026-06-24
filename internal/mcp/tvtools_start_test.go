@@ -46,7 +46,7 @@ func TestTaskvisorStart_NoPendingGoals(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
-	assert.Contains(t, err.Error(), "no pending goals")
+	assert.Contains(t, err.Error(), "no pending or roadmap goals")
 }
 
 func TestTaskvisorStart_NoGoalsFile(t *testing.T) {

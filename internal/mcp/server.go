@@ -380,17 +380,19 @@ func (s *Server) RecurringStopHandler(ctx context.Context, req *sdkmcp.CallToolR
 
 // GoalCreateInput defines the input schema for goal-create tool
 type GoalCreateInput struct {
-	Description string   `json:"description" jsonschema:"Goal description — what should be achieved (max 120 chars; use acceptance for detail)"`
-	Acceptance  []string `json:"acceptance,omitempty" jsonschema:"Acceptance criteria the goal must satisfy"`
-	Validate    []string `json:"validate" jsonschema:"Validation steps to verify the goal"`
-	Context     string   `json:"context,omitempty" jsonschema:"Background context for the goal"`
-	NotInScope  string   `json:"not_in_scope,omitempty" jsonschema:"What is explicitly out of scope"`
-	Phase       string   `json:"phase,omitempty" jsonschema:"Development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final)"`
-	MaxRetries  int      `json:"max_retries,omitempty" jsonschema:"Maximum retry attempts before failing (default 5)"`
-	DependsOn   []string `json:"depends_on,omitempty" jsonschema:"IDs of goals this goal depends on (must exist in goals.yaml)"`
-	Scope       []string `json:"scope,omitempty" jsonschema:"Declared file/namespace footprint (globs like internal/x/** or namespace prefixes like App\\Billing). The disjoint-scope co-scheduling gate serializes goals with overlapping or unknown scope under MaxGoals>1; omit to derive from deliverables (treated as unknown = serialize)"`
-	Priority    int      `json:"priority,omitempty" jsonschema:"Dispatch priority (higher = dispatched first; default 0)"`
-	Lane        string   `json:"lane,omitempty" jsonschema:"Validation lane: solo (cheap single-investigator gate, demoted to full on any failure) or full; empty defaults to full"`
+	Description     string   `json:"description" jsonschema:"Goal description — what should be achieved (max 120 chars; use acceptance for detail)"`
+	Acceptance      []string `json:"acceptance,omitempty" jsonschema:"Acceptance criteria the goal must satisfy"`
+	Validate        []string `json:"validate,omitempty" jsonschema:"Validation steps to verify the goal (required for a normal goal; OMIT for a status=roadmap skeleton — elaboration authors them later)"`
+	Status          string   `json:"status,omitempty" jsonschema:"Creation tier: omit for a normal pending goal, or 'roadmap' for a Tier-1 skeleton (no validate/acceptance/scope required; elaboration authors them at dispatch)"`
+	DeliverableArea string   `json:"deliverable_area,omitempty" jsonschema:"Coarse deliverable footprint for a roadmap skeleton (e.g. projects/api/src/Http/ErrorHandling/) that depinfer and elaboration read"`
+	Context         string   `json:"context,omitempty" jsonschema:"Background context for the goal"`
+	NotInScope      string   `json:"not_in_scope,omitempty" jsonschema:"What is explicitly out of scope"`
+	Phase           string   `json:"phase,omitempty" jsonschema:"Development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final)"`
+	MaxRetries      int      `json:"max_retries,omitempty" jsonschema:"Maximum retry attempts before failing (default 5)"`
+	DependsOn       []string `json:"depends_on,omitempty" jsonschema:"IDs of goals this goal depends on (must exist in goals.yaml)"`
+	Scope           []string `json:"scope,omitempty" jsonschema:"Declared file/namespace footprint (globs like internal/x/** or namespace prefixes like App\\Billing). The disjoint-scope co-scheduling gate serializes goals with overlapping or unknown scope under MaxGoals>1; omit to derive from deliverables (treated as unknown = serialize)"`
+	Priority        int      `json:"priority,omitempty" jsonschema:"Dispatch priority (higher = dispatched first; default 0)"`
+	Lane            string   `json:"lane,omitempty" jsonschema:"Validation lane: solo (cheap single-investigator gate, demoted to full on any failure) or full; empty defaults to full"`
 
 	Preconditions []taskvisor.Precondition `json:"preconditions,omitempty" jsonschema:"Optional precondition gates ({kind:env|service, spec, remedy}); daemon parks the goal until each is met"`
 
@@ -439,7 +441,19 @@ func (s *Server) GoalCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequ
 		}
 	}
 
-	output, err := s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.Phase, input.MaxRetries, input.DependsOn, input.Preconditions, investigators, input.Scope, input.Priority, input.Lane)
+	// status=roadmap routes to the skeleton creator (no validate/acceptance/scope);
+	// any other non-empty status is rejected with a typed ErrInvalidInput so the
+	// wire error matches the rest of the surface. Empty status is the normal goal.
+	var output *GoalCreateOutput
+	var err error
+	switch input.Status {
+	case "":
+		output, err = s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.Phase, input.MaxRetries, input.DependsOn, input.Preconditions, investigators, input.Scope, input.Priority, input.Lane)
+	case taskvisor.GoalRoadmap:
+		output, err = s.GoalCreateRoadmap(input.Description, input.Phase, input.DependsOn, input.DeliverableArea, input.Priority)
+	default:
+		return nil, GoalCreateOutput{}, fmt.Errorf("%w: invalid status %q; only %q (roadmap skeleton) or empty (pending) may be created", ErrInvalidInput, input.Status, taskvisor.GoalRoadmap)
+	}
 	if err != nil {
 		return nil, GoalCreateOutput{}, err
 	}
@@ -468,6 +482,42 @@ func (s *Server) GoalAddPrerequisiteHandler(ctx context.Context, req *sdkmcp.Cal
 	output, err := s.GoalAddPrerequisite(input.GoalID, input.PrerequisiteID)
 	if err != nil {
 		return nil, GoalAddPrerequisiteOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
+// GoalEditInput defines the input schema for goal-edit tool. Every editable
+// field is a POINTER so the wire distinguishes "omitted" (nil → leave untouched)
+// from "present" (set; an empty array/string clears it) — the tri-state the
+// Tier-2 elaborator needs to author concrete fields onto a roadmap skeleton
+// without disturbing daemon-owned durable state.
+type GoalEditInput struct {
+	GoalID          string    `json:"goal_id" jsonschema:"ID of the existing goal to edit (e.g. goal-005)"`
+	Acceptance      *[]string `json:"acceptance,omitempty" jsonschema:"Replace the goal's acceptance criteria (empty array clears; omit to leave untouched)"`
+	Validate        *[]string `json:"validate,omitempty" jsonschema:"Replace the goal's validation steps (empty array clears; omit to leave untouched)"`
+	Scope           *[]string `json:"scope,omitempty" jsonschema:"Replace the goal's file/namespace footprint globs (empty array clears; omit to leave untouched)"`
+	Status          *string   `json:"status,omitempty" jsonschema:"Set the goal's status — only roadmap, pending, or blocked (running/done/failed are daemon-owned and rejected); omit to leave untouched"`
+	DeliverableArea *string   `json:"deliverable_area,omitempty" jsonschema:"Replace the goal's coarse deliverable footprint (empty string clears; omit to leave untouched)"`
+	Phase           *string   `json:"phase,omitempty" jsonschema:"Refine the goal's development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final); omit to leave untouched"`
+}
+
+// GoalEditOutput defines the output schema for goal-edit tool.
+type GoalEditOutput struct {
+	ID     string `json:"id" jsonschema:"The edited goal's ID"`
+	Edited bool   `json:"edited" jsonschema:"True if the edit was applied"`
+	Status string `json:"status" jsonschema:"The goal's status after the edit"`
+}
+
+// GoalEditHandler is the MCP tool handler for goal-edit operation.
+func (s *Server) GoalEditHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input GoalEditInput) (
+	*sdkmcp.CallToolResult,
+	GoalEditOutput,
+	error,
+) {
+	output, err := s.GoalEdit(input.GoalID, input.Acceptance, input.Validate, input.Scope, input.Status, input.DeliverableArea, input.Phase)
+	if err != nil {
+		return nil, GoalEditOutput{}, err
 	}
 	result, out := prependStaleWarning(*output)
 	return result, out, nil
@@ -900,6 +950,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: false,
 		},
 	}, s.GoalAddPrerequisiteHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "goal-edit",
+		Description: "Edit an existing goal's authoring fields in goals.yaml (acceptance, validate, scope, status, deliverable_area, phase) by goal_id — the Tier-2 elaboration write-back primitive. Only provided fields change; an empty array/string clears a field, an omitted field is left untouched. Status may only be set to roadmap/pending/blocked (running/done/failed are daemon-owned and rejected). Edits under the goals lock via the canonical full-Goal load-resave, preserving all daemon-owned durable state.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.GoalEditHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "goal-prune",

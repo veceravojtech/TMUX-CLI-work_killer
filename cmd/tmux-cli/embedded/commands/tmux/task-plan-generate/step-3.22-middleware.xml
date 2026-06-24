@@ -2,6 +2,7 @@
       <rule critical="true">Fixtures goal (phase=fixtures) MUST exist in goals.yaml before this step runs.</rule>
       <rule critical="true">This step is CONDITIONAL — if no middleware was selected during discovery, skip entirely with a log message and proceed to the next step.</rule>
       <rule critical="true">All inputs read from docs/architecture/* files on disk (G-16), never from conversation context.</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): emits a skeleton; concrete fields + [CODE-RULE-INJECTION] authored at dispatch by /tmux:elaborate (§6). The concrete fields this shard used to author — acceptance MW-01..MW-04, validate commands, the 3 investigators, not-in-scope — and the per-goal [CODE-RULE-INJECTION] (substep 3.22.6b, which under-injects because `middleware` is not in the Go allowedPhases enum) are now authored at dispatch by /tmux:elaborate against the real tree (§6). The CONDITIONAL skip gate (3.22.1) and depends_on resolution (3.22.2) are preserved verbatim: this shard keeps ONLY enumeration: whether this goal exists, its phase, its depends_on, and its coarse deliverable_area. -->
 
       <substep n="3.22.1" title="Check middleware selection in cross-cutting.md">
         <action>Read docs/architecture/cross-cutting.md. Find the middleware section (written by discover.xml Step 4.2/6.4 — covers CORS, request logging, rate limiting).</action>
@@ -24,99 +25,31 @@
         <action>Set MW_DEPENDS_ON = [FIXTURES_GOAL_ID].</action>
       </substep>
 
-      <substep n="3.22.3" title="Compose acceptance criteria (MW-01..MW-04)">
-        <action>Build ACCEPTANCE array from docs/task-plan-spec.md:725-737, filtering MW-01..MW-03 based on SELECTED_MIDDLEWARE:</action>
-        <criteria>
-          <item id="MW-01" condition="CORS in SELECTED_MIDDLEWARE">CORS configured correctly for specified origins — Playwright E2E: OPTIONS request returns Access-Control-Allow-Origin header</item>
-          <item id="MW-02" condition="request logging in SELECTED_MIDDLEWARE">Request logging captures method, path, status code, duration — read log file after test request to verify entry</item>
-          <item id="MW-03" condition="rate limiting in SELECTED_MIDDLEWARE">Rate limiting returns 429 after configured threshold — integration test sends N+1 requests and asserts 429</item>
-          <item id="MW-04" always="true">All middleware registered in correct priority order in Symfony kernel — verify via bin/console debug:event-dispatcher or config inspection</item>
-        </criteria>
-        <rule>Include MW-01, MW-02, MW-03 only when their corresponding middleware feature appears in SELECTED_MIDDLEWARE. MW-04 is always included (minimum 2 criteria).</rule>
+      <substep n="3.22.3" title="Derive the coarse deliverable_area">
+        <action>Set MIDDLEWARE_AREA = the middleware deliverable directory in the resolved topology — projects/{app}/src/Http/Middleware/ (the cross-cutting middleware directory the shard's old context/quality-gates referenced, where the kernel event subscribers/listeners live; deployable-app layer, not per-BC), where {app} is the deployable name from the resolved conventions/topology. This is a COARSE path (the depinfer produce/consume seed + the elaborator's tree-read anchor), NOT a glob and NOT a per-file path.</action>
+        <rule>Do NOT read task-plan-spec criteria, compose validate commands, or author any acceptance/validate/investigator/not-in-scope here — those are Tier-2 (/tmux:elaborate authors them at dispatch, against SELECTED_MIDDLEWARE). The roadmap skeleton commits only to the coarse deliverable_area.</rule>
       </substep>
 
-      <substep n="3.22.4" title="Compose validation commands">
-        <action>Build VALIDATE array based on selected middleware:</action>
-        <commands>
-          <cmd source="MW-04" always="true">bin/console debug:event-dispatcher --tag=kernel.request</cmd>
-          <cmd source="MW-01" condition="CORS selected">curl -s -o /dev/null -w "%{http_code}" -X OPTIONS -H "Origin: http://test.example.com" $BASE_URL/api/</cmd>
-          <cmd source="MW-02" condition="request logging selected">curl -s $BASE_URL/api/ &amp;&amp; grep -q "request" var/log/test.log</cmd>
-          <cmd source="MW-03" condition="rate limiting selected">vendor/bin/phpunit --filter=RateLimiting</cmd>
-        </commands>
-        <rule>$BASE_URL references the value from docs/architecture/test-environment.md — never hardcoded (GM-05).</rule>
-      </substep>
-
-      <substep n="3.22.5" title="Compose context with Investigation Config">
-        <action>Build CONTEXT string with these sections:</action>
-
-        <section name="purpose">
-HTTP middleware goal: configure and test selected middleware features ({{SELECTED_MIDDLEWARE}}).
-See docs/architecture/cross-cutting.md for middleware selection decisions and configuration details.
-Middleware registration order matters — CORS before rate limiting before logging is typical Symfony priority ordering.
-All middleware registered via Symfony kernel event subscribers or framework config (e.g. nelmio/cors-bundle for CORS).
-Middleware files live in projects/{app}/src/Http/Middleware/ (cross-cutting, not per-BC).
-        </section>
-
-        <section name="investigation-config">
-          <action>Build 3 investigators:</action>
-
-          <investigator n="1" name="Kernel registration">
-            <type>environment-check</type>
-            <commands>bin/console debug:event-dispatcher --tag=kernel.request</commands>
-            <pass>All selected middleware appear as listeners with correct priority ordering</pass>
-            <fail>Missing middleware listener or incorrect priority</fail>
-          </investigator>
-
-          <investigator n="2" name="Integration tests">
-            <type>test-execution</type>
-            <commands>vendor/bin/phpunit --filter=Middleware</commands>
-            <pass>Exit 0, all middleware tests green — CORS headers, log entries, rate limit 429 verified</pass>
-            <fail>Test failure or missing test coverage for selected middleware features</fail>
-          </investigator>
-
-          <investigator n="3" name="Quality gates">
-            <type>quality-gate</type>
-            <commands>vendor/bin/phpstan analyse projects/{app}/src/Http/Middleware/ --level=9 &amp;&amp; vendor/bin/ecs check projects/{app}/src/Http/Middleware/</commands>
-            <pass>PHPStan and ECS both exit 0 — zero errors</pass>
-            <fail>Type errors or code style violations in middleware files</fail>
-          </investigator>
-
-          <rule>3 investigators (GM-08 allows 2-4). Each has type, commands, and pass/fail criteria (GM-09).</rule>
-        </section>
-      </substep>
-
-      <substep n="3.22.6" title="Compose not-in-scope">
-        <action>Set NOT_IN_SCOPE to:</action>
-        <value>Domain logic, application handlers, authentication, controller actions, database persistence, fixtures, E2E tests for non-middleware features — all handled by prior goals. Middleware features not selected during discovery are explicitly excluded.</value>
-      </substep>
-
-      <substep n="3.22.6b" title="Inject code rules (apply [CODE-RULE-INJECTION])">
-        <action>Bind RULE_FILES = the comma-joined middleware deliverable paths (projects/{app}/src/Http/Middleware/** — the middleware listeners/subscribers and their tests). Bind RULE_PHASE = `middleware` (this goal's phase token — pass it VERBATIM; do NOT remap it).</action>
-        <action>Run `tmux-cli rules match --files &lt;RULE_FILES&gt; --phase &lt;RULE_PHASE&gt; --json` and apply the spine's `[CODE-RULE-INJECTION]` procedure (&lt;conventions&gt; / &lt;rule-to-goal-injection&gt;): copy each NON-EMPTY `acceptance_line` into the ACCEPTANCE array (3.22.3); copy each `automated`/`mixed` `validate_cmd` into the VALIDATE array (3.22.4); fold `review` `validate_cmd`s into ONE convention-audit investigator (ADD; base is 3 from 3.22.5, so the 4th slot is free — no drop); add the `Code rules: &lt;ids&gt; — read &lt;paths&gt;` line to CONTEXT (3.22.5). Empty `rules` ⇒ inject nothing.</action>
-        <rule>The phase token `middleware` is NOT in the Go `allowedPhases` enum — `rules match` returns an empty set, so this goal UNDER-injects (fail-safe: under-enforce, never wrong-enforce — mechanical parity, exactly as 3.21.7b documents for `error_handling`). Do NOT remap the phase token to a real phase to force a match. PRESERVE the 3 existing investigators.</rule>
-      </substep>
-
-      <substep n="3.22.7" title="Call goal-create MCP">
-        <action>Call the goal-create MCP tool with these parameters:</action>
+      <substep n="3.22.4" title="Call goal-create MCP (roadmap skeleton)">
+        <action>Call the goal-create MCP tool with a roadmap SKELETON:</action>
         <params>
           <param name="description">Configure HTTP middleware: {{SELECTED_MIDDLEWARE}} with kernel registration and tests (≤120 chars — truncate list if needed)</param>
-          <param name="acceptance">ACCEPTANCE array from substep 3.22.3 (2-4 items depending on selections)</param>
-          <param name="validate">VALIDATE array from substep 3.22.4</param>
-          <param name="context">CONTEXT string from substep 3.22.5 (purpose)</param>
-          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.22.5's 3 investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
-          <param name="not_in_scope">NOT_IN_SCOPE from substep 3.22.6</param>
+          <param name="phase">middleware</param>
+          <param name="deliverable_area">MIDDLEWARE_AREA (coarse, e.g. projects/{app}/src/Http/Middleware/)</param>
           <param name="depends_on">MW_DEPENDS_ON = [FIXTURES_GOAL_ID] from substep 3.22.2</param>
+          <param name="status">roadmap</param>
           <param name="max_retries">3</param>
         </params>
         <rule>Description dynamically lists selected middleware names — must stay ≤120 chars (MaxGoalDescriptionLength). If list exceeds limit, abbreviate: "Configure HTTP middleware: N features with kernel registration".</rule>
         <rule>max_retries=3 — middleware goals have focused cross-cutting scope.</rule>
         <rule>phase=middleware on the created goal.</rule>
+        <rule critical="true">NO validate/acceptance/scope/context/investigation_config/not_in_scope params — this is a roadmap skeleton; /tmux:elaborate authors every concrete field at dispatch (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
 
         <check condition="goal-create returns error">
           <action>Print error with full context and ABORT.</action>
         </check>
         <check condition="goal-create succeeds">
-          <action>Print: "Middleware created: goal-{{ID}} (phase=middleware, depends_on=[{{FIXTURES_GOAL_ID}}]) with 3 investigators, selected: {{SELECTED_MIDDLEWARE}}, max_retries=3"</action>
+          <action>Print: "Middleware skeleton created: goal-{{ID}} (phase=middleware, status=roadmap, depends_on=[{{FIXTURES_GOAL_ID}}], deliverable_area={{MIDDLEWARE_AREA}}, selected: {{SELECTED_MIDDLEWARE}})"</action>
           <action>Proceed to next step.</action>
         </check>
       </substep>

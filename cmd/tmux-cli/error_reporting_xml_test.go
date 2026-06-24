@@ -11,7 +11,7 @@ import (
 
 // exemptFromErrorReporting lists the embedded command XMLs (relative to
 // embedded/commands/tmux) that are deliberately NOT required to carry their own
-// <error-reporting> reference. The 22 task-plan-generate/step-*.xml shards load
+// <error-reporting> reference. The 23 task-plan-generate/step-*.xml shards load
 // into the SAME worker context as their parent task-plan-generate.xml (which
 // DOES carry the reference) and therefore inherit it — duplicating the element
 // per-shard would only invite drift. The list is explicit per-path (NOT a
@@ -43,6 +43,7 @@ var exemptFromErrorReporting = map[string]bool{
 	"task-plan-generate/step-3.27-cicd.xml":                       true,
 	"task-plan-generate/step-3.28-dx.xml":                         true,
 	"task-plan-generate/step-3.29-final-gates.xml":                true,
+	"task-plan-generate/step-3.30-validation-goals.xml":           true,
 }
 
 // TestEmbeddedCommands_ReferenceErrorReporting asserts that every orchestration

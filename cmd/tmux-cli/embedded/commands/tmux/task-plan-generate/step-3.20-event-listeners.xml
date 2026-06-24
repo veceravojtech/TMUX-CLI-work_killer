@@ -3,18 +3,18 @@
       <rule critical="true">One goal per event listener — never batch multiple listeners into one goal.</rule>
       <rule critical="true">Integration tests only — no Playwright E2E tests for event handlers (spec lines 329-332). Action E2E tests assert HTTP response + direct DB state; event side effects are tested here via integration tests.</rule>
       <rule critical="true">All inputs read from docs/architecture/* files on disk (G-16), never from conversation context.</rule>
+      <!-- ROADMAP-ONLY (two-tier, design §5): this shard emits one roadmap SKELETON per event listener. The concrete fields it used to author — EV-01..EV-13 acceptance (incl. is_cross_bc/async conditionals), the validate commands, the 2-3 investigators, the deliverables, not-in-scope — are now authored at dispatch by /tmux:elaborate against the real tree (design §6; the ACL adapter / Published Language DTO existence and the cross-BC wiring are read there, not predicted). This shard keeps ONLY enumeration: which listeners exist (EVENT_LISTENER_LIST — drives N_event_listeners, incl. the skip-when-0 gate), each goal's phase=event_listener, its depends_on wiring (intra- vs cross-BC), and a coarse deliverable_area. -->
 
       <substep n="3.20.1" title="Read event inventory from discovery output">
         <action>Read docs/architecture/domain-model.md. For each BC, collect EVENTS_PER_AGGREGATE — the domain events listed under each aggregate's events section (written by discover.xml Step 3).</action>
-        <action>Read docs/architecture/context-mapping.md (if it exists — skipped for single-BC projects per D-27). Identify cross-BC event flows: producer BC, consumer BC, Published Language event DTO, ACL adapter needed.</action>
+        <action>Read docs/architecture/context-mapping.md (if it exists — skipped for single-BC projects per D-27). Identify cross-BC event flows: producer BC, consumer BC.</action>
         <action>Build EVENT_LISTENER_LIST where each entry contains:</action>
         <fields>
           <field>event_name — the domain event class name (past tense, e.g. ReservationConfirmed)</field>
           <field>source_bc — the BC that raises the event (aggregate root's BC)</field>
           <field>listener_bc — the BC that handles the event (same as source_bc for intra-BC, different for cross-BC)</field>
           <field>is_cross_bc — true if source_bc != listener_bc</field>
-          <field>handler_class_path — contexts/{listener_bc}/app/src/Adapter/{EventName}Handler.php (cross-BC message processor) or contexts/{listener_bc}/app/src/EventListener/{EventName}Listener.php (intra-BC) — both live in the context app (framework) layer that consumes events and calls Application handlers</field>
-          <field>acl_needed — true if is_cross_bc (ACL adapter translates Published Language event to local domain language)</field>
+          <field>handler_class_path — contexts/{listener_bc}/app/src/Adapter/{EventName}Handler.php (cross-BC message processor) or contexts/{listener_bc}/app/src/EventListener/{EventName}Listener.php (intra-BC) — both live in the context app (framework) layer. Used here only to derive the coarse deliverable_area.</field>
           <field>side_effect_summary — short description of what the handler does (from discovery output)</field>
         </fields>
         <action>Count N_event_listeners = length of EVENT_LISTENER_LIST.</action>
@@ -23,7 +23,7 @@
           <action>SKIP — proceed to next step. Do NOT call goal-create.</action>
         </branch>
         <branch condition="N_event_listeners > 0">
-          <action>Print: "Event listeners found: {{N_event_listeners}}. Building goals."</action>
+          <action>Print: "Event listeners found: {{N_event_listeners}}. Building skeletons."</action>
           <action>Proceed to substep 3.20.2.</action>
         </branch>
       </substep>
@@ -50,117 +50,42 @@
         </check>
       </substep>
 
-      <substep n="3.20.3" title="Map acceptance criteria (EV-01..EV-13)">
-        <action>For each event listener, build ACCEPTANCE array from EV-01..EV-13, with conditional criteria based on is_cross_bc and async transport:</action>
+      <substep n="3.20.3" title="Generate one goal skeleton per event listener via goal-create">
+        <action>For each EVENT_LISTENER in EVENT_LISTENER_LIST:</action>
 
-        <criteria-reference name="EV-01..EV-13" source="docs/task-plan-spec.md:669-683">
-          <item id="EV-01" always="true">Event class exists in Domain layer with correct past-tense name — file at contexts/{source_bc}/src/Domain/Event/{EventName}.php</item>
-          <item id="EV-02" always="true">Event is recorded by aggregate root method (collected via DomainEventTrait, not dispatched inline)</item>
-          <item id="EV-03" always="true">Event is dispatched by infrastructure repository after flush (flush-then-dispatch pattern)</item>
-          <item id="EV-04" always="true">Domain event dispatcher interface exists in Domain layer</item>
-          <item id="EV-05" always="true">Symfony Messenger adapter implements domain event dispatcher interface in Infrastructure layer</item>
-          <item id="EV-06" always="true">Listener/handler class exists in appropriate layer — file at {handler_class_path}</item>
-          <item id="EV-07" always="true">Listener is registered in Symfony DI (auto-configured via #[AsMessageHandler] or explicit services.yaml entry) — verify via bin/console debug:messenger</item>
-          <item id="EV-08" condition="is_cross_bc">Published Language event DTO used in contexts/previo/src/Event/{EventName}.php — not internal domain event class</item>
-          <item id="EV-09" condition="is_cross_bc">ACL adapter translates incoming Published Language event to local domain language — adapter at contexts/{listener_bc}/src/Bundle/Application/Acl/</item>
-          <item id="EV-10" always="true">Integration test proves: trigger action that raises event, event dispatched, handler executes, side effect verified</item>
-          <item id="EV-11" always="true">Integration test uses real database, not mocks on repositories — no mock() calls on repository interfaces</item>
-          <item id="EV-12" condition="async transport selected">Async listener has proper Messenger transport config in messenger.yaml with doctrine://default or configured DSN</item>
-          <item id="EV-13" always="true">Integration tests run green — vendor/bin/phpunit --filter=EventListener passes</item>
-        </criteria-reference>
+        <per-listener>
+          <action>Set LISTENER_AREA = contexts/{listener_bc}/app/src/ — the context app (framework) layer directory where the handler/listener (and any cross-BC Adapter) lives, derived as the coarse parent of handler_class_path. COARSE deliverable directory (the elaborator's tree-read anchor; it refines into the precise handler/DI/integration-test/ACL footprint at dispatch against real files). NOT a per-file path, NOT a glob.</action>
 
-        <rule>EV-01..EV-07 always included. EV-08/EV-09 only when is_cross_bc. EV-10/EV-11/EV-13 always included. EV-12 only when async transport is selected (check docs/architecture/adrs/ or cross-cutting.md for Messenger async decision).</rule>
-        <rule>Replace placeholders ({source_bc}, {listener_bc}, {EventName}, {handler_class_path}) with actual values from EVENT_LISTENER_LIST.</rule>
+          <action>Call the goal-create MCP tool with a roadmap SKELETON:</action>
+          <params>
+            <param name="description">Short title, &lt;=120 chars. Pattern: "Event listener: {EventName} handler in {listener_bc} — {side_effect_summary}"
+              Examples:
+              - "Event listener: ReservationConfirmed handler in Notification — send confirmation email"
+              - "Event listener: PaymentCompleted handler in Booking — update reservation payment status"
+              - "Event listener: GuestCheckedIn handler in Housekeeping — schedule room cleaning"
+            </param>
+            <param name="phase">event_listener</param>
+            <param name="deliverable_area">LISTENER_AREA (coarse, e.g. contexts/{listener_bc}/app/src/)</param>
+            <param name="depends_on">DEPENDS_ON from substep 3.20.2 (own BC infra + fixtures, optionally source BC infra for cross-BC)</param>
+            <param name="status">roadmap</param>
+            <param name="max_retries">3</param>
+          </params>
+
+          <action>After each successful goal-create, record the returned goal ID. Append to EVENT_LISTENER_GOAL_IDS list.</action>
+
+          <check condition="goal-create returns error">
+            <action>Print error with event name, listener BC, and full context. ABORT — do not continue to next listener.</action>
+          </check>
+
+          <rule>Description must be ≤120 characters (MaxGoalDescriptionLength invariant). If the natural description exceeds 120 chars, truncate the side_effect_summary while preserving EventName and BC.</rule>
+          <rule>max_retries=3 per G-11. phase=event_listener on every created goal.</rule>
+          <rule critical="true">NO acceptance/validate/scope/context/investigation_config/not_in_scope params — roadmap skeleton; /tmux:elaborate authors EV-01..EV-13 (incl. the is_cross_bc/async conditionals and the integration-tests-only validate) at dispatch against the REAL tree (design §5/§6). NEVER run `tmux-cli rules match` here.</rule>
+        </per-listener>
       </substep>
 
-      <substep n="3.20.4" title="Compose context with deliverables and Investigation Config">
-        <action>For each event listener goal, build CONTEXT string with these sections:</action>
-
-        <section name="purpose">
-Event listener: {{event_name}} handler in {{listener_bc}}.
-Listens for {{event_name}} raised by {{source_bc}} aggregate and executes: {{side_effect_summary}}.
-See docs/architecture/domain-model.md for event definition and docs/architecture/context-mapping.md for cross-BC flow.
-Integration tests only — no Playwright E2E (event side effects tested via PHPUnit integration tests).
-        </section>
-
-        <section name="deliverables">
-          <deliverable always="true">Listener class: {handler_class_path}</deliverable>
-          <deliverable always="true">DI configuration: services.yaml entry or #[AsMessageHandler] attribute</deliverable>
-          <deliverable always="true">Integration test: contexts/{listener_bc}/app/tests/Integration/EventListener/{EventName}ListenerTest.php</deliverable>
-          <deliverable condition="is_cross_bc">ACL adapter: contexts/{listener_bc}/src/Bundle/Application/Acl/{source_bc}ACLAdapter.php (if not already created by infra goal)</deliverable>
-          <deliverable condition="is_cross_bc">Published Language DTO: contexts/previo/src/Event/{EventName}.php (if not already created by domain goal)</deliverable>
-          <deliverable condition="async transport">Messenger transport config: config/packages/messenger.yaml routing entry for this event</deliverable>
-        </section>
-
-        <section name="investigation-config">
-          <action>Build 2-3 investigators per event listener goal:</action>
-
-          <investigator n="1" name="Event wiring">
-            <type>implementation-check</type>
-            <files>{handler_class_path}, contexts/{source_bc}/src/Domain/Event/{EventName}.php</files>
-            <commands>bin/console debug:messenger</commands>
-            <pass>Event collected in aggregate via DomainEventTrait, dispatched by repo after flush, listener registered in DI, handler receives correct event class</pass>
-            <fail>Missing event class, listener not registered, event not dispatched by repo, or handler receives wrong event type</fail>
-            <condition_extra condition="is_cross_bc">Also verify: ACL adapter exists in contexts/{listener_bc}/src/Bundle/Application/Acl/, Published Language DTO in contexts/previo/src/Event/, handler imports only from its own context + the shared-kernel (contexts/previo) namespace</condition_extra>
-          </investigator>
-
-          <investigator n="2" name="Integration tests">
-            <type>test-execution</type>
-            <commands>vendor/bin/phpunit --filter=EventListener</commands>
-            <pass>Exit 0, all event listener integration tests green — event fires, handler executes, side effect verified in real DB</pass>
-            <fail>Test failure, missing test coverage, or mock() on repository interfaces detected</fail>
-          </investigator>
-
-          <investigator n="3" name="Quality gates">
-            <type>quality-gate</type>
-            <commands>vendor/bin/phpstan analyse contexts/{listener_bc}/app/ contexts/{listener_bc}/src/Bundle/ --level=9 &amp;&amp; vendor/bin/ecs check contexts/{listener_bc}/app/ contexts/{listener_bc}/src/Bundle/</commands>
-            <pass>PHPStan and ECS both exit 0 — zero errors on event listener and adapter files</pass>
-            <fail>Type errors or code style violations in listener/adapter files</fail>
-          </investigator>
-
-          <rule>2-3 investigators per event listener goal (GM-08 allows 2-4). Cross-BC listeners get 3 (extra ACL checks in investigator 1). Intra-BC listeners get 2-3. Each has type, commands, and pass/fail criteria (GM-09).</rule>
-        </section>
-      </substep>
-
-      <substep n="3.20.5" title="Generate one goal per event listener via goal-create">
-        <action>For each EVENT_LISTENER in EVENT_LISTENER_LIST, call goal-create MCP tool:</action>
-
-        <params>
-          <param name="description">Short title, &lt;=120 chars. Pattern: "Event listener: {EventName} handler in {listener_bc} — {side_effect_summary}"
-            Examples:
-            - "Event listener: ReservationConfirmed handler in Notification — send confirmation email"
-            - "Event listener: PaymentCompleted handler in Booking — update reservation payment status"
-            - "Event listener: GuestCheckedIn handler in Housekeeping — schedule room cleaning"
-          </param>
-          <param name="acceptance">EV-01..EV-13 criteria from substep 3.20.3 for this specific listener. Each criterion is a separate string in the array. Conditional criteria (EV-08, EV-09, EV-12) included only when applicable.</param>
-          <param name="validate">[
-            "vendor/bin/phpunit --filter=EventListener",
-            "vendor/bin/phpstan analyse contexts/{listener_bc}/app/ contexts/{listener_bc}/src/Bundle/ --level=9",
-            "vendor/bin/ecs check contexts/{listener_bc}/app/ contexts/{listener_bc}/src/Bundle/",
-            "bin/console debug:messenger"
-          ]</param>
-          <param name="context">CONTEXT string from substep 3.20.4 (purpose + deliverables)</param>
-          <param name="investigation_config">Array of {name,type,paths,commands,pass,fail,condition?} objects built from substep 3.20.4's investigators (2-4; types from the Reference Table). Omit conditional investigators whose condition is false.</param>
-          <param name="not_in_scope">Domain event class definition (handled by domain goal), aggregate root changes (handled by domain goal), infrastructure repository dispatch setup (handled by infra goal), Playwright E2E tests (event side effects tested via integration tests only), other event listeners not covered by this goal.</param>
-          <param name="depends_on">DEPENDS_ON from substep 3.20.2 (own BC infra + fixtures, optionally source BC infra for cross-BC)</param>
-          <param name="max_retries">3</param>
-        </params>
-
-        <action>After each successful goal-create, record the returned goal ID. Append to EVENT_LISTENER_GOAL_IDS list.</action>
-
-        <check condition="goal-create returns error">
-          <action>Print error with event name, listener BC, and full context. ABORT — do not continue to next listener.</action>
-        </check>
-
-        <rule>Description must be ≤120 characters (MaxGoalDescriptionLength invariant). If the natural description exceeds 120 chars, truncate the side_effect_summary while preserving EventName and BC.</rule>
-        <rule>max_retries=3 per G-11.</rule>
-        <rule>phase=event_listener on every created goal.</rule>
-        <rule>No Playwright E2E commands in validate array — integration tests only (vendor/bin/phpunit).</rule>
-      </substep>
-
-      <substep n="3.20.6" title="Record event listener goal IDs and report">
-        <action>Store EVENT_LISTENER_GOAL_IDS list as a session variable for downstream reference.</action>
-        <action>Print summary: "Event listener goals created: {{N_event_listeners}} goals (phase=event_listener), IDs: [{{EVENT_LISTENER_GOAL_IDS}}]"</action>
+      <substep n="3.20.4" title="Record event listener goal IDs and report">
+        <action>Store EVENT_LISTENER_GOAL_IDS list as a session variable for downstream reference (step 3.24 Messenger depends on these).</action>
+        <action>Print summary: "Event listener skeletons created: {{N_event_listeners}} goals (phase=event_listener, status=roadmap), IDs: [{{EVENT_LISTENER_GOAL_IDS}}]"</action>
         <action>For each goal, print: "  - goal-{{ID}}: {{event_name}} in {{listener_bc}} (depends_on={{DEPENDS_ON}}, cross_bc={{is_cross_bc}})"</action>
         <action>Proceed to next step.</action>
       </substep>

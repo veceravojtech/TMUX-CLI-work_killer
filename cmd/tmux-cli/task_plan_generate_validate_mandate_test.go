@@ -54,12 +54,15 @@ func TestTaskPlanGenerateXml_ValidateMandateInGoalEmissionStep(t *testing.T) {
 		"the mandate must state that scope is the price of parallelism")
 }
 
-// TestTaskPlanGenerateXml_ValidateMandateAppliesToEveryGoalCreate: substep 1.7
-// is the canonical emission step, but the XML has a goal-create call site per
-// phase (2.7, 3.14.4i, 3.15.4e, ...). The execution-rules section already
-// extends substep 1.7's <scope-derivation> to EVERY call site; the
-// validate/acceptance mandate must get the same treatment so no later phase
-// can emit a structurally-empty goal.
+// TestTaskPlanGenerateXml_ValidateMandateAppliesToEveryGoalCreate: under the
+// two-tier director redesign (docs/architecture/director-two-tier-design.md §5),
+// the per-goal validate/acceptance authoring MOVED to dispatch-time
+// /tmux:elaborate (Tier 2). The execution-rules must therefore extend the
+// ROADMAP-SKELETON contract to EVERY enumerated goal-create call site (3.14.x,
+// 3.15.x, …): status=roadmap + a coarse deliverable_area, NO Tier-1
+// validate/acceptance. The legacy "validate+acceptance on every goal" mandate
+// survives only for the carved-out bootstrap goals (goal-001 Gate 0, goal-002
+// Scaffold), which precede any tree for elaboration to read.
 func TestTaskPlanGenerateXml_ValidateMandateAppliesToEveryGoalCreate(t *testing.T) {
 	content := readGenerateBundle(t)
 
@@ -69,12 +72,19 @@ func TestTaskPlanGenerateXml_ValidateMandateAppliesToEveryGoalCreate(t *testing.
 	require.NotEqual(t, -1, rulesEnd, "execution-rules must be well-formed")
 	rules := content[rulesStart:rulesEnd]
 
-	assert.Contains(t, rules, "validate + acceptance on EVERY goal-create",
-		"execution-rules must extend the structured validate/acceptance mandate to every goal-create call site")
-	assert.Contains(t, rules, "project-runnable",
-		"the execution-rule must require >=1 project-runnable validate command")
-	assert.Contains(t, rules, "never prose-only",
-		"the execution-rule must forbid prose-only validation rules")
+	// The roadmap-skeleton mandate applies to every enumerated goal-create site.
+	assert.Contains(t, rules, "ROADMAP SKELETON on EVERY enumerated goal-create",
+		"execution-rules must extend the roadmap-skeleton contract to every enumerated goal-create call site")
+	assert.Contains(t, rules, "status=roadmap",
+		"the execution-rule must require status=roadmap on enumerated skeletons")
+	assert.Contains(t, rules, "deliverable_area on EVERY goal-create",
+		"the execution-rule must mandate a coarse deliverable_area on every goal-create")
+	// Per-goal validate/acceptance authoring is now Tier-2 (/tmux:elaborate).
+	assert.Contains(t, rules, "/tmux:elaborate",
+		"the execution-rule must point per-goal validate/acceptance authoring at /tmux:elaborate")
+	// Bootstrap carve-out: goal-001/goal-002 still carry the full structured contract.
+	assert.Contains(t, rules, "bootstrap goals",
+		"the execution-rule must carve out the bootstrap goals (goal-001 Gate 0, goal-002 Scaffold)")
 }
 
 // TestTaskPlanGenerateMd_ValidateMandate: the .md companion is the

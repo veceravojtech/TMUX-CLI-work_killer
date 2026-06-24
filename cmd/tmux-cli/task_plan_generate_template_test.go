@@ -76,25 +76,35 @@ func TestTemplate_ControllerActionDependsOnBootstrap(t *testing.T) {
 		"substep 3.18.2 must gate the bootstrap dependency on auth_required actions")
 }
 
+// Two-tier (director redesign §5): per-flow auth goals are roadmap skeletons that
+// declare no concrete deliverables at all — security.yaml/User entity are NEVER
+// owned by a per-flow goal (they belong to auth-bootstrap), and that invariant
+// still holds at Tier-1: the 3.19 step carries no User-entity/security deliverable
+// and explicitly notes the security config comes from the auth-bootstrap
+// dependency. Scope to the whole 3.19 auth step (3.19 → 3.19a).
 func TestTemplate_PerFlowDeliverablesDropSecurityConfig(t *testing.T) {
 	content := readGenerateBundle(t)
-	// Scope strictly to the per-flow auth deliverables block (3.19.4) so the
-	// auth-bootstrap step's legitimate security.yaml ownership does not cause a
-	// false pass.
-	block := sliceBetween(t, content, `n="3.19.4"`, `n="3.19.5"`)
+	block := sliceBetween(t, content, `n="3.19"`, `n="3.19a"`)
 	assert.NotContains(t, block, "User entity:",
-		"per-flow auth goals must no longer declare a 'User entity:' deliverable")
+		"per-flow auth goals must not declare a 'User entity:' deliverable")
 	assert.NotContains(t, block, "<deliverable>Security config",
-		"per-flow auth goals must no longer declare a security.yaml deliverable")
-	assert.Contains(t, block, "provided by the auth-bootstrap dependency",
-		"per-flow block must note that security config + User entity come from auth-bootstrap")
+		"per-flow auth goals must not declare a security.yaml deliverable")
+	assert.Contains(t, block, "auth-bootstrap dependency",
+		"the 3.19 step must note that security config + User entity come from the auth-bootstrap dependency")
 }
 
+// Two-tier: the lexik JWT keypair generation is a concrete validate/command
+// authored at dispatch by /tmux:elaborate against the real tree — the
+// auth-bootstrap shard is now a roadmap skeleton and no longer authors the
+// keygen inline. The skeleton still carries the security-config deliverable_area
+// the elaborator seeds the JWT wiring from. Scope to the 3.16a step (3.16a → 3.17).
 func TestTemplate_JwtKeygenGatedOnUsesJwt(t *testing.T) {
 	content := readGenerateBundle(t)
 	bootstrap := sliceBetween(t, content, `n="3.16a"`, `n="3.17"`)
-	assert.Contains(t, bootstrap, "lexik:jwt:generate-keypair",
-		"auth-bootstrap step must generate the JWT keypair")
-	assert.Contains(t, bootstrap, "uses_jwt",
-		"JWT keypair generation must be gated on a uses_jwt condition")
+	assert.Contains(t, bootstrap, `<param name="status">roadmap`,
+		"auth-bootstrap is emitted as a roadmap skeleton")
+	assert.Contains(t, bootstrap, `<param name="deliverable_area">`,
+		"the auth-bootstrap skeleton carries a coarse deliverable_area (config/packages/) the elaborator seeds JWT wiring from")
+	assert.NotContains(t, bootstrap, "lexik:jwt:generate-keypair",
+		"the JWT keypair generation is a Tier-2 validate authored at dispatch by /tmux:elaborate, not inline here")
 }

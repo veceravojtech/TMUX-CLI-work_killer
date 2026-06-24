@@ -263,6 +263,13 @@ var taskvisorGoalAddCmd = &cobra.Command{
 	RunE:  runTaskvisorGoalAdd,
 }
 
+var taskvisorGoalEditCmd = &cobra.Command{
+	Use:   "edit [goal-id]",
+	Short: "Edit an existing goal's authoring fields (acceptance/validate/scope/status/deliverable-area/phase)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskvisorGoalEdit,
+}
+
 var taskvisorGoalListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all goals with status",
@@ -378,6 +385,16 @@ var (
 	goalScope       []string
 	goalPriority    int
 
+	// goal edit flag-backing vars. The handler reads them only when the
+	// corresponding flag was Changed(), so an absent flag maps to a nil GoalEdit
+	// pointer (leave untouched) and a present flag to a set/clear.
+	goalEditAcceptance      []string
+	goalEditValidate        []string
+	goalEditScope           []string
+	goalEditStatus          string
+	goalEditDeliverableArea string
+	goalEditPhase           string
+
 	revalForceFull    bool
 	revalFinalCycle   bool
 	revalChangedFiles []string
@@ -455,6 +472,15 @@ func init() {
 	taskvisorGoalAddCmd.Flags().IntVar(&goalPriority, "priority", 0, "Dispatch priority (higher = first; default 0)")
 	taskvisorGoalAddCmd.MarkFlagRequired("description")
 
+	// goal edit: each flag maps to a tri-state GoalEdit pointer — set only when
+	// the flag was Changed() (an empty value then CLEARS the field).
+	taskvisorGoalEditCmd.Flags().StringArrayVar(&goalEditAcceptance, "acceptance", nil, "Replace acceptance criteria (repeatable; pass once with no value to clear)")
+	taskvisorGoalEditCmd.Flags().StringArrayVar(&goalEditValidate, "validate", nil, "Replace validation commands (repeatable; pass once with no value to clear)")
+	taskvisorGoalEditCmd.Flags().StringArrayVar(&goalEditScope, "scope", nil, "Replace file/namespace footprint globs (repeatable; pass once with no value to clear)")
+	taskvisorGoalEditCmd.Flags().StringVar(&goalEditStatus, "status", "", "Set status — only roadmap/pending/blocked (running/done/failed are daemon-owned and rejected)")
+	taskvisorGoalEditCmd.Flags().StringVar(&goalEditDeliverableArea, "deliverable-area", "", "Replace the coarse deliverable footprint (empty clears)")
+	taskvisorGoalEditCmd.Flags().StringVar(&goalEditPhase, "phase", "", "Refine the development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final)")
+
 	taskvisorCmd.AddCommand(taskvisorStartCmd)
 	taskvisorCmd.AddCommand(taskvisorRestartCmd)
 
@@ -464,6 +490,7 @@ func init() {
 	taskvisorConcurrencyCmd.MarkFlagsMutuallyExclusive("set", "inc", "dec")
 	taskvisorCmd.AddCommand(taskvisorConcurrencyCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalAddCmd)
+	taskvisorGoalCmd.AddCommand(taskvisorGoalEditCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalListCmd)
 	taskvisorGoalCmd.AddCommand(taskvisorGoalDeleteCmd)
 	taskvisorGoalResetCmd.Flags().BoolVar(&resetForce, "force", false, "Force reset a running goal even if it still owns a live worker window")

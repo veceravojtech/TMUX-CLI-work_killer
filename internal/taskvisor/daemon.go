@@ -30,6 +30,12 @@ const (
 	phaseNone phase = iota
 	phaseSupervising
 	phaseValidating
+	// phaseElaborating marks a GoalRoadmap goal mid Tier-2 elaboration: a
+	// /tmux:elaborate worker is authoring its concrete fields. The goal stays
+	// GoalRoadmap on disk for the whole episode; this runtime phase is the only
+	// in-flight marker, so the elaboration dispatch loop skips goals already in it
+	// and driveElaboratingGoals watches them for completion/timeout.
+	phaseElaborating
 )
 
 // goalRuntime holds the per-goal in-flight cycle state hoisted off Daemon so
