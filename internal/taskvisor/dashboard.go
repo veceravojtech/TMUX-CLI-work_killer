@@ -425,6 +425,41 @@ func renderMappingsSection(buf *bytes.Buffer, projectRoot string) {
 	}
 }
 
+// ── Section 2b: recurring task (stub — goal-006 red phase) ──────────────────────
+
+// recurringRow is the dashboard-local view-model for the active recurring task,
+// mirroring *queueCounts: it decouples the board from goal-001's persistence
+// struct (RecurringFile/RecurringTask), which is absent in this worktree. goal-007
+// maps the real RecurringFile onto this shape without changing the signature.
+type recurringRow struct {
+	id           string
+	index, total int
+	status       string
+	phase        string
+	inCycle      string
+}
+
+// collectRecurring is a STUB for the goal-006 red phase: it always returns nil (no
+// data). goal-007 reads .tmux-cli/recurring.yaml via LoadRecurring, keeps only an
+// active task, and maps it to a recurringRow (inCycle = formatElapsed(dispatched_at,
+// "")). Mirrors collectMappings' lock-free data-or-nil read.
+func collectRecurring(projectRoot string) *recurringRow {
+	return nil
+}
+
+// renderRecurringSection mirrors renderMappingsSection: a bold header plus an
+// ansiDim placeholder when there is no active recurring task. It stays UNCALLED in
+// production for goal-006 — goal-007 renders the active row and wires this into
+// RenderBoard.
+func renderRecurringSection(buf *bytes.Buffer, projectRoot string) {
+	fmt.Fprintf(buf, "%sRECURRING%s\n", ansiBold, ansiReset)
+	row := collectRecurring(projectRoot)
+	if row == nil {
+		fmt.Fprintf(buf, "  %s(no active recurring task)%s\n", ansiDim, ansiReset)
+		return
+	}
+}
+
 // ── Section 3: backend queue counts ────────────────────────────────────────────
 
 // collectQueueCounts gates on producer.LoadConfig (read-only), then makes at most
