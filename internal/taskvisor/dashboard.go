@@ -250,6 +250,8 @@ func RenderBoard(w io.Writer, projectRoot string, exec tmux.TmuxExecutor) error 
 
 	renderGoalsSection(&buf, projectRoot, cycleByGoal)
 	buf.WriteByte('\n')
+	renderRecurringSection(&buf, projectRoot)
+	buf.WriteByte('\n')
 	renderMappingsSection(&buf, projectRoot)
 	buf.WriteByte('\n')
 	renderQueueSection(&buf, projectRoot)
@@ -439,12 +441,42 @@ type recurringRow struct {
 	inCycle      string
 }
 
-// collectRecurring is a STUB for the goal-006 red phase: it always returns nil (no
-// data). goal-007 reads .tmux-cli/recurring.yaml via LoadRecurring, keeps only an
-// active task, and maps it to a recurringRow (inCycle = formatElapsed(dispatched_at,
-// "")). Mirrors collectMappings' lock-free data-or-nil read.
+// collectRecurring reads .tmux-cli/recurring.yaml via LoadRecurring (lock-free,
+// data-or-nil — mirroring collectMappings), keeps only an ACTIVE task, and maps it
+// to a recurringRow (inCycle = formatElapsed(dispatched_at, "")). A load error, a
+// nil RecurringFile, a nil Task, or a non-active status all yield nil → the
+// placeholder renders. The cycle counter is index/total (the persisted current-cycle
+// index against TotalCycles), not completed/total.
 func collectRecurring(projectRoot string) *recurringRow {
-	return nil
+	rf, err := LoadRecurring(projectRoot)
+	if err != nil || rf == nil || rf.Task == nil || rf.Task.Status != RecurringActive {
+		return nil
+	}
+	t := rf.Task
+	return &recurringRow{
+		id:      t.ID,
+		index:   t.CurrentCycle.Index,
+		total:   t.TotalCycles,
+		status:  t.Status,
+		phase:   cyclePhaseName(cyclePhaseFromName(t.CurrentCycle.Phase)),
+		inCycle: formatElapsed(t.CurrentCycle.DispatchedAt, ""),
+	}
+}
+
+// recurringStatusColor mirrors goalStatusColor for recurring-task statuses, keeping
+// the status-coloring honest without overloading goal-status semantics. Unknown
+// statuses render uncolored.
+func recurringStatusColor(status string) string {
+	switch status {
+	case RecurringActive:
+		return ansiGreen
+	case RecurringStopped:
+		return ansiYellow
+	case RecurringDone:
+		return ansiCyan
+	default:
+		return ""
+	}
 }
 
 // renderRecurringSection mirrors renderMappingsSection: a bold header plus an
@@ -458,6 +490,9 @@ func renderRecurringSection(buf *bytes.Buffer, projectRoot string) {
 		fmt.Fprintf(buf, "  %s(no active recurring task)%s\n", ansiDim, ansiReset)
 		return
 	}
+	fmt.Fprintf(buf, "  %s  %s%s%s  %d/%d  %s  %s\n",
+		row.id, recurringStatusColor(row.status), row.status, ansiReset,
+		row.index, row.total, row.phase, row.inCycle)
 }
 
 // ── Section 3: backend queue counts ────────────────────────────────────────────
