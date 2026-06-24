@@ -25,7 +25,12 @@ type ScriptRunnerFunc func(ctx context.Context, scriptPath, dir string, env []st
 // non-pass). Kept modest deliberately: the script runs synchronously inside
 // the tick under the goals+db locks, so the whole daemon blocks while it runs —
 // slow suites should raise the setting per project rather than this seed.
-const validateScriptTimeout = 120 * time.Second
+// Raised 120s→600s for the validation-as-goal model: the heavy validate stack
+// (phpunit integration + deptrac + phpstan L9 + kernel boot) now runs in a
+// dedicated validation goal's OWN supervising cycle, so the original
+// "blocks the whole daemon under locks" caution is relaxed; 600s covers a
+// Symfony stack with margin under the validate_timeout: 1260 envelope.
+const validateScriptTimeout = 600 * time.Second
 
 // runValidateScript reason values (the non-pass classification contract).
 // Every non-pass used to collapse into a bare `passed=false`, making a

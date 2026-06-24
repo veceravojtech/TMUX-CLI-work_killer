@@ -163,6 +163,19 @@ type Goal struct {
 	// this persisted field; it never parses goal.md.
 	Scope []string `yaml:"scope,omitempty"`
 
+	// Validates inverts the dependency relationship: when non-empty it names the
+	// IMPLEMENTATION goal id this goal exists to validate, marking THIS goal as a
+	// dedicated VALIDATION goal (IsValidationGoal()). A validation goal carries the
+	// heavy validate[] stack (phpunit integration, deptrac, phpstan L9, kernel
+	// boot) and depends_on its implementer, so the costly checks run in the
+	// validation goal's OWN supervising cycle — never inline in the implementer's
+	// cycle under the goals+db locks. Its failure is terminal-TO-ITSELF: CascadeFailure
+	// short-circuits on it so neither the implementer it validates nor any unrelated
+	// downstream impl goal is ever cascade-blocked by a red validation goal.
+	// Absent (empty) ⇒ an ordinary goal; omitempty preserves byte-identical
+	// existing goals.yaml.
+	Validates string `yaml:"validates,omitempty"`
+
 	// Migrates marks a goal that mutates the SHARED database schema (e.g. runs
 	// doctrine:migrations:migrate inside its worker). Per-goal worktrees (E1-1a)
 	// isolate FILES but NOT the shared DB, so the co-scheduling gate
@@ -462,6 +475,26 @@ func (gf *GoalsFile) GoalByID(id string) (*Goal, bool) {
 	return nil, false
 }
 
+// IsValidationGoal reports whether this goal is a dedicated validation goal —
+// one that exists solely to run the heavy validate[] checks for the
+// implementation goal named in Validates. See the Validates field doc.
+func (g *Goal) IsValidationGoal() bool { return g.Validates != "" }
+
+// HasValidationGoalFor reports whether a dedicated validation goal validating
+// implGoalID exists in the file. It is the precondition for the
+// taskvisor.validation=false DEFER path (deferValidationToSeparateGoal): the
+// impl goal may be marked done without an inline validate ONLY when a separate
+// validation goal will run the checks in its own cycle — otherwise the caller
+// MUST fall through to an inline runValidateScript (never a silent false-pass).
+func (gf *GoalsFile) HasValidationGoalFor(implGoalID string) bool {
+	for i := range gf.Goals {
+		if gf.Goals[i].IsValidationGoal() && gf.Goals[i].Validates == implGoalID {
+			return true
+		}
+	}
+	return false
+}
+
 func (gf *GoalsFile) NextPendingGoal() (*Goal, bool) {
 	for i := range gf.Goals {
 		if gf.Goals[i].Status == GoalBlocked {
@@ -701,6 +734,15 @@ func (g *Goal) DependsOnSatisfied(goals []Goal) bool {
 // an unknown verdict). The BFS traversal and the pending/running status guard are
 // preserved from the original, as is BlockedBy recording on every dependent.
 func (gf *GoalsFile) CascadeFailure(failedGoalID, verdictClass string) {
+	// A validation goal is terminal-TO-ITSELF: it validates an already-Done
+	// implementer (depends_on it) and exists only to run heavy checks, so a red
+	// validation goal must NOT block the implementer it validates NOR any
+	// unrelated downstream impl goal that happens to gate on it. Short-circuit
+	// BEFORE the hard/soft branch so the isolation covers BOTH verdict classes.
+	if g, ok := gf.GoalByID(failedGoalID); ok && g.IsValidationGoal() {
+		log.Printf("%s: validation goal terminal — no cascade (validates %s)", failedGoalID, g.Validates)
+		return
+	}
 	hard := verdictClass == "fail" || verdictClass == "code-defect"
 	visited := map[string]bool{}
 	queue := []string{failedGoalID}

@@ -211,6 +211,14 @@ Re-run /tmux:task-plan-discover to regenerate discovery outputs, or edit the fil
     <step n="3.28" title="Generate Makefile / DX goal (single goal, phase=dx)"><load file=".claude/commands/tmux/task-plan-generate/step-3.28-dx.xml">READ step-3.28-dx.xml NOW and execute its content as this step.</load></step>
     <step n="3.29" title="Generate Final Gate goals (goal-T+3..T+5)"><load file=".claude/commands/tmux/task-plan-generate/step-3.29-final-gates.xml">READ step-3.29-final-gates.xml NOW and execute its content as this step.</load></step>
 
+    <validation-as-goal policy="true">
+      <intent>The daemon runs a goal's HEAVY validate stack (phpunit integration + deptrac + phpstan L9 + kernel boot) decoupled from implementation: per the validation-as-goal model, the heavy checks live in a DEDICATED validation goal, never inline in the implementer's supervising cycle. A red validation goal is terminal-to-itself (the daemon's CascadeFailure short-circuits on any goal whose `validates:` is set), so it never cascade-blocks the implementer it validates nor any unrelated downstream impl goal. Step 3.30 emits these validation goals; this token (`validation-as-goal`) marks the policy as active.</intent>
+      <rule>Every implementation goal keeps a LIGHT presence validate (build + file-presence greps) so the every-goal-has-≥1-validate mandate (RC-A) holds; the heavy checks move to its phase's validation goal.</rule>
+      <rule>A validation goal carries `validates:` = the primary impl goal id it gates, an elevated `priority` (above the default 0), and `depends_on` the implementer(s) whose work it validates.</rule>
+    </validation-as-goal>
+
+    <step n="3.30" title="Generate per-phase validation goals (validation-as-goal)"><load file=".claude/commands/tmux/task-plan-generate/step-3.30-validation-goals.xml">READ step-3.30-validation-goals.xml NOW and execute its content as this step.</load></step>
+
     <step n="4" title="Post-generation ordering verification">
       <substep n="4.1" title="Load generated goals">
         <action>Read goals.yaml from disk. Extract ordered list of all goals with their: goal ID, phase, depends_on array, BC assignment (if any).</action>

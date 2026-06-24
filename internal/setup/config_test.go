@@ -260,8 +260,8 @@ func TestDefaultSettings_MaxWallClockSec(t *testing.T) {
 
 func TestDefaultSettings_ValidateScriptTimeoutSec(t *testing.T) {
 	s := DefaultSettings()
-	assert.Equal(t, 120, s.Taskvisor.ValidateScriptTimeoutSec,
-		"default validate_script_timeout_sec should be 120 — the per-execution validate.sh ceiling (P7-fresh)")
+	assert.Equal(t, 600, s.Taskvisor.ValidateScriptTimeoutSec,
+		"default validate_script_timeout_sec should be 600 — raised for the validation-as-goal model (heavy validate runs in a dedicated validation goal's own cycle)")
 }
 
 func TestSaveSettings_ValidateScriptTimeoutSecRoundTrip(t *testing.T) {
