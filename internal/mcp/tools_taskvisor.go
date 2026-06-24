@@ -103,6 +103,16 @@ type tvGoal struct {
 	// mirror, every MCP load-resave (GoalCreate, GoalAddPrerequisite) silently
 	// erases migrates: true and disarms the exclusion at MaxGoals>1.
 	Migrates bool `yaml:"migrates,omitempty"`
+	// Validates mirrors taskvisor.Goal.Validates (same yaml key). When non-empty
+	// it names the implementation goal id this goal validates, marking it a
+	// dedicated validation goal (validation-as-goal model): the daemon's
+	// CascadeFailure short-circuits on it (terminal-to-itself) so a red
+	// validation goal never cascade-blocks its implementer or downstream impl
+	// goals. DUAL-STRUCT (critical): without this mirror every MCP load-resave
+	// (GoalCreate, GoalAddPrerequisite) silently erases validates: and the
+	// daemon re-treats the goal as ordinary — re-arming the very cascade the
+	// model removes. Guarded by TestGoalTvGoalYamlTagParity.
+	Validates string `yaml:"validates,omitempty"`
 	// FailedBy mirrors taskvisor.Goal.FailedBy (same yaml key) — the
 	// timeout-salvage marker ("validation-timeout") the daemon's salvage scan
 	// keys on to keep watching signal.json for a late verdict. DUAL-STRUCT

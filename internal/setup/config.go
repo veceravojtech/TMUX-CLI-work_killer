@@ -92,10 +92,10 @@ type TaskvisorSettings struct {
 	// a value <=0 disables the heartbeat. Values >0 override the daemon default.
 	ProgressTimeoutSec int `yaml:"progress_timeout_sec"`
 	// ValidateScriptTimeoutSec bounds ONE execution of a goal's validate.sh —
-	// the deterministic P7 anchor (runValidateScript). Default 120; a value <=0
-	// keeps the daemon seed. Deliberately modest: the script runs synchronously
-	// inside the tick under the goals+db locks, so the whole daemon blocks while
-	// it runs — projects with slow suites raise this explicitly. A timeout kill
+	// the deterministic P7 anchor (runValidateScript). Default 600; a value <=0
+	// keeps the daemon seed. Raised 120→600 for the validation-as-goal model: the
+	// heavy validate stack runs in a dedicated validation goal's own cycle, so the
+	// 600s ceiling covers a Symfony stack with margin. A timeout kill
 	// is classified as reason "timeout" (not a red suite) in the P7 gate logs.
 	ValidateScriptTimeoutSec int `yaml:"validate_script_timeout_sec"`
 	// TransientRetryMaxAttempts bounds the C4-cont transient-failure retry loop in
@@ -289,7 +289,7 @@ func DefaultSettings() *Settings {
 			CircuitBreakerK:           2,
 			AutoResumeIntervalSec:     30,
 			ProgressTimeoutSec:        300,
-			ValidateScriptTimeoutSec:  120,
+			ValidateScriptTimeoutSec:  600,
 			TransientRetryMaxAttempts: 3,
 			TransientRetryBackoffMs:   500,
 			MaxWallClockSec:           14400,

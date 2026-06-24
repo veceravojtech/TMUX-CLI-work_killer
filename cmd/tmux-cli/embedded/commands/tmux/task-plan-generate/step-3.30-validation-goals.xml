@@ -1,0 +1,49 @@
+    <step n="3.30" title="Generate per-phase validation goals (validation-as-goal)">
+      <rule critical="true">This step implements the validation-as-goal model: the HEAVY validate stack (phpunit integration, deptrac, phpstan L9, kernel boot) must NOT live inline on the implementation goals — it moves into DEDICATED validation goals emitted here. An implementation goal keeps only a LIGHT presence validate (build + file-presence greps) so the every-goal-has-≥1-validate mandate (RC-A) still holds.</rule>
+      <rule critical="true">A validation goal is terminal-to-itself in the daemon: it sets `validates:` = the impl goal id it gates, so CascadeFailure short-circuits on it — a red validation goal NEVER cascade-blocks the implementer it validates nor any unrelated downstream impl goal. This is why heavy checks are safe to decouple here.</rule>
+      <rule critical="true">Emit ONE validation goal per PHASE-CLUSTER (the set of impl goals sharing a phase), not one per impl goal — a single validation goal runs the phase's heavy stack against the cluster's combined deliverables.</rule>
+
+      <substep n="3.30.1" title="Group implementation goals by phase-cluster">
+        <action>Read goals.yaml from disk. Build PHASE_CLUSTERS — a map of phase → ordered list of impl goal IDs in that phase. EXCLUDE phase=gate and phase=scaffold (they carry their own gate checks) and EXCLUDE any goal already carrying `validates:` (never validate a validation goal).</action>
+        <action>For each cluster, designate PRIMARY_IMPL = the first (lowest-ordinal) impl goal ID in the cluster — this becomes the validation goal's `validates:` target.</action>
+        <check condition="a phase-cluster has zero heavy checks to run (pure config/docs phase)">
+          <action>Skip emitting a validation goal for that cluster — do not emit an empty-validate validation goal.</action>
+        </check>
+      </substep>
+
+      <substep n="3.30.2" title="Move heavy checks off the impl goals (keep light presence validate)">
+        <action>For each impl goal in a cluster, ensure its `validate[]` retains ONLY light presence checks (e.g. `go build ./...` or `composer dump-autoload`, plus `test -f`/grep file-presence on its deliverables). The heavy suite (phpunit integration, deptrac, phpstan analyse --level=9, kernel boot smoke) is what the validation goal will own — do NOT duplicate it on the impl goal.</action>
+        <rule>Every impl goal MUST still carry ≥1 validate after this move (RC-A). If trimming would empty the array, leave a single build/presence check in place.</rule>
+      </substep>
+
+      <substep n="3.30.3" title="Compose the validation goal's heavy validate[] and acceptance">
+        <action>For each cluster, build HEAVY_VALIDATE — the phase-appropriate heavy commands (e.g. `vendor/bin/phpunit --testsuite=integration`, `vendor/bin/deptrac analyse --fail-on-uncovered`, `vendor/bin/phpstan analyse --level=9`, a kernel-boot smoke test). Build ACCEPTANCE mirroring those checks ("integration suite green", "no deptrac violations", "phpstan L9 clean", "kernel boots").</action>
+        <rule>HEAVY_VALIDATE must be non-empty — a validation goal with no heavy checks is pointless (see 3.30.1 skip).</rule>
+      </substep>
+
+      <substep n="3.30.4" title="Call goal-create MCP for the validation goal">
+        <action>For each cluster, call the goal-create MCP tool with these parameters:</action>
+        <params>
+          <param name="description">Validate {{PHASE}} — heavy checks (phpunit/deptrac/phpstan/kernel)</param>
+          <param name="acceptance">ACCEPTANCE array from substep 3.30.3</param>
+          <param name="validate">HEAVY_VALIDATE array from substep 3.30.3</param>
+          <param name="context">CONTEXT: "Dedicated validation goal for the {{PHASE}} phase-cluster (validation-as-goal model). Runs the heavy validate stack decoupled from implementation so it never stalls an implementer's supervising cycle. Validates the cluster's combined deliverables; terminal-to-itself (a red verdict here blocks nothing downstream)."</param>
+          <param name="investigation_config">2–4 investigators of type test-execution / static-analysis / architecture-check matching HEAVY_VALIDATE (one per heavy check class).</param>
+          <param name="depends_on">ALL impl goal IDs in the cluster (PHASE_CLUSTERS[phase]) — the validation goal runs only AFTER every implementer in the phase is Done.</param>
+          <param name="priority">50 — ELEVATED above the default 0 so the validation goal is dispatched ahead of lower-priority pending work once its dependencies clear.</param>
+          <param name="phase">{{PHASE}}</param>
+          <param name="max_retries">3</param>
+        </params>
+        <rule critical="true">The created validation goal MUST carry `validates:` = PRIMARY_IMPL (the cluster's primary impl goal id). This is the discriminator the daemon reads (IsValidationGoal) to make the goal terminal-to-itself. If the goal-create MCP tool does not accept a `validates` parameter in this runtime, set it on the goal in goals.yaml immediately after creation so the field is persisted — without it the daemon treats the goal as ordinary and the cascade isolation is lost.</rule>
+        <rule>depends_on MUST list EVERY impl goal in the cluster — never a subset (the heavy stack validates the whole cluster's combined output).</rule>
+        <rule>priority elevated (≥50) and phase set to the cluster's phase so ordering verification (Step 4) keeps it adjacent to the impl goals it validates.</rule>
+
+        <check condition="goal-create returns error">
+          <action>Print error with full context and ABORT.</action>
+        </check>
+        <check condition="goal-create succeeds">
+          <action>Print: "Validation goal created: goal-{{VAL_GOAL_ID}} (phase={{PHASE}}, validates=goal-{{PRIMARY_IMPL}}, depends_on={{PHASE_CLUSTERS[phase]}}, priority=50) — heavy checks decoupled from implementation."</action>
+          <action>Proceed to the next cluster; when all clusters are emitted, proceed to the next step.</action>
+        </check>
+      </substep>
+    </step>

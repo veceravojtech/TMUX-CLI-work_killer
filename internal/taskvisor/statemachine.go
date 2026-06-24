@@ -333,13 +333,16 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 		return err
 	}
 
-	// taskvisor.validation=false: skip the validation step entirely (no validate.sh,
-	// no validator workers) and mark the goal done directly. Placed AFTER the
-	// supervisor teardown so the windows are still cleaned up, but BEFORE
-	// runValidateScript so neither the deterministic script nor the reasoning
-	// validator ever runs.
-	if d.skipValidation {
-		return d.markGoalDoneWithoutValidation(goal, goals)
+	// taskvisor.validation=false redefined (validation-as-goal): "false" now means
+	// DEFER the checks to a dedicated validation goal, NOT "skip checks". So the
+	// impl goal may be marked done without an inline validate ONLY when a separate
+	// validation goal (Validates==this id) exists to run the checks in its own
+	// cycle. With NO such validation goal we must NOT false-pass (goal-037): fall
+	// through to the inline runValidateScript legacy safe path below so the heavy
+	// checks still run. Placed AFTER supervisor teardown (windows cleaned up) but
+	// BEFORE runValidateScript.
+	if d.skipValidation && goals.HasValidationGoalFor(goal.ID) {
+		return d.deferValidationToSeparateGoal(goal, goals)
 	}
 
 	passed, reason, stderr, err := d.runValidateScript(goal)
@@ -370,16 +373,21 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	return nil
 }
 
-// markGoalDoneWithoutValidation transitions a goal straight from supervising to
-// done when the validation step is disabled (taskvisor.validation=false). It
+// deferValidationToSeparateGoal transitions an impl goal straight from
+// supervising to done when validation is DEFERRED to a dedicated validation
+// goal (taskvisor.validation=false AND a goal with Validates==goal.ID exists).
+// The heavy checks are NOT skipped — they run in the validation goal's own
+// supervising cycle; here we only record the impl goal's deliverable-done. It
 // mirrors the VerdictPass branch of checkValidatingPhase — the same durable
 // done-path (SaveGoals → autoCommit → resolveTask → advanceToNextGoal) — but
 // passes a nil validator signal: there are no findings to compact because no
-// validator ever ran.
-func (d *Daemon) markGoalDoneWithoutValidation(goal *Goal, goals *GoalsFile) error {
+// validator ran inline. The caller guarantees the precondition (a validation
+// goal exists); without one it falls through to inline runValidateScript so
+// checks always run (never the goal-037 false-pass).
+func (d *Daemon) deferValidationToSeparateGoal(goal *Goal, goals *GoalsFile) error {
 	goal.Status = GoalDone
 	goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	log.Printf("%s: supervising -> done (validation disabled, %s)", goal.ID, goalDuration(goal))
+	log.Printf("%s: supervising -> done (validation deferred to separate goal, %s)", goal.ID, goalDuration(goal))
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
 	}

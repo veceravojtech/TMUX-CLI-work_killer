@@ -128,12 +128,14 @@ func TestCheckSupervising_TransitionsToValidating_PerGoal(t *testing.T) {
 	assert.Equal(t, "done", rt.lastSupervisorStatus, "the supervisor status is recorded per goal")
 }
 
-// TestCheckSupervising_SkipValidation_MarksDoneDirectly proves that with the
-// goal-validation step disabled (taskvisor.validation=false ⇒ d.skipValidation),
-// a supervisor "done" signal takes the goal straight from supervising to GoalDone
-// WITHOUT spawning a validator: no validate.sh run, no validator window created,
-// and the runtime never advances to phaseValidating. The done-path mirrors the
-// VerdictPass branch (status done, FinishedAt stamped, advance to the next goal).
+// TestCheckSupervising_SkipValidation_MarksDoneDirectly proves that with
+// validation deferred (taskvisor.validation=false ⇒ d.skipValidation) AND a
+// dedicated validation goal present for goal-001, a supervisor "done" signal
+// takes the impl goal straight from supervising to GoalDone WITHOUT spawning a
+// validator inline: no validate.sh run, no validator window created, and the
+// runtime never advances to phaseValidating (the heavy checks run later in the
+// validation goal's own cycle). The done-path mirrors the VerdictPass branch
+// (status done, FinishedAt stamped, advance to the next goal).
 func TestCheckSupervising_SkipValidation_MarksDoneDirectly(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
@@ -147,6 +149,10 @@ func TestCheckSupervising_SkipValidation_MarksDoneDirectly(t *testing.T) {
 		Goals: []Goal{
 			{ID: "goal-001", Description: "test", Status: GoalRunning, MaxRetries: 3},
 			{ID: "goal-002", Description: "next", Status: GoalPending},
+			// Dedicated validation goal: its presence is what lets the defer path
+			// mark goal-001 done without an inline validate (no false-pass).
+			{ID: "goal-v01", Description: "validate impl", Status: GoalPending,
+				Validates: "goal-001", DependsOn: []string{"goal-001"}},
 		},
 	}
 	writeGoals(t, dir, gf)
