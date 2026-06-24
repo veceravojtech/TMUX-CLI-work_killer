@@ -23,6 +23,10 @@ fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 [[ -f "$PROJECT_DIR/.tmux-cli/taskvisor-active" ]] && exit 0
+# Defer to the recurring-task driver between its cycles: while a recurring run owns
+# the supervisor window the daemon is the sole dispatcher, so this Stop hook must not
+# inject a second /tmux:supervisor (mirrors the taskvisor-active guard above).
+[[ -f "$PROJECT_DIR/.tmux-cli/recurring-active" ]] && exit 0
 
 # --- All goals terminal? No work to restart ---
 GOALS_FILE="${PROJECT_DIR}/.tmux-cli/goals.yaml"
