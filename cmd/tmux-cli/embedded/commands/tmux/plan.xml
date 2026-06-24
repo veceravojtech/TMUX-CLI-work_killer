@@ -265,7 +265,7 @@ Ask First: &lt;decisions to auto-resolve preferring the highest-quality in-scope
       <action>Read $ARGUMENTS — if it is a file path, read that file. If inline text, use directly.</action>
       <action>Identify N modules/aspects/components from the plan.</action>
       <action>For each module determine: name, scope summary, source files to analyze, dependencies on other modules.</action>
-      <action>Respect the dependency graph if present in the plan — record it for tasks.yaml and the final dependency ordering in step 11.</action>
+      <action>Author each module's dependency edges from genuine produce/consume scope overlap — NOT from ordinal/phase position. A module depends_on another ONLY when it CONSUMES a file or symbol that the other PRODUCES (the same real-dependency basis the daemon's EnforceFileOverlapDeps applies in internal/taskvisor/depinfer.go to inject missing edges). Compare the files/symbols each module consumes against what prior modules produce: keep the genuine ordering edge (consumer after producer) and drop every ordinal/phase-position edge ("all priors in the phase" / "implementation wave / prerequisites first"). Modules with no produce/consume overlap — read-only controller actions, separate per-event listeners, CI/Makefile/DX chores — are SIBLINGS with empty depends_on, never chained. Record the resulting edges for tasks.yaml (step 3b) and the final dependency ordering in step 11.</action>
       <rule critical="true">When $ARGUMENTS references a user-approved task decomposition (numbered list, table, explicit breakdown from prior conversation), PRESERVE the exact task count and boundaries. Create research-task context files and add implementation detail for each task, but NEVER merge, squash, split, or recompose the approved tasks. The user approved the structure; the planner fills in the detail.</rule>
       <parallelism>
         <rule critical="true">Default to MAXIMUM parallelism for spec-writing. Implementation dependencies do NOT block parallel spec-writing. Each spec worker reads source code independently — it does not need another module to be IMPLEMENTED first.</rule>
@@ -291,7 +291,7 @@ tasks:
     wid: "execute-N"
     status: pending
     context: "{research-root}/task-&lt;slug&gt;.md"
-    depends_on: ["execute-M"]  # implementation dependency — from plan's dependency graph. Optional.
+    depends_on: ["execute-M"]  # produce/consume overlap ONLY — execute-M PRODUCES a file/symbol this task CONSUMES; NOT ordinal/phase position. Independent tasks are siblings (omit depends_on). Optional.
       </format>
       <rule>The literal value written for context: is the RESOLVED research-root path (step 0b) — goal-scoped (.tmux-cli/goals/{GOAL_ID}/research/task-&lt;slug&gt;.md) in goal mode, timestamped (.tmux-cli/research/{y-m-d-hh}/task-&lt;slug&gt;.md) in standalone mode. The file itself is written at tasks-path (also step 0b) — per-goal in GOAL_MODE, top-level in standalone.</rule>
       <action>Verify all context files referenced in tasks.yaml exist on disk.</action>
@@ -581,7 +581,7 @@ tasks:
     context: "&lt;path to the accepted spec .md file&gt;"
     depends_on: ["execute-M"]  # from spec ## Dependencies, mapped to wids. Optional.
       </format>
-      <action>Respect the dependency graph from the specs — use depends_on fields or order tasks by implementation wave (prerequisites first).</action>
+      <action>Author depends_on from produce/consume scope overlap derived from the accepted specs — each task depends_on ONLY the tasks that PRODUCE files/symbols it CONSUMES (read each spec's ## Dependencies and ### Files to Create/Modify; the same overlap basis as EnforceFileOverlapDeps). Keep the genuine consumer-after-producer ordering edge; do NOT add ordinal/phase-position edges and do NOT order tasks by implementation wave (prerequisites first) — independent tasks with disjoint file sets stay siblings with no depends_on so the finalized DAG keeps parallel branches.</action>
       <action>Set the top-level status field in tasks-path to "ready".</action>
       <rule>Preserve any existing top-level `lane` key in tasks-path verbatim when rewriting (written by the step 3d solo-lane gate) — dropping it would silently disable the slim audit and the supervisor's solo read.</rule>
       <action condition="GOAL_MODE is true">Append a research-file index to .tmux-cli/goals/{GOAL_ID}/goal.md so the goal records its plan artifacts. Use a section titled "## Research Files" with two subsections grouped by category, using markdown links RELATIVE to the goal dir:
