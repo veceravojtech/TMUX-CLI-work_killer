@@ -204,18 +204,37 @@ func (d *Daemon) isGitRepo() bool {
 	return err == nil
 }
 
-// baseRootMarker is the repo-root file used to assert that a worktree has the
-// base actually checked out. go.mod is committed and present in every real
-// checkout of this module, so its presence at <wt>/go.mod is a cheap, reliable
-// proof the worktree is not a base-less stub.
-const baseRootMarker = "go.mod"
+// controlPlaneEntries are the daemon-injected root artifacts that are NOT base
+// source: a real `git worktree add` writes the `.git` gitdir pointer, and the
+// reuse path links in `.tmux-cli` / `.claude`. Excluding them makes
+// baseCheckedOut project-type-agnostic — it asserts the base is materialized by
+// the presence of ANY genuine base root entry (e.g. composer.json for a
+// PHP/Symfony target, go.mod for a Go module, package.json for a Node project)
+// rather than a single hardcoded language marker, so a correctly provisioned
+// non-Go worktree dispatches instead of STUCK-looping.
+var controlPlaneEntries = map[string]bool{
+	".git":      true,
+	".tmux-cli": true,
+	".claude":   true,
+}
 
 // baseCheckedOut reports whether the base is materialized in the worktree by
-// checking for the repo-root marker (go.mod). A stray/empty dir or a worktree
-// whose checkout never landed will be missing it.
+// scanning its root for any entry that is not a daemon-injected control-plane
+// artifact (see controlPlaneEntries). A stray/empty dir, a control-plane-only
+// dir, or an unreadable path reads as base-less (false) — preserving the
+// task-262 fail-loud guarantee.
 func baseCheckedOut(wtPath string) bool {
-	_, err := os.Stat(filepath.Join(wtPath, baseRootMarker))
-	return err == nil
+	entries, err := os.ReadDir(wtPath)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if controlPlaneEntries[e.Name()] {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // isRegisteredWorktree reports whether wtPath is a worktree git actually knows
@@ -330,7 +349,7 @@ func (d *Daemon) ensureWorktree(goal *Goal, parallel bool) (string, error) {
 	// on disk — self-healing on the next reuse check (registered-but-baseless →
 	// re-provision).
 	if !baseCheckedOut(wtPath) {
-		return "", fmt.Errorf("worktree provisioning failed for %s: base not checked out at %s (missing %s)", goal.ID, wtPath, baseRootMarker)
+		return "", fmt.Errorf("worktree provisioning failed for %s: base not checked out at %s (no base source materialized)", goal.ID, wtPath)
 	}
 
 	if err := d.symlinkControlPlane(wtPath); err != nil {

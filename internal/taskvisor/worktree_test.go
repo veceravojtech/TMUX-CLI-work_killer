@@ -17,6 +17,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// baseRootMarker is a test-local fixture filename used by the existing
+// TestEnsureWorktree_* tests to materialize a Go base (go.mod) in a worktree.
+// The production const was deleted when baseCheckedOut became project-agnostic
+// (it no longer keys on any single language marker); these fixtures keep
+// writing go.mod purely to make the worktree dir non-empty → base-present.
+const baseRootMarker = "go.mod"
+
 // fakeGitRunner is a recording GitRunnerFunc: it captures every invocation's
 // argv (so tests assert the exact git commands without a real repo) and returns
 // canned (stdout, exitCode) per a responder. A sideEffect hook lets a test
@@ -471,6 +478,34 @@ func TestEnsureWorktree_StubReuseValidNoReprovision(t *testing.T) {
 	assert.Equal(t, 0, fake.count("worktree", "add"), "valid worktree reused, not re-added")
 	assert.Equal(t, 0, fake.count("worktree", "prune"), "no teardown on a valid reuse")
 	assert.Equal(t, 0, fake.count("worktree", "remove", "--force"), "no teardown on a valid reuse")
+}
+
+// TestEnsureWorktree_NonGoBase_ComposerJSON: a `git worktree add` whose checkout
+// materializes a NON-Go base (composer.json + a contexts/ dir, no go.mod) must be
+// accepted — the project-agnostic baseCheckedOut treats any non-control-plane
+// root entry as base content, so a PHP/Symfony worktree dispatches instead of
+// STUCK-looping (regression of task 262's go.mod-only probe).
+func TestEnsureWorktree_NonGoBase_ComposerJSON(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+
+	fake := &fakeGitRunner{sideEffect: func(args []string) {
+		if argsContain(args, "worktree", "add") {
+			_ = os.MkdirAll(wtPath, 0o755)
+			// Non-Go base: composer.json + a contexts/ dir, deliberately NO go.mod.
+			_ = os.WriteFile(filepath.Join(wtPath, "composer.json"), []byte("{}\n"), 0o644)
+			_ = os.MkdirAll(filepath.Join(wtPath, "contexts"), 0o755)
+		}
+	}}
+	d.SetGitRunnerFunc(fake.run)
+
+	cwd, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err)
+
+	assert.Equal(t, wtPath, cwd, "a correctly provisioned non-Go worktree is returned, not re-provisioned")
+	assert.True(t, baseCheckedOut(wtPath), "composer.json base reads as checked out (no go.mod required)")
 }
 
 // --- mergeWorktreeBack -----------------------------------------------------
