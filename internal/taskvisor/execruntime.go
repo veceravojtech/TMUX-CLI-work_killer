@@ -70,7 +70,7 @@ func resolveComposeProject(projectRoot, body string) string {
 // composeProjectFromDocumentedField returns the compose project name an operator
 // explicitly declares via a "Compose Project:" field in test-environment.md, else
 // "". Mirrors appServiceFromDocumentedField: split on the FIRST ':' (the colon may
-// sit inside markdown bold), strip the `*_\`` wrappers, take the first field.
+// sit inside markdown bold), strip the `*_\` wrappers, take the first field.
 func composeProjectFromDocumentedField(body string) string {
 	for _, line := range strings.Split(body, "\n") {
 		if !strings.Contains(strings.ToLower(line), "compose project") {

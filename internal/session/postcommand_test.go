@@ -12,6 +12,53 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestPostCommandConfigWithModel_InjectsModelFlag verifies a non-empty model is
+// injected as `--model '<model>'` into EVERY claude command in the fallback chain.
+// The bracketed id is single-quoted so the shell that runs the command does not
+// glob-expand `[1m]`.
+func TestPostCommandConfigWithModel_InjectsModelFlag(t *testing.T) {
+	const model = "claude-opus-4-6[1m]"
+	cfg := PostCommandConfigWithModel(model)
+
+	require.Len(t, cfg.Commands, 3)
+	assert.Equal(t,
+		`claude --dangerously-skip-permissions --model 'claude-opus-4-6[1m]' --session-id="$TMUX_WINDOW_UUID"`,
+		cfg.Commands[0])
+	assert.Equal(t,
+		`claude --dangerously-skip-permissions --model 'claude-opus-4-6[1m]' --resume "$TMUX_WINDOW_UUID"`,
+		cfg.Commands[1])
+	assert.Equal(t,
+		`claude --dangerously-skip-permissions --model 'claude-opus-4-6[1m]'`,
+		cfg.Commands[2])
+
+	for _, c := range cfg.Commands {
+		assert.Contains(t, c, "--model 'claude-opus-4-6[1m]'")
+	}
+	// Error patterns are unchanged by the model.
+	assert.Equal(t, DefaultPostCommandConfig().ErrorPatterns, cfg.ErrorPatterns)
+}
+
+// TestPostCommandConfigWithModel_Empty_MatchesDefault verifies an empty model
+// produces a config byte-identical to DefaultPostCommandConfig — no --model flag,
+// no behavior change for sessions started without --model.
+func TestPostCommandConfigWithModel_Empty_MatchesDefault(t *testing.T) {
+	cfg := PostCommandConfigWithModel("")
+	def := DefaultPostCommandConfig()
+
+	assert.Equal(t, def.Commands, cfg.Commands)
+	for _, c := range cfg.Commands {
+		assert.NotContains(t, c, "--model")
+	}
+}
+
+// TestDefaultPostCommandConfig_NoModelFlag pins that the default (model-less)
+// launch chain never carries a --model flag.
+func TestDefaultPostCommandConfig_NoModelFlag(t *testing.T) {
+	for _, c := range DefaultPostCommandConfig().Commands {
+		assert.NotContains(t, c, "--model")
+	}
+}
+
 // MockExecutorWithFeedback is a test mock for tmux.TmuxExecutor
 type MockExecutorWithFeedback struct {
 	SendMessageWithFeedbackFunc func(sessionID, windowID, message string) (string, error)

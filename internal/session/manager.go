@@ -13,6 +13,12 @@ type SessionManager struct {
 	executor             tmux.TmuxExecutor
 	sessionReadyAttempts int
 	sessionReadyInterval time.Duration
+	// model, when non-empty, is recorded in the new session's environment as
+	// TMUX_CLI_MODEL and injected as --model into each window's claude launch (the
+	// supervisor window directly, later windows/workers by reading TMUX_CLI_MODEL
+	// back) so every window — the supervisor window, taskvisor, and all
+	// MCP-spawned workers — launches Claude with that model.
+	model string
 }
 
 // NewSessionManager creates a new SessionManager with the given dependencies
@@ -22,6 +28,15 @@ func NewSessionManager(executor tmux.TmuxExecutor) *SessionManager {
 		sessionReadyAttempts: 10,
 		sessionReadyInterval: 50 * time.Millisecond,
 	}
+}
+
+// WithModel returns the manager configured to record TMUX_CLI_MODEL=<model> in
+// the session environment and inject --model '<model>' into claude launches at
+// CreateSession time. An empty model is a no-op (the session inherits Claude's
+// default model). Returns the receiver for chaining.
+func (m *SessionManager) WithModel(model string) *SessionManager {
+	m.model = model
+	return m
 }
 
 // waitForSession polls HasSession until the newly created session is reachable.
@@ -74,6 +89,16 @@ func (m *SessionManager) CreateSession(id, path string) error {
 		return fmt.Errorf("set session environment: %w", err)
 	}
 
+	// 4.5. Record the chosen Claude model in the session environment as
+	// TMUX_CLI_MODEL so the SEPARATE processes that spawn later windows (the MCP
+	// server's windows-spawn-worker, the daemon recovery path, `windows-create`)
+	// can retrieve it and inject the same --model into their launch commands.
+	// Window 0 below gets the model directly from m.model. Best-effort: a model is
+	// an optional override, so a set failure must not tear down a good session.
+	if m.model != "" {
+		_ = m.executor.SetSessionEnvironment(id, "TMUX_CLI_MODEL", m.model)
+	}
+
 	// 5. List windows in the newly created session to capture default window
 	windowList, err := m.executor.ListWindows(id)
 	if err != nil {
@@ -100,8 +125,8 @@ func (m *SessionManager) CreateSession(id, path string) error {
 			return fmt.Errorf("export TMUX_WINDOW_UUID in shell: %w", err)
 		}
 
-		// Execute post-command for supervisor window
-		postCmdConfig := DefaultPostCommandConfig()
+		// Execute post-command for supervisor window — inject --model when set.
+		postCmdConfig := PostCommandConfigWithModel(m.model)
 		err = ExecutePostCommandWithFallback(m.executor, id, windowList[0].TmuxWindowID, postCmdConfig)
 		if err != nil {
 			// Post-command failure is not fatal

@@ -144,6 +144,7 @@ func TestServer_WindowsCreate_Success(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 
 	server := newTestServer(mockExec, "/test/dir")
@@ -1155,6 +1156,7 @@ func TestServer_WindowsSpawnWorker_Success(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
@@ -1208,6 +1210,7 @@ func TestWindowsSpawnWorker_SelfIdentifiesSupervisorFromUUID(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@2", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@2", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@2", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@2", "/tmux:execute").Return(nil)
@@ -1258,6 +1261,7 @@ func TestWindowsSpawnWorker_MaxWorkersIsPerSupervisor(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@9", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@9", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@9", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@9", "/tmux:execute").Return(nil)
@@ -1288,6 +1292,7 @@ func TestWindowsSpawnWorker_WorkingDirectory_ThreadsToCreateWindow(t *testing.T)
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
@@ -1318,6 +1323,7 @@ func TestWindowsSpawnWorker_EmptyWorkingDirectory_UsesSessionDefault(t *testing.
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
@@ -1372,6 +1378,7 @@ func TestServer_WindowsSpawnWorker_WithCustomDeliverable(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
@@ -1407,6 +1414,7 @@ func TestServer_WindowsSpawnWorker_WithoutDeliverable(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
@@ -1443,6 +1451,7 @@ func TestServer_WindowsSpawnWorker_ExecuteSendFails_CleansUp(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(errors.New("send failed"))
@@ -1470,6 +1479,7 @@ func TestServer_WindowsSpawnWorker_TaskMessageFails_CleansUp(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
@@ -1531,6 +1541,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersNotExceeded(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@2", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@2", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@2", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@2", "/tmux:execute").Return(nil)
@@ -1566,6 +1577,7 @@ func TestServer_WindowsSpawnWorker_MaxWorkersZeroUnlimited(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@4", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@4", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@4", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@4", "/tmux:execute").Return(nil)
@@ -1590,6 +1602,7 @@ func TestWindowsSpawnWorker_PipePaneCalledAfterCreate(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", "/test/dir/.tmux-cli/logs/panes/execute-1.log").Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
@@ -1615,6 +1628,7 @@ func TestWindowsSpawnWorker_PipePaneError_DoesNotFailSpawn(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(fmt.Errorf("pipe-pane failed"))
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
@@ -1642,6 +1656,7 @@ func TestWindowsSpawnWorker_PipePaneLogPath_MatchesWorkerName(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", "/test/dir/.tmux-cli/logs/panes/execute-045-1.log").Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
@@ -1668,6 +1683,7 @@ func TestWindowsSpawnWorker_PipePaneLogDir_Created(t *testing.T) {
 	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
 		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
 	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
 	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
 	mockExec.On("PipePane", "test-session", "@1", mock.Anything).Return(nil)
 	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)

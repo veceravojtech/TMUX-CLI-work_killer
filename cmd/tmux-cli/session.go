@@ -418,6 +418,12 @@ func init() {
 	startCmd.Flags().Bool("sudo", false, "Prompt for sudo password and cache it for the session")
 	startAttachCmd.Flags().Bool("sudo", false, "Prompt for sudo password and cache it for the session")
 
+	// Add --model flag to start and start-attach commands. Recorded in the session
+	// environment as TMUX_CLI_MODEL and injected as --model into every
+	// window/worker's claude launch.
+	startCmd.Flags().String("model", "", "Claude model for this session (e.g. 'claude-opus-4-6[1m]'); applies to all windows and workers")
+	startAttachCmd.Flags().String("model", "", "Claude model for this session (e.g. 'claude-opus-4-6[1m]'); applies to all windows and workers")
+
 	// Add --timeout flag to sudo command
 	sudoCmd.Flags().Int("timeout", 0, "Timeout in seconds (0 = no timeout; omit for config default, which is 30s)")
 
@@ -526,7 +532,7 @@ func NewUsageError(msg string) error {
 
 // startOrReuseSession handles session discovery, interactive prompts for existing sessions,
 // and session creation. Returns the session ID (existing or newly created).
-func startOrReuseSession(executor tmux.TmuxExecutor, projectPath string) (string, error) {
+func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model string) (string, error) {
 	// Check if session already exists for this path
 	existingSessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", projectPath)
 
@@ -543,6 +549,7 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath string) (string
 			if _, err := fmt.Scanln(&response); err != nil {
 				// EOF or pipe input — treat as cancel
 				fmt.Printf("Keeping existing session '%s'\n", existingSessionID)
+				applyModelToExistingSession(executor, existingSessionID, model)
 				return existingSessionID, nil
 			}
 
@@ -553,6 +560,7 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath string) (string
 				// Fall through to create new session
 			} else {
 				fmt.Printf("Keeping existing session '%s'\n", existingSessionID)
+				applyModelToExistingSession(executor, existingSessionID, model)
 				return existingSessionID, nil
 			}
 		}
@@ -560,7 +568,7 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath string) (string
 
 	// Create new session
 	sessionID := session.GenerateSessionID(projectPath)
-	manager := session.NewSessionManager(executor)
+	manager := session.NewSessionManager(executor).WithModel(model)
 
 	if err := manager.CreateSession(sessionID, projectPath); err != nil {
 		return "", err
@@ -568,6 +576,17 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath string) (string
 
 	fmt.Printf("Created session '%s' for %s\n", sessionID, projectPath)
 	return sessionID, nil
+}
+
+// applyModelToExistingSession records TMUX_CLI_MODEL on a reused session so
+// windows/workers spawned AFTER this point inject the requested model into their
+// claude launch command. The already-running supervisor window keeps its current
+// model (its launch command already ran). Best-effort, no-op for an empty model.
+func applyModelToExistingSession(executor tmux.TmuxExecutor, sessionID, model string) {
+	if model == "" {
+		return
+	}
+	_ = executor.SetSessionEnvironment(sessionID, "TMUX_CLI_MODEL", model)
 }
 
 func cleanProjectDir(projectPath string) error {
@@ -595,7 +614,8 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: auto-setup: %v\n", err)
 	}
 	executor := tmux.NewTmuxExecutor()
-	sessionID, err := startOrReuseSession(executor, projectPath)
+	model, _ := cmd.Flags().GetString("model")
+	sessionID, err := startOrReuseSession(executor, projectPath, model)
 	if err != nil {
 		return err
 	}
@@ -626,7 +646,8 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: auto-setup: %v\n", err)
 	}
 	executor := tmux.NewTmuxExecutor()
-	sessionID, err := startOrReuseSession(executor, projectPath)
+	model, _ := cmd.Flags().GetString("model")
+	sessionID, err := startOrReuseSession(executor, projectPath, model)
 	if err != nil {
 		return err
 	}
@@ -1011,8 +1032,9 @@ func runWindowsCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("export TMUX_WINDOW_UUID in shell: %w", err)
 	}
 
-	// Execute postcommand (non-fatal)
-	postCmdConfig := session.DefaultPostCommandConfig()
+	// Execute postcommand (non-fatal) — inherit the session's --model when set.
+	model, _ := executor.GetSessionEnvironment(sessionID, "TMUX_CLI_MODEL")
+	postCmdConfig := session.PostCommandConfigWithModel(model)
 	err = session.ExecutePostCommandWithFallback(executor, sessionID, windowID, postCmdConfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: post-command execution failed for window %s: %v\n", windowID, err)
@@ -1856,7 +1878,9 @@ func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
 		exportCmd := fmt.Sprintf("export TMUX_WINDOW_UUID=\"%s\"", windowUUID)
 		_ = executor.SendMessage(sessionID, windowID, exportCmd)
 
-		postCmdConfig := session.DefaultPostCommandConfig()
+		// Inherit the session's --model (set at start-attach) when present.
+		model, _ := executor.GetSessionEnvironment(sessionID, "TMUX_CLI_MODEL")
+		postCmdConfig := session.PostCommandConfigWithModel(model)
 		_ = session.ExecutePostCommandWithFallback(executor, sessionID, windowID, postCmdConfig)
 
 		return &taskvisor.CreatedWindow{TmuxWindowID: windowID, Name: name}, nil

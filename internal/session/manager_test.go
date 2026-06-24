@@ -183,6 +183,68 @@ func TestCreateSession_Window0StaysSupervisor(t *testing.T) {
 	mockExec.AssertCalled(t, "SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string"))
 }
 
+// TestCreateSession_WithModel_InjectsModelIntoLaunch verifies WithModel injects
+// `--model '<model>'` into the supervisor window's claude launch command AND
+// records the model in the session environment as TMUX_CLI_MODEL so the separate
+// worker-spawning processes (MCP server, recovery) can retrieve and re-inject it.
+func TestCreateSession_WithModel_InjectsModelIntoLaunch(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	const wantModel = "claude-opus-4-6[1m]"
+
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_MODEL", wantModel).Return(nil)
+	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	mockExec.On("SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return len(s) > 0
+	})).Return(nil)
+	// The launch command (first fallback) MUST carry --model '<model>'.
+	mockExec.On("SendMessageWithFeedback", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return strings.Contains(s, "--model 'claude-opus-4-6[1m]'") && strings.Contains(s, "claude --dangerously-skip-permissions")
+	})).Return("", nil)
+
+	manager := NewSessionManager(mockExec).WithModel(wantModel)
+	require.NoError(t, manager.CreateSession("test-id", "/tmp"))
+
+	mockExec.AssertCalled(t, "SetSessionEnvironment", "test-id", "TMUX_CLI_MODEL", wantModel)
+	mockExec.AssertCalled(t, "SendMessageWithFeedback", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return strings.Contains(s, "--model 'claude-opus-4-6[1m]'")
+	}))
+}
+
+// TestCreateSession_NoModel_NoModelFlagOrEnv verifies the default manager (no model
+// configured) never writes TMUX_CLI_MODEL and launches claude with no --model flag
+// — byte-identical to pre-flag behavior.
+func TestCreateSession_NoModel_NoModelFlagOrEnv(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
+	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	mockExec.On("SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return len(s) > 0
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return !strings.Contains(s, "--model")
+	})).Return("", nil)
+
+	manager := NewSessionManager(mockExec)
+	require.NoError(t, manager.CreateSession("test-id", "/tmp"))
+
+	mockExec.AssertNotCalled(t, "SetSessionEnvironment", "test-id", "TMUX_CLI_MODEL", mock.Anything)
+}
+
 // TestSessionManager_CreateSession_PathNotExist tests error when path doesn't exist
 func TestSessionManager_CreateSession_PathNotExist(t *testing.T) {
 	mockExec := new(MockTmuxExecutor)

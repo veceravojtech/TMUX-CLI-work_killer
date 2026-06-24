@@ -261,8 +261,11 @@ func (s *Server) WindowsCreate(name, command, cwd string) (*WindowInfo, error) {
 		return nil, fmt.Errorf("%w: export TMUX_WINDOW_UUID in shell: %w", ErrTmuxCommandFailed, err)
 	}
 
-	// Execute postcommand if configured - NON-FATAL
-	postCmdConfig := session.DefaultPostCommandConfig()
+	// Execute postcommand if configured - NON-FATAL. Inherit the session's
+	// --model (recorded as TMUX_CLI_MODEL at start-attach) so workers launch
+	// Claude with the same model as the supervisor window.
+	model, _ := s.executor.GetSessionEnvironment(sessionID, "TMUX_CLI_MODEL")
+	postCmdConfig := session.PostCommandConfigWithModel(model)
 	err = session.ExecutePostCommandWithFallback(s.executor, sessionID, windowID, postCmdConfig)
 	if err != nil {
 		_ = err // Post-command failure is not fatal

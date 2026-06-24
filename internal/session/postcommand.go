@@ -20,19 +20,39 @@ type PostCommandConfig struct {
 }
 
 // DefaultPostCommandConfig returns the default post-command configuration
-// with Claude CLI launch and fallback handling.
+// with Claude CLI launch and fallback handling (no model override).
 func DefaultPostCommandConfig() *PostCommandConfig {
+	return PostCommandConfigWithModel("")
+}
+
+// PostCommandConfigWithModel returns the post-command configuration with the
+// Claude launch fallback chain, injecting `--model '<model>'` into every
+// invocation when model is non-empty. An empty model yields the exact default
+// chain (no --model flag). The model is single-quoted so a bracketed id such as
+// claude-opus-4-6[1m] is not glob-expanded by the shell that runs the command.
+func PostCommandConfigWithModel(model string) *PostCommandConfig {
 	return &PostCommandConfig{
-		Enabled: true,
-		Commands: []string{
-			`claude --dangerously-skip-permissions --session-id="$TMUX_WINDOW_UUID"`,
-			`claude --dangerously-skip-permissions --resume "$TMUX_WINDOW_UUID"`,
-			`claude --dangerously-skip-permissions`,
-		},
+		Enabled:  true,
+		Commands: claudeLaunchCommands(model),
 		ErrorPatterns: []string{
 			"already in use",
 			"No conversation found",
 		},
+	}
+}
+
+// claudeLaunchCommands builds the three-step Claude launch fallback chain. The
+// optional --model flag is placed right after --dangerously-skip-permissions so
+// the session-id/resume tail is unchanged.
+func claudeLaunchCommands(model string) []string {
+	modelFlag := ""
+	if model != "" {
+		modelFlag = fmt.Sprintf(" --model '%s'", model)
+	}
+	return []string{
+		fmt.Sprintf(`claude --dangerously-skip-permissions%s --session-id="$TMUX_WINDOW_UUID"`, modelFlag),
+		fmt.Sprintf(`claude --dangerously-skip-permissions%s --resume "$TMUX_WINDOW_UUID"`, modelFlag),
+		fmt.Sprintf(`claude --dangerously-skip-permissions%s`, modelFlag),
 	}
 }
 
