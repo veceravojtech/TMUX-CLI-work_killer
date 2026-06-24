@@ -620,6 +620,15 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 			f.Consumer, f.Stem, f.Producer, f.Evidence)
 	}
 
+	// Read-only over-serialization warning on the PRE-enforcement (plan-authored)
+	// graph — detecting before EnforceFileOverlapDeps avoids counting
+	// daemon-injected overlap edges. Log-only: no mutation, no SaveGoals, no
+	// effect on depWarningCount or dispatch.
+	if sf := DetectOverSerialized(goals); sf != nil {
+		log.Printf("over-serialization warning: %s (pending=%d critical-path=%d max-fan-out=%d runnable=%d)",
+			sf.Reason, sf.PendingCount, sf.CriticalPath, sf.MaxFanOut, sf.RunnableCount)
+	}
+
 	enforced := EnforceFileOverlapDeps(goals)
 	for _, e := range enforced {
 		log.Printf("dep enforce: %s now depends_on %s (file overlap: %s) — serialized pre-dispatch", e.From, e.To, e.Stem)

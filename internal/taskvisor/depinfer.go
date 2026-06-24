@@ -2,6 +2,7 @@ package taskvisor
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -274,6 +275,153 @@ func EnforceFileOverlapDeps(goals *GoalsFile) []DepEdge {
 	}
 
 	return edges
+}
+
+// SerializationFinding is the read-only result of DetectOverSerialized: a
+// snapshot of the pending-goal DAG shape plus a human-readable Reason naming
+// each fired signal. A nil *SerializationFinding means "no warning".
+type SerializationFinding struct {
+	PendingCount  int
+	CriticalPath  int
+	MaxFanOut     int
+	RunnableCount int
+	Reason        string
+}
+
+// DetectOverSerialized is a PURE, read-only detector (modeled on
+// InferMissingDeps — it never mutates, prunes, or authors depends_on edges,
+// and never calls SaveGoals). It computes a DAG-shape signal over the
+// GoalPending goals and returns a *SerializationFinding when the plan-authored
+// dependency graph is over-serialized — i.e. near-linear, single-runnable, or
+// degenerate fan-out — the shape where a single stuck goal freezes all pending
+// work and effective parallelism collapses to ~1.
+//
+// All graph signals are restricted to pending→pending edges: a pending goal
+// depending on a GoalDone goal is satisfied (not serialized against pending
+// work), so such an edge must not inflate fan-out or the critical path.
+//
+// Over-serialized when ANY of:
+//   - criticalPath*4 >= pendingCount*3 (longest pending chain covers ≥75% of
+//     pending nodes — a pure/near-linear chain),
+//   - maxFanOut <= 1 (no pending goal unblocks more than one other),
+//   - runnableCount <= 1 (given the done set, at most one pending goal is
+//     startable, so the rest are transitively blocked behind it).
+//
+// Fires only when pendingCount >= 3 (below that the shape is too small to be
+// meaningfully "over-serialized"). Returns nil otherwise. Integer math only.
+func DetectOverSerialized(goals *GoalsFile) *SerializationFinding {
+	if goals == nil || len(goals.Goals) == 0 {
+		return nil
+	}
+
+	pending := map[string]bool{}
+	for i := range goals.Goals {
+		if goals.Goals[i].Status == GoalPending {
+			pending[goals.Goals[i].ID] = true
+		}
+	}
+	pendingCount := len(pending)
+	if pendingCount < 3 {
+		return nil
+	}
+
+	// maxFanOut: for each pending goal g, count pending goals y that list g in
+	// their DependsOn (i.e. how many pending nodes g directly unblocks). Only
+	// pending→pending edges count.
+	fanOut := map[string]int{}
+	runnableCount := 0
+	for i := range goals.Goals {
+		g := &goals.Goals[i]
+		if g.Status != GoalPending {
+			continue
+		}
+		if g.DependsOnSatisfied(goals.Goals) {
+			runnableCount++
+		}
+		for _, dep := range g.DependsOn {
+			if pending[dep] {
+				fanOut[dep]++
+			}
+		}
+	}
+	maxFanOut := 0
+	for _, n := range fanOut {
+		if n > maxFanOut {
+			maxFanOut = n
+		}
+	}
+
+	criticalPath := longestPendingPath(goals, pending)
+
+	over := criticalPath*4 >= pendingCount*3 || maxFanOut <= 1 || runnableCount <= 1
+	if !over {
+		return nil
+	}
+
+	var signals []string
+	if criticalPath*4 >= pendingCount*3 {
+		signals = append(signals, "critical-path "+strconv.Itoa(criticalPath)+"/"+strconv.Itoa(pendingCount)+" ≈ pending count")
+	}
+	if maxFanOut <= 1 {
+		signals = append(signals, "max fan-out "+strconv.Itoa(maxFanOut)+" (no pending goal unblocks >1 other)")
+	}
+	if runnableCount <= 1 {
+		signals = append(signals, "only "+strconv.Itoa(runnableCount)+" runnable node")
+	}
+
+	return &SerializationFinding{
+		PendingCount:  pendingCount,
+		CriticalPath:  criticalPath,
+		MaxFanOut:     maxFanOut,
+		RunnableCount: runnableCount,
+		Reason:        strings.Join(signals, "; "),
+	}
+}
+
+// longestPendingPath returns the number of NODES on the longest path through
+// the pending subgraph, following DependsOn edges whose target is itself
+// pending. A single isolated pending node has length 1; a pure N-chain has
+// length N. Cycle-safe: a memoized DFS with an on-stack `visiting` set treats a
+// back-edge as contributing 0 depth, so an authored cycle terminates instead of
+// recursing forever.
+func longestPendingPath(goals *GoalsFile, pending map[string]bool) int {
+	memo := map[string]int{}
+	visiting := map[string]bool{}
+
+	var depth func(id string) int
+	depth = func(id string) int {
+		if v, ok := memo[id]; ok {
+			return v
+		}
+		if visiting[id] {
+			// Back-edge to a node already on the current DFS stack: contribute
+			// 0 so the cycle cannot inflate (or hang) the longest path.
+			return 0
+		}
+		visiting[id] = true
+		best := 0
+		if g, ok := goals.GoalByID(id); ok {
+			for _, dep := range g.DependsOn {
+				if !pending[dep] {
+					continue
+				}
+				if d := depth(dep); d > best {
+					best = d
+				}
+			}
+		}
+		visiting[id] = false
+		memo[id] = best + 1
+		return memo[id]
+	}
+
+	longest := 0
+	for id := range pending {
+		if d := depth(id); d > longest {
+			longest = d
+		}
+	}
+	return longest
 }
 
 func hasTransitivePath(goals *GoalsFile, from, to string) bool {

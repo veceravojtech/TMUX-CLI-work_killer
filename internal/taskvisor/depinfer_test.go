@@ -304,3 +304,114 @@ func TestInferMissingDeps_SelfReference(t *testing.T) {
 	findings := InferMissingDeps(gf)
 	assert.Empty(t, findings)
 }
+
+func TestDetectOverSerialized(t *testing.T) {
+	t.Run("near-linear chain triggers", func(t *testing.T) {
+		gf := &GoalsFile{
+			Goals: []Goal{
+				{ID: "goal-002", Status: GoalPending},
+				{ID: "goal-003", Status: GoalPending, DependsOn: []string{"goal-002"}},
+				{ID: "goal-004", Status: GoalPending, DependsOn: []string{"goal-002", "goal-003"}},
+				{ID: "goal-005", Status: GoalPending, DependsOn: []string{"goal-002", "goal-003", "goal-004"}},
+			},
+		}
+
+		sf := DetectOverSerialized(gf)
+
+		require.NotNil(t, sf)
+		assert.Equal(t, 4, sf.PendingCount)
+		assert.GreaterOrEqual(t, sf.CriticalPath, 3)
+		assert.Equal(t, 1, sf.RunnableCount)
+		assert.NotEmpty(t, sf.Reason)
+	})
+
+	t.Run("genuine parallel branches no trigger", func(t *testing.T) {
+		gf := &GoalsFile{
+			Goals: []Goal{
+				{ID: "goal-002", Status: GoalPending},
+				{ID: "goal-003", Status: GoalPending},
+				{ID: "goal-004", Status: GoalPending, DependsOn: []string{"goal-002"}},
+				{ID: "goal-005", Status: GoalPending, DependsOn: []string{"goal-002"}},
+			},
+		}
+
+		sf := DetectOverSerialized(gf)
+
+		assert.Nil(t, sf)
+	})
+
+	t.Run("done-set leaves one runnable triggers", func(t *testing.T) {
+		gf := &GoalsFile{
+			Goals: []Goal{
+				{ID: "goal-001", Status: GoalDone},
+				{ID: "goal-002", Status: GoalPending, DependsOn: []string{"goal-001"}},
+				{ID: "goal-003", Status: GoalPending, DependsOn: []string{"goal-001", "goal-002"}},
+				{ID: "goal-004", Status: GoalPending, DependsOn: []string{"goal-001", "goal-002", "goal-003"}},
+			},
+		}
+
+		sf := DetectOverSerialized(gf)
+
+		require.NotNil(t, sf)
+		assert.Equal(t, 3, sf.PendingCount)
+		assert.Equal(t, 1, sf.RunnableCount)
+		assert.NotEmpty(t, sf.Reason)
+	})
+
+	t.Run("below floor no trigger", func(t *testing.T) {
+		gf := &GoalsFile{
+			Goals: []Goal{
+				{ID: "goal-002", Status: GoalPending},
+				{ID: "goal-003", Status: GoalPending, DependsOn: []string{"goal-002"}},
+			},
+		}
+
+		sf := DetectOverSerialized(gf)
+
+		assert.Nil(t, sf)
+	})
+
+	t.Run("nil and empty", func(t *testing.T) {
+		assert.Nil(t, DetectOverSerialized(nil))
+		assert.Nil(t, DetectOverSerialized(&GoalsFile{}))
+	})
+
+	t.Run("cycle terminates", func(t *testing.T) {
+		// Mutual depends_on among pending goals: the longest-path DFS must
+		// terminate via its visiting guard, never recurse forever.
+		gf := &GoalsFile{
+			Goals: []Goal{
+				{ID: "goal-002", Status: GoalPending, DependsOn: []string{"goal-003"}},
+				{ID: "goal-003", Status: GoalPending, DependsOn: []string{"goal-002"}},
+				{ID: "goal-004", Status: GoalPending, DependsOn: []string{"goal-002"}},
+			},
+		}
+
+		// Must return (not hang); a cyclic single-runnable graph is over-serialized.
+		sf := DetectOverSerialized(gf)
+		assert.NotNil(t, sf)
+	})
+
+	t.Run("read-only no mutation", func(t *testing.T) {
+		gf := &GoalsFile{
+			Goals: []Goal{
+				{ID: "goal-002", Status: GoalPending},
+				{ID: "goal-003", Status: GoalPending, DependsOn: []string{"goal-002"}},
+				{ID: "goal-004", Status: GoalPending, DependsOn: []string{"goal-002", "goal-003"}},
+				{ID: "goal-005", Status: GoalPending, DependsOn: []string{"goal-002", "goal-003", "goal-004"}},
+			},
+		}
+
+		before := make([]int, len(gf.Goals))
+		for i := range gf.Goals {
+			before[i] = len(gf.Goals[i].DependsOn)
+		}
+
+		_ = DetectOverSerialized(gf)
+
+		for i := range gf.Goals {
+			assert.Equal(t, before[i], len(gf.Goals[i].DependsOn),
+				"DependsOn of %s must be unchanged", gf.Goals[i].ID)
+		}
+	})
+}
