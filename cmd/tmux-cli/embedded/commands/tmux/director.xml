@@ -12,7 +12,7 @@
 
   <requirements critical="true">
     <mcp>tmux-cli MCP server REQUIRED (for taskvisor-start, goal-create, goal-add-prerequisite, windows-list).</mcp>
-    <composition critical="true">The director is a THIN orchestrator. It invokes the existing skills in this same window as the human-in-the-loop sequence it replaces — `/tmux:task-plan-discover` (Stage 0), `/tmux:task-plan-generate` (Stage 1) — and signals the daemon to run (Stage 3). It NEVER re-derives discovery questions, goal enumeration, depinfer/G-04/plan-audit, or the supervisor dispatch loop; those live in their own skills and the daemon. It NEVER calls `/tmux:supervisor` or `/tmux:elaborate` directly — the DAEMON dispatches the supervisor (implement) and the elaborator (Tier-2) once started.</composition>
+    <composition critical="true">The director is a THIN orchestrator. It invokes the existing skills in this same window as the human-in-the-loop sequence it replaces — `/tmux:project-discovery` (Stage 0), `/tmux:task-plan-generate` (Stage 1) — and signals the daemon to run (Stage 3). It NEVER re-derives discovery questions, goal enumeration, depinfer/G-04/plan-audit, or the supervisor dispatch loop; those live in their own skills and the daemon. It NEVER calls `/tmux:supervisor` or `/tmux:elaborate` directly — the DAEMON dispatches the supervisor (implement) and the elaborator (Tier-2) once started.</composition>
     <known-dependency>`task-plan-generate` is being rewritten to ROADMAP-ONLY in a parallel sibling task — referenced here by name; the director assumes it emits `status: roadmap` skeletons (id / description / phase / depends_on / deliverable_area, no concrete fields). The daemon's Tier-2 elaboration wiring (ElaborationCandidates → dispatchElaboration → `/tmux:elaborate`, phaseElaborating) is a parallel Go increment — referenced by BEHAVIOR; the director only STARTS the daemon. The goal-create ROADMAP-SKELETON form (a `status: roadmap` goal with `deliverable_area` and no `validate`/`acceptance`) is a parallel sibling of the goal-create MCP tool — referenced by name; the director uses it in Stage 4.</known-dependency>
   </requirements>
 
@@ -26,7 +26,7 @@
   </glossary>
 
   <autonomy-policy>
-    <rule>The director is INTERACTIVE at exactly two points, mirroring the human-in-the-loop sequence it replaces: Stage 0 discovery (the ONLY interactive authoring phase — `/tmux:task-plan-discover` blocks on user confirmation of language/domain) and Stage 2 approval (the single roadmap approval gate). Everything else — Stage 1 roadmap generation, Stage 3 run, Stage 4 drive &amp; self-heal — is FULLY AUTONOMOUS.</rule>
+    <rule>The director is INTERACTIVE at exactly two points, mirroring the human-in-the-loop sequence it replaces: Stage 0 discovery (the ONLY interactive authoring phase — `/tmux:project-discovery` blocks on user confirmation of language/domain) and Stage 2 approval (the single roadmap approval gate). Everything else — Stage 1 roadmap generation, Stage 3 run, Stage 4 drive &amp; self-heal — is FULLY AUTONOMOUS.</rule>
     <rule>When AUTO_APPROVE is true (plan.auto_approve=true), Stage 2 is skipped and the director runs end-to-end with no user gate — discovery still blocks if docs/architecture/* are genuinely absent (a fact only the user can supply).</rule>
     <rule>Escalate to the user ONLY for: (a) discovery facts no file inspection can supply (the Stage 0 interactive phase), (b) the Stage 2 approval gate (unless AUTO_APPROVE), or (c) a self-heal that needs user-only knowledge (credentials, business intent, out-of-band facts). A blocked/missing goal that is fixable by a follow-up roadmap node is NEVER a user escalation — self-heal it (§8).</rule>
     <rule>Self-imposed organizational boundaries (phase tables, "after Stage N") are NOT authorization gates — the initial invocation authorizes the whole flow until a &lt;stop-conditions&gt; rule fires.</rule>
@@ -46,7 +46,7 @@
 
   <llm critical="true">
     <mandate>NEVER author a goal's concrete validate / acceptance / scope / goal.md — not in Stage 1, not in a Stage-4 follow-up. Every node the director creates is a ROADMAP SKELETON (id / description / phase / depends_on / deliverable_area); concrete fields are ALWAYS authored by Tier-2 elaboration against the real tree. This is the invariant the whole redesign exists for.</mandate>
-    <mandate>NEVER reimplement discover / generate / supervisor logic — COMPOSE them: invoke `/tmux:task-plan-discover` and `/tmux:task-plan-generate` in this window, start the daemon via the taskvisor-start MCP tool. NEVER call `/tmux:supervisor` or `/tmux:elaborate` yourself — the daemon dispatches them.</mandate>
+    <mandate>NEVER reimplement discover / generate / supervisor logic — COMPOSE them: invoke `/tmux:project-discovery` and `/tmux:task-plan-generate` in this window, start the daemon via the taskvisor-start MCP tool. NEVER call `/tmux:supervisor` or `/tmux:elaborate` yourself — the daemon dispatches them.</mandate>
     <mandate>NEVER blind-retry a blocked/missing goal. A blocker or a missing deliverable becomes a properly-wired follow-up ROADMAP node (§8), re-wiring depends_on so depinfer / G-04 / plan-audit stay valid — corrective action stays inside the two-tier model.</mandate>
     <mandate>Self-heal uses the goal-create roadmap-skeleton form to CREATE the node and goal-add-prerequisite to WIRE the blocked goal's depends_on onto it. The director is the generation-side conductor, so it MAY call these; a worker may not. NEVER hand-edit goals.yaml.</mandate>
     <mandate>Honor plan.auto_approve like plan.xml does — skip Stage 2 when AUTO_APPROVE is true; otherwise the single approval gate is mandatory.</mandate>
@@ -78,7 +78,7 @@
         <action>Skip discovery. Log "Stage 0: docs/architecture/* present — discovery skipped." Proceed to Stage 1.</action>
       </branch>
       <branch condition="discovery outputs absent or incomplete">
-        <action>Invoke `/tmux:task-plan-discover` in this window (the ONLY interactive phase). It detects language/framework, produces the product brief, and collects the domain-model inputs, blocking on user confirmation. When it completes, proceed to Stage 1.</action>
+        <action>Invoke `/tmux:project-discovery` in this window (the ONLY interactive phase). It detects language/framework, produces the product brief, and collects the domain-model inputs, blocking on user confirmation. When it completes, proceed to Stage 1.</action>
       </branch>
       <rule>Discovery is COMPOSED, not reimplemented — the director never writes docs/architecture/* itself.</rule>
     </step>
@@ -133,7 +133,7 @@
     <rule>goal-add-prerequisite: Stage-4 DAG re-wiring of an existing blocked goal onto a new follow-up node — generation-side, idempotent, cycle-safe, cap-enforced.</rule>
     <rule>goal-edit / goal-prune: NEVER — field write-back (roadmap→pending) is Tier-2 elaboration's; the director only adds skeleton nodes + edges.</rule>
     <rule>windows-kill: NEVER on DIRECTOR_WID; the daemon owns the supervisor/elaborator/execute window lifecycle.</rule>
-    <rule>Compose, don't reimplement: `/tmux:task-plan-discover` (Stage 0), `/tmux:task-plan-generate` (Stage 1), daemon (Stage 3). The director never calls `/tmux:supervisor` or `/tmux:elaborate` — the daemon dispatches them.</rule>
+    <rule>Compose, don't reimplement: `/tmux:project-discovery` (Stage 0), `/tmux:task-plan-generate` (Stage 1), daemon (Stage 3). The director never calls `/tmux:supervisor` or `/tmux:elaborate` — the daemon dispatches them.</rule>
     <rule>Edit the embedded source (cmd/tmux-cli/embedded/commands/tmux/director.xml) only — never the regenerated .claude/commands/ copy; never run `make install`.</rule>
     <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
   </execution-rules>

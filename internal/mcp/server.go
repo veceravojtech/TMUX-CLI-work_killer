@@ -307,6 +307,28 @@ func (s *Server) TaskvisorStartHandler(ctx context.Context, req *sdkmcp.CallTool
 	return result, out, nil
 }
 
+// TaskvisorStopInput defines the input schema for taskvisor-stop tool (no parameters needed)
+type TaskvisorStopInput struct{}
+
+// TaskvisorStopOutput defines the output schema for taskvisor-stop tool
+type TaskvisorStopOutput struct {
+	Stopped bool `json:"stopped" jsonschema:"True if the taskvisor-stop signal file was written (the daemon returns to IDLE on its next poll)"`
+}
+
+// TaskvisorStopHandler is the MCP tool handler for taskvisor-stop operation.
+func (s *Server) TaskvisorStopHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input TaskvisorStopInput) (
+	*sdkmcp.CallToolResult,
+	TaskvisorStopOutput,
+	error,
+) {
+	output, err := s.TaskvisorStop()
+	if err != nil {
+		return nil, TaskvisorStopOutput{}, err
+	}
+	result, out := prependStaleWarning(*output)
+	return result, out, nil
+}
+
 // RecurringCreateInput defines the input schema for recurring-create tool.
 type RecurringCreateInput struct {
 	Prompt string `json:"prompt" jsonschema:"The prompt to dispatch each cycle"`
@@ -905,6 +927,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: true,
 		},
 	}, s.TaskvisorStartHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "taskvisor-stop",
+		Description: "Ask the taskvisor daemon to return to IDLE (the inverse of taskvisor-start): writes the .tmux-cli/taskvisor-stop signal file. The daemon consumes it on its next poll and deactivates — tearing down in-flight goal windows and going IDLE WITHOUT being killed (the process stays up for the next start). Idempotent; harmless when no daemon is running.",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: true,
+		},
+	}, s.TaskvisorStopHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "recurring-create",

@@ -80,7 +80,7 @@ composer.json (root, path repositories) · per-package composer.json · deptrac.
 else derives from `has_frontend`. `HasFrontend` stays derived (`vue|twig`⇒true).
 Add `FrontendMode *string` to the manifest `Condition` (rules.go:73) + a case in
 `matches()` (rules.go:170) with **known-to-match** (stack-style) semantics. Dump in
-`resolve --signals`. `task-plan-discover.xml` captures the mode and a **deployables/
+`resolve --signals`. `project-discovery.xml` captures the mode and a **deployables/
 packages inventory** (which BCs are libraries vs which `projects/<app>` compose
 them) — P2's contexts-vs-projects split is a new discovery dimension. Default: one
 `projects/api` wiring all contexts unless discovery finds more.
@@ -141,7 +141,7 @@ test; rewrite generation goal-content tests pinning `src/<BC>/` → monorepo pat
 
 | phase | content | touches |
 |-------|---------|---------|
-| 1 | FrontendMode signal + discovery (contexts/projects/packages split) | internal/rules/rules.go, task-plan-discover.xml |
+| 1 | FrontendMode signal + discovery (contexts/projects/packages split) | internal/rules/rules.go, project-discovery.xml |
 | 2 | manifest repoint + vue/twig packs + E2E pack re-gate | rules/manifest.yaml |
 | 3 | conventions rewrite (port P2) + code-rules globs/signals | rules/php-symfony/* |
 | 4 | ~21 generation shards → monorepo paths + FrontendMode branches | task-plan-generate/step-*.xml |

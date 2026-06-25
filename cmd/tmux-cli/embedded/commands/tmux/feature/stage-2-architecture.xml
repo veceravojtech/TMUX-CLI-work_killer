@@ -93,7 +93,7 @@ Reply to approve and unblock the autonomous Stages 3&#8211;5 (suffixes combine, 
         <action>Re-print the option list and idle again.</action>
       </check>
     </check>
-    <mandate>NEVER use AskUserQuestion or any other interactive tool &#8212; all interaction is text output + waiting for the user's message (tmux window compatibility), mirroring task-plan-discover.xml.</mandate>
+    <mandate>NEVER use AskUserQuestion or any other interactive tool &#8212; all interaction is text output + waiting for the user's message (tmux window compatibility), mirroring project-discovery.xml.</mandate>
   </substep>
 
   <substep n="2.4" title="Record the ADR + unblock Stages 3&#8211;5">

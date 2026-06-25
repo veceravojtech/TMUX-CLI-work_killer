@@ -16,7 +16,6 @@ import (
 
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"syscall"
 
 	"github.com/console/tmux-cli/internal/producer"
@@ -297,11 +296,19 @@ var taskvisorGoalPriorityCmd = &cobra.Command{
 	RunE:  runTaskvisorGoalPriority,
 }
 
-var taskvisorGoalStopCmd = &cobra.Command{
+var taskvisorStopCmd = &cobra.Command{
 	Use:   "stop",
-	Short: "Send stop signal to taskvisor daemon",
+	Short: "Return the taskvisor daemon to IDLE (graceful; process stays up — inverse of start)",
 	Args:  cobra.NoArgs,
-	RunE:  runTaskvisorGoalStop,
+	RunE:  runTaskvisorStop,
+}
+
+var taskvisorGoalStopCmd = &cobra.Command{
+	Use:        "stop",
+	Short:      "Return the taskvisor daemon to IDLE (deprecated alias for `taskvisor stop`)",
+	Args:       cobra.NoArgs,
+	RunE:       runTaskvisorGoalStop,
+	Deprecated: "use `tmux-cli taskvisor stop` instead",
 }
 
 var taskvisorRestartCmd = &cobra.Command{
@@ -482,6 +489,7 @@ func init() {
 	taskvisorGoalEditCmd.Flags().StringVar(&goalEditPhase, "phase", "", "Refine the development phase (gate,scaffold,fixtures,domain,application,infrastructure,action,auth,event,cross-cutting,deployment,ci,final)")
 
 	taskvisorCmd.AddCommand(taskvisorStartCmd)
+	taskvisorCmd.AddCommand(taskvisorStopCmd)
 	taskvisorCmd.AddCommand(taskvisorRestartCmd)
 
 	taskvisorConcurrencyCmd.Flags().IntVar(&concSet, "set", 0, "Set the in-flight goal cap to N (N>=1)")
@@ -1760,48 +1768,6 @@ func gitChangedFiles(root string) []string {
 	}
 	sort.Strings(files)
 	return files
-}
-
-func stopDaemonProcess(cwd string) error {
-	pidPath := filepath.Join(cwd, ".tmux-cli", "taskvisor.pid")
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read PID file: %w", err)
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		_ = os.Remove(pidPath)
-		return fmt.Errorf("invalid PID in %s: %w", pidPath, err)
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		_ = os.Remove(pidPath)
-		return nil
-	}
-
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		_ = os.Remove(pidPath)
-		return nil
-	}
-
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
-			_ = proc // keep vet happy
-			_ = os.Remove(pidPath)
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	fmt.Fprintf(os.Stderr, "warning: daemon PID %d did not exit within 10s after SIGTERM\n", pid)
-	_ = os.Remove(pidPath)
-	return nil
 }
 
 func runTaskvisorRestart(cmd *cobra.Command, args []string) error {

@@ -78,4 +78,4 @@ When the user identifies exactly one bounded context, discovery adapts: the cont
 
 Discovery ends by verifying all expected output files exist on disk and printing: "Run `/tmux:task-plan-generate` to start goal generation." After that message, the skill does nothing further — no code generation, no automatic invocation of the next skill, no file deletion. The generator reads `docs/architecture/*` files from disk; conversation context from discovery is not passed forward.
 
-Follow `.claude/commands/tmux/task-plan-discover.xml` EXACTLY as written. That file defines the complete discovery flow, all validation gates (D-01 through D-30), and hard interaction rules. Do not improvise beyond it.
+Follow `.claude/commands/tmux/project-discovery.xml` EXACTLY as written. That file defines the complete discovery flow, all validation gates (D-01 through D-30), and hard interaction rules. Do not improvise beyond it.

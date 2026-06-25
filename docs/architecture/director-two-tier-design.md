@@ -74,7 +74,7 @@ It composes existing skills rather than reimplementing them:
 
 | Stage | Director action | Reuses |
 |---|---|---|
-| 0. Discover | Ensure `docs/architecture/*` exist & validate (Step 0 gate). If absent, run discovery. | `/tmux:task-plan-discover` |
+| 0. Discover | Ensure `docs/architecture/*` exist & validate (Step 0 gate). If absent, run discovery. | `/tmux:project-discovery` |
 | 1. Roadmap | Generate the **skeleton-only** goals.yaml (Tier 1). | `task-plan-generate` — now roadmap-only (§5) |
 | 2. Approve | Present the roadmap (DAG + phases + plan-audit) for one approval gate. | plan-audit, `plan-approval.md` |
 | 3. Run | Start taskvisor. The daemon now interleaves an **elaboration cycle** before each goal's first implementation cycle (§6). | taskvisor daemon |

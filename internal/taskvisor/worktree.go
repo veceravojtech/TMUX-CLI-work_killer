@@ -2,6 +2,7 @@ package taskvisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -805,6 +806,18 @@ func (d *Daemon) discardWorktree(goal *Goal) error {
 		branch = worktreeBranch(goal.ID)
 	}
 
+	// Tear the goal's per-worktree compose stack (taskvisor-<goalID>) down WITH
+	// volumes BEFORE the worktree dir is removed below (the stack down uses cwd=wt,
+	// which must still exist) and BEFORE rt.WorktreeDir is cleared. Keyed purely on
+	// the goalID-derived project name, so it stays correct even after a crash that
+	// lost runtime state. Best-effort warn-and-continue: a teardown failure (incl. an
+	// idempotent "no such project" when the stack was never up) never blocks the
+	// worktree/branch removal. A no-op on the local-runtime path. This is the SINGLE
+	// teardown seam — reached by both the done (finalizeWorktreeOnDone) and failed
+	// paths, and deliberately SKIPPED by the needs-merge BLOCK path (which keeps the
+	// worktree), so the stack is preserved there for free.
+	d.tearDownWorktreeStack(goal, wt)
+
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 	run := d.gitRunner()
@@ -825,6 +838,81 @@ func (d *Daemon) discardWorktree(goal *Goal) error {
 	rt.WorktreeDir = ""
 	rt.Branch = ""
 	return nil
+}
+
+// tearDownWorktreeStack runs `docker compose -p taskvisor-<goalID> down -v` for a
+// goal's per-worktree stack (T1 ComposeStack.Down), with cwd=worktree. It is the
+// teardown half of bringUpWorktreeStack, called from the single discardWorktree
+// seam. Gated on RunTarget==docker (a local project has no stack); a no-op there.
+// Best-effort by contract: Down's own taskvisor- prefix guard refuses any
+// non-taskvisor project, and a non-zero exit / "no such project" (the idempotent
+// never-up case) is warn-and-continue — it never blocks the worktree removal.
+func (d *Daemon) tearDownWorktreeStack(goal *Goal, worktree string) {
+	if !d.worktreeStackEnabled() {
+		return
+	}
+	er := ResolveExecRuntime(d.workDir)
+	stack := NewComposeStack(er, goal.ID, worktree, "", d.composeRunner())
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	if err := stack.Down(ctx); err != nil {
+		log.Printf("warning: %s: worktree stack teardown: %v", goal.ID, err)
+	}
+}
+
+// composeLsEntry is the subset of a `docker compose ls --format json` row T2 reads
+// to enumerate live compose projects for orphan reaping.
+type composeLsEntry struct {
+	Name string `json:"Name"`
+}
+
+// reapOrphanStacks tears down per-worktree compose stacks left by a crashed run on
+// (re)activation: it enumerates every compose project via `docker compose ls`, and
+// for each taskvisor-<goalID> project whose goal is NOT currently GoalRunning, runs
+// `down -v` so a crash-leaked stack + its db volume never survive into the next
+// run. The operator's MAIN stack is untouched (it lacks the taskvisor- prefix), and
+// an in-flight goal's stack is kept (e.g. crash re-dispatch reuses it). Gated on
+// RunTarget==docker, so a local-runtime / MaxGoals=1 project makes zero compose
+// calls and activation stays byte-identical. Best-effort throughout: any enumerate/
+// teardown error is logged and skipped, never fatal to activation.
+func (d *Daemon) reapOrphanStacks(goals *GoalsFile) {
+	if !d.worktreeStackEnabled() {
+		return
+	}
+	run := d.composeRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+
+	stdout, _, code, err := run(ctx, d.workDir, os.Environ(), "compose", "ls", "--all", "--format", "json")
+	if err != nil || code != 0 {
+		if err != nil {
+			log.Printf("warning: reap orphan stacks: compose ls: %v", err)
+		}
+		return
+	}
+	var entries []composeLsEntry
+	if jerr := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &entries); jerr != nil {
+		log.Printf("warning: reap orphan stacks: parse compose ls: %v", jerr)
+		return
+	}
+
+	for _, e := range entries {
+		project := e.Name
+		if !strings.HasPrefix(project, "taskvisor-") {
+			continue // never touch the operator's main stack
+		}
+		goalID := strings.TrimPrefix(project, "taskvisor-")
+		if g, ok := goals.GoalByID(goalID); ok && g.Status == GoalRunning {
+			continue // keep an in-flight goal's stack
+		}
+		// Down by EXACT project name from `ls` (cwd=base d.workDir, which always
+		// exists — the orphan's worktree may already be pruned). The literal
+		// ComposeStack keeps Down's taskvisor- prefix guard satisfied.
+		stack := &ComposeStack{Project: project, Worktree: d.workDir, run: run}
+		if derr := stack.Down(ctx); derr != nil {
+			log.Printf("warning: reap orphan stack %s: %v", project, derr)
+		}
+	}
 }
 
 // pruneOrphanWorktrees clears worktrees left by a crashed run on (re)activation:

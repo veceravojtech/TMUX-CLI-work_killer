@@ -84,7 +84,7 @@
         <commands>
           <cmd source="SC-02">composer install</cmd>
           <cmd source="SC-01b">sh -c 'find contexts projects packages -maxdepth 2 -name monorepo-component.json | grep -q .'</cmd>
-          <cmd source="SC-05">bin/console</cmd>
+          <cmd source="SC-05">php bin/console</cmd>
           <cmd source="SC-03b">test ! -e src/Kernel.php</cmd>
           <cmd source="SC-03b">sh -c '! tr -d " \042" &lt; composer.json | grep -qF "App\\\\:src/"'</cmd>
           <cmd source="SC-06">vendor/bin/phpunit</cmd>
@@ -106,6 +106,7 @@
           <cmd source="SC-26" condition="FRONTEND_MODE == twig">test -d templates/components</cmd>
         </commands>
         <rule>These commands are emitted BARE (CMD-CONV): in local mode the daemon runs them on the host (Gate 0 having verified host Composer); in docker mode the daemon wraps them into the {{APP_SVC}} container started by task-R, so no host PHP/Composer is required.</rule>
+        <rule>SC-05 is the interpreter form `php bin/console`, NOT the bare entrypoint token `bin/console`. This still routes correctly — wrapcmd.classify() keys off the first token `php` (a phpToolPrefix) → classPHP, so RunTarget alone decides host-vs-container exactly as for any other PHP command; `php` does NOT pin it to the host. The interpreter form is deliberate: the skeleton is hand-scaffolded (not symfony/flex-generated), so `bin/console` is not guaranteed to carry a `#!/usr/bin/env php` shebang or the executable bit, and bare `bin/console` would then fail under `sh -c` with "Permission denied". SC-05 asserts the KERNEL boots, not that the entrypoint file is chmod +x — invoking via `php` proves the former without depending on the latter. Do NOT revert to bare `bin/console`.</rule>
       </substep>
 
       <substep n="2.5" title="Compose context with Investigation Config and fan-out hints">
@@ -166,7 +167,7 @@ Test environment variables from docs/architecture/test-environment.md.
 
           <investigator n="2" name="Kernel boot">
             <type>environment-check</type>
-            <commands>bin/console</commands>
+            <commands>php bin/console</commands>
             <pass>Exit 0 — Symfony kernel boots successfully</pass>
             <fail>Kernel boot error or missing service configuration</fail>
           </investigator>

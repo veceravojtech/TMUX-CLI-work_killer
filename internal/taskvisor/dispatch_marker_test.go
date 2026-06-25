@@ -127,6 +127,39 @@ func TestDispatchCandidate_ImplementerMarkerUsesRetry(t *testing.T) {
 		"NextDispatch=implementer with an existing tasks.yaml must take the retry path")
 }
 
+// TestDispatchCandidate_GatePhaseNeverRetriesToSupervisor is the regression for
+// the live "no /tmux:gate was run" miss: a gate goal carrying BOTH an existing
+// tasks.yaml (e.g. left by a pre-DispatchGate supervisor run) AND the
+// implementer marker + consumed code budget — the exact state that forces every
+// other phase into dispatchRetry's hardcoded /tmux:supervisor — must instead
+// re-dispatch its dedicated /tmux:gate executor and NEVER the supervisor.
+func TestDispatchCandidate_GatePhaseNeverRetriesToSupervisor(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := markerGoalsFile(Goal{
+		ID: "goal-001", Description: "env gate", Status: GoalPending, Phase: PhaseGate,
+		CodeRetries: 2, MaxCodeRetries: 3, // code budget consumed — sticky heuristic says retry
+		NextDispatch: dispatchImplementer, // marker that would force dispatchRetry for any other phase
+	})
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+	writeGoalTasksYaml(t, dir, "goal-001", markerTasksYaml) // stale tasks.yaml present
+
+	sent := markerCaptureMocks(exec, "@99", "supervisor-001")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
+
+	require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
+
+	require.Len(t, *sent, 1, "gate dispatch should send exactly one command")
+	assert.Equal(t, "/tmux:gate goal-001", (*sent)[0],
+		"a gate goal must re-dispatch /tmux:gate even with a stale tasks.yaml + implementer marker")
+	assert.NotContains(t, (*sent)[0], "/tmux:supervisor",
+		"the gate phase must never divert into the supervisor-retry path")
+}
+
 // TestDispatchCandidate_EmptyMarkerLegacyHeuristic: legacy mid-flight
 // goals.yaml entries carry no marker — the existing heuristic must reproduce
 // today's behavior both ways (consumed budget + tasks.yaml → retry; fresh

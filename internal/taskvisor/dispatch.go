@@ -102,13 +102,25 @@ func (d *Daemon) runValidateScript(goal *Goal) (passed bool, reason, stderr stri
 	// must not race the schema we validate against. Lock order is goals→db — the
 	// poll loop already holds the goals flock here, so db is strictly the inner
 	// lock. At MaxGoals=1 there is never contention and this is byte-identical.
+	//
+	// EXCEPTION (T2): a worktree goal now validates against its OWN per-worktree
+	// compose stack (taskvisor-<goalID>), whose db volume is isolated from every
+	// other goal's — there is no shared schema to serialize, so the db-lock is NOT
+	// held on that path (it would needlessly serialize independent stacks). The
+	// no-worktree path keeps the lock with the same goals→db order, byte-identical,
+	// including the scriptReasonLockError classification on a lock-acquire failure.
 	var (
 		stderrOut string
 		exitCode  int
 		runErr    error
 	)
-	if lockErr := d.withDBLock(func() error {
+	runScript := func() {
 		_, stderrOut, exitCode, runErr = d.scriptRunnerFn(ctx, scriptPath, cwd, env)
+	}
+	if d.goalUsesWorktree(goal) {
+		runScript()
+	} else if lockErr := d.withDBLock(func() error {
+		runScript()
 		return nil
 	}); lockErr != nil {
 		log.Printf("error: acquiring db lock for validate of goal %s: %v", goal.ID, lockErr)
@@ -237,8 +249,79 @@ func (d *Daemon) writeValidatorWindowMarker(goalID, name string) error {
 // goal dir; no new lock).
 func (d *Daemon) regenerateValidateScript(goal *Goal) error {
 	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
-	if err := WriteValidateScript(goalDir, goal.Validate, ResolveExecRuntime(d.workDir)); err != nil {
+	if err := WriteValidateScript(goalDir, goal.Validate, d.execRuntimeForGoal(goal)); err != nil {
 		return fmt.Errorf("regenerate validate.sh: %w", err)
+	}
+	return nil
+}
+
+// execRuntimeForGoal resolves the base ExecRuntime from test-environment.md and,
+// for a goal running in an isolated per-goal worktree, retargets its compose
+// project at the goal's OWN per-worktree stack (taskvisor-<goalID>). It is the
+// single seam that makes the regenerated validate.sh exec into the worktree stack
+// (`docker compose -p taskvisor-<goalID> exec …`) instead of the operator's MAIN
+// stack — the task-275 fix. For a no-worktree goal (MaxGoals=1 / non-git) the
+// project is left at the base resolution, so the rendered script stays
+// byte-identical. In local (non-docker) mode the ComposeProject field is unused by
+// wrapCommand, so the override is harmless there.
+func (d *Daemon) execRuntimeForGoal(goal *Goal) ExecRuntime {
+	rt := ResolveExecRuntime(d.workDir)
+	if d.goalUsesWorktree(goal) {
+		rt.ComposeProject = WorktreeComposeProject(goal.ID)
+	}
+	return rt
+}
+
+// worktreeStackEnabled reports whether the per-worktree compose stack lifecycle
+// should engage: ONLY when the project's resolved runtime is docker. A local
+// (non-docker) project has no compose stack to bring up or tear down — gating here
+// keeps a parallel-goal run on a local/Go project (worktrees but no docker) from
+// trying to `compose up` a non-existent stack and halting dispatch.
+func (d *Daemon) worktreeStackEnabled() bool {
+	return ResolveExecRuntime(d.workDir).RunTarget == "docker"
+}
+
+// stackBaselineCmd reads the operator-declared "Stack Baseline:" / "Baseline
+// Command:" migration command from test-environment.md (resolveBaselineCmd), or ""
+// when none is documented — in which case the stack is brought up without a
+// migrate step. Best-effort: an absent/unreadable file yields "".
+func (d *Daemon) stackBaselineCmd() string {
+	data, err := os.ReadFile(filepath.Join(d.workDir, "docs", "architecture", "test-environment.md"))
+	if err != nil {
+		return ""
+	}
+	return resolveBaselineCmd(string(data))
+}
+
+// bringUpWorktreeStack brings a worktree goal's OWN compose stack
+// (taskvisor-<goalID>) to a migrated baseline with cwd=the worktree, so the stack
+// sees the goal's uncommitted edits and the deterministic validate.sh execs
+// against the goal's code — not the operator's MAIN stack (task-275).
+//
+//   - cwd == d.workDir (no-worktree: MaxGoals=1 / non-git) ⇒ no-op, zero compose
+//     calls (byte-identical).
+//   - RunTarget != docker (local runtime) ⇒ no-op: there is no compose stack.
+//   - otherwise ⇒ T1 ComposeStack.Up. An Up error is RETURNED so the dispatch
+//     caller HALTS the dispatch (infra/ops fault, like a missing runner) — it never
+//     falls back to inline-on-master (the 275 regression) and never charges a
+//     code-retry cycle (the caller returns the error BEFORE creating any window).
+func (d *Daemon) bringUpWorktreeStack(goal *Goal, cwd string) error {
+	if cwd == d.workDir {
+		return nil
+	}
+	er := ResolveExecRuntime(d.workDir)
+	if er.RunTarget != "docker" {
+		return nil
+	}
+	timeout := d.scriptTimeout
+	if timeout <= 0 {
+		timeout = validateScriptTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	stack := NewComposeStack(er, goal.ID, cwd, d.stackBaselineCmd(), d.composeRunner())
+	if err := stack.Up(ctx); err != nil {
+		return fmt.Errorf("bring up worktree stack for %s: %w", goal.ID, err)
 	}
 	return nil
 }
@@ -375,6 +458,16 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 		return fmt.Errorf("ensure worktree: %w", err)
 	}
 
+	// Bring the goal's per-worktree compose stack up (cwd=worktree, migrated
+	// baseline) BEFORE any window is created, so the supervisor — and the validate
+	// that follows — exec against the goal's OWN stack (task-275). A no-op on the
+	// no-worktree / local-runtime path. An Up failure is an infra/ops halt: returning
+	// here leaves the goal GoalPending with NO window created and NO code-retry
+	// charged (we never fall back to the operator's master stack — the 275 regression).
+	if err := d.bringUpWorktreeStack(goal, cwd); err != nil {
+		return err
+	}
+
 	supWin := supervisorWindow(goal.ID, mg)
 	if err := d.writeSupervisorWindowMarker(goal.ID, supWin); err != nil {
 		return fmt.Errorf("write supervisor-window marker: %w", err)
@@ -402,10 +495,14 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	log.Printf("%s: phase %s -> supervising", goal.ID, phaseName(oldPhase))
 
 	dispatchPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "dispatch.md")
-	planCmd := fmt.Sprintf("/tmux:plan %s %s", dispatchPath, goal.ID)
-	log.Printf("dispatch: sending to session=%s window=%s cmd=%s", d.session, winInfo.TmuxWindowID, planCmd)
-	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, planCmd); err != nil {
-		return fmt.Errorf("send plan command: %w", err)
+	// Phase decides the first-dispatch command (dispatchcmd.go matrix): most
+	// phases run the /tmux:plan pre-planner, but a skip-planning phase (gate)
+	// dispatches the supervisor directly, which self-specs its single-task fan-out.
+	kind := d.dispatchKindForGoal(goal)
+	dispatchCmd := dispatchCommand(kind, DispatchArgs{DispatchPath: dispatchPath, GoalID: goal.ID})
+	log.Printf("dispatch: phase=%s kind=%s sending to session=%s window=%s cmd=%s", goal.Phase, kind, d.session, winInfo.TmuxWindowID, dispatchCmd)
+	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, dispatchCmd); err != nil {
+		return fmt.Errorf("send dispatch command (kind=%s): %w", kind, err)
 	}
 	log.Printf("dispatch: SendMessage returned successfully")
 
@@ -540,6 +637,14 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 		return fmt.Errorf("ensure worktree: %w", err)
 	}
 
+	// Bring the goal's per-worktree compose stack up for the retry cycle too (see
+	// dispatch). ComposeStack.Up is idempotent (`up -d` is a no-op for an already-up
+	// stack), so a retry that reuses the worktree just reconciles the stack. Same
+	// infra/ops halt contract: an Up failure returns before any window is created.
+	if err := d.bringUpWorktreeStack(goal, cwd); err != nil {
+		return err
+	}
+
 	supWin := supervisorWindow(goal.ID, mg)
 	if err := d.writeSupervisorWindowMarker(goal.ID, supWin); err != nil {
 		return fmt.Errorf("write supervisor-window marker: %w", err)
@@ -572,7 +677,7 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	// from that marker — which, under concurrent dispatch, may name ANOTHER
 	// in-flight goal. We know goal.ID authoritatively here, so we hand it over and
 	// supervisor.xml step 0b consumes it as the highest-precedence GOAL_ID source.
-	supervisorCmd := "/tmux:supervisor " + goal.ID
+	supervisorCmd := dispatchCommand(DispatchImplement, DispatchArgs{GoalID: goal.ID})
 	log.Printf("dispatchRetry: sending to session=%s window=%s cmd=%s", d.session, winInfo.TmuxWindowID, supervisorCmd)
 	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, supervisorCmd); err != nil {
 		return fmt.Errorf("send supervisor command: %w", err)
@@ -973,7 +1078,7 @@ func (d *Daemon) createValidatorAndSendPayload(goal *Goal) error {
 	d.runtime(goal.ID).bootConfirmedAt = d.now()
 
 	goalMdPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "goal.md")
-	investigateCmd := fmt.Sprintf("/tmux:investigate %s", goalMdPath)
+	investigateCmd := dispatchCommand(DispatchInvestigate, DispatchArgs{GoalMdPath: goalMdPath})
 	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, investigateCmd); err != nil {
 		return fmt.Errorf("send investigate command: %w", err)
 	}

@@ -41,6 +41,20 @@ func isPathLike(tok string) bool {
 	return strings.Contains(tok, "/") || hasKnownExtension(tok)
 }
 
+// isConcreteFileStem reports whether a stem names a concrete source FILE (carries
+// a known source extension) rather than a COARSE DIRECTORY area (path-like, no
+// extension). It is the single overlap predicate shared by InferMissingDeps and
+// EnforceFileOverlapDeps: only a shared concrete-file stem is the directional
+// produce/consume proxy (one goal edits a file the other references). A shared
+// coarse-directory stem alone is NOT a dependency signal — sibling action goals
+// of the same bounded context legitimately share a deliverable_area directory yet
+// edit disjoint files, so it must never force a serializing edge or a finding.
+// Keeping both consumers on this one helper guarantees the read-only finding and
+// the enforced edge can never diverge.
+func isConcreteFileStem(s string) bool {
+	return hasKnownExtension(s)
+}
+
 // toolBinaryNames are basenames of read-only tooling that appears in validate
 // commands (e.g. `vendor/bin/phpunit`, `bin/console`). These are shared tools,
 // not goal-produced deliverables, so they must never enter the produced-stem set
@@ -161,6 +175,9 @@ func InferMissingDeps(goals *GoalsFile) []DepFinding {
 		accExt := extractExtensionOnlyTokens(g.Acceptance)
 		scanConsumer := func(stems []string, evidence string) {
 			for _, s := range stems {
+				if !isConcreteFileStem(s) {
+					continue
+				}
 				for _, prodID := range producerMap[s] {
 					if prodID == g.ID {
 						continue
@@ -238,7 +255,7 @@ func EnforceFileOverlapDeps(goals *GoalsFile) []DepEdge {
 			// and membership-test against the higher-id goal's stem set.
 			stem := ""
 			for _, s := range lo.stems {
-				if hi.set[s] {
+				if hi.set[s] && isConcreteFileStem(s) {
 					stem = s
 					break
 				}

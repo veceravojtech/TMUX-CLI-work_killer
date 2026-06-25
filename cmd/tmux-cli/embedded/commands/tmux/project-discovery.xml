@@ -1,4 +1,4 @@
-<task id="task-plan-discover" name="Interactive project discovery — BMAD-style collaborative session">
+<task id="project-discovery" name="Interactive project discovery — BMAD-style collaborative session">
   <objective>Guide the user through collaborative project discovery. Detect language/framework, produce product brief, and collect domain model inputs. This is the ONLY interactive phase — all subsequent planning and implementation is autonomous.</objective>
 
   <input>
@@ -533,6 +533,13 @@ Should the app seed a default admin user on first run (the dev environment)? If 
             <rule critical="true">GATED: ask this ONLY when Step 6.2 captured one or more auth flows (AUTH_FLOWS non-empty). If AUTH_FLOWS is empty there is no User entity to seed — SKIP this question entirely and leave seed_default_admin unset.</rule>
             <rule critical="true">Capture environment-variable NAMES only (admin_identifier_env, admin_password_env). NEVER record, repeat, or inline the secret values — values live only in the environment.</rule>
           </q>
+          <q order="8" topic="stack-baseline" condition="RUN_TARGET == docker AND services_compose (the DB/services run as compose services)">
+            <template>
+Each DB-touching goal validates in its own per-worktree compose stack with a FRESH database, so the schema must be migrated before validation runs. What single command migrates a fresh database to the baseline schema inside the app container? For Symfony/Doctrine the usual answer is `bin/console doctrine:migrations:migrate -n` (I'll run it via `exec -T &lt;app&gt; sh -c '&lt;command&gt;'`). Reply with the command, or `skip`/`none` if no per-worktree baseline migrate is needed. Capture the discrete value STACK_BASELINE_CMD.
+            </template>
+            <rule critical="true">GATED: ask this ONLY when RUN_TARGET == docker AND the DB/services run as compose services (services_compose). For local-runtime or external-services projects, SKIP this question entirely and leave STACK_BASELINE_CMD unset — those runtimes never get a Stack Baseline block.</rule>
+            <rule>OPT-IN: if the user answers `skip`/`none` (or gives no command), leave STACK_BASELINE_CMD empty — Step 7.3 writes NO Stack Baseline block, preserving the project-agnostic default-skip behavior. The command is parsed per-worktree by `resolveBaselineCmd` (internal/taskvisor/composestack.go); see docs/architecture/stack-baseline-convention.md.</rule>
+          </q>
         </questions>
         <rule>Ask ONE question, wait for answer, then ask the next. Do not batch.</rule>
       </substep>
@@ -597,7 +604,8 @@ Here's the test environment configuration I've captured:
 |---------|-----------|----------------|---------|
 {{#each published_ports}}| {{service}} | {{host_port}} | {{container_port}} | {{purpose}} |
 {{/each}}
-_Compose-internal services (db/mailer/redis): reached by service name (e.g. db:5432) with NO host binding — not published._{{/if}}
+_Compose-internal services (db/mailer/redis): reached by service name (e.g. db:5432) with NO host binding — not published._
+{{#if stack_baseline_cmd}}**Stack Baseline (per-worktree migrate):** `{{stack_baseline_cmd}}`{{/if}}{{/if}}
 {{/if}}**Test Credentials:** {{test_user_credentials}}
 **Test Database:** {{test_db_name}}
 **Fixture Command:** {{fixture_command}}
@@ -615,10 +623,12 @@ _Compose-internal services (db/mailer/redis): reached by service name (e.g. db:5
 Should I save this to `docs/architecture/test-environment.md`, or would you like to adjust anything?
         </template>
         <action condition="seed_default_admin == yes">When writing test-environment.md, append a `## Bootstrap / Seed Default Admin` block recording exactly: `seed_default_admin: yes`, `admin_identifier_env: {{admin_identifier_env}}`, `admin_password_env: {{admin_password_env}}`. Record env-var NAMES only — NEVER the secret values. Generation Step 3.19a reads this block directly.</action>
+        <action condition="RUN_TARGET == docker AND services_compose AND stack_baseline_cmd is non-empty (user did NOT skip)">When writing test-environment.md, append a `## Stack Baseline` block recording EXACTLY one line: `**Stack Baseline:** {{stack_baseline_cmd}}`. This is the canonical first-`:`-split form parsed per-worktree by `resolveBaselineCmd` (internal/taskvisor/composestack.go) to migrate each goal's fresh compose DB before validate; it round-trips to exactly the command. Omit the block ENTIRELY when the user skipped (stack_baseline_cmd empty) and for local-runtime / external-services projects — NEVER write an empty field. See docs/architecture/stack-baseline-convention.md.</action>
         <action>On confirmation, write docs/architecture/test-environment.md.</action>
 
         <rule critical="true">Do NOT save test-environment.md until user confirms the summary.</rule>
         <rule>The `## Bootstrap / Seed Default Admin` block, when present, records env-var NAMES (admin_identifier_env, admin_password_env) only — never secret values (GM-05). The block is omitted entirely when seed_default_admin is not yes.</rule>
+        <rule>The `## Stack Baseline` block, when present, records EXACTLY `**Stack Baseline:** &lt;command&gt;` (the canonical first-`:`-split form parsed by `resolveBaselineCmd`). It is emitted ONLY for docker + compose-hosted-DB projects and omitted entirely when the user skips — local-runtime / external-services projects never get it. See docs/architecture/stack-baseline-convention.md.</rule>
         <rule>D-14 gate: test environment doc must contain base URL, test user credentials, DB name, fixture command, AND Run Target (docker|local) — all non-empty. When Run Target = docker with compose-hosted services, the doc must ALSO contain a non-empty Published Ports mapping for the host-required port(s) (the app web port; db/mailer/redis are compose-internal and carry no host binding), omitted entirely — not "N/A" — for local or external-services projects.</rule>
         <rule>D-15 gate: Playwright status must explicitly state whether Playwright is installed, needs Gate 0 setup, or is not applicable.</rule>
       </substep>

@@ -2,7 +2,7 @@
   <objective>Read validated discovery outputs from docs/architecture/*, generate a precise sequence of taskvisor goal ROADMAP SKELETONS (Tier 1 of the two-tier director flow, docs/architecture/director-two-tier-design.md §5). Each emitted goal carries ONLY id + description + phase + depends_on + a coarse deliverable_area, with status=roadmap — NO validate/acceptance/scope/goal.md and NO per-goal [CODE-RULE-INJECTION]. Those concrete fields are authored just-in-time, against the REAL tree, by /tmux:elaborate at dispatch (§6) — never predicted here at the moment of least information. Goals are atomic and 1-indexed (goal-001, goal-002, …) with explicit dependencies. This skill starts with a validation gate (Step 0) that checks cross-file consistency before any goal generation begins, and after enumeration runs the Tier-1 DAG analyses that operate fine on skeletons: depinfer (produce/consume depends_on keyed on deliverable_area), G-04 phase-ordering, and the over-serialization plan-audit.</objective>
 
   <input>
-    <note>No $ARGUMENTS — reads docs/architecture/* files implicitly from the working directory. These files are produced by /tmux:task-plan-discover.</note>
+    <note>No $ARGUMENTS — reads docs/architecture/* files implicitly from the working directory. These files are produced by /tmux:project-discovery.</note>
   </input>
 
   <output>
@@ -80,7 +80,7 @@ Inject ONLY into the STRUCTURED goal-create params (`acceptance` / `validate` / 
           <file path="docs/architecture/context-map.md" required="multi-bc-only"/>
         </checklist>
         <action>For context-map.md: count the number of level-3 headings (### lines) under "Bounded Context Inventory" in bounded-contexts.md. If exactly one BC exists, skip the context-map.md check entirely (D-27). If two or more BCs exist, context-map.md is required.</action>
-        <action>For each missing required file, collect an error: "Missing required file: docs/architecture/&lt;filename&gt; — run /tmux:task-plan-discover first"</action>
+        <action>For each missing required file, collect an error: "Missing required file: docs/architecture/&lt;filename&gt; — run /tmux:project-discovery first"</action>
         <rule>Do not stop at the first missing file. Check all files and collect all errors.</rule>
       </substep>
 
@@ -141,7 +141,7 @@ Discovery output validation failed. Fix the following issues and retry:
 {{index}}. {{error_message}}
 {{/each}}
 
-Re-run /tmux:task-plan-discover to regenerate discovery outputs, or edit the files manually.
+Re-run /tmux:project-discovery to regenerate discovery outputs, or edit the files manually.
           </template>
           <action>ABORT. Do NOT proceed to Step 1.</action>
         </branch>
@@ -328,8 +328,8 @@ Re-run /tmux:task-plan-discover to regenerate discovery outputs, or edit the fil
       </substep>
     </step>
 
-    <step n="6" title="Handoff to planning">
-      <action>Print: "Generation complete. Run /tmux:plan — its blind audit gate (step 11a) audits the finalized plan via a serial native sub-agent before handing off to /tmux:supervisor. With require_plan_approval enabled, execution stays blocked until plan-approval.md records ≥90% with zero open SEV-1/SEV-2."</action>
+    <step n="6" title="Handoff to the roadmap approval gate">
+      <action>Print: "Generation complete — goals.yaml holds the roadmap SKELETONS (status: roadmap). NEXT is the single roadmap APPROVAL GATE (two-tier design §3, director Stage 2), NOT /tmux:plan: review the DAG (goals + depends_on edges + phases) and the plan-audit over-serialization output, recorded in plan-approval.md. With require_plan_approval enabled the run stays blocked until plan-approval.md records ≥90% with zero open SEV-1/SEV-2 (skipped when plan.auto_approve=true). On approval, start the taskvisor daemon via taskvisor-start — it elaborates each roadmap goal just-in-time through /tmux:elaborate (Tier 2, §6), flips it roadmap→pending, then runs the implement→investigate→validate loop. Do NOT run /tmux:plan or /tmux:supervisor — those are the RETIRED single-tier planner/dispatch path; in the two-tier flow the daemon owns elaboration and dispatch. (Under /tmux:director this is its Stage 2 → Stage 3; invoked standalone, it is your approve-then-start step.)"</action>
     </step>
 
 

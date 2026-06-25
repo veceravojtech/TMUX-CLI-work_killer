@@ -303,6 +303,17 @@ func (d *Daemon) dispatchCandidate(goal *Goal, goals *GoalsFile) error {
 		log.Printf("%s: unhandled prerequisite escalation pending — routing through plan (not retry/skip-plan)", goal.ID)
 		return d.dispatch(goal, goals)
 	}
+	// The gate phase owns a self-contained executor (DispatchGate → /tmux:gate)
+	// and never produces a tasks.yaml for the supervisor-retry path to resume. A
+	// tasks.yaml left in the goal dir — e.g. from a pre-DispatchGate supervisor
+	// run, or a hand-seeded file — must NOT divert the gate into dispatchRetry's
+	// hardcoded /tmux:supervisor. Always re-dispatch via dispatch(), which resolves
+	// the gate phase back to /tmux:gate. Gated AFTER the dispatchGeneration /
+	// escalation branches (both already route to dispatch()) so it only intercepts
+	// the retry/heuristic fall-through below.
+	if d.dispatchKindForGoal(goal) == DispatchGate {
+		return d.dispatch(goal, goals)
+	}
 	if goal.NextDispatch == dispatchImplementer && d.tasksYamlExists(goal.ID) {
 		return d.dispatchRetry(goal, goals)
 	}

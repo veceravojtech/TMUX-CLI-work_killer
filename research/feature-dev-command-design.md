@@ -5,7 +5,7 @@
 One command that takes a single feature/task for an **existing** system and drives it
 end-to-end: ingest context → recommend architecture (DDD + resolved project rules) →
 write feature docs + choose a test strategy → implement → validate. It is the brownfield
-analogue of the greenfield `task-plan-discover → task-plan-generate` pair, and a thin
+analogue of the greenfield `project-discovery → task-plan-generate` pair, and a thin
 **composer** over existing primitives — not a new execution engine.
 
 ## Non-goals

@@ -57,7 +57,7 @@ func gate0Block(t *testing.T, content string) string {
 // TestDiscoverXML_RunTargetDecisionAsksPublishedPorts verifies the run-target
 // decision elicits the published host:container port mappings.
 func TestDiscoverXML_RunTargetDecisionAsksPublishedPorts(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-discover.xml")
+	content := readEmbeddedCommand(t, "project-discovery.xml")
 	assert.Contains(t, content, "PUBLISHED_PORTS",
 		"run-target decision must capture a discrete PUBLISHED_PORTS list")
 	assert.Contains(t, content, "host:container",
@@ -67,7 +67,7 @@ func TestDiscoverXML_RunTargetDecisionAsksPublishedPorts(t *testing.T) {
 // TestDiscoverXML_PublishedPortsInTestEnvOutput verifies the Step-7 summary
 // block carries a Published Ports heading guarded by an is_docker conditional.
 func TestDiscoverXML_PublishedPortsInTestEnvOutput(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-discover.xml")
+	content := readEmbeddedCommand(t, "project-discovery.xml")
 
 	// Isolate the Step-7 pre-save summary template.
 	start := strings.Index(content, "Here's the test environment configuration")
@@ -91,7 +91,7 @@ func TestDiscoverXML_PublishedPortsInTestEnvOutput(t *testing.T) {
 // TestDiscoverXML_D14GatesPublishedPorts verifies the D-14 gate rule requires
 // Published Ports alongside the existing Run Target requirement.
 func TestDiscoverXML_D14GatesPublishedPorts(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-discover.xml")
+	content := readEmbeddedCommand(t, "project-discovery.xml")
 
 	var d14 string
 	for _, line := range strings.Split(content, "\n") {
@@ -111,7 +111,7 @@ func TestDiscoverXML_D14GatesPublishedPorts(t *testing.T) {
 // keeps published ports out of ADRs (test-environment.md is the sole sink) and
 // that no new ADR topic was introduced for them.
 func TestDiscoverXML_PublishedPortsNotRecordedAsADR(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-discover.xml")
+	content := readEmbeddedCommand(t, "project-discovery.xml")
 
 	// Isolate the run-target ADR-exclusion rule.
 	start := strings.Index(content, "EXCEPTION: the run-target decision")
@@ -206,7 +206,7 @@ func TestEmbeddedCommandsXML_WellFormed(t *testing.T) {
 			}
 			require.NoError(t, tokErr, "embedded XML %s must be well-formed", path)
 		}
-		if strings.HasSuffix(path, "task-plan-discover.xml") {
+		if strings.HasSuffix(path, "project-discovery.xml") {
 			sawDiscover = true
 		}
 		checked++
@@ -214,5 +214,5 @@ func TestEmbeddedCommandsXML_WellFormed(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Positive(t, checked, "at least one embedded command XML must be checked")
-	assert.True(t, sawDiscover, "the edited task-plan-discover.xml must be among the verified files")
+	assert.True(t, sawDiscover, "the edited project-discovery.xml must be among the verified files")
 }

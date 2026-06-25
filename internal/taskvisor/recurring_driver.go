@@ -204,7 +204,8 @@ func (d *Daemon) driveRecurring(goals *GoalsFile) {
 				log.Printf("[RECUR] send /clear: %v", err)
 			}
 		}
-		if err := d.executor.SendMessageWithDelay(d.session, win.TmuxWindowID, "/tmux:supervisor "+task.Prompt); err != nil {
+		recurCmd := dispatchCommand(DispatchRecurringSupervisor, DispatchArgs{Prompt: task.Prompt})
+		if err := d.executor.SendMessageWithDelay(d.session, win.TmuxWindowID, recurCmd); err != nil {
 			log.Printf("[RECUR] send supervisor prompt: %v", err)
 		}
 		task.CurrentCycle.Phase = cyclePhaseName(cyclePhaseSettling)

@@ -57,7 +57,7 @@ The `<conventions>` block of `task-plan-generate.xml:36-57` holds 11 cross-cutti
 Plus two universal items: `scope-derivation` (line 49) and `validate-acceptance-mandate` (line 51).
 
 ### 2.3 Signal detection (reuse target for the Go resolver)
-`internal/taskvisor/execruntime.go:29` already parses `docs/architecture/test-environment.md` for `RunTarget` ("docker"|"local"), `AppSvc`, `NodeSvc`, and `playwrightApplicable`. Signals (`LANG`, `FRAMEWORK`, `RUN_TARGET`, `HAS_DATABASE`, `HAS_FRONTEND`, `N_auth_flows`, symfony package flags) originate in discovery (`task-plan-discover.xml`) → written to `docs/architecture/test-environment.md` + project manifest (`composer.json`).
+`internal/taskvisor/execruntime.go:29` already parses `docs/architecture/test-environment.md` for `RunTarget` ("docker"|"local"), `AppSvc`, `NodeSvc`, and `playwrightApplicable`. Signals (`LANG`, `FRAMEWORK`, `RUN_TARGET`, `HAS_DATABASE`, `HAS_FRONTEND`, `N_auth_flows`, symfony package flags) originate in discovery (`project-discovery.xml`) → written to `docs/architecture/test-environment.md` + project manifest (`composer.json`).
 
 Other related (NOT in scope — leave as-is): `scope_gate.go` `stackMarkers` (runtime co-scheduling), `investigator.go` `projectSanityInvestigator` (marker-file detection go.mod/composer.json/package.json/Makefile), `classifyScope`/`scopeProfile`.
 

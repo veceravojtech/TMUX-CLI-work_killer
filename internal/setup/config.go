@@ -149,6 +149,13 @@ type TaskvisorSettings struct {
 	// `git_freshness: false` opt-out: nil is backfilled to true by LoadSettings.
 	// Read via GitFreshnessEnabled(), never directly.
 	GitFreshness *bool `yaml:"git_freshness"`
+	// DispatchOverrides overrides the per-phase first-dispatch command the daemon
+	// runs (taskvisor dispatchcmd.go matrix). Keys are goal phases (gate, scaffold,
+	// domain, …); values are "plan" (run the /tmux:plan pre-planner) or "implement"
+	// (skip planning, dispatch the supervisor directly). Unlisted phases keep the
+	// built-in matrix default; an unknown phase or value is logged and ignored. A
+	// generation bounce always forces planning regardless of an override.
+	DispatchOverrides map[string]string `yaml:"dispatch_overrides"`
 	// Validation gates the post-execution goal validation step: when ON (the
 	// default), a goal that finishes execution is handed to the validator
 	// (validate.sh + the reasoning investigator workers) before it can reach done.

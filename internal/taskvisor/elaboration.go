@@ -60,6 +60,13 @@ func (d *Daemon) dispatchElaborate(goal *Goal, goals *GoalsFile) error {
 		return fmt.Errorf("ensure worktree: %w", err)
 	}
 
+	// Bring the per-worktree stack up before the elaborator window, same shared
+	// helper + infra/ops halt contract as dispatch (a no-op on the no-worktree /
+	// local-runtime path).
+	if err := d.bringUpWorktreeStack(goal, cwd); err != nil {
+		return err
+	}
+
 	supWin := supervisorWindow(goal.ID, mg)
 	if err := d.writeSupervisorWindowMarker(goal.ID, supWin); err != nil {
 		return fmt.Errorf("write supervisor-window marker: %w", err)
@@ -83,7 +90,7 @@ func (d *Daemon) dispatchElaborate(goal *Goal, goals *GoalsFile) error {
 	log.Printf("%s: phase %s -> elaborating", goal.ID, phaseName(oldPhase))
 
 	dispatchPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "dispatch.md")
-	elabCmd := fmt.Sprintf("/tmux:elaborate %s %s", dispatchPath, goal.ID)
+	elabCmd := dispatchCommand(DispatchElaborate, DispatchArgs{DispatchPath: dispatchPath, GoalID: goal.ID})
 	log.Printf("dispatchElaborate: sending to session=%s window=%s cmd=%s", d.session, winInfo.TmuxWindowID, elabCmd)
 	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, elabCmd); err != nil {
 		return fmt.Errorf("send elaborate command: %w", err)

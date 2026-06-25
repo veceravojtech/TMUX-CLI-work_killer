@@ -29,7 +29,7 @@ Two consumption mechanics, fixed up front:
 ## 2. The E2E lifecycle — surface by surface
 
 ### 2.1 Discovery (produces signals)
-`task-plan-discover.xml` Step 7 writes test-environment.md. **Add one line to
+`project-discovery.xml` Step 7 writes test-environment.md. **Add one line to
 the saved template: `**Stack:** {{LANG}}-{{FRAMEWORK}}`** (e.g. `php-symfony`).
 `rules.Detect` gains a parser for it (priority: Stack line → manifests →
 symfony-mention fallback). This removes the planner's `--lang/--framework`
@@ -244,7 +244,7 @@ cheapness). Automated signals are therefore the highest-value rules to grow.
 
 | phase | content | touches |
 |-------|---------|---------|
-| 2a | Stack line in discovery + Detect parser; Signals + Detect grow Class A/B-cheap; `resolve --signals` | task-plan-discover.xml, internal/rules, rules.go CLI |
+| 2a | Stack line in discovery + Detect parser; Signals + Detect grow Class A/B-cheap; `resolve --signals` | project-discovery.xml, internal/rules, rules.go CLI |
 | 2b | `rules match` CLI (internal/rules, shared globs/routing) + rule→goal injection (acceptance/validate/investigator incl. budget rule) + runnable-ness baseline | rules.go CLI, internal/rules, task-plan-generate.xml (+ relevant shards), generation tests |
 | 2c | Consumption: buildTaskMessage CODE_RULES, spec §Code Rules + SpecValidate S9, execute.xml 1b, audit prompt input, investigate-worker note | tools.go, plan.xml, execute.xml, investigate-worker.xml + MCP tests |
 | 2d | `rules lint` (checker → internal/rules/lint.go, shared with catalogue test), `/tmux:rules:add` skill | rules.go CLI, new command XML |

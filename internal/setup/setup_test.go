@@ -188,8 +188,8 @@ func TestRun_TaskPlanSkillsDiscoverable(t *testing.T) {
 	cfg := testConfig()
 	cfg.ProjectRoot = dir
 
-	cfg.CommandTemplates["task-plan-discover.md"] = "---\ndescription: Interactive project discovery\n---\nSee task-plan-discover.xml for full spec."
-	cfg.CommandTemplates["task-plan-discover.xml"] = `<task id="task-plan-discover" name="Interactive project discovery">\n  <objective>Guide discovery</objective>\n</task>`
+	cfg.CommandTemplates["project-discovery.md"] = "---\ndescription: Interactive project discovery\n---\nSee project-discovery.xml for full spec."
+	cfg.CommandTemplates["project-discovery.xml"] = `<task id="project-discovery" name="Interactive project discovery">\n  <objective>Guide discovery</objective>\n</task>`
 	cfg.CommandTemplates["task-plan-generate.md"] = "---\ndescription: Goal generation\n---\nSee task-plan-generate.xml for full spec."
 	cfg.CommandTemplates["task-plan-generate.xml"] = `<task id="task-plan-generate" name="Goal generation">\n  <objective>Generate goals</objective>\n</task>`
 
@@ -200,8 +200,8 @@ func TestRun_TaskPlanSkillsDiscoverable(t *testing.T) {
 		file   string
 		marker string
 	}{
-		{"task-plan-discover.md", "task-plan-discover.xml"},
-		{"task-plan-discover.xml", `<task id="task-plan-discover"`},
+		{"project-discovery.md", "project-discovery.xml"},
+		{"project-discovery.xml", `<task id="project-discovery"`},
 		{"task-plan-generate.md", "task-plan-generate.xml"},
 		{"task-plan-generate.xml", `<task id="task-plan-generate"`},
 	}

@@ -97,8 +97,8 @@ var investigatorTypePriority = map[string]int{
 	// mandatory signals — dead-choreography and the goal's own integration+
 	// functional suite — are never dropped by the >4 truncation; each outweighs a
 	// 4th quality gate. Both surviving the cap is the B2b/B3 compose contract.
-	"emission-check":     -1,
-	"own-suite-green":    -1,
+	"emission-check":  -1,
+	"own-suite-green": -1,
 	// code-review is the mandatory functional/acceptance review (RC-1). Pinned at
 	// -1 so the >4 truncation never drops the only behavioral gate on a goal whose
 	// other investigators are all static analysis.

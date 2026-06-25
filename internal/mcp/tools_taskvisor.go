@@ -221,6 +221,22 @@ func (s *Server) TaskvisorStart() (*TaskvisorStartOutput, error) {
 	return &TaskvisorStartOutput{Started: true}, nil
 }
 
+// TaskvisorStop asks an ACTIVE daemon to drop to IDLE by writing the
+// taskvisor-stop signal file (the inverse of taskvisor-start) — the MCP mirror of
+// `tmux-cli taskvisor stop`. The daemon consumes it on its next poll and calls
+// deactivate(), returning to IDLE WITHOUT being killed (the process stays up,
+// ready for the next start). Idempotent and harmless when no daemon is running.
+func (s *Server) TaskvisorStop() (*TaskvisorStopOutput, error) {
+	signalPath := filepath.Join(s.workingDir, ".tmux-cli", "taskvisor-stop")
+	if err := os.MkdirAll(filepath.Dir(signalPath), 0o755); err != nil {
+		return nil, fmt.Errorf("%w: failed to create directory: %w", ErrInvalidInput, err)
+	}
+	if err := os.WriteFile(signalPath, []byte("stop"), 0o644); err != nil {
+		return nil, fmt.Errorf("%w: failed to write signal file: %w", ErrInvalidInput, err)
+	}
+	return &TaskvisorStopOutput{Stopped: true}, nil
+}
+
 var allowedPhases = map[string]bool{
 	"gate": true, "scaffold": true, "fixtures": true, "domain": true,
 	"application": true, "infrastructure": true, "action": true, "auth": true,

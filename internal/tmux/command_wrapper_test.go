@@ -2,10 +2,24 @@ package tmux
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// createFakeShell writes a fake, executable shell file named `name` into `dir`
+// so that isValidShellPath (which requires an absolute path to an existing,
+// regular, executable file) accepts it WITHOUT depending on which shells happen
+// to be installed on the host. Returns the absolute path to the fake shell.
+func createFakeShell(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("failed to create fake shell %s: %v", path, err)
+	}
+	return path
+}
 
 func TestWrapCommandForPersistence(t *testing.T) {
 	tests := []struct {
@@ -100,12 +114,21 @@ func TestWrapCommandForPersistence(t *testing.T) {
 		},
 	}
 
+	// Hermeticity: rather than pointing SHELL at host paths (/bin/zsh may be
+	// absent), create fake executable shells in a temp dir and redirect SHELL at
+	// them by basename. The shells the cases expect to be USED (zsh/bash/sh) are
+	// created; the fish case's basename is deliberately NOT created, so it resolves
+	// to a missing path and exercises the real isValidShellPath -> /bin/sh fallback.
+	shellDir := t.TempDir()
+	for _, name := range []string{"zsh", "bash", "sh"} {
+		createFakeShell(t, shellDir, name)
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set shell env var for this test
-			originalShell := os.Getenv("SHELL")
-			os.Setenv("SHELL", tt.shell)
-			defer os.Setenv("SHELL", originalShell)
+			// Redirect SHELL at the hermetic fake shell of the same name, so the
+			// test does not depend on which shells are installed on the host.
+			t.Setenv("SHELL", filepath.Join(shellDir, filepath.Base(tt.shell)))
 
 			result := WrapCommandForPersistence(tt.command)
 			assert.Equal(t, tt.expected, result)
@@ -187,10 +210,9 @@ func TestWrapCommandForPersistence_MultiWordCommands(t *testing.T) {
 		},
 	}
 
-	// Use zsh for these tests
-	originalShell := os.Getenv("SHELL")
-	os.Setenv("SHELL", "/bin/zsh")
-	defer os.Setenv("SHELL", originalShell)
+	// Use a hermetic fake zsh for these tests (host may have no /bin/zsh).
+	shellDir := t.TempDir()
+	t.Setenv("SHELL", createFakeShell(t, shellDir, "zsh"))
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

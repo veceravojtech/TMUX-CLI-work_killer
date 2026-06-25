@@ -185,6 +185,7 @@ Source of truth: `RegisterTools()` in `internal/mcp/server.go`. Regenerate this 
 | tasks-validate | yes | yes | Validate tasks.yaml lean format (no extra fields) |
 | spec-validate | yes | yes | Validate spec .md against S0-S8 quality catalogue |
 | taskvisor-start | no | yes | Signal the taskvisor daemon to start (writes `.tmux-cli/taskvisor-start`; fails if no pending goals) |
+| taskvisor-stop | no | yes | Ask the daemon to return to IDLE (writes `.tmux-cli/taskvisor-stop`; daemon deactivates on next poll, process stays up — inverse of taskvisor-start) |
 | goal-create | no | no | Create a goal in goals.yaml with sequential ID + goal dir (delegates to `taskvisor.CreateGoal`) |
 | goal-add-prerequisite | no | no | Wire an existing goal's depends_on to an existing prerequisite (generation-side escalation backstop; validates IDs, rejects self-dep/cycle, caps escalations) |
 | goal-edit | no | no | Edit an existing goal's authoring fields (acceptance/validate/scope/status/deliverable_area/phase) by id — the Tier-2 elaboration write-back primitive (delegates to `taskvisor.EditGoal`); status guard rejects daemon-owned running/done/failed |

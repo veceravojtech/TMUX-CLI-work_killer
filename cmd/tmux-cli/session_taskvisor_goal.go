@@ -373,25 +373,11 @@ func runTaskvisorGoalSkip(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// runTaskvisorGoalStop backs the legacy `taskvisor goal stop` alias; the
+// canonical surface is the top-level `taskvisor stop`. Both delegate to
+// doTaskvisorStop.
 func runTaskvisorGoalStop(cmd *cobra.Command, args []string) error {
-	cwd, err := taskvisorProjectRoot()
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-
-	if err := stopDaemonProcess(cwd); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: stop daemon process: %v\n", err)
-	}
-
-	for _, name := range []string{"taskvisor-active", "taskvisor-start", "taskvisor-current-goal", "taskvisor-current-cycle", "taskvisor-current-worktree"} {
-		p := filepath.Join(cwd, ".tmux-cli", name)
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", name, err)
-		}
-	}
-
-	fmt.Println("Taskvisor stop signal sent")
-	return nil
+	return runTaskvisorStop(cmd, args)
 }
 
 func runTaskvisorGoalPrune(cmd *cobra.Command, args []string) error {

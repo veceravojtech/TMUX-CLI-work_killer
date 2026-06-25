@@ -1,5 +1,5 @@
 <task id="feature" name="Brownfield feature-development orchestrator">
-  <objective>Drive ONE feature through an EXISTING system end-to-end — context discovery, architecture recommendation, docs + test strategy, implementation, and validation — by COMPOSING the existing plan/supervisor/investigate primitives. The brownfield analogue of the greenfield task-plan-discover &#8594; task-plan-generate pair. Six stages (0&#8211;5); interactive ONLY at Stage 2; fully autonomous before and after. This file is the SPINE: Stage 0 (capability + topology resolution) is loaded here; Stages 1&#8211;5 are loaded sub-step seams whose shard files arrive with F2&#8211;F6.</objective>
+  <objective>Drive ONE feature through an EXISTING system end-to-end — context discovery, architecture recommendation, docs + test strategy, implementation, and validation — by COMPOSING the existing plan/supervisor/investigate primitives. The brownfield analogue of the greenfield project-discovery &#8594; task-plan-generate pair. Six stages (0&#8211;5); interactive ONLY at Stage 2; fully autonomous before and after. This file is the SPINE: Stage 0 (capability + topology resolution) is loaded here; Stages 1&#8211;5 are loaded sub-step seams whose shard files arrive with F2&#8211;F6.</objective>
 
   <input>
     <note>$ARGUMENTS = the feature description / name (a free-text statement of the ONE feature to drive end-to-end). Empty $ARGUMENTS is a hard stop in Stage 0 preflight.</note>
@@ -30,7 +30,7 @@
       BROWNFIELD composer over the existing /tmux:plan + /tmux:supervisor + /tmux:investigate
       primitives, interactive only at Stage 2 (architecture).</note>
     <vs name="task-plan-generate">GREENFIELD goal synthesis from docs/architecture discovery
-      (the task-plan-discover &#8594; task-plan-generate pair builds a project from scratch);
+      (the project-discovery &#8594; task-plan-generate pair builds a project from scratch);
       /tmux:feature drives ONE feature through an ALREADY-EXISTING system.</vs>
     <vs name="/worker:* (MR cycles)">/worker:quick-dev, /worker:tech-spec, /worker:pipeline and the
       Redmine/GitLab MR workers operate a diff&#8594;spec&#8594;MR cycle on an external ticket; /tmux:feature

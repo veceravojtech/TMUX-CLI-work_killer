@@ -42,7 +42,7 @@ func step319a(t *testing.T) string {
 }
 
 func TestDiscover_SeedAdminQuestionPresent(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-discover.xml")
+	content := readEmbeddedCommand(t, "project-discovery.xml")
 
 	assert.Contains(t, content, `topic="seed-default-admin"`,
 		"discovery must have a seed-default-admin question topic")
@@ -55,7 +55,7 @@ func TestDiscover_SeedAdminQuestionPresent(t *testing.T) {
 }
 
 func TestDiscover_SeedAdminGatedOnAuth(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-discover.xml")
+	content := readEmbeddedCommand(t, "project-discovery.xml")
 
 	// The seed question must be guarded to ask only when auth flows exist.
 	assert.Contains(t, content, "AUTH_FLOWS",
@@ -65,7 +65,7 @@ func TestDiscover_SeedAdminGatedOnAuth(t *testing.T) {
 }
 
 func TestDiscover_SeedAdminPersistedToTestEnv(t *testing.T) {
-	content := readEmbeddedCommand(t, "task-plan-discover.xml")
+	content := readEmbeddedCommand(t, "project-discovery.xml")
 
 	assert.Contains(t, content, "## Bootstrap / Seed Default Admin",
 		"Step 7.3 must persist a Bootstrap / Seed Default Admin block")

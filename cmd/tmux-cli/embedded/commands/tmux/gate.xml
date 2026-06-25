@@ -1,0 +1,69 @@
+<task id="gate" name="Self-contained environment-gate executor">
+  <objective>Run ONE atomic gate-phase goal end-to-end inside the daemon-spawned window: probe the system-level prerequisites for the chosen run target, apply corrections in the mandated order, bootstrap AGENTS.md from the verified results, then signal completion to the taskvisor daemon. This is the gate phase's dedicated quick path — it replaces the supervisor→/execute fan-out (an implementation orchestrator) for a goal that only verifies an environment and writes one artifact. It spawns NOTHING and self-specs NO tasks.yaml; the work is done directly in this window.</objective>
+
+  <input>
+    <arg name="$ARGUMENTS">The goal id as a single leading token (e.g. `goal-001`). The daemon ships it verbatim via dispatchCommand(DispatchGate). If absent, fall back to the global current-goal marker (step 0).</arg>
+  </input>
+
+  <output>
+    <primary>A verified environment + a project-root AGENTS.md whose GATE0 sentinel block records run target, container-runtime versions, base URL, published ports, and gate status — exactly the artifact the gate goal's acceptance (E-16) requires.</primary>
+    <secondary>The completion signal `.tmux-cli/goals/&lt;GOAL_ID&gt;/signal.json` = {"source":"supervisor","status":"done"} that releases the daemon from the supervising phase into validation.</secondary>
+  </output>
+
+  <requirements critical="true">
+    <note>No tmux-cli MCP spawn tools are needed — the gate runs inline and reports via a plain signal.json file write, never via windows-message. The mcp__tmux-cli__sudo-execute tool is used ONLY when a privileged correction is required AND a sudo password is already stored.</note>
+  </requirements>
+
+  <llm critical="true">
+    <mandate critical="true">SIGNAL CONTRACT (load-bearing): on completion, WRITE `.tmux-cli/goals/&lt;GOAL_ID&gt;/signal.json` with EXACTLY {"source":"supervisor","status":"done"}. The daemon's checkSupervisingPhase type-asserts a *SupervisorSignal and LoadSignal routes ONLY on source=="supervisor" — any other source value (e.g. "gate", "validator") makes LoadSignal error and wedges the daemon tick. Write this ONCE, at the very end, after all gate work is done. Never write it mid-run.</mandate>
+    <mandate critical="true">NEVER spawn workers (no windows-spawn-worker, no /tmux:execute), and NEVER write a tasks.yaml or dispatch.md. Writing a per-goal tasks.yaml would route every subsequent re-dispatch into the supervisor-retry path (dispatchRetry gates on tasksYamlExists) — the exact heavy path this command exists to avoid. You ARE the worker; do the work here.</mandate>
+    <mandate>The goal's own goal.md is the authoritative spec — its Acceptance Criteria, Validation Rules, Context (correction ordering + AGENTS.md bootstrap instructions), and Investigation Config define WHAT to check, fix, and write. Read it first and follow it; this skill is the runner, goal.md is the contents.</mandate>
+    <mandate>Run every check INDEPENDENTLY — one failure must not skip the others (the gate reports ALL missing prerequisites in one pass, not just the first).</mandate>
+    <mandate>Credentials, DSNs, ports, and connection params come from docs/architecture/test-environment.md by reference — NEVER inline a secret value into AGENTS.md or a correction (GM-05). The [env] remedy names the bare variable; the [service] remedy names host:port.</mandate>
+    <mandate>Stay within the gate's footprint: the only file you WRITE into the repo is AGENTS.md (inside its GATE0 sentinels). Do not edit unrelated source, do not create quality-tool configs or install Composer dev-deps — those belong to Scaffold (goal-002).</mandate>
+    <mandate>Do your best in ONE pass then signal done — do NOT loop internally retrying. After you signal, the daemon runs the goal's validate.sh and /tmux:investigate; any still-red check becomes a correction injected into the NEXT cycle, which re-dispatches /tmux:gate. Convergence is the daemon's job across cycles, not an inner loop here.</mandate>
+  </llm>
+
+  <flow>
+    <step n="0" title="Resolve the goal">
+      <action>Bind GOAL_ID: if $ARGUMENTS has a leading `goal-NNN` token, use it VERBATIM. Otherwise read `.tmux-cli/taskvisor-current-goal` (trim whitespace) and use its content. If neither yields an id, print "ERROR: gate executor could not resolve a GOAL_ID" and STOP.</action>
+      <action>Bind GOAL_DIR = `.tmux-cli/goals/&lt;GOAL_ID&gt;`. Verify GOAL_DIR/goal.md exists; if not, print the error and STOP.</action>
+    </step>
+
+    <step n="1" title="Load the spec and prior feedback">
+      <action>Read GOAL_DIR/goal.md in full — internalize its Acceptance Criteria, Validation Rules, Context (correction ordering + AGENTS.md bootstrap), and Investigation Config. These define the exact checks, the correction ordering, and the AGENTS.md content for THIS run target.</action>
+      <action>If GOAL_DIR/corrections/ exists, read the NEWEST corrections/cycle-*.md (highest N). It is the daemon's feedback from the previous cycle (a check that was still red, or an AGENTS.md defect) — treat its contents as the priority items to resolve THIS cycle, in addition to a full re-check.</action>
+      <action>Read the inputs goal.md references: docs/architecture/test-environment.md (run target, published ports, base URL, DB/service connection fields) and any environment-gate / agents.md template it cites under Research Files. The check list and AGENTS.md layout come from those, never hardcoded.</action>
+    </step>
+
+    <step n="2" title="Probe the environment">
+      <action>Run each prerequisite check from goal.md's Validation Rules / Investigation Config as an independent Bash command. Capture pass/fail per check; do NOT abort on the first failure. Host PHP/extension checks for a docker run target are deferred to the in-container scaffold — do not run them on the host.</action>
+      <action>Include the host port preflight (the app web port from test-environment.md must be free) — a bound port is a gate failure with a concrete remedy.</action>
+    </step>
+
+    <step n="3" title="Apply corrections in order">
+      <action>For every failed check, apply the fix in the mandated ordering from goal.md (typically: container runtime → system packages → extensions → services → frontend; plus the host web-port preflight). Attempt auto-remediation via Bash where it is safe and unprivileged.</action>
+      <action>For a privileged step (package install, freeing a port), use mcp__tmux-cli__sudo-execute ONLY if a sudo password is already stored; otherwise DO NOT guess — record the exact, copy-pasteable remediation command so the next cycle (or operator) can apply it. Never inline secrets.</action>
+      <action>Re-run any check whose inputs you changed so the verified results reflect the post-correction state.</action>
+    </step>
+
+    <step n="4" title="Bootstrap AGENTS.md from verified results">
+      <action>Resolve the agents.md template (overlay → _base as goal.md directs), fill it from the VERIFIED gate results (run target, container-runtime + Compose versions, published ports, base URL, gate status passed/total), and write it at the project root BETWEEN the `&lt;!-- GATE0:BEGIN --&gt;` and `&lt;!-- GATE0:END --&gt;` sentinels.</action>
+      <rule>Idempotent replace INSIDE the sentinels only — never touch content outside them. If AGENTS.md is absent, create it with the sentinel block.</rule>
+    </step>
+
+    <step n="5" title="Signal completion">
+      <action>Write GOAL_DIR/signal.json with EXACTLY this content (no extra fields):</action>
+      <signal>{"source":"supervisor","status":"done"}</signal>
+      <action>Print a one-line summary: "Gate &lt;GOAL_ID&gt;: &lt;passed&gt;/&lt;total&gt; checks green; AGENTS.md written; signaled done." Then STOP — the daemon takes over (tears down this window, runs validate.sh + /tmux:investigate).</action>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>The signal.json source is ALWAYS "supervisor" — it is the wire type the daemon's supervising phase consumes; "gate" is the command name, not the signal source.</rule>
+    <rule>Best-effort single pass, then signal — the daemon's code-retry budget + validate.sh + investigate drive convergence across cycles; this command never self-loops.</rule>
+    <rule>No worker spawn, no tasks.yaml, no dispatch.md — those belong to the supervisor path; the gate is self-contained.</rule>
+    <rule>AGENTS.md is the ONLY repo file written; all credentials referenced via docs/architecture/test-environment.md, never inlined (GM-05).</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (a still-red prerequisite check, a missing dep awaiting its recorded remedy, a port still bound) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+</task>

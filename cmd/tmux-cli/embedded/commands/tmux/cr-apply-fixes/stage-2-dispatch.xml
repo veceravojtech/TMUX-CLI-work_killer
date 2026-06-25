@@ -44,7 +44,7 @@ Reply to confirm and unblock dispatch:
         <action>Re-print the plan and idle again.</action>
       </check>
     </check>
-    <mandate>NEVER use AskUserQuestion or any other interactive tool — all interaction is text output + waiting for the user's message (tmux window compatibility), mirroring task-plan-discover.xml. The confirm gate is the ONLY interactive point in /tmux:cr-apply-fixes.</mandate>
+    <mandate>NEVER use AskUserQuestion or any other interactive tool — all interaction is text output + waiting for the user's message (tmux window compatibility), mirroring project-discovery.xml. The confirm gate is the ONLY interactive point in /tmux:cr-apply-fixes.</mandate>
   </substep>
 
   <substep n="2.3" title="Emit ONE goal per category via goal-create depends_on chains">

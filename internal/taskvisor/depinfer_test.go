@@ -290,6 +290,143 @@ func TestEnforceFileOverlap_ExcludesToolBinaries(t *testing.T) {
 	assert.Len(t, ready, 2, "disjoint-scope goals co-schedule once the false edge is gone")
 }
 
+func TestEnforceFileOverlapDeps_CoarseAreaNoEdge(t *testing.T) {
+	// Two pending same-BC siblings whose ONLY shared stem is a coarse directory
+	// area (path-like, no source extension). A shared coarse-dir stem is NOT a
+	// produce/consume signal, so it must not force a serializing depends_on edge.
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:         "goal-001",
+				Scope:      []string{"contexts/Foo/app/src/Http/Controller/"},
+				Status:     GoalPending,
+				MaxRetries: 5,
+			},
+			{
+				ID:         "goal-002",
+				Scope:      []string{"contexts/Foo/app/src/Http/Controller/"},
+				Status:     GoalPending,
+				MaxRetries: 5,
+			},
+		},
+	}
+
+	edges := EnforceFileOverlapDeps(gf)
+	assert.Empty(t, edges, "shared coarse-directory stem alone must not force an edge")
+
+	g1, ok := gf.GoalByID("goal-001")
+	require.True(t, ok)
+	assert.Empty(t, g1.DependsOn, "producer gains no edge from a coarse-dir overlap")
+	g2, ok := gf.GoalByID("goal-002")
+	require.True(t, ok)
+	assert.Empty(t, g2.DependsOn, "sibling stays runnable in parallel — no false serialization")
+}
+
+func TestEnforceFileOverlapDeps_ConcreteFileStillEdges(t *testing.T) {
+	// A shared concrete source-file stem IS the directional produce/consume proxy
+	// (one goal edits a file the other references) — the legitimate edge stays.
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Scope: []string{"src/Entity/User.php"}, Status: GoalPending, MaxRetries: 5},
+			{ID: "goal-002", Scope: []string{"src/Entity/User.php"}, Status: GoalPending, MaxRetries: 5},
+		},
+	}
+
+	edges := EnforceFileOverlapDeps(gf)
+	require.Len(t, edges, 1)
+	assert.Equal(t, "goal-002", edges[0].From, "higher-id goal depends on lower-id")
+	assert.Equal(t, "goal-001", edges[0].To)
+	assert.Equal(t, "src/Entity/User.php", edges[0].Stem)
+	assert.True(t, hasKnownExtension(edges[0].Stem), "trigger stem is the concrete .php file")
+}
+
+func TestEnforceFileOverlapDeps_MixedPrefersConcreteStem(t *testing.T) {
+	// The pair shares BOTH a coarse dir (listed first in slice order) AND a
+	// concrete file. The coarse dir must be skipped and the concrete file becomes
+	// the trigger stem — exactly one edge, its Stem a known-extension file.
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:         "goal-001",
+				Scope:      []string{"contexts/Foo/app/src/Entity/", "contexts/Foo/app/src/Entity/User.php"},
+				Status:     GoalPending,
+				MaxRetries: 5,
+			},
+			{
+				ID:         "goal-002",
+				Scope:      []string{"contexts/Foo/app/src/Entity/", "contexts/Foo/app/src/Entity/User.php"},
+				Status:     GoalPending,
+				MaxRetries: 5,
+			},
+		},
+	}
+
+	edges := EnforceFileOverlapDeps(gf)
+	require.Len(t, edges, 1, "exactly one edge despite two shared stems")
+	assert.Equal(t, "contexts/Foo/app/src/Entity/User.php", edges[0].Stem)
+	assert.True(t, hasKnownExtension(edges[0].Stem), "the concrete file wins as the trigger stem, not the coarse dir")
+}
+
+func TestEnforceFileOverlapDeps_CoarseAreaIdempotentAndAcyclic(t *testing.T) {
+	newCoarse := func() *GoalsFile {
+		return &GoalsFile{
+			Goals: []Goal{
+				{ID: "goal-001", Scope: []string{"contexts/Foo/app/src/Http/Controller/"}, Status: GoalPending, MaxRetries: 5},
+				{ID: "goal-002", Scope: []string{"contexts/Foo/app/src/Http/Controller/"}, Status: GoalPending, MaxRetries: 5},
+			},
+		}
+	}
+
+	gf := newCoarse()
+	before, err := yaml.Marshal(gf)
+	require.NoError(t, err)
+
+	first := EnforceFileOverlapDeps(gf)
+	assert.Empty(t, first, "coarse-only pair yields no edge")
+	second := EnforceFileOverlapDeps(gf)
+	assert.Empty(t, second, "second call adds zero edges (idempotent)")
+
+	after, err := yaml.Marshal(gf)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "coarse-only pair leaves the DAG byte-identical and acyclic")
+}
+
+func TestInferMissingDeps_CoarseAreaNoFinding(t *testing.T) {
+	// The consumer's only overlap with the producer is a coarse directory stem.
+	// The read-only inference must stay consistent with the enforcer: no finding.
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:    "goal-001",
+				Scope: []string{"contexts/Foo/app/src/Http/Controller/"},
+			},
+			{
+				ID:         "goal-002",
+				Acceptance: []string{"contexts/Foo/app/src/Http/Controller/ must contain the controller"},
+			},
+		},
+	}
+
+	findings := InferMissingDeps(gf)
+	assert.Empty(t, findings, "a coarse-directory overlap yields no inferred dependency finding")
+}
+
+func TestInferMissingDeps_ConcreteProducerConsumerStillFound(t *testing.T) {
+	gf := &GoalsFile{
+		Goals: []Goal{
+			{ID: "goal-001", Scope: []string{"src/Entity/User.php"}},
+			{ID: "goal-002", Acceptance: []string{"src/Entity/User.php must expose the user fields"}},
+		},
+	}
+
+	findings := InferMissingDeps(gf)
+	require.Len(t, findings, 1, "a concrete-file produce/consume overlap is still reported")
+	assert.Equal(t, "goal-002", findings[0].Consumer)
+	assert.Equal(t, "goal-001", findings[0].Producer)
+	assert.Equal(t, "src/Entity/User.php", findings[0].Stem)
+	assert.Equal(t, "acceptance", findings[0].Evidence)
+}
+
 func TestInferMissingDeps_SelfReference(t *testing.T) {
 	gf := &GoalsFile{
 		Goals: []Goal{

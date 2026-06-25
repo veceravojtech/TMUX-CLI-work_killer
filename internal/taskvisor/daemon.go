@@ -164,6 +164,13 @@ type Daemon struct {
 	// per-goal worktree lifecycle (E1-1a). Nil ⇒ defaultGitRunner (real git). With
 	// MaxGoals=1 no git path is ever reached, so this is never invoked.
 	gitRunnerFn GitRunnerFunc
+	// composeRunnerFn is the injectable seam for every per-worktree compose
+	// invocation (T1 ComposeStack up/down) behind the worktree stack lifecycle.
+	// Seeded to defaultComposeRunner in New(); SetComposeRunnerFunc injects a fake
+	// in tests. The stack lifecycle only engages on the worktree+docker path
+	// (cwd!=d.workDir AND RunTarget==docker), so at MaxGoals=1 / local runtime this
+	// is never invoked and behavior stays byte-identical to the pre-stack build.
+	composeRunnerFn ComposeRunnerFunc
 	// autoCommit gates the completion-time auto-commit step (autoCommitGoal):
 	// on a goal's done transition the daemon commits the goal's scope-matched
 	// changeset to the current branch. Seeded true by New() and overridden from
@@ -236,11 +243,15 @@ type Daemon struct {
 	// daemon-level halt (currently only the wall-clock ceiling). Set BEFORE
 	// deactivate() (whose tail render surfaces it) and cleared in activate() so a
 	// (re)start shows a clean IDLE/ACTIVE surface.
-	haltReason           string
-	haltOnStaleBinary    bool
-	restartOnStaleBinary bool
-	restartAttempted     bool
-	execReplaceFn        func(string, []string, []string) error
+	haltReason string
+	// dispatchPhaseOverride is the parsed setting.yaml `taskvisor.dispatch_overrides`
+	// map (phase → first-dispatch kind). Populated in Run() from settings; nil when
+	// unset, in which case resolveDispatchKind falls back to the phase matrix.
+	dispatchPhaseOverride map[string]DispatchKind
+	haltOnStaleBinary     bool
+	restartOnStaleBinary  bool
+	restartAttempted      bool
+	execReplaceFn         func(string, []string, []string) error
 	// commandRefreshFn rewrites the installed .claude/commands/tmux/ templates from
 	// the (new) binary's embedded FS when checkStaleBinary fires. Injected from
 	// cmd/tmux-cli (where the embedded FS lives) so internal/taskvisor need not
@@ -301,6 +312,7 @@ func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
 		promptSettleDelay:  3 * time.Second,
 		promptPollInterval: 2 * time.Second,
 		scriptRunnerFn:     defaultScriptRunner,
+		composeRunnerFn:    defaultComposeRunner,
 		scriptTimeout:      validateScriptTimeout,
 		autoResumeInterval: 30 * time.Second,
 		execReplaceFn:      syscall.Exec,
@@ -317,6 +329,24 @@ func (d *Daemon) SetWindowCreateFunc(fn WindowCreateFunc) {
 
 func (d *Daemon) SetScriptRunnerFunc(fn ScriptRunnerFunc) {
 	d.scriptRunnerFn = fn
+}
+
+// SetComposeRunnerFunc overrides the per-worktree compose runner (tests inject a
+// fake). Mirrors SetGitRunnerFunc / SetScriptRunnerFunc.
+func (d *Daemon) SetComposeRunnerFunc(fn ComposeRunnerFunc) {
+	d.composeRunnerFn = fn
+}
+
+// composeRunner returns the configured per-worktree compose runner, lazily
+// defaulting to defaultComposeRunner so a direct-construct Daemon (literal, not
+// via New) never nil-panics. The stack lifecycle only reaches this on the
+// worktree+docker path, so at MaxGoals=1 / local runtime the real runner is never
+// invoked even though it is the default.
+func (d *Daemon) composeRunner() ComposeRunnerFunc {
+	if d.composeRunnerFn != nil {
+		return d.composeRunnerFn
+	}
+	return defaultComposeRunner
 }
 
 func (d *Daemon) SetExecReplaceFnForTest(fn func(string, []string, []string) error) {
@@ -379,6 +409,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		// validation OFF ⇒ goals are marked done directly out of supervising. The
 		// daemon field is the inverse so its zero value (false) means "validate".
 		d.skipValidation = !settings.Taskvisor.ValidationEnabled()
+		d.dispatchPhaseOverride = parseDispatchOverrides(settings.Taskvisor.DispatchOverrides)
 	}
 
 	// Backend failure reporting (goal-008/009). Config is read independently of
@@ -543,6 +574,11 @@ func (d *Daemon) poll(ctx context.Context) error {
 	return d.withGoalsLock(func() error {
 		switch d.mode {
 		case modeIdle:
+			// A stop signal while already idle is a no-op; consume a stray one so it
+			// cannot trigger an immediate deactivate right after the next activate().
+			if _, err := d.consumeStopSignal(); err != nil {
+				return err
+			}
 			if d.recurringPickup() {
 				return nil
 			}
@@ -565,6 +601,16 @@ func (d *Daemon) poll(ctx context.Context) error {
 			return d.activate(goals)
 
 		case modeActive:
+			// A stop signal asks the daemon to return to IDLE gracefully (the
+			// inverse of start) — deactivate tears down in-flight goal windows,
+			// restores window-0, clears markers, and keeps the PROCESS alive to
+			// poll for the next start. It never kills the daemon.
+			if stop, err := d.consumeStopSignal(); err != nil {
+				return err
+			} else if stop {
+				log.Printf("taskvisor: stop signal received — deactivating to IDLE")
+				return d.deactivate()
+			}
 			goals, err := LoadGoals(d.workDir)
 			if err != nil {
 				return fmt.Errorf("load goals: %w", err)
@@ -576,6 +622,23 @@ func (d *Daemon) poll(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+// consumeStopSignal reports whether a taskvisor-stop signal file was present and
+// removes it. The CLI `taskvisor stop` and the taskvisor-stop MCP tool write this
+// file to ask an ACTIVE daemon to drop to IDLE without being killed.
+func (d *Daemon) consumeStopSignal() (bool, error) {
+	stopPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-stop")
+	if _, err := os.Stat(stopPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat stop signal: %w", err)
+	}
+	if err := os.Remove(stopPath); err != nil {
+		return false, fmt.Errorf("remove stop signal: %w", err)
+	}
+	return true, nil
 }
 
 func (d *Daemon) activate(goals *GoalsFile) error {
@@ -612,6 +675,14 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	// goal is not GoalRunning. No-op with zero git when the worktrees dir is absent
 	// (the MaxGoals=1 / never-parallel case), so activation stays byte-identical.
 	d.pruneOrphanWorktrees(goals)
+
+	// Reap per-worktree compose stacks orphaned by a crashed run: `docker compose
+	// down -v` every taskvisor-* project whose goal is not GoalRunning, so a
+	// crash-leaked stack + its db volume never survive into the next run. Co-located
+	// with pruneOrphanWorktrees (the same activation/recovery seam) and gated on
+	// RunTarget==docker, so a local-runtime / MaxGoals=1 project makes zero compose
+	// calls and activation stays byte-identical.
+	d.reapOrphanStacks(goals)
 
 	// Heal stale block-state on (re)activation too, so a daemon that comes up
 	// against an already-stuck goals.yaml re-pends a recovered subtree before it
