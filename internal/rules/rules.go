@@ -333,7 +333,7 @@ func parseStackLine(body string) (lang, framework string, ok bool) {
 			continue
 		}
 		val := strings.TrimSpace(line[len("stack:"):])
-		val = strings.ToLower(strings.TrimSpace(strings.Trim(val, "*_` ")))
+		val = stripQualifier(strings.ToLower(strings.TrimSpace(strings.Trim(val, "*_` "))))
 		if val == "" {
 			continue
 		}
@@ -414,7 +414,7 @@ func parseUsesJWT(projectRoot, crossCutting string) Tri {
 
 // parseBoundedContextCount counts the level-3 (BC) headings under the
 // "## Bounded Context Inventory" H2 of bounded-contexts.md (the format
-// task-plan-discover writes and task-plan-generate reads). When that H2 is
+// project-discovery writes and task-plan-generate reads). When that H2 is
 // absent it falls back to counting all `### ` headings. -1 when the file is
 // absent (unknown).
 func parseBoundedContextCount(projectRoot string) int {
@@ -544,6 +544,17 @@ func parseRunTarget(body string) string {
 	return ""
 }
 
+// stripQualifier drops a trailing parenthetical reason that discovery docs
+// append to a field value, e.g. "none (no persistence)" -> "none" or
+// "php-symfony (base web app)" -> "php-symfony", so callers can match the
+// leading token rather than the whole annotated line.
+func stripQualifier(val string) string {
+	if i := strings.IndexByte(val, '('); i >= 0 {
+		val = strings.TrimSpace(val[:i])
+	}
+	return val
+}
+
 // parseHasDatabase reads the "Test Database:" line; a none/n-a value means no
 // database, a missing line means unknown.
 func parseHasDatabase(body string) Tri {
@@ -556,7 +567,7 @@ func parseHasDatabase(body string) Tri {
 		if idx < 0 {
 			continue
 		}
-		val := strings.TrimSpace(strings.Trim(strings.TrimSpace(low[idx+1:]), "*_`"))
+		val := stripQualifier(strings.TrimSpace(strings.Trim(strings.TrimSpace(low[idx+1:]), "*_`")))
 		if val == "" || val == "none" || val == "n/a" || val == "-" {
 			return TriNo
 		}
@@ -596,7 +607,7 @@ func parseFrontendMode(body string) string {
 		if !strings.HasPrefix(strings.ToLower(line), "frontend:") {
 			continue
 		}
-		val := strings.ToLower(strings.TrimSpace(strings.Trim(strings.TrimSpace(line[len("frontend:"):]), "*_` ")))
+		val := stripQualifier(strings.ToLower(strings.TrimSpace(strings.Trim(strings.TrimSpace(line[len("frontend:"):]), "*_` "))))
 		switch val {
 		case "vue", "twig", "none":
 			return val

@@ -272,6 +272,46 @@ func TestDetect_PlaywrightNotApplicable(t *testing.T) {
 	}
 }
 
+func TestDetect_HasDatabaseQualifiedNone(t *testing.T) {
+	// Discovery docs annotate the value with a parenthetical reason. The
+	// qualifier must not defeat the none-match into a false HasDatabase=yes.
+	root := t.TempDir()
+	arch := filepath.Join(root, "docs", "architecture")
+	if err := os.MkdirAll(arch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testEnv := "**Run Target:** docker\n**Test Database:** none (no persistence)\n**Playwright Status:** not applicable\n"
+	if err := os.WriteFile(filepath.Join(arch, "test-environment.md"), []byte(testEnv), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if sig := Detect(root); sig.HasDatabase != TriNo {
+		t.Fatalf("HasDatabase = %v, want no", sig.HasDatabase)
+	}
+}
+
+func TestDetect_StackLineQualified(t *testing.T) {
+	// A parenthetical qualifier on the Stack line must not leak into the
+	// framework (or lang) token.
+	root := t.TempDir()
+	writeProjectFile(t, root, "docs/architecture/test-environment.md",
+		"# Test Environment\n**Stack:** php-symfony (the base web app)\n**Run Target:** docker\n")
+	sig := Detect(root)
+	if sig.Lang != "php" || sig.Framework != "symfony" {
+		t.Fatalf("qualifier leaked: got %q/%q, want php/symfony", sig.Lang, sig.Framework)
+	}
+}
+
+func TestDetect_FrontendModeQualified(t *testing.T) {
+	// A parenthetical qualifier on the Frontend line must still resolve to the
+	// explicit mode rather than falling through to derivation.
+	root := t.TempDir()
+	writeProjectFile(t, root, "docs/architecture/test-environment.md",
+		"# Test Environment\n**Stack:** php-symfony\n**Frontend:** twig (server-rendered)\n")
+	if sig := Detect(root); sig.FrontendMode != "twig" {
+		t.Fatalf("FrontendMode = %q, want twig", sig.FrontendMode)
+	}
+}
+
 func TestDetect_StackLineOverridesManifest(t *testing.T) {
 	// An explicit **Stack:** line beats project-manifest detection: a php
 	// composer.json present, but the doc declares go-gin.
