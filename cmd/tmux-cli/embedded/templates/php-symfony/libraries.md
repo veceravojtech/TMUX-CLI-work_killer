@@ -6,6 +6,7 @@
 
 ## Framework Core
 - symfony/framework-bundle
+- symfony/console
 - symfony/runtime
 - symfony/dotenv
 - symfony/yaml
@@ -36,6 +37,11 @@
 - api-platform/core
 {{/uses_api_platform}}
 - nelmio/cors-bundle
+
+## Templating
+{{#frontend_twig}}
+- symfony/twig-bundle
+{{/frontend_twig}}
 
 ## Static Analysis (require-dev)
 - phpstan/phpstan
