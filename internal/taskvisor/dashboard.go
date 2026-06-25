@@ -507,7 +507,10 @@ func collectQueueCounts(projectRoot string) (*queueCounts, string) {
 	if err != nil || !cfg.APIEnabled {
 		return cacheOr(projectRoot, "api disabled")
 	}
-	client := producer.New(cfg)
+	// Quiet: this is a best-effort poll that degrades to the cache on any failure,
+	// so the producer must not leak a transport-error line (e.g. a transient 2s
+	// deadline-exceeded) onto the board render. cacheOr below is the real handler.
+	client := producer.New(cfg).Quiet()
 	if client == nil {
 		return cacheOr(projectRoot, "api unavailable")
 	}

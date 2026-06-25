@@ -61,6 +61,24 @@ type Client struct {
 	// SubmitTask and used to scope ClaimTask/ListTasks. Empty means unscoped
 	// (global) — preserving the pre-lane behavior for clients without a config.
 	project string
+	// quiet suppresses the low-level transport-error stderr prints in doSignedRaw.
+	// Set via Quiet() by best-effort callers (the read-only dashboard poll) that
+	// already degrade gracefully on failure, so a transient timeout never leaks a
+	// scary "producer: request failed" line onto an otherwise-fine render. Default
+	// false: every command-driven caller keeps surfacing transport errors.
+	quiet bool
+}
+
+// Quiet marks the client as best-effort: transport-error stderr prints in
+// doSignedRaw are suppressed (the caller handles failure itself). Returns the
+// receiver for chaining and is nil-safe, so `producer.New(cfg).Quiet()` works
+// even when New returned a nil no-op client.
+func (c *Client) Quiet() *Client {
+	if c == nil {
+		return nil
+	}
+	c.quiet = true
+	return c
 }
 
 // New builds a Client from cfg. It returns nil (a no-op client) when reporting

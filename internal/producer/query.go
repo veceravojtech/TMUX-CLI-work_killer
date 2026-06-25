@@ -544,7 +544,9 @@ func (c *Client) doSignedRaw(ctx context.Context, method, path string, query url
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, reader)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "producer: failed to build request:", err)
+		if !c.quiet {
+			fmt.Fprintln(os.Stderr, "producer: failed to build request:", err)
+		}
 		return nil, err
 	}
 	if body != nil {
@@ -560,7 +562,9 @@ func (c *Client) doSignedRaw(ctx context.Context, method, path string, query url
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "producer: request failed:", err)
+		if !c.quiet {
+			fmt.Fprintln(os.Stderr, "producer: request failed:", err)
+		}
 		return nil, err
 	}
 	return resp, nil
