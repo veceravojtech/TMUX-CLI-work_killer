@@ -794,6 +794,118 @@ func TestTick_MaxGoalsThree_OneCandidateLeavesSlotsIdle(t *testing.T) {
 	assert.Equal(t, GoalPending, gf.Goals[1].Status, "dependent goal stays pending; spare slots idle")
 }
 
+// --- Streaming goal-generation regression suite (execute-1) ---
+//
+// These three lock the contract that the daemon dispatches a born-pending
+// bootstrap goal WITHOUT waiting for the whole roadmap to be authored, picks up
+// later-appended roadmap goals across ticks (goals.yaml grows under the poll
+// flock), and holds a goal whose dependency is unsatisfied — with no terminal
+// "roadmap-complete" signal anywhere. They drive d.tick directly with the mock
+// dispatch harness; the daemon engine is already streaming, so they are pure
+// regression guards (see execute-1-streaming-goal-dispatch.md).
+
+// TestTick_DispatchesBootstrapGoalBeforeRoadmapComplete: a born-pending bootstrap
+// goal dispatches on the next tick even though the rest of the roadmap is still a
+// not-yet-elaboratable skeleton. No wait for any roadmap-complete marker.
+func TestTick_DispatchesBootstrapGoalBeforeRoadmapComplete(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	// goal-001 is the born-pending bootstrap goal; goal-002 is a later roadmap
+	// skeleton still being authored (depends on goal-001, so not yet elaboratable).
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "bootstrap gate0", Status: GoalPending},
+			{ID: "goal-002", Description: "later roadmap tail", Status: GoalRoadmap, DependsOn: []string{"goal-001"}},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-001")
+	require.NoError(t, err)
+
+	setupDispatchMocks(exec, testSession, "@0")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	assert.Equal(t, GoalRunning, gf.Goals[0].Status, "bootstrap goal-001 dispatched before the roadmap is complete")
+	assert.Equal(t, GoalRoadmap, gf.Goals[1].Status, "later skeleton stays roadmap (dep unsatisfied) — it does not gate goal-001's early dispatch")
+}
+
+// TestTick_PicksUpLaterAppendedReadyGoal: a roadmap goal appended to goals.yaml
+// AFTER an earlier tick (its dependency now done) is picked up on the next tick
+// and dispatched to the elaborator — proving the daemon streams in goals.yaml
+// growth via the fresh LoadGoals re-read, with no terminal signal gating it.
+func TestTick_PicksUpLaterAppendedReadyGoal(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	// Earlier state: goal-001 already done. (Simulates the bootstrap goal having
+	// dispatched + completed on a prior tick.)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals:       []Goal{{ID: "goal-001", Description: "bootstrap", Status: GoalDone}},
+	})
+
+	// goals.yaml GROWS: a later roadmap goal whose dep (goal-001) is now satisfied
+	// is appended and persisted under the lock, exactly as the streaming generator
+	// would while the daemon runs.
+	grown, err := LoadGoals(dir)
+	require.NoError(t, err)
+	grown.Goals = append(grown.Goals, Goal{ID: "goal-002", Description: "later appended ready goal", Status: GoalRoadmap, DependsOn: []string{"goal-001"}})
+	require.NoError(t, SaveGoals(dir, grown))
+
+	// The daemon re-reads goals.yaml fresh each poll (daemon.go:604); model that by
+	// loading the grown file and driving the next tick off it.
+	fresh, err := LoadGoals(dir)
+	require.NoError(t, err)
+	_, err = EnsureGoalDir(dir, "goal-002")
+	require.NoError(t, err)
+
+	setupDispatchMocks(exec, testSession, "@2", "supervisor-002")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@2"))
+
+	require.NoError(t, d.tick(context.Background(), fresh))
+
+	assert.Equal(t, phaseElaborating, d.runtime("goal-002").phase, "later-appended ready roadmap goal is picked up and dispatched to the elaborator")
+	g, ok := fresh.GoalByID("goal-002")
+	require.True(t, ok)
+	assert.Equal(t, GoalRoadmap, g.Status, "elaboration keeps the goal GoalRoadmap on disk; the runtime phase is the in-flight marker")
+}
+
+// TestTick_HoldsGoalWithUnsatisfiedDependency: a goal whose dependency is not yet
+// done is simply held — not dispatched, not errored — while a sibling whose deps
+// ARE satisfied dispatches normally in the same tick.
+func TestTick_HoldsGoalWithUnsatisfiedDependency(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-001",
+		Goals: []Goal{
+			{ID: "goal-001", Description: "bootstrap done", Status: GoalDone},
+			{ID: "goal-002", Description: "ready: dep goal-001 done", Status: GoalPending, DependsOn: []string{"goal-001"}},
+			{ID: "goal-003", Description: "held: dep goal-002 not done", Status: GoalRoadmap, DependsOn: []string{"goal-002"}},
+		},
+	}
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-002")
+	require.NoError(t, err)
+
+	setupDispatchMocks(exec, testSession, "@2", "supervisor-002")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@2"))
+
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	assert.Equal(t, GoalRunning, gf.Goals[1].Status, "goal-002 dispatched (dep satisfied)")
+	assert.Equal(t, GoalRoadmap, gf.Goals[2].Status, "goal-003 held: unsatisfied dep is not dispatched and raises no error")
+	assert.NotEqual(t, phaseElaborating, d.runtime("goal-003").phase, "goal-003 was never dispatched to the elaborator")
+}
+
 // All goals terminal and none running -> deactivateOnCompletion fires and the
 // daemon goes idle with a completion report.
 func TestTick_AllTerminalNoneRunning_Deactivates(t *testing.T) {

@@ -91,6 +91,7 @@
       <check condition="goals.yaml emitted with status: roadmap skeletons">
         <action>Proceed to Stage 2. The director does NOT author or amend any concrete goal field here.</action>
       </check>
+      <note>Streaming early start (AUTO_APPROVE only): on the autonomous path, `/tmux:task-plan-generate` itself signals taskvisor-start right after its bootstrap tier (its Step 2b), so the daemon begins dispatching goal-001 DURING this stage while the remaining skeletons are still being authored. The director's Stage 3 therefore only CONFIRMS the already-running daemon under AUTO_APPROVE (it does not re-fire the start). On the require_plan_approval path the generator does not early-start, so Stage 3 remains the sole start owner after Stage 2's approval.</note>
     </step>
 
     <step n="2" title="Stage 2 — Approve (single roadmap approval gate)">
@@ -101,10 +102,18 @@
     </step>
 
     <step n="3" title="Stage 3 — Run (start the daemon)">
-      <action>Start the taskvisor daemon by calling the `taskvisor-start` MCP tool (the Ask-First resolution: the taskvisor-start MCP tool is the existing start signal — prefer it over an ad-hoc CLI invocation). The daemon now interleaves a Tier-2 ELABORATION cycle before each roadmap goal's first implementation cycle (ElaborationCandidates → `/tmux:elaborate` → roadmap→pending), then runs the unchanged implement → investigate → validate flow — cap-bounded parallel elaboration per §11.1. The director STARTS the daemon and does not micromanage dispatch.</action>
-      <check condition="taskvisor-start reports no startable goals">
-        <action>The daemon's start signal currently keys on `pending` goals; a freshly generated roadmap is all `status: roadmap`. Whether taskvisor-start admits roadmap goals is owned by the parallel Go elaboration-wiring increment — if it errors here after its own retries with a roadmap-only goals.yaml, that is the missing wiring, not a director defect: follow the &lt;error-reporting&gt; procedure (harness/infra defect) and surface it to the user. Do NOT fabricate a pending goal or author concrete fields to satisfy the gate.</action>
-      </check>
+      <branch condition="AUTO_APPROVE is true">
+        <action>Do NOT call taskvisor-start here. On the autonomous path the GENERATOR already signaled the daemon early — Stage 1's `/tmux:task-plan-generate` fires taskvisor-start right after its bootstrap tier (its Step 2b), so the daemon has been dispatching goal-001 and streaming in each later skeleton WHILE Stage 1 finished authoring the roadmap. This is the single-owner rule for the early start: the generator owns it under AUTO_APPROVE, the director must NOT re-fire it (a second taskvisor-start would be a duplicate start signal). Confirm the daemon is running (windows-list shows the daemon-spawned goal windows, e.g. supervisor-001 / an elaborator window, or goals.yaml shows goal-001 advancing past `pending`) and proceed to Stage 4.</action>
+        <check condition="no daemon activity is observable after Stage 1 (no goal window, no status advance) within a reasonable monitoring window">
+          <action>The generator's early start did not take effect — confirm goals.yaml holds ≥1 born-pending/roadmap goal, then call taskvisor-start ONCE as the recovery owner. If it still errors after its own retries with a non-terminal goals.yaml, that is a harness/infra defect: follow the &lt;error-reporting&gt; procedure and surface it. Do NOT fabricate a pending goal or author concrete fields to satisfy the gate.</action>
+        </check>
+      </branch>
+      <branch condition="AUTO_APPROVE is false (the require_plan_approval / single-approval path)">
+        <action>Now that Stage 2's approval has passed, start the taskvisor daemon by calling the `taskvisor-start` MCP tool (the Ask-First resolution: the taskvisor-start MCP tool is the existing start signal — prefer it over an ad-hoc CLI invocation). On this path the generator deliberately did NOT early-start, so the director is the sole start owner — no duplication. The daemon interleaves a Tier-2 ELABORATION cycle before each roadmap goal's first implementation cycle (ElaborationCandidates → `/tmux:elaborate` → roadmap→pending), then runs the unchanged implement → investigate → validate flow — cap-bounded parallel elaboration per §11.1. The director STARTS the daemon and does not micromanage dispatch.</action>
+        <check condition="taskvisor-start reports no startable goals">
+          <action>taskvisor-start admits a goals.yaml with ANY `pending` OR `roadmap` goal (internal/mcp/tools_taskvisor.go), so a freshly generated roadmap-only plan IS startable. If it nonetheless errors here after its own retries with a non-terminal goals.yaml, that is a harness/infra defect, not a director defect: follow the &lt;error-reporting&gt; procedure and surface it to the user. Do NOT fabricate a pending goal or author concrete fields to satisfy the gate.</action>
+        </check>
+      </branch>
     </step>
 
     <step n="4" title="Stage 4 — Drive &amp; self-heal">

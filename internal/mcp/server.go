@@ -921,7 +921,7 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "taskvisor-start",
-		Description: "Signal the taskvisor daemon to start processing goals. Checks goals.yaml for pending goals and writes the .tmux-cli/taskvisor-start signal file. Fails if no pending goals exist.",
+		Description: "Signal the taskvisor daemon to start processing goals. Checks goals.yaml for pending or roadmap goals and writes the .tmux-cli/taskvisor-start signal file. Fails if no pending or roadmap goals exist.",
 		Annotations: &sdkmcp.ToolAnnotations{
 			ReadOnlyHint:   false,
 			IdempotentHint: true,
