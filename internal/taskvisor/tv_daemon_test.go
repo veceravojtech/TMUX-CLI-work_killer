@@ -3,6 +3,7 @@ package taskvisor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -44,13 +45,24 @@ func TestRun_ActivateOnSignal(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 
 	writeSettings(t, dir, true, true)
+	// The goal is already in-flight (GoalRunning, phaseNone ⇒ checkProgress is a
+	// no-op), so activation is exercised WITHOUT a live dispatch. A bare PENDING
+	// goal here would drive an unmocked dispatch that fails IDENTICALLY every tick,
+	// which the new poll-error circuit breaker (task 313) now correctly fails fast +
+	// deactivates after K errors — that is the wedge path, not the activation path
+	// this test pins. Mirrors the wallclock TestRun_ accepted idiom.
 	writeGoals(t, dir, &GoalsFile{
-		Goals: []Goal{{ID: "goal-001", Description: "test", Status: GoalPending}},
+		CurrentGoal: "goal-001",
+		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning}},
 	})
 	writeStartSignal(t, dir)
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@9", Name: "supervisor", CurrentCommand: "claude"},
+	}, nil)
+	exec.On("SendMessageWithDelay", testSession, "@9", mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -513,4 +525,145 @@ func TestDaemon_ClampValidateTimeout_LoadFailureStillClamps(t *testing.T) {
 	d := &Daemon{}
 	d.clampValidateTimeout(setup.DefaultMaxWorkers)
 	assert.GreaterOrEqual(t, d.validateTimeout, 1260*time.Second)
+}
+
+// --- Poll-error circuit breaker (task 313) -------------------------------------
+
+// TestNotePollErr_TripsAtK pins the PURE counter: at k=2 (the circuit_breaker_k
+// default) two IDENTICAL poll errors trip fail-fast; the first does not. No mocks,
+// no tmux server — this is the test that keeps the breaker logic deterministic.
+func TestNotePollErr_TripsAtK(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	writeSettings(t, dir, true, true) // circuit_breaker_k absent -> default 2
+
+	err := errors.New("create supervisor: boom")
+	assert.False(t, d.notePollErr(err), "first identical error must not trip")
+	assert.True(t, d.notePollErr(err), "second identical error trips at k=2")
+	assert.Equal(t, 2, d.consecutivePollErrs)
+}
+
+// TestNotePollErr_ResetsOnDifferentMessage proves a changing error message never
+// accumulates the streak — only an IDENTICAL message recurring counts.
+func TestNotePollErr_ResetsOnDifferentMessage(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	writeSettings(t, dir, true, true)
+
+	assert.False(t, d.notePollErr(errors.New("error A")))
+	assert.Equal(t, 1, d.consecutivePollErrs)
+	assert.False(t, d.notePollErr(errors.New("error B")), "a different message restarts the streak at 1")
+	assert.Equal(t, 1, d.consecutivePollErrs)
+	assert.Equal(t, "error B", d.lastPollErrMsg)
+}
+
+// TestNotePollErr_ResetsOnSuccess proves resetPollErrStreak (called on a clean
+// poll) restarts the streak: the same error recurring once more does not trip.
+func TestNotePollErr_ResetsOnSuccess(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	writeSettings(t, dir, true, true)
+
+	err := errors.New("create supervisor: boom")
+	assert.False(t, d.notePollErr(err))
+	d.resetPollErrStreak()
+	assert.Equal(t, 0, d.consecutivePollErrs)
+	assert.Equal(t, "", d.lastPollErrMsg)
+	assert.False(t, d.notePollErr(err), "after a clean poll the streak restarts at 1, not 2")
+	assert.Equal(t, 1, d.consecutivePollErrs)
+}
+
+// TestRun_FailFastOnRepeatedPollError drives the REAL poll loop into a
+// deterministic, identical bring-up error every tick (window creation fails the
+// same way, the goal stays GoalPending, so the next tick re-dispatches and
+// re-fails identically). After K errors the daemon must mark the goal GoalFailed,
+// emit the ALL-COMPLETE failure milestone, and drop to modeIdle — never loop
+// forever. Run returns when the bounding ctx expires.
+func TestRun_FailFastOnRepeatedPollError(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeSettings(t, dir, true, true) // circuit_breaker_k default 2
+	writeGoals(t, dir, &GoalsFile{
+		Goals: []Goal{{ID: "goal-001", Description: "test", Status: GoalPending}},
+	})
+	writeStartSignal(t, dir)
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	// Window-0 "supervisor" is live so notifyCompletion finds it to emit the
+	// ALL-COMPLETE milestone; no goal-namespaced windows exist, so no kills fire.
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", CurrentCommand: "claude"},
+	}, nil)
+	var sent []string
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Run(func(args mock.Arguments) {
+		sent = append(sent, args.Get(2).(string))
+	}).Return(nil)
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	// Deterministic, identical bring-up error on every dispatch tick.
+	d.SetWindowCreateFunc(func(name, command, cwd string) (*CreatedWindow, error) {
+		return nil, errors.New("boom: cannot create window")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, d.Run(ctx))
+
+	assert.Equal(t, modeIdle, d.mode, "fail-fast must deactivate to idle, not loop forever")
+
+	goals, err := LoadGoals(dir)
+	require.NoError(t, err)
+	g, ok := goals.GoalByID("goal-001")
+	require.True(t, ok)
+	assert.Equal(t, GoalFailed, g.Status, "the wedged goal must be marked failed via the existing path")
+
+	var allComplete string
+	for _, m := range sent {
+		if strings.Contains(m, "ALL-COMPLETE") {
+			allComplete = m
+		}
+	}
+	assert.Contains(t, allComplete, "failed=1", "deactivateOnCompletion must emit the ALL-COMPLETE failure milestone")
+}
+
+// TestRun_HonorsStopSignalDuringPollError pins the error-path stop check: when a
+// taskvisor-stop signal is present while the daemon is wedged in a poll-error
+// loop, handlePollError consumes it and deactivates cleanly — stop takes
+// PRECEDENCE over fail-fast (the in-flight goal is NOT marked failed) even when
+// the streak is already one short of tripping K. This closes the window where the
+// pre-tick stop check is starved by an in-flight tick() bring-up error.
+func TestRun_HonorsStopSignalDuringPollError(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	writeSettings(t, dir, true, true) // k = 2
+	d.mode = modeActive
+	d.session = testSession
+	d.currentGoal = "goal-001"
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		Goals:       []Goal{{ID: "goal-001", Description: "test", Status: GoalRunning}},
+		CurrentGoal: "goal-001",
+	})
+
+	// Stop signal written mid-wedge.
+	stopPath := filepath.Join(dir, ".tmux-cli", "taskvisor-stop")
+	require.NoError(t, os.WriteFile(stopPath, nil, 0o644))
+
+	setupDeactivateMocks(exec, testSession, "@0")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
+
+	// One short of tripping K=2: without the stop check the very next notePollErr
+	// would fail-fast the goal. The stop check must win.
+	d.consecutivePollErrs = 1
+	d.lastPollErrMsg = "boom: cannot create window"
+
+	deactivated := d.handlePollError(context.Background(), errors.New("boom: cannot create window"))
+
+	assert.True(t, deactivated, "a pending stop must deactivate the wedged daemon")
+	assert.Equal(t, modeIdle, d.mode, "stop deactivates to idle")
+	assert.Equal(t, 0, d.consecutivePollErrs, "deactivation resets the poll-error streak")
+
+	goals, err := LoadGoals(dir)
+	require.NoError(t, err)
+	g, ok := goals.GoalByID("goal-001")
+	require.True(t, ok)
+	assert.Equal(t, GoalRunning, g.Status, "stop takes precedence over fail-fast — the goal must NOT be failed")
+
+	_, statErr := os.Stat(stopPath)
+	assert.True(t, os.IsNotExist(statErr), "the stop signal must be consumed on the error path")
 }

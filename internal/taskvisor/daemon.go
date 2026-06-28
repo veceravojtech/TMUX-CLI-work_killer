@@ -198,6 +198,18 @@ type Daemon struct {
 	idleTicks     int
 	stallReported bool
 
+	// consecutivePollErrs / lastPollErrMsg drive the poll-error circuit breaker
+	// (handlePollError). A deterministic bring-up/poll error that repeats
+	// IDENTICALLY K (= circuitBreakerK()) times fails the in-flight goal fast via
+	// the EXISTING failure machinery instead of looping the poll forever (the
+	// old `poll error: %v` + continue, which leaked the goal/session and starved
+	// the stop signal). notePollErr increments consecutivePollErrs while
+	// lastPollErrMsg matches err.Error() and restarts at 1 on a different message;
+	// resetPollErrStreak zeroes both on a clean poll. Zero-valued by default (no
+	// New change), so a daemon that never wedges keeps byte-identical behavior.
+	consecutivePollErrs int
+	lastPollErrMsg      string
+
 	// finalGateStuckReported debounces the terminal final-gate STUCK: line to one
 	// emission per episode (mirrors stallReported). Unlike the idle-tick path, the
 	// final-gate branch in checkStall is AnyRunning-agnostic and self-clears in
@@ -459,6 +471,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-ticker.C:
 			if err := d.poll(d.ctx); err != nil {
 				log.Printf("poll error: %v", err)
+				d.handlePollError(d.ctx, err)
+			} else {
+				// A clean poll closes any open poll-error episode so a later,
+				// unrelated wedge starts counting from zero.
+				d.resetPollErrStreak()
 			}
 			d.renderBoard()
 		}
@@ -629,6 +646,118 @@ func (d *Daemon) consumeStopSignal() (bool, error) {
 		return false, fmt.Errorf("remove stop signal: %w", err)
 	}
 	return true, nil
+}
+
+// notePollErr is the PURE counter behind the poll-error circuit breaker. It
+// compares err.Error() to the last-seen poll error: an identical message
+// increments the consecutive streak, any different message (or the first error)
+// restarts it at 1. It returns true once the streak reaches circuitBreakerK()
+// — the signal for handlePollError to fail the wedged goal fast. Side-effect-
+// free except the two counter fields, so the breaker is unit-testable with no
+// mocks and no running tmux server.
+func (d *Daemon) notePollErr(err error) (failFast bool) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if msg == d.lastPollErrMsg {
+		d.consecutivePollErrs++
+	} else {
+		d.lastPollErrMsg = msg
+		d.consecutivePollErrs = 1
+	}
+	return d.consecutivePollErrs >= d.circuitBreakerK()
+}
+
+// resetPollErrStreak zeroes the poll-error streak. Called on every clean poll
+// (Run loop) and after a fail-fast/stop deactivation, so a fresh wedge episode
+// always starts counting from zero.
+func (d *Daemon) resetPollErrStreak() {
+	d.consecutivePollErrs = 0
+	d.lastPollErrMsg = ""
+}
+
+// handlePollError is the Run-loop error arm. The old loop only logged
+// `poll error: %v` and continued forever — never failing the goal, never
+// emitting a failure milestone, never deactivating, and starving the stop
+// signal (poll()'s pre-tick stop check at the modeActive arm is starved while an
+// in-flight tick() returns a bring-up error). This closes both holes:
+//
+//   - STOP FIRST: re-check/consume .tmux-cli/taskvisor-stop on the error path and
+//     deactivate() immediately if set — a wedged daemon ALWAYS honors stop, and
+//     stop takes PRECEDENCE over the fail-fast below (a clean stop never marks the
+//     in-flight goal failed).
+//   - FAIL FAST: otherwise feed the error to notePollErr; once K (= circuitBreakerK())
+//     identical errors recur, route the in-flight goal through the EXISTING failure
+//     machinery — the verbatim mirror of the convergence circuit-breaker terminal
+//     sequence (CascadeFailure + reportFailure + SaveGoals + deactivateOnCompletion).
+//     deactivateOnCompletion emits the SAME [TASKVISOR:ALL-COMPLETE …failed=N] /
+//     goal-<id> failed milestone the daemon already produces — no parallel failure
+//     channel, no new status. A wedge with no in-flight goal still deactivate()s to
+//     stop the loop.
+//
+// Goal mutations + deactivation hold withGoalsLock (matching poll(); deactivate /
+// deactivateOnCompletion are the lock-free variants poll() already calls under the
+// flock). Returns whether the daemon deactivated (went idle) as a result.
+func (d *Daemon) handlePollError(ctx context.Context, err error) (deactivated bool) {
+	_ = ctx
+	var didDeactivate bool
+	lockErr := d.withGoalsLock(func() error {
+		// Stop takes precedence over fail-fast: a freshly-written stop signal must
+		// halt the wedged daemon cleanly, WITHOUT failing the in-flight goal.
+		if stop, serr := d.consumeStopSignal(); serr != nil {
+			log.Printf("poll-error path: stop signal: %v", serr)
+		} else if stop {
+			log.Printf("taskvisor: stop signal received on poll-error path — deactivating to IDLE")
+			didDeactivate = true
+			return d.deactivate()
+		}
+
+		if !d.notePollErr(err) {
+			return nil
+		}
+
+		// K identical poll errors — fail fast through the existing machinery.
+		didDeactivate = true
+		log.Printf("taskvisor: %d consecutive identical poll errors (%q) — failing fast", d.consecutivePollErrs, d.lastPollErrMsg)
+		goals, lerr := LoadGoals(d.workDir)
+		if lerr != nil || goals == nil {
+			if lerr != nil {
+				log.Printf("poll-wedge fail-fast: load goals: %v", lerr)
+			}
+			// No goals to fail — still deactivate() to stop the poll-error loop.
+			return d.deactivate()
+		}
+		failedGoal := false
+		if g, ok := goals.GoalByID(d.currentGoal); ok && (g.Status == GoalRunning || g.Status == GoalPending) {
+			// Mirror the budget-exhaustion GoalFailed cascade: CascadeFailure first
+			// (blocks dependents), then mark the goal failed and report it.
+			goals.CascadeFailure(g.ID, "fail")
+			g.Status = GoalFailed
+			g.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+			g.FailedBy = "poll-wedge"
+			d.reportPollWedge(g, d.consecutivePollErrs, err)
+			log.Printf("%s: running -> failed (poll-wedge after %d identical poll errors)", g.ID, d.consecutivePollErrs)
+			failedGoal = true
+		}
+		if !failedGoal {
+			// Wedge before any dispatch (no in-flight goal) — just stop the loop.
+			return d.deactivate()
+		}
+		if serr := SaveGoals(d.workDir, goals); serr != nil {
+			log.Printf("poll-wedge fail-fast: save goals: %v", serr)
+		}
+		// deactivateOnCompletion is the terminal sink that emits the failure
+		// milestone (ALL-COMPLETE failed=N) and drops to modeIdle.
+		return d.deactivateOnCompletion(goals)
+	})
+	if lockErr != nil {
+		log.Printf("poll-error handler: %v", lockErr)
+	}
+	if didDeactivate {
+		d.resetPollErrStreak()
+	}
+	return didDeactivate
 }
 
 func (d *Daemon) activate(goals *GoalsFile) error {

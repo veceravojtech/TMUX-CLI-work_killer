@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -170,4 +172,74 @@ func TestE2EEvaluatorXml_CycleBody(t *testing.T) {
 	// already added it; execute-3 must not duplicate it).
 	assert.Equal(t, 1, strings.Count(content, "<error-reporting>"),
 		"the <error-reporting> reference must be present exactly once (not duplicated)")
+}
+
+// TestE2EEvaluatorXml_AutoTeardownOnWedge pins the task-313 wedge wiring: the
+// WATCH step treats the daemon's `goal-<id> failed` fail-fast milestone as the
+// PRIMARY wedge surface, and the JUDGE/TRIAGE FAIL branch makes FAIL→TEARDOWN an
+// explicit, deterministic AUTO-action (`tmux-cli e2e-teardown <session>`, no LLM
+// deliberation) — the no-operator-intervention reap (AC4/AC5). The >=K / poll-error
+// line count is named only as a best-effort EXTRA signal. The git-excluded .claude
+// mirror, when present, must match the embedded source (dual-write).
+func TestE2EEvaluatorXml_AutoTeardownOnWedge(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	// WATCH: the daemon fail-fast milestone is the PRIMARY, deterministic wedge
+	// surface (not a 600s-silence wait).
+	assert.Contains(t, content, "PRIMARY wedge surface",
+		"WATCH must name goal-<id> failed as the primary wedge surface")
+	assert.Contains(t, content, "goal-&lt;id&gt; failed",
+		"WATCH must key on the daemon-emitted goal-<id> failed milestone")
+
+	// TRIAGE FAIL branch: explicit AUTO-teardown, no deliberation.
+	assert.Contains(t, content, "AUTO-TEARDOWN ON WEDGE",
+		"FAIL branch must make teardown an explicit AUTO-action")
+	assert.Contains(t, content, "tmux-cli e2e-teardown",
+		"FAIL branch must run tmux-cli e2e-teardown on a wedge")
+	assert.Contains(t, content, "NO LLM DELIBERATION",
+		"the auto-teardown must run deterministically, without LLM deliberation")
+
+	// Best-effort EXTRA signal wording — must NOT be load-bearing.
+	assert.Contains(t, content, "&gt;=K",
+		"WATCH must name the >=K identical poll-error lines as a best-effort signal")
+	assert.Contains(t, content, "poll error:",
+		"WATCH must reference the daemon's poll error: lines as the extra signal")
+
+	// The 600s silence window is preserved as the BACKSTOP (never lowered/removed).
+	assert.Contains(t, content, "600s",
+		"the 600s WATCH silence window must remain the backstop")
+	assert.Contains(t, content, "BACKSTOP",
+		"600s-silence / ceiling-breach must be reframed as the backstop, not the primary")
+
+	// Dual-write: the git-excluded .claude mirror, when present in this checkout,
+	// must be byte-identical to the embedded source. Skipped where .claude was not
+	// regenerated (fresh checkout / CI) — the `diff` verification step covers it
+	// there; readEmbeddedCommand already proves the embedded source of truth.
+	if root := findRepoRoot(); root != "" {
+		mirror := filepath.Join(root, ".claude", "commands", "tmux", "e2e-evaluator.xml")
+		if b, err := os.ReadFile(mirror); err == nil {
+			assert.Equal(t, content, string(b),
+				".claude mirror must match the embedded e2e-evaluator.xml (dual-write)")
+		}
+	}
+}
+
+// findRepoRoot walks up from the test's working directory to the directory that
+// holds a .claude/commands/tmux tree, returning "" if none is found. Best-effort:
+// the on-disk .claude copy is git-excluded and may be absent.
+func findRepoRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if fi, err := os.Stat(filepath.Join(dir, ".claude", "commands", "tmux")); err == nil && fi.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }

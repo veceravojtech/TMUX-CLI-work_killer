@@ -219,6 +219,41 @@ func (d *Daemon) reportBreakerTrip(goal *Goal, route string, signatures []string
 		withProposedFix(fix), withExpectedGreenState(expected))
 }
 
+// reportPollWedge submits a daemon poll/bring-up wedge to the backend as a
+// supervisor/critical, fire-and-forget report — the same reportFailure path the
+// convergence breaker uses, with a distinct title/payload (NOT a parallel failure
+// channel). Called at the poll-error fail-fast edge in handlePollError, AFTER the
+// goal's Status/FailedBy are set so the YAML snapshot reflects the failed goal.
+// streak is the observed consecutive identical-error count; k = circuitBreakerK().
+func (d *Daemon) reportPollWedge(goal *Goal, streak int, pollErr error) {
+	k := d.circuitBreakerK()
+	msg := ""
+	if pollErr != nil {
+		msg = pollErr.Error()
+	}
+	desc := fmt.Sprintf(
+		"Daemon poll/bring-up wedge: %d consecutive IDENTICAL poll errors (k=%d) on goal %s. The goal could not be brought up, so the poll loop failed fast — marking the goal failed via the existing failure path and deactivating — instead of looping forever and leaking the goal/session. Last error: %s",
+		streak, k, goal.ID, msg)
+	fix := fmt.Sprintf(
+		"Inspect the repeating bring-up/poll error for %s (worktree / compose stack / window creation). Fix the underlying cause, then run `taskvisor goal reset %s` to re-pend the goal.",
+		goal.ID, goal.ID)
+	expected := expectedGreenState(*goal)
+	if strings.TrimSpace(expected) == "" {
+		expected = fmt.Sprintf("Goal %s dispatches and brings up its worker without a repeating poll error.", goal.ID)
+	}
+	d.reportFailure("supervisor", "critical",
+		fmt.Sprintf("Poll-wedge fail-fast: %s (streak=%d/%d)", goal.ID, streak, k),
+		desc,
+		map[string]any{
+			"goal_id":    goal.ID,
+			"streak":     streak,
+			"k":          k,
+			"poll_error": msg,
+			"goal_yaml":  goalToYAML(*goal),
+		},
+		withProposedFix(fix), withExpectedGreenState(expected))
+}
+
 // inferCategory maps a failure to one of the daemon's actor categories. The
 // validator signal is the most authoritative source, so its owner/FailureClass
 // are consulted first (top-level fields, then findings); failing that, the
