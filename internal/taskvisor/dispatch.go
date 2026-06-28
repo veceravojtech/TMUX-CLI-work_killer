@@ -169,13 +169,21 @@ func (d *Daemon) bringUpWorktreeStack(goal *Goal, cwd string) error {
 	if er.RunTarget != "docker" {
 		return nil
 	}
+	stack := NewComposeStack(er, goal.ID, cwd, d.stackBaselineCmd(), d.composeRunner())
+	if stack.BaseFile == "" {
+		// Base compose file is a deliverable of a LATER goal; defer the stack
+		// and run locally — mirrors the local-runtime / no-worktree no-ops.
+		// One-shot notice (a successful dispatch flips the goal to running, so
+		// it is not re-polled), never a repeating poll-error loop.
+		log.Printf("[stack] no base compose file yet for %s, deferring stack; running locally", goal.ID)
+		return nil
+	}
 	timeout := d.scriptTimeout
 	if timeout <= 0 {
 		timeout = validateScriptTimeout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	stack := NewComposeStack(er, goal.ID, cwd, d.stackBaselineCmd(), d.composeRunner())
 	if err := stack.Up(ctx); err != nil {
 		return fmt.Errorf("bring up worktree stack for %s: %w", goal.ID, err)
 	}

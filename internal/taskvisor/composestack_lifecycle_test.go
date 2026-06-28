@@ -116,6 +116,24 @@ func TestBringUpWorktreeStack_LocalRuntimeNoop(t *testing.T) {
 	assert.Empty(t, fake.calls, "local runtime has no stack — zero compose calls")
 }
 
+// TestBringUpWorktreeStack_NoBaseComposeFileNoop: a docker-target worktree goal
+// whose worktree has NO base compose file yet (the file is a deliverable of a
+// LATER goal) must DEFER the stack — return nil and make zero compose calls —
+// rather than hard-erroring and wedging the pre-dispatch poll loop. This is the
+// third no-op branch, distinct from the present-but-Up-fails infra halt below.
+func TestBringUpWorktreeStack_NoBaseComposeFileNoop(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	writeTestEnvMD(t, dir, dockerTestEnv) // RunTarget=docker so the stack lifecycle engages
+	wt := d.worktreePath("goal-015")
+	require.NoError(t, os.MkdirAll(wt, 0o755)) // worktree dir exists but NO writeComposeFile ⇒ BaseFile==""
+
+	fake := &fakeStackRunner{}
+	d.SetComposeRunnerFunc(fake.run)
+
+	require.NoError(t, d.bringUpWorktreeStack(&Goal{ID: "goal-015"}, wt))
+	assert.Empty(t, fake.calls, "missing base compose file ⇒ deferred no-op, zero compose calls")
+}
+
 // --- TC-3: up fails ⇒ infra/ops halt, no window, no code-retry charge ------
 
 func TestBringUpWorktreeStack_UpFailsHaltsInfraOps(t *testing.T) {
