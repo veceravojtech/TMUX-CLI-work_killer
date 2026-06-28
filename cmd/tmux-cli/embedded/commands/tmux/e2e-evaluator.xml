@@ -23,7 +23,7 @@
     <term name="ORCHESTRATOR">This running `/tmux:e2e-evaluator` session (in THIS repo). It drives the target with `tmux send-keys`/`paste-buffer`, observes the target's pipe-pane log, and FILES defects with `/tmux:task-report` (self-contained — the standalone `task-report` command is the whole reporting contract; no consumer pipeline or auto-install watcher is required to file). It may optionally poll task state with `/tmux:task-list`, but it never blocks the loop waiting on a fix and never builds/pulls itself (design §3).</term>
     <term name="TARGET">A fresh disposable session created with `tmux-cli start` (detached) in `/tmp/&lt;scenario&gt;-&lt;ts&gt;`. It runs `claude`, executes the real flow (discovery → roadmap → taskvisor → running app), and reports progress back to the ORCHESTRATOR pane.</term>
     <term name="CYCLE">One PROVISION → BOOTSTRAP → DRIVE → WATCH → MEASURE → JUDGE → REPORT → TEARDOWN pass (design §2). Max 10. Pristine every cycle: a failed cycle's session AND its `/tmp` content are reaped before the next (§10).</term>
-    <term name="PROVISION">Step 2 (this slice): resolve the target dir (`--project` or default `/tmp/&lt;scenario&gt;-&lt;UTCstamp&gt;`, `git init` if the flow needs a repo), start the detached target session by exact name, and discover/attach a native terminal for the human view (headless when none / no `$DISPLAY`) — design §5.</term>
+    <term name="PROVISION">Step 2 (this slice): resolve the target dir (`--project` or default `/tmp/&lt;scenario&gt;-&lt;UTCstamp&gt;`, `git init` if the flow needs a repo), start the detached target session by exact name, and — whenever `$DISPLAY` is set and a native terminal exists — MANDATORILY attach a native terminal for the human view and VERIFY a client landed (headless ONLY when there is genuinely no GUI: no `$DISPLAY` / no native terminal binary) — design §5.</term>
     <term name="BOOTSTRAP">Step 3 (this slice): launch `claude` in the target with the trust prompt pre-accepted and bypass-permissions mode on, export `TMUX_CLI_ORCHESTRATOR_PANE`, and start pipe-pane logging BEFORE any DRIVE (design §5).</term>
     <term name="DRIVE">Sending the scenario instruction (and later inputs) to the target — always two-step: text via `paste-buffer`/`send-keys -l` THEN a SEPARATE `Enter` (design §4). Owned by execute-3 (loop slot).</term>
     <term name="TEARDOWN">Step 11 (this slice): the ordered reap between cycles and at terminal stop — daemon stop → `docker compose down` → worktrees+branches → `kill-session` → `rm -rf` (design §10). A step's failure is logged but the reap CONTINUES.</term>
@@ -46,6 +46,7 @@
     <mandate critical="true">NEVER `pkill -f &lt;projectname&gt;` IN TEARDOWN — it matches the killer's OWN command line and SIGTERMs the teardown mid-run (observed: exit 144, `rm` skipped). Reap by EXACT session name + tracked PIDs only (design §10).</mandate>
     <mandate>PIPE-PANE BEFORE ANY DRIVE. Start the pipe-pane log in BOOTSTRAP the instant the pane exists and before the first DRIVE, with `-o` (append) so a re-attach never truncates — else early transcript is lost and assertions miss it (design §4).</mandate>
     <mandate>PRISTINE EVERY CYCLE. A failed cycle's target session AND its `/tmp` content are reaped via TEARDOWN (§10) before the next cycle; never reuse a dirty target dir (PROVISION fails loud on a non-empty dir).</mandate>
+    <mandate critical="true">ATTACH THE HUMAN VIEW WHEN A GUI EXISTS. In PROVISION, whenever `$DISPLAY` is set AND a native terminal binary exists, you MUST attach a native terminal to the target session and VERIFY a client landed (`tmux list-clients`) before BOOTSTRAP — headless is permitted ONLY when there is genuinely no GUI (no `$DISPLAY` / no native terminal). Silently running headless with a GUI present hides progress from the operator and is a defect, not a shortcut (step 2).</mandate>
     <mandate>COMPOSE, DON'T REIMPLEMENT. The orchestrator drives the REAL discovery/generation/daemon flow inside the target; it never re-derives discovery questions, goal enumeration, or the dispatch loop. Only a genuine tmux-cli defect (reproduces on a clean retry, §7) earns a `/tmux:task-report`; LLM variance and bad-input are retried/fixed, never filed.</mandate>
     <mandate>SLOT DISCIPLINE. This slice authors ONLY steps 1, 1b, 2, 3, 11. Steps 4–10 are labelled SLOT comments owned by execute-3 (loop) and execute-4 (state/report); do NOT author or renumber them.</mandate>
   </llm>
@@ -105,9 +106,16 @@
       <check condition="`tmux-cli start` errors after its own retries">
         <action>Abort this cycle and report the start failure (a harness/infra defect — see &lt;error-reporting&gt;). Do not proceed to BOOTSTRAP on a session that did not come up.</action>
       </check>
-      <action>TERMINAL DISCOVERY (human view only, never required to drive — decision #4): if `$DISPLAY` is set, probe native terminals in a fixed order and attach the FIRST found (Konsole wins on this host). EXCLUDE the Flatpak Konsole — it is sandboxed (no host binary/TTY) and is a trap.</action>
-      <branch condition="no native terminal found OR no `$DISPLAY`">
-        <action>Run FULLY HEADLESS (no attach) and CONTINUE — this is NOT an error. Driving a detached session is unaffected (works in CI/SSH).</action>
+      <action critical="true">TERMINAL DISCOVERY — ATTACH A HUMAN VIEW (decision #4). The human view is a DELIVERABLE the operator asked for, NOT an optional probe you may skip: whenever `$DISPLAY` is set AND a native terminal binary exists, you MUST attach one to the target session and VERIFY a client landed before BOOTSTRAP. Do NOT silently fall through to headless when a GUI is available — that is the exact defect that hides progress from the human. Procedure, in order:
+        1. Gate: read `$DISPLAY`. If empty/unset → headless (the genuine CI/SSH path, step's branch below). Otherwise continue — attaching is now MANDATORY, not best-effort.
+        2. Resolve a NATIVE terminal binary in fixed order (first found wins): `konsole`, `gnome-terminal`, `xterm`, `alacritty`, `kitty`, `wezterm` — via `command -v &lt;t&gt;` resolving to a real host path (e.g. `/usr/bin/konsole`). EXCLUDE the Flatpak Konsole: NEVER launch via `flatpak run …`; a flatpak-only install is sandboxed (no host TTY) and is a trap — treat it as "not found".
+        3. Attach detached-safe with a concrete, backgrounded invocation that survives this orchestrator turn — e.g. `setsid &lt;native-term&gt; -e tmux attach-session -t &lt;exact-session&gt; &gt;/dev/null 2&gt;&amp;1 &amp;` (Konsole: add `--separate` so it never reuses an existing window). Attaching a SECOND client to the already-running detached session is safe and does not disturb driving (send-keys/capture/pipe-pane are unaffected).
+        4. VERIFY the attach: after ~2–3s, `tmux list-clients -t &lt;exact-session&gt;` MUST show ≥1 client. If zero, retry the launch ONCE (e.g. wrong/zombie binary), then re-verify.</action>
+      <branch condition="`$DISPLAY` is set, a native terminal exists, but no client attaches after one retry">
+        <action>Degrade to headless to keep the run alive, but ANNOUNCE it LOUDLY — print a WARN naming the terminal binary tried and the verify failure so the human knows WHY they cannot see progress (a missing human view with a GUI present is a reportable harness defect, not a silent fallback). Continue the cycle headless.</action>
+      </branch>
+      <branch condition="`$DISPLAY` is unset OR no native terminal binary exists">
+        <action>Run FULLY HEADLESS (no attach) and CONTINUE — this is the genuine CI/SSH path and is NOT an error. Driving a detached session is unaffected. (This branch is reachable ONLY when there is no GUI to attach to — never as a shortcut around step 3 above.)</action>
       </branch>
     </step>
 
@@ -261,6 +269,7 @@
       • Two-step send always — text THEN a separate Enter; large/quoted input via load-buffer+paste-buffer (design §4)
       • TEARDOWN reaps in order (daemon → compose down → worktrees+branches → kill-session → rm -rf), continues past a single failure, and NEVER pkill -f &lt;projectname&gt; (design §10)
       • BOOTSTRAP injects TMUX_CLI_ORCHESTRATOR_PANE (the execute-1 notify-orchestrator contract) and starts pipe-pane BEFORE any DRIVE; PROVISION fails loud on a dirty dir (pristine every cycle)
+      • PROVISION MUST attach a native terminal for the human view and VERIFY a client landed whenever $DISPLAY + a native terminal exist (Konsole first; exclude Flatpak) — headless ONLY with no GUI; never skip silently (step 2)
       • This slice authors ONLY steps 1/1b/2/3/11 — steps 4–10 are execute-3 (loop) and execute-4 (state/report) SLOTs; do not author or renumber them
       • Self-test conductor only — never ship to drive end-user projects; only a defect that reproduces on a clean retry earns a task-report (design §7/§14)
     </critical-rules>
