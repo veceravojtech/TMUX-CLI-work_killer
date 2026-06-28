@@ -1,5 +1,5 @@
 <task id="e2e-evaluator" name="Self-healing end-to-end evaluation conductor">
-  <objective>Drive and verify the ENTIRE tmux-cli flow end-to-end against itself in a disposable session, then SELF-HEAL the tooling when the flow breaks: discovery → roadmap/goal-generation → taskvisor implementation → a verifiably-running app (docs/architecture/e2e-evaluator-design.md §1). One cycle = PROVISION → BOOTSTRAP → DRIVE → WATCH → MEASURE → JUDGE → (PASS=stop | FAIL=TRIAGE→task-report→wait-for-fix) → REPORT → TEARDOWN, up to 10 cycles, resumable across a cleared context. This file is the CONDUCTOR SPINE: it owns the lifecycle endpoints — PROVISION (§5), BOOTSTRAP (§5), TEARDOWN (§10) — and leaves contiguous labelled SLOTs for the DRIVE/WATCH/MEASURE/JUDGE/TRIAGE loop (execute-3) and the STATE/REPORT/SUCCESS+RESUME steps (execute-4). It COMPOSES the real flow against a target session; it never reimplements discovery, generation, or the daemon.</objective>
+  <objective>Drive and verify the ENTIRE tmux-cli flow end-to-end against itself in a disposable session, then SELF-HEAL the tooling when the flow breaks: discovery → roadmap/goal-generation → taskvisor implementation → a verifiably-running app (docs/architecture/e2e-evaluator-design.md §1). One cycle = PROVISION → BOOTSTRAP → DRIVE → WATCH → MEASURE → JUDGE → (PASS=stop | FAIL=TRIAGE→task-report) → REPORT → TEARDOWN, up to 10 cycles, resumable across a cleared context. This file is the CONDUCTOR SPINE: it owns the lifecycle endpoints — PROVISION (§5), BOOTSTRAP (§5), TEARDOWN (§10) — and leaves contiguous labelled SLOTs for the DRIVE/WATCH/MEASURE/JUDGE/TRIAGE loop (execute-3) and the STATE/REPORT/SUCCESS+RESUME steps (execute-4). It COMPOSES the real flow against a target session; it never reimplements discovery, generation, or the daemon.</objective>
 
   <input>
     <note>$ARGUMENTS = the scenario name and/or `--project &lt;path&gt;`. Empty $ARGUMENTS → run the DEFAULT scenario (the canonical Symfony dashboard-login full-flow run, §1) in a fresh `/tmp/&lt;scenario&gt;-&lt;UTCstamp&gt;` dir. `--project &lt;path&gt;` pins the target dir instead of the default `/tmp` location.</note>
@@ -20,7 +20,7 @@
   </requirements>
 
   <glossary>
-    <term name="ORCHESTRATOR">This running `/tmux:e2e-evaluator` session (in THIS repo). It drives the target with `tmux send-keys`/`paste-buffer`, observes the target's pipe-pane log, files defects with `/tmux:task-report`, polls task state with `/tmux:task-list`, and waits for the fix commit + external auto-install — it never builds/pulls itself (design §3, decision #12).</term>
+    <term name="ORCHESTRATOR">This running `/tmux:e2e-evaluator` session (in THIS repo). It drives the target with `tmux send-keys`/`paste-buffer`, observes the target's pipe-pane log, and FILES defects with `/tmux:task-report` (self-contained — the standalone `task-report` command is the whole reporting contract; no consumer pipeline or auto-install watcher is required to file). It may optionally poll task state with `/tmux:task-list`, but it never blocks the loop waiting on a fix and never builds/pulls itself (design §3).</term>
     <term name="TARGET">A fresh disposable session created with `tmux-cli start` (detached) in `/tmp/&lt;scenario&gt;-&lt;ts&gt;`. It runs `claude`, executes the real flow (discovery → roadmap → taskvisor → running app), and reports progress back to the ORCHESTRATOR pane.</term>
     <term name="CYCLE">One PROVISION → BOOTSTRAP → DRIVE → WATCH → MEASURE → JUDGE → REPORT → TEARDOWN pass (design §2). Max 10. Pristine every cycle: a failed cycle's session AND its `/tmp` content are reaped before the next (§10).</term>
     <term name="PROVISION">Step 2 (this slice): resolve the target dir (`--project` or default `/tmp/&lt;scenario&gt;-&lt;UTCstamp&gt;`, `git init` if the flow needs a repo), start the detached target session by exact name, and discover/attach a native terminal for the human view (headless when none / no `$DISPLAY`) — design §5.</term>
@@ -74,15 +74,9 @@
       <action>Read AGENTS.md (or CLAUDE.md if AGENTS.md is absent) from THIS repo root and internalize conventions, architecture, and constraints before driving any cycle. If neither exists, proceed without project context.</action>
       <!-- SLOT: execute-4 resume-state read — on a no-arg re-invocation, read `.tmux-cli/e2e-evaluator/<scenario>.state.json`; if status==in-progress and cycle<=max_cycles, continue at `cycle` (design §6). execute-4 authors the read + resume-decision logic here. -->
 
-      <startup-assert title="STARTUP-ASSERT — §12 prerequisite soft-pause gate (runs FIRST, before RESUME and before any loop entry)">
-        <rule critical="true">This gate runs FIRST on every invocation — BEFORE the RESUME read below and BEFORE PROVISION/any cycle. The self-healing loop's autonomy depends on two ENVIRONMENT prerequisites (design §12): (a) the `/tmux:task-report` CONSUMER pipeline is live (a filed defect actually gets worked + committed), and (b) an AUTO-INSTALL WATCHER rebuilds `~/.local/bin/tmux-cli` on the new fix commit. tmux-cli ships NEITHER today (`make install` is manual), so they MUST be asserted, never assumed — without them the loop would file a defect and WAIT FOREVER.</rule>
-        <action>Probe (a) the task-report consumer is reachable (the consumer process/endpoint that drains filed tasks toward a fix commit) and (b) the auto-install watcher is present (the process that rebuilds the binary on a new commit).</action>
-        <check condition="EITHER the task-report consumer is unreachable OR the auto-install watcher is absent">
-          <action critical="true">SOFT-PAUSE — print exactly ONE human-actionable line and STOP without entering the loop: `⏸ paused: run `make install` and start the task-report consumer, then re-invoke /tmux:e2e-evaluator to resume`. This is a clean exit (feature.xml:57-75 graceful conditional-stage stop idiom), NOT an error and NOT a hang — a later re-invoke re-runs this gate and resumes from the persisted STATE_FILE.</action>
-          <action critical="true">NEVER `git pull` / `make install` / start the consumer YOURSELF — the orchestrator only FILES defects and WAITS for the external consumer + auto-install (design §12). Self-healing the prerequisite here would defeat the very condition this gate exists to surface.</action>
-        </check>
-        <note>SOFT-PAUSE ≠ failure: print + clean exit so a re-invoke resumes; never error, never loop (task-list.xml:31 fully-autonomous / never-hang mandate — print + exit, not block).</note>
-      </startup-assert>
+      <startup-note title="No prerequisite gate — reporting is task-report-only (self-contained)">
+        <rule critical="true">There is NO consumer-pipeline / auto-install-watcher prerequisite and NO soft-pause gate. Defect reporting is `/tmux:task-report` AND NOTHING MORE — the standalone `task-report` command is the entire reporting contract; it files the defect to the backend on its own (honoring api.enabled / DEDUP / RECURSION-guard) and needs no external consumer or rebuild watcher to function. The loop NEVER blocks waiting for a fix to land. Proceed straight to RESUME below — do not probe for, assert, or pause on any reporting prerequisite.</rule>
+      </startup-note>
 
       <resume title="RESUME — read/init STATE_FILE, decide continue | stop | exhausted (the §6 resume read paired with step 10's write)">
         <rule critical="true">RESUME is IDEMPOTENT — read → reconcile → atomic rewrite, modelled on task-list.xml:44-68 reconcile-on-every-invocation and :86-89 drain/re-check-on-each-run. A no-arg re-invocation after a cleared context continues the run; a re-invocation mid-cycle is safe (last-writer-wins via the step-8 temp + rename).</rule>
@@ -133,7 +127,7 @@
            step n="5"  WATCH   — PRIMARY: target notify-orchestrator reports; FALLBACK: pipe-pane/capture-pane on silence (§4/§9).
            step n="6"  MEASURE — per-goal + per-phase start/end timings; achieved-parallelism vs max_goals (§9/§13).
            step n="7"  JUDGE + TRIAGE — verify the §8 end-state (app up: GET /login=200, dashboard unauth=302/401, auth=200) + timing (§9);
-                        PASS → stop the loop; FAIL → TRIAGE (§7: defect→/tmux:task-report→/tmux:task-list to resolved→wait fix+install→TEARDOWN→next cycle).
+                        PASS → stop the loop; FAIL → TRIAGE (§7: defect→/tmux:task-report→TEARDOWN→next cycle; never block on a fix landing).
          This slice provides the TEARDOWN subroutine (step 11) the loop calls between cycles; it does NOT author these steps. -->
 
     <step n="4" title="DRIVE — self-healing loop body + two-step send">
@@ -195,9 +189,9 @@
         <row class="bad test input">the scenario/instruction itself was malformed → FIX the input, retry, NEVER file a task-report.</row>
       </table>
       <rule critical="true">DEFECT SIGNATURE = the normalized {phase, reason-class, area} tuple — lowercase and STRIP volatile goal-instance ids/timestamps (goal-007 vs goal-008, run stamps) so the SAME defect dedupes across cycles. This signature powers both DEDUP and the loop guard below.</rule>
-      <action>On a confirmed defect (reproduced on clean retry, same signature): invoke the `/tmux:task-report` skill (DEDUP key = category+title+goal_id; `proposed_fix` non-stub; honoring api.enabled / RECURSION-guard) — do NOT re-implement reporting here (see task-report.xml). Then poll `/tmux:task-list` until the filed task is `resolved`, and WAIT for the fix commit + external auto-install to rebuild the binary (the orchestrator never runs `git pull`/`make install` itself — design §12). Then TEARDOWN (step 11) → next cycle.</action>
-      <check condition="the SAME defect signature fails twice AFTER a fix landed">
-        <action>ESCALATE to the human and stop thrashing — do NOT re-file the same task. Same-signature-twice-after-fix is the convergence loop guard (design §7).</action>
+      <action>On a confirmed defect (reproduced on clean retry, same signature): invoke the `/tmux:task-report` skill (DEDUP key = category+title+goal_id; `proposed_fix` non-stub; honoring api.enabled / RECURSION-guard) — do NOT re-implement reporting here (see task-report.xml). That is the WHOLE reporting obligation: filing the defect via `task-report` and nothing more. Record the filed task id, then TEARDOWN (step 11) → next cycle. Do NOT block the loop waiting for the task to be `resolved` or for a fix commit / rebuild; the orchestrator only FILES and continues (it never runs `git pull`/`make install`). A later cycle naturally re-tests against whatever binary is on disk (CLI re-read every call); if a fix has landed the signature clears, if not it dedupes.</action>
+      <check condition="the SAME defect signature recurs across cycles (already filed once, still failing)">
+        <action>ESCALATE to the human and stop thrashing — do NOT re-file the same task (it is already filed + deduped). Same-signature-recurrence is the convergence loop guard (design §7).</action>
       </check>
     </step>
 
