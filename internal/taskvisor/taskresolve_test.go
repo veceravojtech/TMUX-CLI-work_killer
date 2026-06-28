@@ -5,9 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -176,62 +174,4 @@ func TestTaskResolveOnDone_NoMappingNoop(t *testing.T) {
 		d2.resolveTaskOnTerminal(goal, "resolved", doneResolution(goal, nil))
 	})
 	assert.Equal(t, 0, count, "absent ledger ⇒ still no backend call")
-}
-
-// A validator PASS that the daemon gate downgrades (declared validate +
-// scriptPassed=false, no validate.sh) takes the error/ops re-validate branch:
-// the goal does NOT reach done and the resolver never fires, so no backend call
-// is made and the mapping is preserved. Mirrors
-// TestCheckValidatingPhase_DeclaredValidate_LLMPassNoScript_DowngradesAndRevalidates.
-func TestTaskResolveOnDone_GateRejectedNeverResolves(t *testing.T) {
-	d, exec, dir := setupDaemon(t)
-	d.ctx = context.Background()
-	d.session = testSession
-	d.mode = modeActive
-	d.validatorSendDelay = 0
-
-	require.NoError(t, SaveTaskGoals(dir, &TaskGoalsFile{Mappings: []TaskGoalMapping{
-		{TaskID: "51", GoalID: "goal-001", Title: "t", ClaimedAt: "2026-06-13T00:00:00Z"},
-	}}))
-
-	goal := routeGoal("goal-001", 3, 2, 2, 0)
-	goal.Validate = []string{"go test ./..."} // declares validate ⇒ gate armed
-	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{goal}}
-	writeGoals(t, dir, gf)
-	_, err := EnsureGoalDir(dir, "goal-001")
-	require.NoError(t, err)
-
-	d.runtime("goal-001").phase = phaseValidating
-
-	// LLM validator returns pass; no validate.sh exists ⇒ scriptPassed stays false.
-	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
-		Verdict: VerdictPass, Timestamp: "2026-06-13T14:35:00Z",
-	}))
-
-	count := 0
-	orig := updateTaskStatusFn
-	defer func() { updateTaskStatusFn = orig }()
-	updateTaskStatusFn = func(_ *Daemon, _ context.Context, _, _ string, _ map[string]any) error {
-		count++
-		return nil
-	}
-
-	const valID = "@2"
-	val := []tmux.WindowInfo{{TmuxWindowID: valID, Name: "validator-001", CurrentCommand: "claude"}}
-	exec.On("ListWindows", testSession).Return(val, nil)
-	exec.On("CaptureWindowOutput", testSession, valID).Return("❯ ", nil)
-	exec.On("KillWindow", testSession, valID).Return(nil)
-	exec.On("SendMessage", testSession, valID, mock.Anything).Return(nil)
-	d.SetWindowCreateFunc(mockCreateWindowFn(valID))
-
-	g := &gf.Goals[0]
-	require.NoError(t, d.checkValidatingPhase(g, gf))
-
-	assert.NotEqual(t, GoalDone, g.Status, "a gate-downgraded LLM pass must NOT reach done")
-	assert.Equal(t, 0, count, "the resolver never fires from a gate-rejected pass")
-
-	tgf, err := LoadTaskGoals(dir)
-	require.NoError(t, err)
-	require.NotNil(t, tgf)
-	assert.GreaterOrEqual(t, tgf.indexOf("goal-001"), 0, "gate-rejected pass leaves the mapping for reconcile")
 }

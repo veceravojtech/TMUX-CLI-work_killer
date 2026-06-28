@@ -27,6 +27,13 @@ type TmuxExecutor interface {
 	// SendEnter sends a bare Enter keystroke to a window (no text payload)
 	SendEnter(sessionID, windowID string) error
 
+	// NotifyPane delivers a text message followed by a SEPARATE Enter keystroke
+	// directly to a tmux pane by its pane id (e.g. "%3"). Unlike SendMessage it
+	// targets the pane id directly (pane ids are session-global), performing no
+	// session:window join — used by the orchestrator reply channel.
+	// An empty message delivers a bare Enter (a valid heartbeat ping).
+	NotifyPane(paneID, message string) error
+
 	// SendMessage sends a text message to a specific window in a session
 	// The message is delivered to the first pane of the target window
 	// An Enter key is automatically appended to the message

@@ -66,17 +66,6 @@ type goalRuntime struct {
 	lastProgressHash string
 	lastProgressAt   time.Time
 
-	// scriptPassed records the validate.sh exit-0 result from checkSupervisingPhase,
-	// threaded to checkValidatingPhase for GateTerminalPass. Zero-value false is the
-	// correct default (no validate.sh ran, or runtime was cleared). NOT final within
-	// a cycle: checkValidatingPhase's gate-time re-run (P7-fresh) refreshes it when
-	// an LLM pass would otherwise be vetoed by a stale false.
-	scriptPassed bool
-	// scriptReason names why the LAST validate.sh observation did not pass
-	// (runValidateScript's reason contract; empty when scriptPassed). Surfaced in
-	// the P7 downgrade log so a gated pass is diagnosable without re-running.
-	scriptReason string
-
 	// WorktreeDir/Branch hold the per-goal git-worktree isolation state (E1-1a).
 	// Set by ensureWorktree when MaxGoals>1 on a git repo; read by
 	// mergeWorktreeBack/discardWorktree and by execute-35 (validate isolation).
@@ -190,8 +179,8 @@ type Daemon struct {
 	// seeded from taskvisor.git_freshness (GitFreshnessEnabled) ONLY in Run().
 	gitFreshness bool
 	// skipValidation disables the post-execution validation step: when true a goal
-	// is marked done DIRECTLY out of the supervising phase (no validate.sh, no
-	// validator windows) instead of being handed to the validator. Zero-value
+	// is marked done DIRECTLY out of the supervising phase (no validator
+	// windows) instead of being handed to the validator. Zero-value
 	// false (validate as normal) so a direct-construct Daemon and every literal-
 	// Daemon unit test keep the validating transition unchanged; seeded from the
 	// INVERSE of taskvisor.validation (ValidationEnabled) ONLY in Run().
@@ -391,8 +380,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		if settings.Taskvisor.ProgressTimeoutSec > 0 {
 			d.progressTimeout = time.Duration(settings.Taskvisor.ProgressTimeoutSec) * time.Second
 		}
-		// P7-fresh: per-execution validate.sh ceiling. <=0 keeps the New() seed
-		// (validateScriptTimeout), mirroring the ProgressTimeoutSec convention.
+		// Per-execution script-runner ceiling (bounds one integration-gate run).
+		// <=0 keeps the New() seed (validateScriptTimeout), mirroring the
+		// ProgressTimeoutSec convention.
 		if settings.Taskvisor.ValidateScriptTimeoutSec > 0 {
 			d.scriptTimeout = time.Duration(settings.Taskvisor.ValidateScriptTimeoutSec) * time.Second
 		}
@@ -545,8 +535,8 @@ func (d *Daemon) clearRuntime(goalID string) {
 
 // goalWorkDir resolves the working directory a goal's VALIDATION must run in so
 // the verdict observes ONLY that goal's edits (E1-1c). It is the single chokepoint
-// for validate-cwd routing: both runValidateScript and createValidatorAndSendPayload
-// (and, via the WORKTREE_DIR marker, the inv-* investigators) derive their cwd here,
+// for validate-cwd routing: createValidatorAndSendPayload
+// (and, via the WORKTREE_DIR marker, the inv-* investigators) derives its cwd here,
 // so there is no duplicated worktree-path logic.
 //
 //   - empty WorktreeDir (MaxGoals=1, or a non-git repo) ⇒ base d.workDir — the cwd

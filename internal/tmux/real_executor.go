@@ -261,6 +261,44 @@ func (e *RealTmuxExecutor) SendMessage(sessionID, windowID, message string) erro
 	return nil
 }
 
+// NotifyPane delivers a text message followed by a SEPARATE Enter keystroke
+// directly to a tmux pane addressed by its pane id (e.g. "%3").
+// Pane ids are session-global, so the target is used as-is with no session:window
+// join (this is the only structural difference from SendMessage).
+// Command: tmux send-keys -t <paneID> -l "<message>" && tmux send-keys -t <paneID> Enter
+// Uses the -l (literal) flag so special characters are not interpreted, matching
+// SendMessage's proven Claude-Code-CLI-compatible mechanic.
+// An empty message delivers a bare Enter (a valid heartbeat/ack ping).
+func (e *RealTmuxExecutor) NotifyPane(paneID, message string) error {
+	// Target the pane id directly — no session:window join.
+	target := paneID
+
+	// Step 1: Send the message text with -l (literal) flag
+	cmd1 := exec.Command("tmux", "send-keys", "-t", target, "-l", message)
+	output1, err := cmd1.CombinedOutput()
+	if err != nil {
+		// Check if tmux not found (maps to exit 126 via errors.Is sentinel match)
+		if cmd1.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux send-keys (text) failed (target: %s): %w: %s",
+			target, err, strings.TrimSpace(string(output1)))
+	}
+
+	// Step 2: Send Enter key separately
+	cmd2 := exec.Command("tmux", "send-keys", "-t", target, "Enter")
+	output2, err := cmd2.CombinedOutput()
+	if err != nil {
+		if cmd2.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux send-keys (Enter) failed (target: %s): %w: %s",
+			target, err, strings.TrimSpace(string(output2)))
+	}
+
+	return nil
+}
+
 // SendMessageWithDelay delivers a text message to a specific window with a 1-second delay before pressing Enter.
 // This is specifically designed for windows-message MCP action where formatted multi-line messages
 // need time to be fully delivered before execution.

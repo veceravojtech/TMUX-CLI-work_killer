@@ -77,6 +77,12 @@ func (m *MockTmuxExecutor) SendMessage(sessionID, windowID, message string) erro
 	return args.Error(0)
 }
 
+// NotifyPane mocks delivering a message + separate Enter directly to a pane id
+func (m *MockTmuxExecutor) NotifyPane(paneID, message string) error {
+	args := m.Called(paneID, message)
+	return args.Error(0)
+}
+
 // SendMessageWithDelay mocks sending a text message with a 1-second delay
 func (m *MockTmuxExecutor) SendMessageWithDelay(sessionID, windowID, message string) error {
 	args := m.Called(sessionID, windowID, message)

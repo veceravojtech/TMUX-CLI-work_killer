@@ -1,31 +1,28 @@
-# Plan Approval — Per-worktree compose stack (task 275 fix)
+# Plan Approval — e2e-evaluator (4-task decomposition)
 
-- **Verdict:** PASS
-- **Score:** 100 / 100
-- **Timestamp:** 2026-06-25T00:00:00 (audit run)
-- **Auditor:** blind read-only plan auditor (no planning conversation; on-disk artifacts + real source tree only)
-- **Plan:** `.tmux-cli/tasks.yaml` (status: ready) — execute-1 (T1 mechanism), execute-2 (T2 lifecycle wiring, depends_on execute-1)
-
-## Scope audited
-- `.tmux-cli/tasks.yaml`
-- `.tmux-cli/research/2026-06-24-23/execute-1-per-worktree-compose-mechanism.md`
-- `.tmux-cli/research/2026-06-24-23/execute-2-wire-worktree-stack-lifecycle.md`
-- `.tmux-cli/research/2026-06-24-23/task-worktree-compose-mechanism.md`, `task-worktree-stack-lifecycle.md`, `code-rules.md`
-- Real tree: `internal/taskvisor/{execruntime,wrapcmd,worktree,dispatch,daemon,statemachine,elaboration}.go`
+**Verdict:** PASS
+**Score:** 92 / 100
+**Audit label:** audit run 2026-06-28 (blind read-only artifact audit)
+**Design under audit:** `docs/architecture/e2e-evaluator-design.md`
+**Queue:** `.tmux-cli/tasks.yaml` (status: ready) — execute-1 ← execute-2 ← execute-3 ← execute-4
+**Specs:** `.tmux-cli/research/2026-06-28-12/execute-{1,2,3,4}-*.md`
 
 ## Per-dimension summary
 
-1. **validate-executability** — PASS. T1/T2 Verification commands are bare and runnable: `go test ... -run '<regex>' [-race]`, `go build ./...`, `grep -n/-F`, `docker compose -p taskvisor-goal-015 ps`, `docker volume ls`. No shell-wrapper chains.
-2. **dependency-correctness** — PASS. The execute-2 → execute-1 edge is a genuine produce/consume: T2 consumes `WorktreeComposeProject(goalID)`, `ComposeStack.Up/Down`, and the T1-defined `composeRunnerFn` type (bring-up, teardown, validate retarget, daemon field). No cycle, no dangling ref.
-3. **runtime-state-gating** — PASS. Bring-up/db-lock gate on live `goalUsesWorktree` (verified `worktree.go:991`); teardown keys purely on `WorktreeComposeProject(goalID)` derivable from goalID alone (crash-safe, explicitly stated). No assertion against state absent at implementation time.
-4. **host-container-split** — PASS. Port-strip override (`!reset []`) removes host `ports:` for app/db; validate execs over the internal compose network (`exec -T app`, `db:5432`); per-worktree named `db-data` volume isolates the DB and `down -v` reaps it. Collision/isolation handling is sound. (Docker Compose v5.1.4 present → `!reset` supported; spec also documents an `!override []` fallback.)
-5. **objective-acceptance** — PASS. Acceptance Criteria are objective Given/When/Then and independently testable, anchored on the concrete goal-015 `/api/register` debug:router exit-0 → done → dependents-dispatch chain.
-6. **spec-discovery-consistency** — PASS. Every Code Map file:line ref resolves to the real symbol (line numbers within 1–2): `resolveComposeProject`@59, `normalizeComposeName`@116, `composeProjectFromDocumentedField`@74, `dockerExec`@49, `worktreeBranch`@120/`worktreePath`@133, `ensureWorktree`@296, `discardWorktree`@797 (guard@799, remove@818, clear@825), `finalizeWorktreeOnDone`@881 (discard@895/898/935, BLOCK-skip@981, failed@1068), `pruneOrphanWorktrees`@835, `ScriptRunnerFunc`@20/`defaultScriptRunner`@52/`scriptRunnerFn`@161/@111, `goalWorkDir`@530, `pruneOrphanWorktrees` call@614, `ensureWorktree` sites dispatch@373/@538 + elaboration@58, `runValidateScript`@76 (cwd@96/env@97/db-lock@110), `regenerateValidateScript`@238/@240, statemachine `runValidateScript`@401/@544.
-7. **environment-prerequisites** — PASS. All cited helpers/seams real: `ScriptRunnerFunc`/`scriptRunnerFn`/`defaultScriptRunner`, `dockerExec`+`shSingleQuote`, `ensureWorktree`, `discardWorktree`, `pruneOrphanWorktrees`, `safeToRemoveWorktree`, `withDBLock`, `regenerateValidateScript`, `goalUsesWorktree`, `gitRunnerFn`, `scriptReasonRunnerMissing`/`scriptReasonLockError`. Confirmed: no existing `compose up/down` anywhere in `internal/taskvisor` — T1 genuinely adds that responsibility (matches prior-learning).
-8. **scope-sanity** — PASS. T1 CREATEs only `composestack.go` + `composestack_test.go` (its Code Map refs to existing files are all "CHANGE: none"); `composestack.go` does not yet exist. T2 modifies dispatch/worktree/daemon/elaboration. No write-collision (T1 writes no file T2 edits, and vice versa). Footprint contained.
-9. **rule-coverage** — PASS. `code-rules.md` reports no `must` rules match the Go daemon files; neither spec carries a `## Code Rules` section — correct.
+1. **validate-executability — MOSTLY PASS (one SEV-3).** execute-1 is fully concrete and runnable (`go test ./internal/tmux/... ./internal/testutil/... ./cmd/tmux-cli/...`, `make build`, `go vet`); execute-2 ships a real structural test (`TestE2EEvaluatorXml_Skeleton`) + `ReferenceErrorReporting`. However execute-3/execute-4 present behavioral scenarios named like Go unit tests (`TestResume_ContinuesAtCycle`, `TC-1 LoopGuard`, `TestSuccess_AppUpRequired`) for an XML agent-prompt deliverable that has no behavioral test harness — under this repo's "TDD mandatory" culture that is a clarity gap (SEV-3, −8). Mitigated, not blocking: execute-2 models the correct structural-grep pattern, repo convention tests every embedded command structurally, and both specs' Verification sections list concrete runnable fallbacks (`jq` on state.json, `ls` of reports, `go test -run TestEmbeddedCommands_ReferenceErrorReporting`).
+2. **dependency-correctness — PASS.** No cycles, no dangling refs. execute-2 depends_on execute-1 is a genuine produce/consume (BOOTSTRAP injects `TMUX_CLI_ORCHESTRATOR_PANE`, the env contract execute-1 produces). The execute-2/3/4 serial chain is justified and necessary: all three write the same `e2e-evaluator.xml` in labelled non-overlapping slots; parallelizing them would collide on one file.
+3. **runtime-state-gating — PASS.** execute-4 STARTUP-ASSERT gates the §12 prerequisites (task-report consumer reachable + auto-install watcher present) and soft-pauses with a human-actionable `make install` message when absent; "absent" safely subsumes "unconfirmable," so the under-defined probe mechanism resolves to the safe default (pause, never hang).
+4. **host-container-split — PASS.** execute-2 TEARDOWN encodes the §10 ordered reap (daemon stop → `docker compose down` → worktrees+branches → `kill-session` by exact name → `rm -rf /tmp`), correctly separating host artifacts from container stacks and explicitly forbidding `pkill -f <projectname>`.
+5. **objective-acceptance — PASS.** execute-4 SUCCESS-CRITERIA pins full-flow PASS to app-verifiably-UP (`GET /login`→200, dashboard-unauth→302/401, authed→200) with an explicit false-pass guard (`app_up:false` overrides a green daemon); Acceptance Criteria are Given/When/Then.
+6. **spec-discovery-consistency — PASS.** All 14 design sections covered (§1/§3/§5/§10/§11/§14→execute-2; §4 primitive→execute-1; §2/§4/§7/§9/§13→execute-3; §6/§8/§12→execute-4). No contradiction on the shared `e2e-evaluator.xml` slot partitioning (execute-2 owns 1/1b/2/3/11; execute-3 owns the 4–7 cycle slots; execute-4 owns the 8–10 state/report slots).
+7. **environment-prerequisites — PASS.** execute-2 requirements name tmux-cli CLI on PATH, docker, claude, tmux; the `TestEmbeddedCommands_ReferenceErrorReporting` invariant (verbatim `<error-reporting>` last child, file NOT in `exemptFromErrorReporting`) is stated and verified correct; embed.FS auto-pickup with zero Go changes confirmed against `session.go:48-49`.
+8. **scope-sanity — PASS.** Sizing is sane; no empty tasks. execute-3 is the heaviest (five design sections) but cohesively bundles the cycle body, and since 2/3/4 must serialize on one file, splitting it would add handoffs without buying parallelism.
+9. **rule-coverage — PASS.** Footprint is Go (internal/tmux, cmd/tmux-cli, internal/setup) + XML (embedded commands), no PHP/Symfony; no `must` code rules match, so specs correctly OMIT a `## Code Rules` section. NOTE (non-deducted): `code-rules.md` emits spurious Symfony-greenfield warnings (`src/Infrastructure`, docker/database packs) that are irrelevant to this Go/XML footprint — a rule-matcher profile artifact, but the net "no rules match" verdict is correct and the warnings never reach the worker specs.
 
-## Minor findings (no deduction)
-- None material. Both specs explicitly handle the one version-sensitive surface (`!reset` vs `!override`) and the worst-case `down -v`-nukes-base risk (taskvisor- prefix guard, asserted in T1 TC-9). Teardown DRY-placement inside `discardWorktree` correctly inherits the needs-merge BLOCK preservation at `worktree.go:981` for free.
+## Code Map verification (real tree)
+All cited symbols/lines exist and are accurate (minor ≤6-line drift): `TmuxExecutor`/`SendMessage`/`SendEnter` (executor.go), `RealTmuxExecutor.SendMessage` (real_executor.go:232), `mockExecutor` + `TestTmuxExecutor_Interface_HasSendMessage` (executor_test.go:99), `MockTmuxExecutor.SendMessage` (mock_tmux.go:75), `windowsMessageCmd`/`runWindowsMessage`/`NewUsageError`/`determineExitCodeEnhanced`/go:embed (session.go), `execute.xml:148` error-reporting block, `exemptFromErrorReporting`/`TestEmbeddedCommands_ReferenceErrorReporting`, `MaxGoals`/`MaxWorkers`/`MaxWallClockSec`/`ProgressTimeoutSec` (config.go defaults 1/4/14400/300), `ConcurrencyOverridePath`/`ReadConcurrencyOverride`, `DisjointReadySet` (scope_gate.go:162), `DetectOverSerialized`/`InferMissingDeps`/`EnforceFileOverlapDeps` (depinfer.go), `SerializationFinding`, statemachine slot-fill + maxWallClock. `e2e-evaluator.xml` does not yet exist (correct — execute-2 CREATEs it).
 
-No open SEV-1/SEV-2 (or SEV-3). Score 100 ≥ 90 → PASS.
+## Open findings
+- **SEV-3 (validate-executability):** execute-3/execute-4 Test Plans list behavioral scenarios as Go-style test names for an XML prompt with no behavioral harness. Remediation: relabel them as runtime/acceptance scenarios and point the worker at the structural-grep test pattern (execute-2's `TestE2EEvaluatorXml_Skeleton`) as the actual automated check. Non-blocking; specs already carry concrete fallback verification commands.
+
+No open SEV-1 or SEV-2 findings. Score 92 ≥ 90 → APPROVED.

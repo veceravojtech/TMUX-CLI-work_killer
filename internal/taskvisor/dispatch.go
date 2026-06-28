@@ -21,33 +21,18 @@ type ScriptRunnerFunc func(ctx context.Context, scriptPath, dir string, env []st
 
 // validateScriptTimeout seeds Daemon.scriptTimeout (New()); overridable via
 // taskvisor.validate_script_timeout_sec. 120s (was 30s — which silently killed
-// any validate.sh wrapping a real test suite and fed the P7 gate a false
-// non-pass). Kept modest deliberately: the script runs synchronously inside
-// the tick under the goals+db locks, so the whole daemon blocks while it runs —
-// slow suites should raise the setting per project rather than this seed.
+// any script wrapping a real test suite). Kept modest deliberately: the script
+// runs synchronously inside the tick under the goals+db locks, so the whole
+// daemon blocks while it runs — slow suites should raise the setting per
+// project rather than this seed.
 // Raised 120s→600s for the validation-as-goal model: the heavy validate stack
 // (phpunit integration + deptrac + phpstan L9 + kernel boot) now runs in a
 // dedicated validation goal's OWN supervising cycle, so the original
 // "blocks the whole daemon under locks" caution is relaxed; 600s covers a
 // Symfony stack with margin under the validate_timeout: 1260 envelope.
+// validateScriptTimeout bounds ONE execution of the worktree integration gate
+// script (worktree.go runIntegrationGate), which shares the scriptRunnerFn seam.
 const validateScriptTimeout = 600 * time.Second
-
-// runValidateScript reason values (the non-pass classification contract).
-// Every non-pass used to collapse into a bare `passed=false`, making a
-// timeout kill or a flock hiccup indistinguishable from a genuinely red suite
-// at the P7 gate — reasons make the downgrade diagnosable from the log alone.
-const (
-	scriptReasonMissing       = "missing"
-	scriptReasonNotExecutable = "not-executable"
-	scriptReasonLockError     = "lock-error"
-	scriptReasonExecError     = "exec-error"
-	scriptReasonTimeout       = "timeout"
-	// scriptReasonRunnerMissing classifies a validate.sh that exited 127 (command
-	// not found) or 126 (not executable) — the script's RUNNER is missing/unusable,
-	// an infra/exec error, not a red suite. Routed to a terminal halt that charges
-	// NO code-retry budget (goal-009: a missing runner used to burn 3→2→1→0).
-	scriptReasonRunnerMissing = "runner-missing"
-)
 
 func defaultScriptRunner(ctx context.Context, scriptPath, dir string, env []string) (stdout, stderr string, exitCode int, err error) {
 	cmd := exec.CommandContext(ctx, scriptPath)
@@ -65,101 +50,6 @@ func defaultScriptRunner(ctx context.Context, scriptPath, dir string, env []stri
 		return outBuf.String(), errBuf.String(), -1, runErr
 	}
 	return outBuf.String(), errBuf.String(), 0, nil
-}
-
-// runValidateScript executes the goal's deterministic validate.sh anchor.
-// `passed` is true only on exit 0; `reason` names WHY the script did not pass
-// (the scriptReason* constants or "exit-<N>"; empty on pass) so the P7 gate's
-// downgrade log can distinguish an operational non-run from a red suite. The
-// gate still treats EVERY non-pass as "no deterministic backing" — the reason
-// changes observability, never the verdict.
-func (d *Daemon) runValidateScript(goal *Goal) (passed bool, reason, stderr string, err error) {
-	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
-	scriptPath := filepath.Join(goalDir, "validate.sh")
-
-	info, statErr := os.Stat(scriptPath)
-	if statErr != nil {
-		return false, scriptReasonMissing, "", nil
-	}
-	if info.Mode().Perm()&0o111 == 0 {
-		log.Printf("warning: validate.sh exists but is not executable for goal %s", goal.ID)
-		return false, scriptReasonNotExecutable, "", nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), d.scriptTimeout)
-	defer cancel()
-
-	// Route validate.sh's cwd to the goal's worktree (E1-1c) so the script sees
-	// ONLY this goal's edits; scriptPath itself stays rooted at base .tmux-cli above.
-	// WORKTREE_DIR is exported alongside GOAL_ID so the script can reference the tree
-	// explicitly. Under MaxGoals=1 cwd==d.workDir — byte-identical to before.
-	cwd := d.goalWorkDir(goal.ID)
-	env := append(os.Environ(), "GOAL_ID="+goal.ID, "WORKTREE_DIR="+cwd)
-
-	// Hold the shared-schema db lock for the DURATION of the validate.sh exec
-	// (E1-1b): worktrees isolate this goal's FILES but the database SCHEMA is a
-	// single shared resource, so a concurrent worker-run migration (MaxGoals>1)
-	// must not race the schema we validate against. Lock order is goals→db — the
-	// poll loop already holds the goals flock here, so db is strictly the inner
-	// lock. At MaxGoals=1 there is never contention and this is byte-identical.
-	//
-	// EXCEPTION (T2): a worktree goal now validates against its OWN per-worktree
-	// compose stack (taskvisor-<goalID>), whose db volume is isolated from every
-	// other goal's — there is no shared schema to serialize, so the db-lock is NOT
-	// held on that path (it would needlessly serialize independent stacks). The
-	// no-worktree path keeps the lock with the same goals→db order, byte-identical,
-	// including the scriptReasonLockError classification on a lock-acquire failure.
-	var (
-		stderrOut string
-		exitCode  int
-		runErr    error
-	)
-	runScript := func() {
-		_, stderrOut, exitCode, runErr = d.scriptRunnerFn(ctx, scriptPath, cwd, env)
-	}
-	if d.goalUsesWorktree(goal) {
-		runScript()
-	} else if lockErr := d.withDBLock(func() error {
-		runScript()
-		return nil
-	}); lockErr != nil {
-		log.Printf("error: acquiring db lock for validate of goal %s: %v", goal.ID, lockErr)
-		return false, scriptReasonLockError, "", nil
-	}
-	if runErr != nil {
-		log.Printf("error: validate.sh exec error for goal %s: %v", goal.ID, runErr)
-		return false, scriptReasonExecError, "", nil
-	}
-
-	if exitCode == 0 {
-		return true, "", "", nil
-	}
-
-	// A deadline-exceeded context means WE killed the script, not that the
-	// suite failed — classify as timeout (previously indistinguishable from a
-	// red exit and completely silent).
-	reason = fmt.Sprintf("exit-%d", exitCode)
-	if ctx.Err() == context.DeadlineExceeded {
-		reason = scriptReasonTimeout
-	} else if exitCode == 127 || exitCode == 126 {
-		// 127 = command not found, 126 = found but not executable: the script's
-		// runner is missing/unusable (infra), NOT a red suite. Placed AFTER the
-		// DeadlineExceeded check so a timeout kill that surfaces 126/127 stays
-		// classified as a timeout (timeout keeps precedence).
-		reason = scriptReasonRunnerMissing
-	}
-	log.Printf("%s: validate.sh did not pass (%s, timeout budget %s)", goal.ID, reason, d.scriptTimeout)
-
-	if len(stderrOut) > 500 {
-		stderrOut = stderrOut[:500]
-	}
-	return false, reason, stderrOut, nil
-}
-
-func (d *Daemon) hasValidateMd(goalID string) bool {
-	mdPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goalID, "validate.md")
-	_, err := os.Stat(mdPath)
-	return err == nil
 }
 
 // writeCycleMarker pre-creates the current cycle's goal-scoped research dir and
@@ -238,40 +128,6 @@ func (d *Daemon) writeValidatorWindowMarker(goalID, name string) error {
 	return nil
 }
 
-// regenerateValidateScript rewrites the goal's validate.sh from the in-memory
-// (authoritative) goal.Validate rules and a freshly resolved ExecRuntime,
-// mirroring the create-time call in authoring.go. It exists so a runtime
-// correction (e.g. the docker app compose service resolved from
-// test-environment.md) propagates into the command wrap on every (re-)dispatch
-// rather than reusing a stale cached script. WriteValidateScript is a no-op for
-// an empty rule list, so a goal with no validate rules is unaffected. Runs
-// inside the goals-lock context of its callers (it only writes a file under the
-// goal dir; no new lock).
-func (d *Daemon) regenerateValidateScript(goal *Goal) error {
-	goalDir := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID)
-	if err := WriteValidateScript(goalDir, goal.Validate, d.execRuntimeForGoal(goal)); err != nil {
-		return fmt.Errorf("regenerate validate.sh: %w", err)
-	}
-	return nil
-}
-
-// execRuntimeForGoal resolves the base ExecRuntime from test-environment.md and,
-// for a goal running in an isolated per-goal worktree, retargets its compose
-// project at the goal's OWN per-worktree stack (taskvisor-<goalID>). It is the
-// single seam that makes the regenerated validate.sh exec into the worktree stack
-// (`docker compose -p taskvisor-<goalID> exec …`) instead of the operator's MAIN
-// stack — the task-275 fix. For a no-worktree goal (MaxGoals=1 / non-git) the
-// project is left at the base resolution, so the rendered script stays
-// byte-identical. In local (non-docker) mode the ComposeProject field is unused by
-// wrapCommand, so the override is harmless there.
-func (d *Daemon) execRuntimeForGoal(goal *Goal) ExecRuntime {
-	rt := ResolveExecRuntime(d.workDir)
-	if d.goalUsesWorktree(goal) {
-		rt.ComposeProject = WorktreeComposeProject(goal.ID)
-	}
-	return rt
-}
-
 // worktreeStackEnabled reports whether the per-worktree compose stack lifecycle
 // should engage: ONLY when the project's resolved runtime is docker. A local
 // (non-docker) project has no compose stack to bring up or tear down — gating here
@@ -295,7 +151,7 @@ func (d *Daemon) stackBaselineCmd() string {
 
 // bringUpWorktreeStack brings a worktree goal's OWN compose stack
 // (taskvisor-<goalID>) to a migrated baseline with cwd=the worktree, so the stack
-// sees the goal's uncommitted edits and the deterministic validate.sh execs
+// sees the goal's uncommitted edits and the validator's commands run
 // against the goal's code — not the operator's MAIN stack (task-275).
 //
 //   - cwd == d.workDir (no-worktree: MaxGoals=1 / non-git) ⇒ no-op, zero compose
@@ -352,15 +208,6 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 		}
 		d.specRepairs++
 		log.Printf("[spec-drift] %s: goal.md repaired from goals.yaml", goal.ID)
-	}
-
-	// Regenerate validate.sh from the in-memory goal.Validate + a freshly
-	// resolved ExecRuntime so a runtime correction (e.g. the docker app service
-	// resolved from test-environment.md) takes effect on re-dispatch instead of
-	// reusing a stale cached wrap. Runs after the spec-drift repair so the script
-	// reflects the same authoritative rules the repaired goal.md does.
-	if err := d.regenerateValidateScript(goal); err != nil {
-		return err
 	}
 
 	if err := d.writeDispatchMd(goal); err != nil {
@@ -580,13 +427,6 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 		}
 		d.specRepairs++
 		log.Printf("[spec-drift] %s: goal.md repaired from goals.yaml (retry)", goal.ID)
-	}
-
-	// Regenerate validate.sh on retry-dispatch too — crash-recovery re-dispatch
-	// routes through either dispatch() or dispatchRetry(), so both paths must
-	// refresh the wrap or a stale cached app-service name leaks into the retry.
-	if err := d.regenerateValidateScript(goal); err != nil {
-		return err
 	}
 
 	if err := d.writeDispatchMd(goal); err != nil {

@@ -477,9 +477,9 @@ func (d *Daemon) integrationCmd() string {
 
 // runIntegrationGate materializes IntegrationCmd into a temp `#!/bin/sh` script
 // (0o755, removed via defer) and runs it against the merged base (d.workDir) via
-// the shared scriptRunnerFn seam under d.scriptTimeout — the same injected seam
-// validate.sh uses, so no signature change. GOAL_ID is exported mirroring
-// runValidateScript. A non-zero exit (or an exec error) returns errIntegrationFailed;
+// the shared scriptRunnerFn seam under d.scriptTimeout — the daemon's injected
+// script-runner seam, so no signature change. GOAL_ID is exported into the
+// script's environment. A non-zero exit (or an exec error) returns errIntegrationFailed;
 // an unset command is a no-op (nil). Callers invoke this INSIDE WithMergeLock.
 func (d *Daemon) runIntegrationGate(goal *Goal) error {
 	cmd := d.integrationCmd()

@@ -58,7 +58,7 @@ Reply to confirm and unblock dispatch:
       Capture the returned id; set PREV_GOAL_ID = it.</action>
     <action>After every emission the chain is acyclic by construction (each goal depends only on an ALREADY-created predecessor — goal-create rejects a depends_on pointing at a non-existent goal). If a depends_on would ever point forward or form a cycle, ABORT with a named reason rather than emitting it (mirrors task-plan-generate.xml's G-15 acyclicity guard).</action>
     <rule critical="true">ONE goal per affected CATEGORY — never one-per-rule and never a single mega-goal. A category goal's validate bundles ALL its violated rules' checks (2.3a). DETECTED, NOT ASSUMED: emit only for categories the dossier flagged with a real violation; never a no-op gate goal.</rule>
-    <rule critical="true">MEANINGFUL VALIDATE IS A BARE, sh-valid COMMAND — NEVER PROSE: every validate entry the shard emits is a bare, sh-valid runnable command on which `sh -n` passes — a resolved validate_cmd or a resolved quality-gate command — never prose, parentheses, or conditional/explanatory text. The daemon compiles each validate entry verbatim into validate.sh under sh, so a stray parenthesis or quote breaks the gate.</rule>
+    <rule critical="true">MEANINGFUL VALIDATE IS A BARE, RUNNABLE COMMAND — NEVER PROSE: every validate entry the shard emits is a bare, runnable command — a resolved validate_cmd or a resolved quality-gate command — never prose, parentheses, or conditional/explanatory text. The LLM validator runs each validate entry as written, so a stray parenthesis or quote makes the check unrunnable.</rule>
   </substep>
 
   <substep n="2.3a" title="Compose each category goal's GATE_SET (data-driven)">

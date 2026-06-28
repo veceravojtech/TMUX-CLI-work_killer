@@ -1,0 +1,274 @@
+<task id="e2e-evaluator" name="Self-healing end-to-end evaluation conductor">
+  <objective>Drive and verify the ENTIRE tmux-cli flow end-to-end against itself in a disposable session, then SELF-HEAL the tooling when the flow breaks: discovery → roadmap/goal-generation → taskvisor implementation → a verifiably-running app (docs/architecture/e2e-evaluator-design.md §1). One cycle = PROVISION → BOOTSTRAP → DRIVE → WATCH → MEASURE → JUDGE → (PASS=stop | FAIL=TRIAGE→task-report→wait-for-fix) → REPORT → TEARDOWN, up to 10 cycles, resumable across a cleared context. This file is the CONDUCTOR SPINE: it owns the lifecycle endpoints — PROVISION (§5), BOOTSTRAP (§5), TEARDOWN (§10) — and leaves contiguous labelled SLOTs for the DRIVE/WATCH/MEASURE/JUDGE/TRIAGE loop (execute-3) and the STATE/REPORT/SUCCESS+RESUME steps (execute-4). It COMPOSES the real flow against a target session; it never reimplements discovery, generation, or the daemon.</objective>
+
+  <input>
+    <note>$ARGUMENTS = the scenario name and/or `--project &lt;path&gt;`. Empty $ARGUMENTS → run the DEFAULT scenario (the canonical Symfony dashboard-login full-flow run, §1) in a fresh `/tmp/&lt;scenario&gt;-&lt;UTCstamp&gt;` dir. `--project &lt;path&gt;` pins the target dir instead of the default `/tmp` location.</note>
+    <note>A no-arg re-invocation also RESUMES an in-progress run (design §6) — the resume-state read is execute-4's slot in step 1b.</note>
+  </input>
+
+  <output>
+    <!-- SLOT: execute-4 owns the concrete per-cycle output contract (state.json + e2e-report-cycle-<n>.md, design §6). This slice declares the shape only; execute-4 fills the detail in steps 8–10. -->
+    <primary>Per-cycle: a run-state file (`.tmux-cli/e2e-evaluator/&lt;scenario&gt;.state.json`) and a per-cycle report (`.tmux-cli/e2e-evaluator/e2e-report-cycle-&lt;n&gt;.md`) — schema + write rules authored by execute-4 (design §6).</primary>
+  </output>
+
+  <requirements critical="true">
+    <cli>`tmux-cli` CLI MUST be reachable on PATH (the orchestrator drives the target via the CLI + raw tmux, never via the tmux-cli MCP tools — design §3).</cli>
+    <tool>`tmux` MUST be installed (send-keys / paste-buffer / load-buffer / pipe-pane / kill-session are the drive + transcript primitives).</tool>
+    <tool>`docker` (with `docker compose`) MUST be available — the full-flow scenario brings the target app up and TEARDOWN downs its stacks (§10).</tool>
+    <tool>`claude` MUST be installed — BOOTSTRAP launches it in the target session to execute the real flow (§5).</tool>
+    <note>The tmux-cli MCP server is NOT required to DRIVE: MCP tools are frozen into a Claude at startup, so a mid-loop `make install` would not refresh them. The orchestrator uses the CLI + raw tmux (re-read from disk every call) so it survives target rebuilds without restarting (§3).</note>
+  </requirements>
+
+  <glossary>
+    <term name="ORCHESTRATOR">This running `/tmux:e2e-evaluator` session (in THIS repo). It drives the target with `tmux send-keys`/`paste-buffer`, observes the target's pipe-pane log, files defects with `/tmux:task-report`, polls task state with `/tmux:task-list`, and waits for the fix commit + external auto-install — it never builds/pulls itself (design §3, decision #12).</term>
+    <term name="TARGET">A fresh disposable session created with `tmux-cli start` (detached) in `/tmp/&lt;scenario&gt;-&lt;ts&gt;`. It runs `claude`, executes the real flow (discovery → roadmap → taskvisor → running app), and reports progress back to the ORCHESTRATOR pane.</term>
+    <term name="CYCLE">One PROVISION → BOOTSTRAP → DRIVE → WATCH → MEASURE → JUDGE → REPORT → TEARDOWN pass (design §2). Max 10. Pristine every cycle: a failed cycle's session AND its `/tmp` content are reaped before the next (§10).</term>
+    <term name="PROVISION">Step 2 (this slice): resolve the target dir (`--project` or default `/tmp/&lt;scenario&gt;-&lt;UTCstamp&gt;`, `git init` if the flow needs a repo), start the detached target session by exact name, and discover/attach a native terminal for the human view (headless when none / no `$DISPLAY`) — design §5.</term>
+    <term name="BOOTSTRAP">Step 3 (this slice): launch `claude` in the target with the trust prompt pre-accepted and bypass-permissions mode on, export `TMUX_CLI_ORCHESTRATOR_PANE`, and start pipe-pane logging BEFORE any DRIVE (design §5).</term>
+    <term name="DRIVE">Sending the scenario instruction (and later inputs) to the target — always two-step: text via `paste-buffer`/`send-keys -l` THEN a SEPARATE `Enter` (design §4). Owned by execute-3 (loop slot).</term>
+    <term name="TEARDOWN">Step 11 (this slice): the ordered reap between cycles and at terminal stop — daemon stop → `docker compose down` → worktrees+branches → `kill-session` → `rm -rf` (design §10). A step's failure is logged but the reap CONTINUES.</term>
+    <term name="PIPE-PANE LOG">`tmux pipe-pane -o -t &lt;target-pane&gt; 'cat &gt;&gt; &lt;session&gt;.log'` — the full target transcript of record. Assertions grep the LOG, not the screen (screen-scraping is timing-fragile, design §4).</term>
+    <term name="TMUX_CLI_ORCHESTRATOR_PANE">The env var BOOTSTRAP exports into the target so the target's `tmux-cli notify-orchestrator "&lt;msg&gt;"` (the execute-1 primitive, design §4 / decision #1) resolves THIS orchestrator's pane and replies atomically (buffer + paste-buffer, then a separate Enter — escaping handled in Go).</term>
+    <term name="DEFECT SIGNATURE">The normalized {phase, failure reason, goal/area} tuple (design §7). Dedupes defects across cycles and drives the loop guard: the SAME signature failing twice after a fix → escalate to the human (don't thrash). Owned by execute-3 (TRIAGE slot).</term>
+    <!-- SLOT: execute-4 state/report glossary — STATE_FILE / REPORT_FILE (design §6). -->
+    <term name="STATE_FILE">`.tmux-cli/e2e-evaluator/&lt;scenario&gt;.state.json` — the durable run-state (design §6): `{scenario, cycle, max_cycles, status, history[]}`. `cycle` = the NEXT cycle to run; `status` ∈ in-progress|passed|exhausted|escalated. Written atomically (temp + rename) by execute-4's STATE step (step 8) and read by RESUME (step 1b). A machine-written, git-excluded owned file — `.tmux-cli/e2e-evaluator/` follows the AGENTS.md owned-dir convention (`.tmux-cli` is already in `.git/info/exclude`/`.gitignore`).</term>
+    <term name="REPORT_FILE">`.tmux-cli/e2e-evaluator/e2e-report-cycle-&lt;n&gt;.md` — the per-cycle human report (design §6), one per completed cycle, with a FIXED section order: Driven Summary / Failure Point / Defect Signature / Filed Task / Timing Table / Verdict. Written by execute-4's REPORT step (step 9).</term>
+  </glossary>
+
+  <boundary>
+    <note>BOUNDARY — /tmux:e2e-evaluator is a tmux-cli SELF-TEST conductor (design §14 non-goal). It is embedded/installable like the rest BUT is NEVER shipped to drive end-user projects: it tests tmux-cli's own full flow against itself in disposable sessions. It is black-box real-instance E2E, NOT a replacement for `make test-all`, and it does NOT change the daemon's implement/investigate/validate cycle — it only OBSERVES and TIMES it.</note>
+    <vs name="feature / director">/tmux:feature and /tmux:director drive REAL work through the flow (a brownfield feature, a greenfield roadmap) inside the user's project. /tmux:e2e-evaluator drives a DISPOSABLE scenario against a throwaway target purely to verify and self-heal the tooling — it consumes those conductors as the thing-under-test, it is not one of them.</vs>
+  </boundary>
+
+  <llm critical="true">
+    <mandate critical="true">DRIVE VIA CLI + RAW TMUX, NEVER THE tmux-cli MCP TOOLS. MCP tools are frozen into a Claude at startup; a mid-loop `make install` would not refresh them, so the orchestrator must use the `tmux-cli` CLI + `tmux send-keys`/`paste-buffer`/`load-buffer`/`pipe-pane` (re-read from disk every call) to survive target rebuilds without restarting (design §3).</mandate>
+    <mandate critical="true">TWO-STEP SEND, ALWAYS. Every DRIVE is text FIRST (`paste-buffer`/`send-keys -l "&lt;text&gt;"`, or `tmux load-buffer` + `paste-buffer` for multi-line/quoted input — no shell-escaping) THEN a SEPARATE `Enter` key. NEVER a combined send; the PoC failure mode was a forgotten/merged Enter (design §4).</mandate>
+    <mandate critical="true">NEVER `pkill -f &lt;projectname&gt;` IN TEARDOWN — it matches the killer's OWN command line and SIGTERMs the teardown mid-run (observed: exit 144, `rm` skipped). Reap by EXACT session name + tracked PIDs only (design §10).</mandate>
+    <mandate>PIPE-PANE BEFORE ANY DRIVE. Start the pipe-pane log in BOOTSTRAP the instant the pane exists and before the first DRIVE, with `-o` (append) so a re-attach never truncates — else early transcript is lost and assertions miss it (design §4).</mandate>
+    <mandate>PRISTINE EVERY CYCLE. A failed cycle's target session AND its `/tmp` content are reaped via TEARDOWN (§10) before the next cycle; never reuse a dirty target dir (PROVISION fails loud on a non-empty dir).</mandate>
+    <mandate>COMPOSE, DON'T REIMPLEMENT. The orchestrator drives the REAL discovery/generation/daemon flow inside the target; it never re-derives discovery questions, goal enumeration, or the dispatch loop. Only a genuine tmux-cli defect (reproduces on a clean retry, §7) earns a `/tmux:task-report`; LLM variance and bad-input are retried/fixed, never filed.</mandate>
+    <mandate>SLOT DISCIPLINE. This slice authors ONLY steps 1, 1b, 2, 3, 11. Steps 4–10 are labelled SLOT comments owned by execute-3 (loop) and execute-4 (state/report); do NOT author or renumber them.</mandate>
+  </llm>
+
+  <flow>
+    <!-- STEP-NUMBER LAYOUT (contiguous; do NOT renumber):
+         1   CLI/MCP precondition            (this slice)
+         1b  Read project context + resume   (this slice; resume-state read = execute-4 slot)
+         2   PROVISION                       (this slice, §5)
+         3   BOOTSTRAP                        (this slice, §5)
+         4–7 execute-3 LOOP                   (DRIVE / WATCH / MEASURE / JUDGE / TRIAGE — SLOT)
+         8–10 execute-4 STATE / REPORT / SUCCESS+RESUME (SLOT)
+         11  TEARDOWN                         (this slice, §10) — a subroutine the loop calls
+         The lifecycle endpoints (mine) bracket the sibling slices' steps so execute-3/-4 append without renumbering. -->
+
+    <step n="1" title="CLI precondition">
+      <action>Assert the `tmux-cli` CLI is reachable on PATH (e.g. `command -v tmux-cli` / `tmux-cli --version` exits 0) and that `tmux`, `docker`, and `claude` are present.</action>
+      <check condition="tmux-cli CLI not reachable on PATH">
+        <action>Print exactly: ERROR: tmux-cli CLI required on PATH but not found — install it (make install) and retry.</action>
+        <action>STOP. Do not provision anything.</action>
+      </check>
+      <note>The tmux-cli MCP server is intentionally NOT a precondition — driving is CLI-only by design (§3). MCP-not-required-to-drive is a property, not a gap.</note>
+    </step>
+
+    <step n="1b" title="Read project context + resume state">
+      <action>Read AGENTS.md (or CLAUDE.md if AGENTS.md is absent) from THIS repo root and internalize conventions, architecture, and constraints before driving any cycle. If neither exists, proceed without project context.</action>
+      <!-- SLOT: execute-4 resume-state read — on a no-arg re-invocation, read `.tmux-cli/e2e-evaluator/<scenario>.state.json`; if status==in-progress and cycle<=max_cycles, continue at `cycle` (design §6). execute-4 authors the read + resume-decision logic here. -->
+
+      <startup-assert title="STARTUP-ASSERT — §12 prerequisite soft-pause gate (runs FIRST, before RESUME and before any loop entry)">
+        <rule critical="true">This gate runs FIRST on every invocation — BEFORE the RESUME read below and BEFORE PROVISION/any cycle. The self-healing loop's autonomy depends on two ENVIRONMENT prerequisites (design §12): (a) the `/tmux:task-report` CONSUMER pipeline is live (a filed defect actually gets worked + committed), and (b) an AUTO-INSTALL WATCHER rebuilds `~/.local/bin/tmux-cli` on the new fix commit. tmux-cli ships NEITHER today (`make install` is manual), so they MUST be asserted, never assumed — without them the loop would file a defect and WAIT FOREVER.</rule>
+        <action>Probe (a) the task-report consumer is reachable (the consumer process/endpoint that drains filed tasks toward a fix commit) and (b) the auto-install watcher is present (the process that rebuilds the binary on a new commit).</action>
+        <check condition="EITHER the task-report consumer is unreachable OR the auto-install watcher is absent">
+          <action critical="true">SOFT-PAUSE — print exactly ONE human-actionable line and STOP without entering the loop: `⏸ paused: run `make install` and start the task-report consumer, then re-invoke /tmux:e2e-evaluator to resume`. This is a clean exit (feature.xml:57-75 graceful conditional-stage stop idiom), NOT an error and NOT a hang — a later re-invoke re-runs this gate and resumes from the persisted STATE_FILE.</action>
+          <action critical="true">NEVER `git pull` / `make install` / start the consumer YOURSELF — the orchestrator only FILES defects and WAITS for the external consumer + auto-install (design §12). Self-healing the prerequisite here would defeat the very condition this gate exists to surface.</action>
+        </check>
+        <note>SOFT-PAUSE ≠ failure: print + clean exit so a re-invoke resumes; never error, never loop (task-list.xml:31 fully-autonomous / never-hang mandate — print + exit, not block).</note>
+      </startup-assert>
+
+      <resume title="RESUME — read/init STATE_FILE, decide continue | stop | exhausted (the §6 resume read paired with step 10's write)">
+        <rule critical="true">RESUME is IDEMPOTENT — read → reconcile → atomic rewrite, modelled on task-list.xml:44-68 reconcile-on-every-invocation and :86-89 drain/re-check-on-each-run. A no-arg re-invocation after a cleared context continues the run; a re-invocation mid-cycle is safe (last-writer-wins via the step-8 temp + rename).</rule>
+        <action>Read `STATE_FILE = .tmux-cli/e2e-evaluator/&lt;scenario&gt;.state.json` (glossary STATE_FILE; §6 schema).</action>
+        <branch condition="STATE_FILE is MISSING">
+          <action>Treat as a FRESH run — this is NOT an error. Initialize `{ "scenario": &lt;scenario&gt;, "cycle": 1, "max_cycles": 10, "status": "in-progress", "history": [] }` and write it atomically (step 8). Missing file = cycle 1, never a failure.</action>
+        </branch>
+        <branch condition="STATE_FILE is PRESENT and `status` != `in-progress`">
+          <action>The run is already terminal (`passed` | `exhausted` | `escalated`) — STOP cleanly; do NOT enter the loop or redo cycles. Print the terminal status and the last REPORT_FILE path.</action>
+        </branch>
+        <branch condition="STATE_FILE is PRESENT, `status` == `in-progress`, and `cycle` &gt; `max_cycles`">
+          <action>The self-heal budget is spent — set `status: "exhausted"`, write atomically (step 8), and ESCALATE to the human (the §6 max-cycle guard). Do NOT enter the loop.</action>
+        </branch>
+        <branch condition="STATE_FILE is PRESENT, `status` == `in-progress`, and `cycle` &lt;= `max_cycles`">
+          <action>CONTINUE at `cycle` — because `cycle` is the NEXT cycle to run, cycles 1..`cycle`-1 are already done and are NOT re-run. Hand to PROVISION (step 2) for this cycle.</action>
+        </branch>
+      </resume>
+    </step>
+
+    <step n="2" title="PROVISION — fresh target dir + detached session + terminal discovery">
+      <action>RESOLVE the target dir: use `--project &lt;path&gt;` if given, else default to `/tmp/&lt;scenario&gt;-&lt;UTCstamp&gt;` (kept under `/tmp/`). `git init` the dir if the flow needs a repo (design §5).</action>
+      <check condition="the resolved dir already exists AND is non-empty">
+        <action>FAIL LOUD — do NOT reuse a dirty dir (a half-reaped prior cycle). Abort the cycle and report; the next cycle picks a fresh stamped dir. (Pristine-every-cycle, §10.)</action>
+      </check>
+      <action>Start the TARGET session DETACHED via `tmux-cli start` bound to an EXACT, recorded session name (this exact name is the only safe kill target in TEARDOWN — never a pattern). The detached session works headless: send-keys/capture-pane/pipe-pane all operate without an attached terminal (design §3).</action>
+      <check condition="`tmux-cli start` errors after its own retries">
+        <action>Abort this cycle and report the start failure (a harness/infra defect — see &lt;error-reporting&gt;). Do not proceed to BOOTSTRAP on a session that did not come up.</action>
+      </check>
+      <action>TERMINAL DISCOVERY (human view only, never required to drive — decision #4): if `$DISPLAY` is set, probe native terminals in a fixed order and attach the FIRST found (Konsole wins on this host). EXCLUDE the Flatpak Konsole — it is sandboxed (no host binary/TTY) and is a trap.</action>
+      <branch condition="no native terminal found OR no `$DISPLAY`">
+        <action>Run FULLY HEADLESS (no attach) and CONTINUE — this is NOT an error. Driving a detached session is unaffected (works in CI/SSH).</action>
+      </branch>
+    </step>
+
+    <step n="3" title="BOOTSTRAP — launch claude + inject orchestrator pane + start pipe-pane">
+      <action>Resolve THIS orchestrator's own pane id and export it into the target launch environment as `TMUX_CLI_ORCHESTRATOR_PANE` — the target's `tmux-cli notify-orchestrator "&lt;msg&gt;"` (execute-1 primitive) reads it to reply to this pane atomically (design §4 / decision #1).</action>
+      <action>Launch `claude` in the TARGET session with the trust prompt PRE-ACCEPTED and bypass-permissions mode ON, so respawns are non-interactive. IGNORE the "N MCP servers need authentication" warning — only the `tmux-cli` MCP server matters to the target's flow (design §5 / decision #5).</action>
+      <action critical="true">Start the PIPE-PANE LOG IMMEDIATELY once the target pane exists and BEFORE any DRIVE: `tmux pipe-pane -o -t &lt;target-pane&gt; 'cat &gt;&gt; &lt;session&gt;.log'`. Use `-o` (append) so a re-attach never truncates. This log is the transcript of record — assertions grep it, not the screen (design §4).</action>
+      <check condition="pipe-pane fails to start">
+        <action>ABORT the cycle (no transcript = no reliable assertions) and report. Do not DRIVE into an untranscribed session.</action>
+      </check>
+      <action>Wait for the target to be DRIVE-ready before handing off to the loop: poll the log/pane until the idle `❯` prompt is stable and no spinner (Cogitating/Germinating…) is running (design §4).</action>
+    </step>
+
+    <!-- SLOT steps 4–7: execute-3 LOOP (DRIVE / WATCH / MEASURE / JUDGE / TRIAGE) — design §2/§4/§7/§8/§9/§13.
+         execute-3 authors here, in order:
+           step n="4"  DRIVE   — send the scenario instruction (two-step send, §4); drive the real flow.
+           step n="5"  WATCH   — PRIMARY: target notify-orchestrator reports; FALLBACK: pipe-pane/capture-pane on silence (§4/§9).
+           step n="6"  MEASURE — per-goal + per-phase start/end timings; achieved-parallelism vs max_goals (§9/§13).
+           step n="7"  JUDGE + TRIAGE — verify the §8 end-state (app up: GET /login=200, dashboard unauth=302/401, auth=200) + timing (§9);
+                        PASS → stop the loop; FAIL → TRIAGE (§7: defect→/tmux:task-report→/tmux:task-list to resolved→wait fix+install→TEARDOWN→next cycle).
+         This slice provides the TEARDOWN subroutine (step 11) the loop calls between cycles; it does NOT author these steps. -->
+
+    <step n="4" title="DRIVE — self-healing loop body + two-step send">
+      <rule critical="true">SELF-HEALING LOOP CONTROL. Steps 4–7 are the cycle body; one CYCLE = PROVISION (step 2) → BOOTSTRAP (step 3) → DRIVE (4) → WATCH (5) → MEASURE (6) → JUDGE/TRIAGE (7) → REPORT (execute-4 steps 8–9) → TEARDOWN (step 11). Run AT MOST 10 cycles, PRISTINE each (TEARDOWN reaps the prior target before the next PROVISION). Maintain a cycle counter in run-state (execute-4's state.json).</rule>
+      <check condition="the cycle counter would exceed 10 (an 11th cycle)">
+        <action>Do NOT start another cycle. Set `status: exhausted` in run-state and ESCALATE to the human (the self-heal budget is spent — repeated failures need a person). STOP the loop. This is the loop guard; a max-10-cycle run never silently spins.</action>
+      </check>
+      <action>Confirm DRIVE-readiness FIRST (carried from BOOTSTRAP step 3 and re-checked before every send): poll the pipe-pane log / `capture-pane` until the idle `❯` prompt is stable and no spinner (Cogitating/Germinating…) is running. Never send into a busy prompt (design §4).</action>
+      <action critical="true">TWO-STEP SEND, ALWAYS. Send the scenario instruction (and every later input) in TWO separate tmux calls: (1) the TEXT via `tmux load-buffer` + `tmux paste-buffer -t &lt;target-pane&gt;` (multi-line/quoted input — no shell-escaping), or `tmux send-keys -l` for a short single line; THEN (2) a SEPARATE `tmux send-keys -t &lt;target-pane&gt; Enter`. NEVER merge the text and the Enter — the PoC failure mode was a forgotten/merged Enter (design §4). Drive the REAL flow (discovery → roadmap-generation → preflight gate (step 4b) → taskvisor → running app); never re-derive discovery questions or the goal enumeration.</action>
+      <action>After the instruction lands, hand control to WATCH (step 5) — do NOT poll the live channel; the target reports milestones via `tmux-cli notify-orchestrator`.</action>
+    </step>
+
+    <step n="4b" title="Preflight — HARD GATE between roadmap-generated and taskvisor-start">
+      <rule critical="true">This gate runs ONCE per cycle, AFTER the target's roadmap/`goals.yaml` is generated and elaborated, and BEFORE the target is driven to `taskvisor-start`. Real parallelism needs ALL of: the cap flipped, a parallelizable DAG, disjoint scopes, and host capacity (design §13/§14.1). A FAILED preflight BLOCKS `taskvisor-start` for this cycle (do not DRIVE the start) — the roadmap must be corrected (a planner/elaborator defect, not a worker one) before goals are consumed.</rule>
+      <action n="1" title="Set the cap (runtime override, no restart)">Write `max_goals=3` via the `.tmux-cli/taskvisor-concurrency` runtime override (`ConcurrencyOverridePath()`, concurrency.go:28) — NOT `setting.yaml` (which would need a daemon restart). N=3 is the conservative start for one dev host; step 5 below may raise it to 4 ONLY after host capacity is confirmed.</action>
+      <action n="2" title="Prove the DAG is parallelizable">Run plan-audit over the generated `goals.yaml` using `DetectOverSerialized` (depinfer.go:329) — do NOT hand-roll a DAG check.</action>
+      <check condition="DetectOverSerialized returns a non-nil SerializationFinding (near-linear / fan-out≤1 / runnable≤1)">
+        <action>FAIL preflight and BLOCK `taskvisor-start`. The roadmap is over-serialized (no concurrency possible); the produce/consume `depends_on` must be fixed before start. Route as a planner/elaborator defect via TRIAGE (step 7), not a worker retry.</action>
+      </check>
+      <action n="3" title="Verify disjoint scopes">Assert the about-to-run-concurrently goals declare disjoint file `Scope` using `DisjointReadySet(maxGoals)` (scope_gate.go:162) — the same gate the scheduler uses in slot-fill (statemachine.go:160).</action>
+      <check condition="DisjointReadySet would serialize the ready set (overlapping OR unknown scope)">
+        <action>FAIL preflight and BLOCK `taskvisor-start`, FLAGGING the offending goal(s) whose Scope overlaps or is unknown (unknown scope = silently serialized). Fix the roadmap scopes before start.</action>
+      </check>
+      <action n="4" title="Right-size goals">Confirm goals are sized to ~20 min of work each (the 20-min/goal target is achieved by SIZING + parallelism, not by a bigger ceiling — design §14.3). Oversized goals are a roadmap-correction signal, not a ceiling bump.</action>
+      <action n="5" title="Confirm host capacity">Verify the host can run N concurrent docker compose stacks + worktrees (CPU/RAM) with NO host-port collisions (stacks are network-internal by default per the stack convention). Only if capacity is confirmed may N be raised to 4; otherwise keep 3.</action>
+      <action n="6" title="Set the ceilings as soft guardrails">Set `max_wall_clock_sec` ∈ [1800, 2700] (a generous 30–45 min safety net) — NEVER a tight 30-min-minus value that would kill legitimately-borderline goals; enforced softly. Keep `progress_timeout_sec` ≈ 300 (config.go:93) so a wedged goal dies in ~5 min instead of eating the whole ceiling, and so it matches the WATCH silence window (step 5).</action>
+    </step>
+
+    <step n="5" title="WATCH — event-driven primary, capture-pane fallback on silence">
+      <rule critical="true">EVENT-DRIVEN, NEVER POLL A LIVE CHANNEL. The PRIMARY signal is the target reporting milestones via `tmux-cli notify-orchestrator "&lt;msg&gt;"` (execute-1 primitive) into THIS orchestrator's pane (`TMUX_CLI_ORCHESTRATOR_PANE`, injected at BOOTSTRAP). Idle and react to those reports — do not `sleep`-poll or screen-scrape while the channel is live (design §4).</rule>
+      <branch tag="notify-orchestrator milestone arrives">
+        <action>Record the event, RESET the silence timer, and advance WATCH to the next expected milestone (discovery-done → roadmap-generated → preflight-passed → goals-dispatched → goals-done → app-up). The reset is what keeps a healthy long-running phase from tripping the fallback.</action>
+      </branch>
+      <timeout>
+        <rule critical="true">Fire the FALLBACK only on (a) 300s of heartbeat-SILENCE (no `notify-orchestrator` line) OR (b) ANY phase breaching its §9 hard ceiling — whichever first. 300s ties to `ProgressTimeoutSec` (config.go:93) so the orchestrator wakes to diagnose at the SAME cadence the daemon would kill a wedged window — no premature false-trigger, no missed hang. The ceiling breach is the second, independent trigger (regardless of the silence timer).</rule>
+        <action>FALLBACK DIAGNOSIS (read-only): `grep` the PIPE-PANE LOG and run `tmux capture-pane -p -t &lt;target-pane&gt;` to read the target's current state. If the log shows real progress (the channel just went quiet) → treat as variance, resume WATCH. If wedged (no progress, error, hung spinner) → hand to JUDGE/TRIAGE (step 7) as a candidate hang.</action>
+      </timeout>
+      <action>Continue WATCHing until the cycle reaches a terminal milestone (app-up = candidate PASS) or a fallback diagnoses a wedge (candidate FAIL) — then proceed to MEASURE (step 6) and JUDGE/TRIAGE (step 7).</action>
+    </step>
+
+    <step n="6" title="MEASURE — per-phase timings + achieved parallelism (soft guardrails)">
+      <action>Record start/end timestamps for EVERY goal and EVERY phase (`elaborate`, `implement`, `investigate`, `validate`) — taskvisor already drives these transitions; read them from goal state + the pipe-pane log, do not re-instrument the daemon (design §9).</action>
+      <action>Across cycles, compute per-phase p50 / p90 / p95. Set the WARN threshold at observed p90 and the hard ceiling at `max(absolute §9 ceiling, p95 × 1.5)`. Flag any goal/phase over WARN (investigate) or over the ceiling (treat as a hang → fallback diagnosis (step 5) → TRIAGE (step 7)).</action>
+      <action>Record the MEAN in-flight goals per tick (achieved parallelism) vs `max_goals`. Achieved-parallelism ≪ N at `max_goals>1` is ITSELF a defect signal — the DAG/scopes serialized; route it as a planner/elaborator defect (over-serialized `depends_on` or non-disjoint Scope), NOT a worker retry (design §14.3).</action>
+      <rule>Timing thresholds are SOFT guardrails tuned from observed data — they feed reports + defect signals, they do not hard-kill goals (the daemon's `max_wall_clock_sec`/`progress_timeout_sec` own enforcement).</rule>
+    </step>
+
+    <step n="7" title="JUDGE + TRIAGE — verify end-state, file defects only on reproduce">
+      <action>JUDGE against the §8 end-state (full-flow scenario): discovery produced `docs/architecture/*`; a roadmap `goals.yaml` was generated; taskvisor drove all goals to `done`; AND the app is actually up — `GET /login` → 200, dashboard route unauthenticated → 302/401, authenticated request → 200 (a green daemon with a dead app is a FALSE pass). Combine with the MEASURE verdict: GREEN requires the build passing AND p90 within target (design §8/§13).</action>
+      <branch tag="PASS — end-state + timing both green">
+        <action>Stop the loop: hand to execute-4's SUCCESS step (step 10). No TRIAGE, no task-report.</action>
+      </branch>
+      <branch tag="FAIL — end-state unmet or a phase wedged/over-ceiling">
+        <action>Enter TRIAGE. Classify the failure with the defect-vs-variance-vs-bad-input rule below; only a tmux-cli DEFECT earns a `/tmux:task-report` (design §7).</action>
+      </branch>
+      <table title="Failure triage (decision authority: orchestrator, gated by reproduce-on-clean-retry)">
+        <row class="tmux-cli defect">reproduces on a clean PRISTINE retry with the SAME DEFECT SIGNATURE; failure is in the TOOLING (dispatch / worktree / compose / elaboration / daemon / planner-over-serialization), not the worker's code choices → FILE `/tmux:task-report`.</row>
+        <row class="agent/LLM variance">does NOT reproduce on a clean retry (a one-off bad worker choice / model noise) → RECORD as variance, retry the cycle, NEVER file a task-report.</row>
+        <row class="bad test input">the scenario/instruction itself was malformed → FIX the input, retry, NEVER file a task-report.</row>
+      </table>
+      <rule critical="true">DEFECT SIGNATURE = the normalized {phase, reason-class, area} tuple — lowercase and STRIP volatile goal-instance ids/timestamps (goal-007 vs goal-008, run stamps) so the SAME defect dedupes across cycles. This signature powers both DEDUP and the loop guard below.</rule>
+      <action>On a confirmed defect (reproduced on clean retry, same signature): invoke the `/tmux:task-report` skill (DEDUP key = category+title+goal_id; `proposed_fix` non-stub; honoring api.enabled / RECURSION-guard) — do NOT re-implement reporting here (see task-report.xml). Then poll `/tmux:task-list` until the filed task is `resolved`, and WAIT for the fix commit + external auto-install to rebuild the binary (the orchestrator never runs `git pull`/`make install` itself — design §12). Then TEARDOWN (step 11) → next cycle.</action>
+      <check condition="the SAME defect signature fails twice AFTER a fix landed">
+        <action>ESCALATE to the human and stop thrashing — do NOT re-file the same task. Same-signature-twice-after-fix is the convergence loop guard (design §7).</action>
+      </check>
+    </step>
+
+    <!-- SLOT steps 8–10: execute-4 STATE / REPORT / SUCCESS+RESUME — design §6/§8/§12.
+         execute-4 authors here, in order:
+           step n="8"  STATE   — write/update `.tmux-cli/e2e-evaluator/<scenario>.state.json` (cycle/status/history, §6).
+           step n="9"  REPORT  — write `.tmux-cli/e2e-evaluator/e2e-report-cycle-<n>.md` (drove/failed/signature/task/timing/verdict, §6).
+           step n="10" SUCCESS + RESUME — green stop (build passed AND p90 within target, §8/§13); else max-10-cycle guard → status:exhausted → escalate (§6).
+         The resume-state READ is execute-4's slot inside step 1b above (paired with this WRITE). -->
+
+    <step n="8" title="STATE — write/update the durable run-state atomically (§6)">
+      <rule critical="true">STATE_FILE = `.tmux-cli/e2e-evaluator/&lt;scenario&gt;.state.json` is the durable cycle ledger that the self-healing loop (step 4 — its `cycle` counter and `status: exhausted` write live HERE) and RESUME (step 1b) both read. Schema (§6): `{ "scenario", "cycle", "max_cycles": 10, "status", "history": [ {cycle, outcome, defect_signature, task_reported, task_status, git_after, app_up, durations} ] }`; `status` ∈ `in-progress` | `passed` | `exhausted` | `escalated`.</rule>
+      <rule critical="true">ATOMIC WRITE ONLY — write to a `&lt;scenario&gt;.state.json.tmp` temp file then `rename(2)` over the target (temp + rename, last-writer-wins), modelled on task-list.xml's atomic ledger rewrite (:44-68). NEVER truncate-in-place: a concurrent re-invocation must never observe a half-written file (resume idempotency; TestState_AtomicRewrite).</rule>
+      <rule critical="true">`cycle` SEMANTICS — `cycle` is the NEXT cycle to run, NOT the last completed. Bump `cycle` ONLY AFTER the REPORT step (9) has written its report; the just-finished cycle's `history[]` entry carries `cycle = cycle-1` (post-bump). Never off-by-one.</rule>
+      <action>On a FAILED cycle: append the `history[]` entry (`cycle`, `outcome:"failed"`, `defect_signature`, `task_reported`, `task_status`, `git_after`, `app_up`, `durations` from MEASURE step 6) and bump `cycle += 1`; keep `status: "in-progress"`.</action>
+      <action>On the max-cycle guard (step 4 loop guard / RESUME): set `status: "exhausted"` (the exact value execute-3's loop guard and RESUME both write) and do NOT bump `cycle` past `max_cycles`.</action>
+      <action>On a PASSED cycle (step 10 SUCCESS): set `status: "passed"`, append the final `history[]` entry (with `app_up:true`), and do NOT bump `cycle` — the loop stops.</action>
+    </step>
+
+    <step n="9" title="REPORT — write the per-cycle markdown report, then append history + rewrite state (§6)">
+      <rule critical="true">Post-cycle (after JUDGE/TRIAGE, step 7), write REPORT_FILE = `.tmux-cli/e2e-evaluator/e2e-report-cycle-&lt;n&gt;.md` with this EXACT, FIXED section order — every section present every cycle:</rule>
+      <section n="1" name="Driven Summary">what the cycle drove: scenario, target dir/session, and the phases reached (discovery → roadmap → preflight → taskvisor → app-up).</section>
+      <section n="2" name="Failure Point">the phase + milestone where the cycle failed (or "none — passed"); for a wedge, the silence/§9-ceiling trigger that fired (step 5).</section>
+      <section n="3" name="Defect Signature">the normalized {phase, reason-class, area} tuple (step 7) with volatile goal-instance ids/timestamps stripped — or "none" on PASS / variance / bad-input.</section>
+      <section n="4" name="Filed Task">the `/tmux:task-report` task id + its current `/tmux:task-list` status (e.g. `task-281` / `resolved`) — or "none filed (variance / bad-input / pass)".</section>
+      <section n="5" name="Timing Table">per-phase p90 (elaborate / implement / investigate / validate) AND the mean in-flight goals (achieved parallelism), BOTH from execute-3's MEASURE (step 6, §9/§13). A p90 over target, or mean in-flight ≪ `max_goals`, is flagged here as a perf/over-serialization signal.</section>
+      <section n="6" name="Verdict">PASS | FAIL | EXHAUSTED, with the one-line reason. PASS REQUIRES `app_up:true` (step 10 false-pass guard) — never declare PASS on "all goals done" alone.</section>
+      <action>After writing REPORT_FILE, append the cycle's `history[]` entry and rewrite STATE_FILE atomically (step 8). Report-THEN-state ordering keeps the report on disk BEFORE the `cycle` bump points the next resume past it (no report-less gap on a mid-write crash).</action>
+    </step>
+
+    <step n="10" title="SUCCESS-CRITERIA + green-stop — the §8 end-state JUDGE (step 7) consults; the app-up probe is the gate">
+      <rule critical="true">SUCCESS-CRITERIA (consulted by execute-3's JUDGE, step 7). FULL-FLOW PASS requires ALL FOUR, ANDed: (1) discovery docs present (`docs/architecture/*`); (2) a roadmap `goals.yaml` was generated; (3) taskvisor drove ALL goals to `done`; (4) the app is VERIFIABLY UP (the app-up probe below).</rule>
+      <action n="app-up" critical="true">APP-UP PROBE (the gate): `docker compose up` the target stack, then assert `GET /login` → 200, the dashboard route UNAUTHENTICATED → 302/401, and an AUTHENTICATED request → 200. Record the boolean as `app_up` in the cycle's `history[]` entry (step 8).</action>
+      <rule critical="true">FALSE-PASS GUARD — JUDGE may NOT return PASS while `app_up:false`. "All goals done" alone is NEVER a pass: a green daemon with a dead app is a false pass (design §8 deliverable-pinning). If every goal is `done` but the app-up probe fails, the verdict is FAIL with `app_up:false` → route to TRIAGE (step 7). The app-up probe — not goal status — is the gate.</rule>
+      <action n="secondary">SINGLE-COMMAND secondary mode: when the thing-under-test is a single command (not the full flow), derive the intended end-state from THAT command's own skill/XML `description`/contract and assert the concrete artifacts it CLAIMS to produce (design §8 secondary).</action>
+      <branch tag="PASS — all four criteria green AND app_up:true AND p90 within target (§13)">
+        <action>Set `status: "passed"` (step 8), write the final report (step 9), and STOP the loop — no further cycles, no TRIAGE, no task-report.</action>
+      </branch>
+      <branch tag="not green — any criterion unmet, or app_up:false, or a phase over §9 ceiling">
+        <action>Verdict FAIL → JUDGE hands to TRIAGE (step 7). If this was already the max cycle, the RESUME / step-4 loop guard sets `status: "exhausted"` and escalates instead of re-cycling.</action>
+      </branch>
+    </step>
+
+    <step n="11" title="TEARDOWN — ordered reap (subroutine the loop calls between cycles and at terminal stop)">
+      <rule critical="true">Reap ALL artifacts the run spawned OUTSIDE `/tmp` (docker compose stacks, git worktrees, a taskvisor daemon) IN ORDER — stop consumers before removing what they hold. A step's failure is LOGGED but the reap CONTINUES to the next step (never abort the reap on a single failure). Mirrors the per-worktree compose-stack ordering fix: down stacks before removing the worktrees that hold them (design §10).</rule>
+      <action n="1" title="Stop the daemon">Stop the target's taskvisor/`tmux-cli` daemon for the target (graceful stop by the target's own handle).</action>
+      <action n="2" title="Down docker stacks">`docker compose down` EVERY stack the run created (network-internal by default per the stack convention, but still must be downed or they leak + collide on host ports across cycles).</action>
+      <action n="3" title="Remove worktrees + branches">Remove the run's git worktrees and their `taskvisor/&lt;goal-id&gt;` branches.</action>
+      <action n="4" title="Kill the session">`tmux kill-session -t &lt;target-session&gt;` by EXACT recorded name.</action>
+      <action n="5" title="Remove the dir">`rm -rf /tmp/&lt;scenario&gt;-&lt;ts&gt;` (the disposable target dir).</action>
+      <rule critical="true">NEVER `pkill -f &lt;projectname&gt;` (or any cmdline pattern that matches THIS teardown) — it SIGTERMs the teardown itself (exit 144, `rm` skipped). Target by EXACT session name + tracked PIDs only (design §10).</rule>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>DRIVE VIA CLI + RAW TMUX, NEVER the tmux-cli MCP tools: `tmux-cli` CLI + `tmux send-keys`/`paste-buffer`/`load-buffer`/`pipe-pane`/`kill-session` are re-read from disk per call and survive a mid-loop `make install`; MCP tools are frozen at the target's Claude startup (design §3).</rule>
+    <rule>TWO-STEP SEND ALWAYS: text (`paste-buffer`/`send-keys -l`, or `load-buffer`+`paste-buffer` for multi-line/quoted) THEN a SEPARATE `Enter` — never combined (design §4).</rule>
+    <rule>NEVER `pkill -f &lt;projectname&gt;` in TEARDOWN — reap by exact session name + tracked PIDs only; a cmdline-pattern kill SIGTERMs the teardown (design §10).</rule>
+    <rule>PIPE-PANE in BOOTSTRAP before any DRIVE, `-o` (append); the log is the transcript of record — assertions grep the log, not the screen (design §4).</rule>
+    <rule>Self-test ONLY: never ship/point this at an end-user project; it drives disposable targets to verify + self-heal tmux-cli's own flow (design §14).</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm final="true">
+    <critical-rules>
+      • Drive the target via the tmux-cli CLI + raw tmux (send-keys/paste-buffer/load-buffer/pipe-pane) — NEVER the tmux-cli MCP tools (frozen at startup; CLI survives mid-loop rebuilds, design §3)
+      • Two-step send always — text THEN a separate Enter; large/quoted input via load-buffer+paste-buffer (design §4)
+      • TEARDOWN reaps in order (daemon → compose down → worktrees+branches → kill-session → rm -rf), continues past a single failure, and NEVER pkill -f &lt;projectname&gt; (design §10)
+      • BOOTSTRAP injects TMUX_CLI_ORCHESTRATOR_PANE (the execute-1 notify-orchestrator contract) and starts pipe-pane BEFORE any DRIVE; PROVISION fails loud on a dirty dir (pristine every cycle)
+      • This slice authors ONLY steps 1/1b/2/3/11 — steps 4–10 are execute-3 (loop) and execute-4 (state/report) SLOTs; do not author or renumber them
+      • Self-test conductor only — never ship to drive end-user projects; only a defect that reproduces on a clean retry earns a task-report (design §7/§14)
+    </critical-rules>
+  </llm>
+</task>

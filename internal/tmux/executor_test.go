@@ -52,6 +52,10 @@ func (m *mockExecutor) SendMessageWithDelay(sessionID, windowID, message string)
 	return nil
 }
 
+func (m *mockExecutor) NotifyPane(paneID, message string) error {
+	return nil
+}
+
 func (m *mockExecutor) KillWindow(sessionID, windowID string) error {
 	return nil
 }
@@ -103,4 +107,13 @@ func TestTmuxExecutor_Interface_HasSendMessage(t *testing.T) {
 
 	// Verify the method exists by attempting to call it (won't actually execute)
 	_ = executor.SendMessage
+}
+
+func TestTmuxExecutor_Interface_HasNotifyPane(t *testing.T) {
+	// This test verifies that NotifyPane is part of the TmuxExecutor interface
+	// It will fail to compile until NotifyPane is added to the interface definition
+	var executor TmuxExecutor = (*mockExecutor)(nil)
+
+	// Verify the method exists by referencing it (won't actually execute)
+	_ = executor.NotifyPane
 }

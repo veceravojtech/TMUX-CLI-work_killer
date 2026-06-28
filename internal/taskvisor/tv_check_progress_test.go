@@ -1,7 +1,6 @@
 package taskvisor
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -407,8 +406,8 @@ func TestCheckProgress_Validating_CrashDetected(t *testing.T) {
 }
 
 func TestCheckSupervisingPhase_Done_LogsGoalDone(t *testing.T) {
-	// After always-validate: validate.sh pass no longer short-circuits to GoalDone.
-	// It must transition to phaseValidating and set rt.scriptPassed=true.
+	// Validation is non-deterministic: a supervisor "done" no longer short-circuits
+	// to GoalDone, it transitions to phaseValidating where the LLM validator judges.
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
@@ -422,9 +421,8 @@ func TestCheckSupervisingPhase_Done_LogsGoalDone(t *testing.T) {
 		},
 	}
 	writeGoals(t, dir, gf)
-	goalDir, err := EnsureGoalDir(dir, "goal-001")
+	_, err := EnsureGoalDir(dir, "goal-001")
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
 
 	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
 		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
@@ -433,9 +431,6 @@ func TestCheckSupervisingPhase_Done_LogsGoalDone(t *testing.T) {
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
 	setupValidatorMocks(exec, testSession, "@5")
 	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
-	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
-		return "", "", 0, nil
-	})
 
 	goal := &gf.Goals[0]
 	output := captureLog(t, func() {
@@ -443,7 +438,6 @@ func TestCheckSupervisingPhase_Done_LogsGoalDone(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, output, "goal-001: phase supervising -> validating")
-	assert.True(t, d.runtime("goal-001").scriptPassed, "scriptPassed must be true when validate.sh exits 0")
 	assert.Equal(t, phaseValidating, d.runtime("goal-001").phase)
 }
 
@@ -550,193 +544,4 @@ func TestCheckProgress_Supervising_TimeoutExceeded_KillsWindows(t *testing.T) {
 	data, readErr := os.ReadFile(correctionPath)
 	require.NoError(t, readErr)
 	assert.Contains(t, string(data), "timed out")
-}
-
-func TestCheckSupervisingPhase_ValidatePass_SetsScriptPassed(t *testing.T) {
-	d, exec, dir := setupDaemon(t)
-	d.session = testSession
-	d.mode = modeActive
-	d.runtime("goal-001").phase = phaseSupervising
-	d.validatorSendDelay = 0
-
-	gf := &GoalsFile{
-		CurrentGoal: "goal-001",
-		Goals: []Goal{
-			{ID: "goal-001", Description: "test", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
-		},
-	}
-	writeGoals(t, dir, gf)
-	goalDir, err := EnsureGoalDir(dir, "goal-001")
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
-
-	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
-		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
-	}))
-
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
-	setupValidatorMocks(exec, testSession, "@5")
-	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
-	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
-		return "", "", 0, nil
-	})
-
-	goal := &gf.Goals[0]
-	err = d.checkSupervisingPhase(goal, gf)
-	require.NoError(t, err)
-
-	rt := d.runtime("goal-001")
-	assert.True(t, rt.scriptPassed, "scriptPassed must be true when validate.sh exits 0")
-	assert.Equal(t, phaseValidating, rt.phase, "must transition to validating, not done")
-}
-
-func TestCheckSupervisingPhase_ValidateFail_ScriptPassedFalse(t *testing.T) {
-	d, exec, dir := setupDaemon(t)
-	d.session = testSession
-	d.mode = modeActive
-	d.runtime("goal-001").phase = phaseSupervising
-	d.validatorSendDelay = 0
-
-	gf := &GoalsFile{
-		CurrentGoal: "goal-001",
-		Goals: []Goal{
-			{ID: "goal-001", Description: "test", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
-		},
-	}
-	writeGoals(t, dir, gf)
-	goalDir, err := EnsureGoalDir(dir, "goal-001")
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 1\n"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.md"), []byte("- check tests\n"), 0o644))
-
-	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
-		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
-	}))
-
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
-	setupValidatorMocks(exec, testSession, "@5")
-	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
-	d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
-		return "", "tests failed", 1, nil
-	})
-
-	goal := &gf.Goals[0]
-	err = d.checkSupervisingPhase(goal, gf)
-	require.NoError(t, err)
-
-	rt := d.runtime("goal-001")
-	assert.False(t, rt.scriptPassed, "scriptPassed must be false when validate.sh exits non-zero")
-	assert.Equal(t, phaseValidating, rt.phase, "must transition to validating")
-}
-
-func TestCheckValidatingPhase_P7Gate_ScriptPassedTrue_Passes(t *testing.T) {
-	d, exec, dir := setupDaemon(t)
-	d.session = testSession
-	d.mode = modeActive
-	d.runtime("goal-001").phase = phaseValidating
-	d.runtime("goal-001").scriptPassed = true
-
-	gf := &GoalsFile{
-		CurrentGoal: "goal-001",
-		Goals: []Goal{
-			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-05-20T10:00:00Z",
-				Validate: []string{"go test ./..."}, MaxRetries: 3},
-			{ID: "goal-002", Description: "next", Status: GoalPending},
-		},
-	}
-	writeGoals(t, dir, gf)
-	_, err := EnsureGoalDir(dir, "goal-001")
-	require.NoError(t, err)
-
-	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
-		Verdict: "pass", Timestamp: "2026-05-20T14:35:00Z",
-	}))
-
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator-001"},
-	}, nil).Once()
-	exec.On("KillWindow", testSession, "@5").Return(nil)
-
-	goal := &gf.Goals[0]
-	err = d.checkValidatingPhase(goal, gf)
-	require.NoError(t, err)
-
-	assert.Equal(t, GoalDone, goal.Status, "P7 gate must allow pass when ScriptPassed=true")
-}
-
-func TestCheckValidatingPhase_P7Gate_ScriptPassedFalse_Downgrades(t *testing.T) {
-	d, exec, dir := setupDaemon(t)
-	d.session = testSession
-	d.mode = modeActive
-	d.runtime("goal-001").phase = phaseValidating
-	d.runtime("goal-001").scriptPassed = false
-	d.validatorSendDelay = 0
-
-	gf := &GoalsFile{
-		CurrentGoal: "goal-001",
-		Goals: []Goal{
-			{ID: "goal-001", Description: "test", Status: GoalRunning, StartedAt: "2026-05-20T10:00:00Z",
-				Validate: []string{"go test ./..."}, MaxRetries: 3, ValidationRetries: 2, MaxValidationRetries: 2},
-		},
-	}
-	writeGoals(t, dir, gf)
-	_, err := EnsureGoalDir(dir, "goal-001")
-	require.NoError(t, err)
-
-	require.NoError(t, SaveValidatorSignal(dir, "goal-001", &ValidatorSignal{
-		Verdict: "pass", Timestamp: "2026-05-20T14:35:00Z",
-	}))
-
-	// killWindowByName("validator-001")
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@5", Name: "validator-001"},
-	}, nil).Once()
-	exec.On("KillWindow", testSession, "@5").Return(nil)
-	// rerunValidationOnly: killWindowByName("validator-001") + createValidator
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Once()
-	setupValidatorMocks(exec, testSession, "@6")
-	d.SetWindowCreateFunc(mockCreateWindowFn("@6"))
-
-	goal := &gf.Goals[0]
-	err = d.checkValidatingPhase(goal, gf)
-	require.NoError(t, err)
-
-	assert.NotEqual(t, GoalDone, goal.Status, "P7 gate must downgrade pass when ScriptPassed=false")
-	reloaded, err := LoadGoals(dir)
-	require.NoError(t, err)
-	assert.Equal(t, 1, reloaded.Goals[0].ValidationRetries, "ValidationRetries must be decremented (error/ops route)")
-}
-
-func TestCheckSupervisingPhase_NoValidateScript_ScriptPassedFalse(t *testing.T) {
-	d, exec, dir := setupDaemon(t)
-	d.session = testSession
-	d.mode = modeActive
-	d.runtime("goal-001").phase = phaseSupervising
-	d.validatorSendDelay = 0
-
-	gf := &GoalsFile{
-		CurrentGoal: "goal-001",
-		Goals: []Goal{
-			{ID: "goal-001", Description: "test", Status: GoalRunning, Acceptance: []string{"it works"}, MaxRetries: 3},
-		},
-	}
-	writeGoals(t, dir, gf)
-	_, err := EnsureGoalDir(dir, "goal-001")
-	require.NoError(t, err)
-
-	require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
-		Status: "done", Timestamp: "2026-05-20T14:30:00Z",
-	}))
-
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil).Times(2)
-	setupValidatorMocks(exec, testSession, "@5")
-	d.SetWindowCreateFunc(mockCreateWindowFn("@5"))
-
-	goal := &gf.Goals[0]
-	err = d.checkSupervisingPhase(goal, gf)
-	require.NoError(t, err)
-
-	rt := d.runtime("goal-001")
-	assert.False(t, rt.scriptPassed, "scriptPassed must be false when no validate.sh exists")
-	assert.Equal(t, phaseValidating, rt.phase, "must transition to validating")
 }

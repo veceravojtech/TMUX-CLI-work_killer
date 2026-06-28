@@ -159,7 +159,7 @@ func portStripOverride(appSvc string) string {
 // worktree, (3) runs `docker compose -p <project> -f <base> -f <override> up -d`
 // with cwd=worktree, and (4) — when BaselineCmd is set — runs it via `exec -T
 // <appSvc> sh -c <cmd>` so the fresh per-worktree DB is migrated before the
-// deterministic validate.sh ever touches it. Any non-zero exit or exec error is
+// validator's commands ever touch it. Any non-zero exit or exec error is
 // wrapped and returned; Up never auto-fires Down on failure (the caller decides).
 func (s *ComposeStack) Up(ctx context.Context) error {
 	if s.BaseFile == "" {

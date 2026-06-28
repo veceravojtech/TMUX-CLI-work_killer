@@ -27,7 +27,7 @@
 
 | Observed failure (productivityTool) | Mechanism | Root: authored-too-early field |
 |---|---|---|
-| goal-014 `failed_by: runner-missing` | `bin/ensure-test-stack.sh` runs `bin/console` on the **host** (no PHP); exit 127 → `haltRunnerMissing` → soft cascade parks 20 dependents | The `validate[]` and the generated stack script were written at plan time against a test-stack/runtime that did not yet exist |
+| goal-014 `failed_by: runner-missing` | `bin/ensure-test-stack.sh` runs `bin/console` on the **host** (no PHP); exit 127 → runner-missing halt → soft cascade parks 20 dependents | The `validate[]` and the generated stack script were written at plan time against a test-stack/runtime that did not yet exist |
 | In-container boot fails: `config/services.yaml` imports `../contexts/identity/app/src/` "does not exist" | Kernel can't boot → every `bin/console` validate would fail even once the runner is fixed | The import path was a **guess**; the real tree (previo2 triad conversion, goal-037) diverged from the plan-time model |
 | goals 009–011 marked `done` with **zero** migration files and no `doctrine_migrations.yaml` | `doctrine:migrations:migrate` is a no-op → empty schema → fixtures fail `42P01` | The up-front author cannot write a `validate` that **pins a deliverable it cannot see**, so "done" was vacuous (false-pass, defect-256/260 family) |
 | Stranded worktree merge-backs (goal-013 salvaged) | Work lands on a branch the next goal's worktree never sees | Goals specced against an imagined end-state, not the tree actually present in the worktree at dispatch |

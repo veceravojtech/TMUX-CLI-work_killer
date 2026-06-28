@@ -15,16 +15,16 @@ this repo, not a docker-runtime contract).
 
 When taskvisor runs a goal in an isolated git worktree under `MaxGoals > 1` (or a
 git project), it brings up the goal's OWN compose stack — project name
-`taskvisor-<goalID>` — with `cwd = the worktree`, so the deterministic
-`validate.sh` execs against the goal's uncommitted edits instead of the
+`taskvisor-<goalID>` — with `cwd = the worktree`, so the validator's commands
+run against the goal's uncommitted edits instead of the
 operator's MAIN stack (the task-275 fix). That per-worktree stack gets a **fresh,
 empty** `db-data` volume on every `up`.
 
-An empty database red-lines a DB-touching goal's `validate.sh` for an **infra**
+An empty database red-lines a DB-touching goal's validation for an **infra**
 reason (no schema), not a code reason — exactly the class of false-fail the
 worktree-compose work eliminates. The **Stack Baseline** command is the opt-in
 hook that migrates that fresh per-worktree DB to a usable baseline **before**
-`validate.sh` ever touches it.
+the validator's commands ever touch it.
 
 ## Where to declare it
 
@@ -107,7 +107,7 @@ first colon splits.
 
   `<appSvc>` is the app/PHP service resolved from your `test-environment.md`
   (`App Service:` / `Runtime Container:`), never hardcoded. This runs **after**
-  `up -d` and **before** `validate.sh` touches the fresh `db-data` volume. A
+  `up -d` and **before** the validator's commands touch the fresh `db-data` volume. A
   non-zero exit (or exec error) **halts the dispatch** as an infra/ops fault — it
   never falls back to validating against the operator's main stack and never
   charges a code-retry cycle (`ComposeStack.Up`, `composestack.go:164`;

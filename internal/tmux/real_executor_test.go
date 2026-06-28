@@ -343,10 +343,15 @@ func TestRealTmuxExecutor_SendMessage_InvalidWindow(t *testing.T) {
 	err := executor.CreateSession(sessionID, testDir)
 	require.NoError(t, err, "Failed to create test session")
 
-	// Try to send message to non-existent window @99
-	err = executor.SendMessage(sessionID, "@99", "test message")
+	// Try to send message to an unambiguously non-existent NAMED window.
+	// A named target ("can't find window: <name>") is rejected with a non-zero
+	// exit on every tmux build; the "@N" id form is tolerated (exit 0) by some
+	// builds, which made this assertion flaky under load. require.Error halts
+	// before the err.Error() deref below, so an unexpected nil fails cleanly
+	// instead of panicking with a nil-pointer SIGSEGV that crashes the binary.
+	err = executor.SendMessage(sessionID, "nonexistent-window-xyz", "test message")
 
-	assert.Error(t, err, "SendMessage should error for non-existent window")
+	require.Error(t, err, "SendMessage should error for non-existent window")
 	assert.Contains(t, err.Error(), "send-keys", "Error should indicate tmux command failure")
 }
 

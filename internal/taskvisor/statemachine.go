@@ -402,31 +402,16 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	// impl goal may be marked done without an inline validate ONLY when a separate
 	// validation goal (Validates==this id) exists to run the checks in its own
 	// cycle. With NO such validation goal we must NOT false-pass (goal-037): fall
-	// through to the inline runValidateScript legacy safe path below so the heavy
+	// through to the inline LLM validator safe path below so the heavy
 	// checks still run. Placed AFTER supervisor teardown (windows cleaned up) but
-	// BEFORE runValidateScript.
+	// BEFORE the validator is launched.
 	if d.skipValidation && goals.HasValidationGoalFor(goal.ID) {
 		return d.deferValidationToSeparateGoal(goal, goals)
 	}
 
-	passed, reason, stderr, err := d.runValidateScript(goal)
-	if err != nil {
-		return fmt.Errorf("validate script: %w", err)
-	}
-	rt.scriptPassed = passed
-	rt.scriptReason = reason
-	// A missing/unusable validate.sh runner (exit 127/126) is an infra/exec error,
-	// not a code defect. It MUST be intercepted BEFORE the stderr→handleFailedCycle
-	// shortcut below, because exit 127 emits "command not found" to stderr and would
-	// otherwise be swallowed as a code-defect — burning the per-goal code budget
-	// (goal-009). haltRunnerMissing terminally fails the goal charging NO retry.
-	if !passed && reason == scriptReasonRunnerMissing {
-		return d.haltRunnerMissing(goal, goals, stderr)
-	}
-	if stderr != "" && !d.hasValidateMd(goal.ID) {
-		return d.handleFailedCycle(goal, goals, stderr, "code-defect")
-	}
-
+	// Validation is fully non-deterministic: there is no prebuilt deterministic
+	// anchor. The goal advances straight to the validating phase where the LLM
+	// validator grades it against the acceptance criteria.
 	if err := d.createValidatorAndSendPayload(goal); err != nil {
 		return err
 	}
@@ -446,7 +431,7 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 // done-path (SaveGoals → autoCommit → resolveTask → advanceToNextGoal) — but
 // passes a nil validator signal: there are no findings to compact because no
 // validator ran inline. The caller guarantees the precondition (a validation
-// goal exists); without one it falls through to inline runValidateScript so
+// goal exists); without one it falls through to the inline LLM validator so
 // checks always run (never the goal-037 false-pass).
 func (d *Daemon) deferValidationToSeparateGoal(goal *Goal, goals *GoalsFile) error {
 	goal.Status = GoalDone
@@ -541,41 +526,9 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		}
 	}
 
-	// P7-fresh gate-time re-run: rt.scriptPassed is stamped ONCE per cycle in
-	// checkSupervisingPhase and is never refreshed by the rerunValidationOnly /
-	// handleStuckValidator re-validation loops — both re-enter this phase with
-	// the stale value. A single transient validate.sh non-pass (timeout,
-	// lock-error, exec flake) therefore vetoed EVERY subsequent LLM pass until
-	// ValidationRetries bled out and the goal hard-failed with a green suite
-	// (goals 004/006/007, 2026-06-08). Re-run the script here, ONLY on the
-	// otherwise-fatal combination (LLM pass + declared validate + stale false),
-	// so the gate always judges a FRESH deterministic result. A persistently red
-	// validate.sh still gates below — and now logs why.
-	if verdict == VerdictPass && len(goal.Validate) > 0 && !rt.scriptPassed {
-		passed, reason, _, serr := d.runValidateScript(goal)
-		if serr != nil {
-			return fmt.Errorf("validate script (gate-time re-run): %w", serr)
-		}
-		rt.scriptPassed = passed
-		rt.scriptReason = reason
-		if passed {
-			log.Printf("%s: gate-time validate.sh re-run passed — stale script failure cleared", goal.ID)
-		}
-	}
-
-	// P7 deterministic terminal-pass gate: a goal that DECLARES validate steps
-	// cannot terminally pass on the LLM validator's judgment alone — the only
-	// independent anchor is validate.sh. ScriptPassed carries the real validate.sh
-	// result from checkSupervisingPhase (threaded via goalRuntime.scriptPassed,
-	// refreshed by the gate-time re-run above). When ScriptPassed=true, the gate
-	// permits the terminal pass; when false, a `pass` is downgraded to error/ops
-	// (rerunValidationOnly, charges ValidationRetries). No-validate goals and
-	// non-pass verdicts pass through.
-	preGate := verdict
-	verdict, owner = GateTerminalPass(verdict, owner, PassGate{RequireValidate: len(goal.Validate) > 0, ScriptPassed: rt.scriptPassed})
-	if preGate == VerdictPass && verdict != VerdictPass {
-		log.Printf("%s: LLM pass downgraded to %s/%s — validate.sh not passed (%s)", goal.ID, verdict, owner, rt.scriptReason)
-	}
+	// Validation is fully non-deterministic: the LLM validator's verdict is the
+	// sole terminal authority. There is no deterministic anchor to gate the pass
+	// against.
 
 	// An unsubstantiated spec-defect (blocked/planner with no concretely-cited
 	// contradiction) is a validator failure, not a planner failure — re-validate
@@ -890,12 +843,8 @@ func (d *Daemon) salvageLateVerdicts(goals *GoalsFile) error {
 		if verdict == VerdictPass && valSig.Verdict != "" && valSig.Verdict != VerdictPass {
 			verdict = valSig.Verdict
 		}
-		// P7 deterministic terminal-pass gate (same rule as checkValidatingPhase):
-		// a late LLM pass on a goal that DECLARES validate steps has no deterministic
-		// backing (validate.sh is provably not-passed on this path) — gate it so the
-		// late-salvage bypass cannot flip a declared-validate goal to done on judgment
-		// alone. Owner is unused on this path (failure stands); discard it.
-		verdict, _ = GateTerminalPass(verdict, "", PassGate{RequireValidate: len(g.Validate) > 0, ScriptPassed: false})
+		// Validation is fully non-deterministic: a late LLM pass verdict salvages
+		// the timeout-synthesized failure on the validator's judgment alone.
 		if verdict == VerdictPass {
 			g.Status = GoalDone
 			g.FinishedAt = time.Now().UTC().Format(time.RFC3339)
@@ -1478,72 +1427,6 @@ func (d *Daemon) haltRetryCeiling(goal *Goal, goals *GoalsFile) error {
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
 	}
-	return d.advanceToNextGoal(goals, goal.ID, false)
-}
-
-// haltRunnerMissing is the infra/exec route for a validate.sh that exited 127
-// (command not found) / 126 (not executable): the script's RUNNER is missing or
-// unusable. It charges NO retry budget — re-dispatching identical work cannot
-// install a missing binary — terminally fails the goal on cycle 1 with the
-// runner-missing reason, synthesizes an (error, ops) infra signal naming the
-// missing runner, and routes through the existing reportFailedGoals auto-report
-// path. Modeled on haltBlockedEnv (signal synth + SOFT cascade) and
-// haltRetryCeiling (GoalFailed + notify + advanceToNextGoal). GoalFailed is
-// terminal (not GoalBlocked+precondition) because a missing runner cannot
-// self-heal — a §5 auto-resume park would hot-loop re-dispatch — and GoalFailed
-// is the only state reportFailedGoals auto-reports. Contains NO CodeRetries
-// decrement: that is the whole point (goal-009).
-func (d *Daemon) haltRunnerMissing(goal *Goal, goals *GoalsFile, stderr string) error {
-	if err := d.demoteSoloLane(goal, goals, "runner missing"); err != nil {
-		return err
-	}
-
-	// Derive the missing-runner detail from the script's stderr (already clamped to
-	// 500 chars by runValidateScript). Fall back to a generic message when stderr is
-	// empty (e.g. a bare exit 127 with no output).
-	runner := strings.TrimSpace(stderr)
-	if runner == "" {
-		runner = "validate.sh exited 127/126 — its runner command is missing or not executable"
-	}
-	remedy := fmt.Sprintf("Install/repair the validate.sh runner on the daemon host, then re-run the goal: %s", runner)
-
-	sig := &ValidatorSignal{
-		Verdict: VerdictError,
-		Class:   "env-config",
-		Owner:   "ops",
-		Remedy:  remedy,
-		Findings: []ValidationFinding{{
-			Rule:         "validate.sh runner",
-			Status:       VerdictError,
-			FailureClass: "env-config",
-			Owner:        "ops",
-			Detail:       runner,
-		}},
-		NextAction: remedy,
-		Timestamp:  time.Now().UTC().Format(time.RFC3339),
-	}
-	if err := SaveValidatorSignal(d.workDir, goal.ID, sig); err != nil {
-		return err
-	}
-
-	// SOFT cascade (env-config): a missing runner is an operator-fixable infra
-	// defect, so dependents stay GoalPending and resume if an operator installs the
-	// runner and re-runs — they are not hard-blocked (mirrors haltBlockedEnv).
-	goals.CascadeFailure(goal.ID, "env-config")
-
-	goal.Status = GoalFailed
-	goal.FailedBy = scriptReasonRunnerMissing
-	goal.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-
-	log.Printf("[BLOCKED - OPERATOR ACTION REQUIRED] %s: validate.sh runner missing — %s (failed on cycle 1, code budget %d intact, auto-reported)",
-		goal.ID, runner, goal.CodeRetries)
-	d.notifySupervisor(fmt.Sprintf("[TASKVISOR:GOAL-FAILED id=%s desc=%q reason=runner-missing cascade=%d]",
-		goal.ID, goal.Description, countCascaded(goals, goal.ID)))
-
-	if err := SaveGoals(d.workDir, goals); err != nil {
-		return err
-	}
-	d.resolveTaskOnTerminal(goal, "failed", failResolution(goal, "env-config"))
 	return d.advanceToNextGoal(goals, goal.ID, false)
 }
 

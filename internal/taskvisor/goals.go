@@ -510,7 +510,7 @@ func (g *Goal) IsValidationGoal() bool { return g.Validates != "" }
 // taskvisor.validation=false DEFER path (deferValidationToSeparateGoal): the
 // impl goal may be marked done without an inline validate ONLY when a separate
 // validation goal will run the checks in its own cycle — otherwise the caller
-// MUST fall through to an inline runValidateScript (never a silent false-pass).
+// MUST fall through to the inline LLM validator (never a silent false-pass).
 func (gf *GoalsFile) HasValidationGoalFor(implGoalID string) bool {
 	for i := range gf.Goals {
 		if gf.Goals[i].IsValidationGoal() && gf.Goals[i].Validates == implGoalID {

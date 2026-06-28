@@ -1,38 +1,16 @@
 package taskvisor
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// tryDBLockHeld reports whether the cross-process db.lock at <dir>/.tmux-cli/db.lock
-// is currently held by SOME open file description in this process. flock locks
-// obtained via independent open() calls are treated independently, so a
-// non-blocking LOCK_EX on a fresh fd is DENIED (EWOULDBLOCK) while another fd in
-// the same process holds it — the exact observation the validate-wrap test needs.
-func tryDBLockHeld(t *testing.T, dir string) bool {
-	t.Helper()
-	f, err := os.OpenFile(DBLockPath(dir), os.O_CREATE|os.O_RDWR, 0o644)
-	require.NoError(t, err)
-	defer f.Close()
-	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if err != nil {
-		// Could not acquire ⇒ someone else holds it ⇒ held.
-		return true
-	}
-	// Acquired ⇒ not held; release immediately.
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	return false
-}
 
 func TestWithDBLock_RunsFnUnderLock(t *testing.T) {
 	dir := t.TempDir()
@@ -123,44 +101,6 @@ func TestWithDBLock_ReleasesOnError(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("second WithDBLock blocked — lock was not released on error")
 	}
-}
-
-func TestRunValidateScript_HoldsDBLockDuringExec(t *testing.T) {
-	d, _, dir := setupDaemon(t)
-	goalDir, err := EnsureGoalDir(dir, "goal-001")
-	require.NoError(t, err)
-
-	scriptPath := filepath.Join(goalDir, "validate.sh")
-	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
-
-	var heldDuringExec bool
-	d.SetScriptRunnerFunc(func(_ context.Context, _ string, _ string, _ []string) (string, string, int, error) {
-		heldDuringExec = tryDBLockHeld(t, dir)
-		return "", "", 0, nil
-	})
-
-	goal := &Goal{ID: "goal-001"}
-	_, _, _, err = d.runValidateScript(goal)
-	require.NoError(t, err)
-
-	assert.True(t, heldDuringExec, "db.lock must be held during validate.sh exec")
-	assert.False(t, tryDBLockHeld(t, dir), "db.lock must be released after runValidateScript returns")
-}
-
-func TestRunValidateScript_ResultUnchangedUnderLock(t *testing.T) {
-	d, _, dir := setupDaemon(t)
-	goalDir, err := EnsureGoalDir(dir, "goal-001")
-	require.NoError(t, err)
-
-	scriptPath := filepath.Join(goalDir, "validate.sh")
-	require.NoError(t, os.WriteFile(scriptPath, []byte("#!/bin/sh\necho ok\nexit 0\n"), 0o755))
-
-	goal := &Goal{ID: "goal-001"}
-	passed, _, stderr, err := d.runValidateScript(goal)
-
-	require.NoError(t, err)
-	assert.True(t, passed, "a passing validate.sh still returns passed=true under the db lock")
-	assert.Empty(t, stderr)
 }
 
 func TestGoal_MigratesFlagRoundTrips(t *testing.T) {

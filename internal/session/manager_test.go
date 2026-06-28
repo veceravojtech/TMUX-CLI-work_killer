@@ -67,6 +67,11 @@ func (m *MockTmuxExecutor) SendMessageWithDelay(sessionID, windowID, message str
 	return args.Error(0)
 }
 
+func (m *MockTmuxExecutor) NotifyPane(paneID, message string) error {
+	args := m.Called(paneID, message)
+	return args.Error(0)
+}
+
 func (m *MockTmuxExecutor) KillWindow(sessionID, windowID string) error {
 	args := m.Called(sessionID, windowID)
 	return args.Error(0)

@@ -97,11 +97,11 @@ func TestValidationGoalOwnBudget(t *testing.T) {
 // TestValidationAsGoalDeferDoesNotFalsePass — with validation deferred
 // (d.skipValidation==true): when NO validation goal exists for the impl goal,
 // the supervising phase must NOT mark it Done via the skip path — it falls
-// through to the inline runValidateScript (checks run; no goal-037 false-pass).
-// Contrast: when a validation goal IS present, the impl goal is marked Done
-// directly (deferred) WITHOUT invoking the inline runner.
+// through to the (non-deterministic) validating phase where the LLM validator
+// judges it (no goal-037 false-pass). Contrast: when a validation goal IS
+// present, the impl goal is marked Done directly (deferred).
 func TestValidationAsGoalDeferDoesNotFalsePass(t *testing.T) {
-	t.Run("no validation goal -> inline validate runs (no false-pass)", func(t *testing.T) {
+	t.Run("no validation goal -> validating phase runs (no false-pass)", func(t *testing.T) {
 		d, exec, dir := setupDaemon(t)
 		d.session = testSession
 		d.mode = modeActive
@@ -115,17 +115,8 @@ func TestValidationAsGoalDeferDoesNotFalsePass(t *testing.T) {
 			Goals:       []Goal{{ID: "goal-001", Description: "impl", Status: GoalRunning, MaxRetries: 3}},
 		}
 		writeGoals(t, dir, gf)
-		goalDir, err := EnsureGoalDir(dir, "goal-001")
+		_, err := EnsureGoalDir(dir, "goal-001")
 		require.NoError(t, err)
-
-		// An executable validate.sh so the inline runner is actually invokable; a
-		// recording scriptRunnerFn proves the fall-through ran the checks.
-		require.NoError(t, os.WriteFile(filepath.Join(goalDir, "validate.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
-		runnerCalled := false
-		d.SetScriptRunnerFunc(func(ctx context.Context, sp, wd string, env []string) (string, string, int, error) {
-			runnerCalled = true
-			return "", "", 0, nil
-		})
 
 		require.NoError(t, SaveSupervisorSignal(dir, "goal-001", &SupervisorSignal{
 			Status: "done", Timestamp: "2026-06-03T14:30:00Z",
@@ -139,9 +130,8 @@ func TestValidationAsGoalDeferDoesNotFalsePass(t *testing.T) {
 
 		require.NoError(t, d.checkSupervisingPhase(&gf.Goals[0], gf))
 
-		assert.True(t, runnerCalled, "the inline validate.sh runner is invoked — checks run, no false-pass")
 		assert.NotEqual(t, GoalDone, gf.Goals[0].Status, "the impl goal does NOT reach Done via the skip path")
-		assert.Equal(t, phaseValidating, d.runtime("goal-001").phase, "the goal advances to validating (checks gate the done)")
+		assert.Equal(t, phaseValidating, d.runtime("goal-001").phase, "the goal advances to validating (the validator gates the done)")
 	})
 
 	t.Run("validation goal present -> deferred Done, no inline runner", func(t *testing.T) {

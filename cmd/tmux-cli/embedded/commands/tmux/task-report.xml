@@ -54,7 +54,7 @@
         <table>
           <row when="planner/spec defect: contradictory or under-specified goal, bad plan, wrong acceptance/validate rules">plan</row>
           <row when="daemon/dispatch/scheduling: taskvisor tick, dispatch, window lifecycle, budgets, cascade, worktrees">supervisor</row>
-          <row when="validation infrastructure: validator/investigator behavior, validate.sh handling, verdict classification">validator</row>
+          <row when="validation infrastructure: validator/investigator behavior, verdict handling, verdict classification">validator</row>
           <row when="implementer/code: worker behavior, code defects in produced work, execute.xml protocol">execute</row>
           <row when="anything else: install, setup, docs, ideas, backend itself">general</row>
         </table>
@@ -67,7 +67,7 @@
         </table>
       </substep>
       <substep n="3.3" title="title">
-        <rule>One line, ≤80 chars, names the specific mechanism — "GateTerminalPass downgrades pass on stale scriptPassed", never "validation is broken".</rule>
+        <rule>One line, ≤80 chars, names the specific mechanism — "ClassifyVerdict misroutes broken-gate finding as code-defect", never "validation is broken".</rule>
       </substep>
       <substep n="3.4" title="description — fixed skeleton">
         <template>## What happened
@@ -83,8 +83,8 @@
 {numbered steps, or "not reproduced — observed once" when honest}</template>
       </substep>
       <substep n="3.5" title="proposed_fix">
-        <rule>Concrete remediation at file/function/config level when the cause is known (e.g. "re-run validate.sh in rerunValidationOnly before GateTerminalPass").</rule>
-        <rule>When the cause is unknown, name the smallest concrete diagnostic step (e.g. "add reason logging to runValidateScript non-pass paths, then re-trigger") — that is actionable; "investigate" alone is not.</rule>
+        <rule>Concrete remediation at file/function/config level when the cause is known (e.g. "route synthesized error/ops findings through rerunValidationOnly, not handleFailedCycle").</rule>
+        <rule>When the cause is unknown, name the smallest concrete diagnostic step (e.g. "add verdict/owner logging to ClassifyVerdict's non-pass paths, then re-trigger") — that is actionable; "investigate" alone is not.</rule>
         <check condition="derived proposed_fix lowercases/trims to one of: '', 'fix it', 'none', 'n/a', 'na', 'not applicable', 'to be determined', 'tbd'">
           <action>Rewrite it — derive from the Evidence section what change or diagnostic would settle the issue. Do NOT submit until this gate passes.</action>
         </check>

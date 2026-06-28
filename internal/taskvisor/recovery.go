@@ -151,11 +151,7 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 				rt.phase = phaseSupervising
 				rt.dispatchTime = d.now()
 				rt.bootConfirmedAt = d.now()
-				if passed, reason, _, rerr := d.runValidateScript(g); rerr == nil {
-					rt.scriptPassed = passed
-					rt.scriptReason = reason
-				}
-				log.Printf("crash recovery: %s supervisor window alive, resuming supervising phase (scriptPassed=%v)", g.ID, rt.scriptPassed)
+				log.Printf("crash recovery: %s supervisor window alive, resuming supervising phase", g.ID)
 				resumed = true
 				break
 			}
@@ -172,17 +168,14 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 		}
 
 		if allDone {
-			if passed, _, _, verr := d.runValidateScript(g); verr == nil && passed {
-				rt := d.runtime(g.ID)
-				rt.phase = phaseValidating
-				rt.scriptPassed = true
-				rt.validateTime = d.now()
-				log.Printf("crash recovery: %s — tasks all done + validate.sh passes; spawning investigator", g.ID)
-				if err := d.createValidatorAndSendPayload(g); err != nil {
-					log.Printf("crash recovery: %s — validator spawn failed: %v; re-pending", g.ID, err)
-				} else {
-					continue
-				}
+			rt := d.runtime(g.ID)
+			rt.phase = phaseValidating
+			rt.validateTime = d.now()
+			log.Printf("crash recovery: %s — tasks all done; spawning validator", g.ID)
+			if err := d.createValidatorAndSendPayload(g); err != nil {
+				log.Printf("crash recovery: %s — validator spawn failed: %v; re-pending", g.ID, err)
+			} else {
+				continue
 			}
 		}
 

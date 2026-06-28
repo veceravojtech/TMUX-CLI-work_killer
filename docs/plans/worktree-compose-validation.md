@@ -1,15 +1,15 @@
 # Plan brief — Per-worktree compose stack for goal validation (fixes task 275)
 
 ## Problem
-The daemon's deterministic `validate.sh` (the P7 anti-false-pass anchor) execs into the
+The daemon's validator commands exec into the
 MAIN compose stack (`docker compose -p <base-project> exec`), which bind-mounts **master**,
 not the goal's git worktree. Worktree-isolated goals therefore validate against code that
 isn't in the container → exit 1 every cycle → validation-exhausted → cascade. (task 275,
 goal-015: `/api/register` written into `.tmux-cli-worktrees/goal-015/`, invisible to the
 master-mounted `productivitytool-app-1`.)
 
-The deterministic anchor and the P7 gate (`GateTerminalPass`, signal.go) are KEPT — only
-the runtime the validate execs into is fixed.
+The LLM validator and its verdict authority are KEPT — only
+the runtime the validator commands exec into is fixed.
 
 ## Decision (locked by the operator)
 **Path B — per-worktree compose stack.** The daemon brings up a goal-scoped compose stack
@@ -20,7 +20,7 @@ state (an optional setting toggle MAY remain as an escape hatch).
 ## Key facts (already true in the daemon — internal/taskvisor/)
 - The daemon NEVER brings up a compose stack today; it assumes an operator-run main stack.
   This change ADDS stack lifecycle as a new daemon responsibility.
-- `runValidateScript` (dispatch.go:76) ALREADY runs `validate.sh` with `cwd = the goal's
+- The validator ALREADY runs with `cwd = the goal's
   worktree` (`d.goalWorkDir`) and exports `WORKTREE_DIR`. The ONLY defect is the `-p
   <base-project>` pin in `wrapcmd.dockerExec` + `resolveComposeProject` normalizing
   worktree→base (execruntime.go:51-68).
@@ -56,8 +56,8 @@ state (an optional setting toggle MAY remain as an escape hatch).
 - **Where bring-up lives.** Recommended: DAEMON owns up/down (deterministic anchor controls
   its own runtime); the worker's step-4c gate reuses the already-up stack.
 - **ResolveExecRuntime.** Add a goal/worktree-aware ComposeProject = `taskvisor-<goalID>`;
-  keep base-normalized name only for the no-worktree path. Threading: runValidateScript and
-  createValidatorAndSendPayload share the validate-cwd routing (daemon.go:517) — both need
+  keep base-normalized name only for the no-worktree path. Threading:
+  createValidatorAndSendPayload uses the validate-cwd routing (daemon.go:517) — it needs
   the worktree-aware project.
 
 ## Scope / files (the fix lands in THIS cli repo, daemon layer)
@@ -73,18 +73,18 @@ state (an optional setting toggle MAY remain as an escape hatch).
 
 ## Acceptance
 - goal-015 re-run in worktree mode: inside the validate container `bin/console debug:router
-  | grep -F "/api/register"` exits 0 → `validate.sh` exits 0 → `goal-015: running -> done`
+  | grep -F "/api/register"` exits 0 → the validator passes → `goal-015: running -> done`
   → dependents 016-021 dispatch (no cascade).
 - After the goal reaches a terminal state, `docker compose -p taskvisor-goal-015 ps` shows
   no services (stack down) and the per-worktree DB volume is gone.
 - `max_goals>1`: two concurrent goals' stacks don't collide on ports/containers/DB.
-- The P7 deterministic gate (`GateTerminalPass`) and F1/F2 elaborate.xml behavior are
+- The LLM validator's verdict authority and F1/F2 elaborate.xml behavior are
   unchanged; existing daemon test suites stay green.
 
 ## Operator convention — Stack Baseline (per-worktree migrate)
 
 The fresh per-worktree `db-data` volume is empty on every `up`. To migrate it to a
-usable baseline **before** the deterministic `validate.sh` touches it, a managed
+usable baseline **before** the validator's commands touch it, a managed
 project opts in by declaring a **`Stack Baseline:`** (alias `Baseline Command:`)
 field in its `docs/architecture/test-environment.md` — e.g.
 `**Stack Baseline:** bin/console doctrine:migrations:migrate -n`. The daemon reads

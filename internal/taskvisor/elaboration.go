@@ -27,7 +27,7 @@ const elaborationTimeout = 20 * time.Minute
 // loop from re-selecting the same still-GoalRoadmap goal every tick.
 //
 // It mirrors dispatch()'s window plumbing but skips the concrete-goal preamble
-// (investigation-config repair, spec-drift, validate.sh regen) — a skeleton has
+// (investigation-config repair, spec-drift, goal.md regen) — a skeleton has
 // none of those surfaces.
 func (d *Daemon) dispatchElaborate(goal *Goal, goals *GoalsFile) error {
 	mg := d.maxGoals()

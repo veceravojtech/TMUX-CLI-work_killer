@@ -2,9 +2,6 @@ package taskvisor
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -39,7 +36,7 @@ type GoalSpec struct {
 	Lane string
 	// Status selects the creation tier. Empty (the default) creates a normal
 	// GoalPending goal exactly as before. GoalRoadmap creates a Tier-1 SKELETON:
-	// no validate/acceptance/scope/validate.sh is required or authored — the
+	// no validate/acceptance/scope is required or authored — the
 	// roadmap generator emits only id/description/phase/depends_on/DeliverableArea,
 	// and Tier-2 elaboration authors the concrete fields later (design §5). Any
 	// other value is rejected (running/done/failed are daemon-owned).
@@ -56,12 +53,11 @@ type GoalSpec struct {
 // one validation rule is required (an empty Validate is RC-A's trigger for
 // the blind investigator pad).
 //
-// P7: validate steps are now LOAD-BEARING for a terminal pass. A goal that
-// declares validate steps cannot terminally `pass` on the LLM validator's
-// judgment alone — GateTerminalPass (signal.go) downgrades such a pass to
-// error/ops unless the deterministic validate.sh exits 0. A declared-validate
-// goal therefore needs a working, executable validate.sh, or every cycle
-// re-validates until the validation budget is exhausted.
+// Validate steps are written into goal.md as the checks the LLM validator
+// performs when grading the goal. They are GUIDANCE for the validator — not
+// compiled into a script or executed by the daemon. A declared-validate goal
+// therefore needs validate entries the validator can actually run and judge
+// against, or every cycle re-validates until the validation budget is exhausted.
 func validateGoalSpec(spec GoalSpec) error {
 	if spec.Description == "" {
 		return fmt.Errorf("description cannot be empty")
@@ -98,9 +94,9 @@ func validateGoalSpec(spec GoalSpec) error {
 // MaxRetries 0 coerces to the default 5 (LoadGoals migrates it into the
 // per-class budgets Code 5 / Spec 3 / Val 2 / Block 0).
 //
-// Authoring guidance: the spec's validate steps gate the terminal pass (P7) — a
-// declared-validate goal needs a working validate.sh that exits 0, or the LLM
-// validator's pass is downgraded to error/ops and re-validated.
+// Authoring guidance: the spec's validate steps are the checks the LLM validator
+// performs — a declared-validate goal needs validate entries the validator can
+// run and judge against, or its pass is withheld and the goal is re-validated.
 func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 	if err := validateGoalSpec(spec); err != nil {
 		return "", false, err
@@ -144,7 +140,7 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 
 	// Resolve the persisted status once (validated above): GoalRoadmap for a
 	// Tier-1 skeleton, GoalPending otherwise. Hoisted out of the lock so the
-	// post-lock goal.md/validate.sh tail can branch on it.
+	// post-lock goal.md tail can branch on it.
 	status := GoalPending
 	if spec.Status == GoalRoadmap {
 		status = GoalRoadmap
@@ -212,22 +208,6 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 	if err := WriteGoalMD(goalDir, spec.Description, spec.Phase, lane, spec.Acceptance, spec.Validate, spec.Preconditions, spec.Context, spec.NotInScope, spec.Investigators); err != nil {
 		return "", false, fmt.Errorf("write goal.md: %w", err)
 	}
-	// A roadmap skeleton carries no validate, so there is no validate.sh to
-	// author yet — Tier-2 elaboration writes the validate rules (via goal-edit)
-	// and the daemon regenerates validate.sh from them on the goal's first
-	// dispatch (dispatch.go regenerateValidateScript). Writing an empty script
-	// here would be a misleading artifact.
-	if status != GoalRoadmap {
-		// Resolve the project's exec runtime (docker vs local, from
-		// docs/architecture/test-environment.md) so validate.sh's toolchain commands
-		// are wrapped into their container the same way investigator commands are.
-		// AppSvc/NodeSvc are never hardcoded — they come only from ResolveExecRuntime.
-		er := ResolveExecRuntime(workDir)
-		if err := WriteValidateScript(goalDir, spec.Validate, er); err != nil {
-			return "", false, fmt.Errorf("write validate.sh: %w", err)
-		}
-	}
-
 	return id, derivedScope, nil
 }
 
@@ -276,9 +256,9 @@ var editableGoalStatuses = map[string]bool{
 // CLEARS its field (e.g. dropping a stale scope). The status guard runs FIRST,
 // before the lock, so an invalid target status persists nothing.
 //
-// EditGoal intentionally does NOT regenerate validate.sh or goal.md: the daemon
-// regenerates validate.sh from the in-memory goal.Validate on every (re-)dispatch
-// (dispatch.go regenerateValidateScript), and the elaborator worker authors
+// EditGoal intentionally does NOT regenerate goal.md: the daemon repairs
+// goal.md from the in-memory goal.Validate on every (re-)dispatch
+// (dispatch.go spec-drift gate), and the elaborator worker authors
 // goal.md itself (design §6 step 5). Keeping EditGoal to a goals.yaml field write
 // holds the surface minimal and single-responsibility.
 func EditGoal(workDir, goalID string, edit GoalEdit) error {
@@ -321,47 +301,6 @@ func EditGoal(workDir, goalID string, edit GoalEdit) error {
 
 		return SaveGoals(workDir, gf)
 	})
-}
-
-// WriteValidateScript generates an executable validate.sh in goalDir from the
-// goal's validate rules. Each rule becomes a line in a set -e script so any
-// failing command fails the whole validation. P7's GateTerminalPass requires
-// this script to exit 0 for a terminal pass — without it, every LLM-validator
-// pass is downgraded to error/ops and burns ValidationRetries.
-//
-// Each rule is routed through wrapCommand(r, er) — the same daemon-side runtime
-// normalisation investigator commands already get in goal.md — so a goal that
-// emits a bare PHP/Node toolchain command (CMD-CONV "emit bare, daemon wraps")
-// is compiled into `docker compose exec -T <svc> sh -c '...'` when the project
-// declares Run Target: docker. Local mode and host commands pass through
-// unchanged (wrapCommand is a no-op for er.RunTarget != "docker" and for the
-// host class), so non-docker projects are byte-identical to before.
-func WriteValidateScript(goalDir string, rules []string, er ExecRuntime) error {
-	if len(rules) == 0 {
-		return nil
-	}
-	var b strings.Builder
-	b.WriteString("#!/bin/sh\nset -e\n")
-	for _, r := range rules {
-		b.WriteString(wrapCommand(r, er))
-		b.WriteByte('\n')
-	}
-	scriptPath := filepath.Join(goalDir, "validate.sh")
-	if err := os.WriteFile(scriptPath, []byte(b.String()), 0o755); err != nil {
-		return err
-	}
-	// Lint the generated script with 'sh -n' (parse-only, no execution) so a
-	// non-runnable validate entry fails fast here instead of after a full
-	// supervise→validate cycle.
-	out, lintErr := exec.Command("sh", "-n", scriptPath).CombinedOutput()
-	if lintErr != nil {
-		if _, ok := lintErr.(*exec.ExitError); ok {
-			return fmt.Errorf("validate.sh syntax error: %s", strings.TrimSpace(string(out)))
-		}
-		// sh could not be started (missing/broken binary) — fail open, do not
-		// block goal-create; the later validate run uses the same sh.
-	}
-	return nil
 }
 
 // criticalPriorityTier is the priority floor (G4) above which a goal is treated

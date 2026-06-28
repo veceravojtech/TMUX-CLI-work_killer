@@ -80,6 +80,10 @@ func (m *MockExecutorWithFeedback) SendMessage(sessionID, windowID, message stri
 	return nil
 }
 
+func (m *MockExecutorWithFeedback) NotifyPane(paneID, message string) error {
+	return nil
+}
+
 func (m *MockExecutorWithFeedback) CaptureWindowOutput(sessionID, windowID string) (string, error) {
 	return "", nil
 }

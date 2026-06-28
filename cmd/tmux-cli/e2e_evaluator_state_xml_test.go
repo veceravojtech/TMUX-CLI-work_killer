@@ -1,0 +1,177 @@
+package main
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+// These tests pin execute-4's four appended blocks (STARTUP-ASSERT, RESUME,
+// SUCCESS-CRITERIA, REPORT+STATE) into the labelled state/report slots of
+// e2e-evaluator.xml. They are content assertions over the embedded conductor —
+// same style as e2e_evaluator_xml_test.go (execute-2 skeleton, execute-3 loop).
+
+// --- RESUME (step 1b slot, paired with the step-8 STATE write) ---------------
+
+// TestResume_ContinuesAtCycle: state cycle=N,status=in-progress ⇒ loop starts at
+// N; cycles 1..N-1 are NOT re-run (`cycle` = NEXT cycle to run).
+func TestResume_ContinuesAtCycle(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "NEXT cycle to run",
+		"RESUME must define `cycle` as the NEXT cycle to run, not the last completed")
+	assert.Contains(t, content, "NOT re-run",
+		"RESUME must state that already-finished cycles are NOT re-run on continue")
+	assert.Contains(t, content, "in-progress",
+		"RESUME continues only while status==in-progress")
+}
+
+// TestResume_MissingFileInitsCycle1: no state.json ⇒ init cycle=1, not an error.
+func TestResume_MissingFileInitsCycle1(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "Missing file = cycle 1",
+		"RESUME must treat a missing state file as cycle 1")
+	assert.Contains(t, content, `"cycle": 1`,
+		"RESUME must initialize cycle:1 on a fresh run")
+	assert.Contains(t, content, "NOT an error",
+		"a missing state file is a fresh run, NOT an error")
+}
+
+// TestResume_Exhausted: cycle>max_cycles ⇒ status=exhausted, escalate, no loop.
+func TestResume_Exhausted(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "max_cycles",
+		"RESUME must guard cycle against max_cycles")
+	assert.Contains(t, content, "exhausted",
+		"RESUME must set status:exhausted past the cap")
+	assert.Contains(t, content, "ESCALATE",
+		"RESUME must escalate to the human when exhausted")
+}
+
+// --- STARTUP-ASSERT (step 1b slot, runs first) -------------------------------
+
+// TestPrereq_ConsumerAbsentSoftPause: task-report consumer unreachable ⇒
+// soft-pause message printed, loop NOT entered, clean exit.
+func TestPrereq_ConsumerAbsentSoftPause(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "task-report consumer",
+		"STARTUP-ASSERT must probe the task-report consumer reachability")
+	assert.Contains(t, content, "⏸ paused",
+		"STARTUP-ASSERT must print a soft-pause line on an absent prerequisite")
+	assert.Contains(t, content, "make install",
+		"the soft-pause message must be human-actionable (make install)")
+	assert.Contains(t, content, "SOFT-PAUSE",
+		"STARTUP-ASSERT must label the degraded path a soft-pause, not an error")
+}
+
+// TestPrereq_WatcherAbsentSoftPause: auto-install watcher missing ⇒ same pause.
+func TestPrereq_WatcherAbsentSoftPause(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "auto-install watcher",
+		"STARTUP-ASSERT must probe the auto-install watcher presence")
+	// Never self-heal the prerequisite — only file + wait (design §12).
+	assert.True(t,
+		strings.Contains(content, "NEVER") && strings.Contains(content, "make install"),
+		"STARTUP-ASSERT must forbid running git pull/make install itself")
+}
+
+// --- SUCCESS-CRITERIA (step 10, consulted by JUDGE step 7) -------------------
+
+// TestSuccess_AppUpRequired: all goals done but GET /login≠200 ⇒ FAIL, app_up:false.
+func TestSuccess_AppUpRequired(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "app_up:false",
+		"SUCCESS-CRITERIA false-pass guard must key on app_up:false")
+	assert.Contains(t, content, "false pass",
+		"SUCCESS-CRITERIA must call a green-daemon/dead-app a false pass")
+	assert.Contains(t, content, "GET /login",
+		"app-up probe must hit GET /login")
+	// JUDGE may not PASS while the app is down.
+	assert.True(t,
+		strings.Contains(content, "may NOT return PASS") || strings.Contains(content, "never a pass"),
+		"SUCCESS-CRITERIA must block PASS while app_up:false")
+}
+
+// TestSuccess_FullFlowPass: docs+goals+all-done+login200+unauth302+authed200 ⇒ passed.
+func TestSuccess_FullFlowPass(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "goals.yaml",
+		"full-flow PASS requires a generated goals.yaml")
+	assert.Contains(t, content, `status: "passed"`,
+		"a green cycle sets status:passed")
+	assert.Contains(t, content, "302/401",
+		"app-up probe must assert the unauthenticated dashboard redirect/deny")
+	assert.Contains(t, content, "docs/architecture/*",
+		"full-flow PASS requires discovery docs present")
+}
+
+// --- REPORT+STATE (steps 8–9) ------------------------------------------------
+
+// TestReport_HasAllSections: per-cycle report carries all six fixed sections,
+// including the p90 + mean-in-flight timing line.
+func TestReport_HasAllSections(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	for _, section := range []string{
+		"Driven Summary",
+		"Failure Point",
+		"Defect Signature",
+		"Filed Task",
+		"Timing Table",
+		"Verdict",
+	} {
+		assert.Contains(t, content, section,
+			"REPORT must declare the %q section in the fixed order", section)
+	}
+	assert.Contains(t, content, "p90",
+		"Timing Table must record per-phase p90")
+	assert.Contains(t, content, "in-flight",
+		"Timing Table must record mean in-flight goals (achieved parallelism)")
+	assert.Contains(t, content, "e2e-report-cycle-",
+		"REPORT must write e2e-report-cycle-<n>.md")
+}
+
+// TestState_AtomicRewrite: state is rewritten atomically (temp + rename), so a
+// concurrent re-invocation never observes a truncated file.
+func TestState_AtomicRewrite(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "temp + rename",
+		"STATE write must be atomic temp+rename")
+	assert.Contains(t, content, "last-writer-wins",
+		"STATE atomic rewrite is last-writer-wins")
+	assert.Contains(t, content, "NEVER truncate-in-place",
+		"STATE must never truncate-in-place")
+	// cycle is bumped only after REPORT, never off-by-one.
+	assert.Contains(t, content, "NEXT cycle to run",
+		"STATE must keep cycle = the NEXT cycle to run (no off-by-one)")
+}
+
+// TestState_GlossaryTerms: STATE_FILE / REPORT_FILE are declared in the glossary
+// so the loop + resume steps reference them by name (execute-4 owns the slot).
+func TestState_GlossaryTerms(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, `name="STATE_FILE"`,
+		"glossary must declare STATE_FILE")
+	assert.Contains(t, content, `name="REPORT_FILE"`,
+		"glossary must declare REPORT_FILE")
+	assert.Contains(t, content, ".state.json",
+		"STATE_FILE path is <scenario>.state.json")
+}
+
+// TestE2EEvaluatorXml_StateReportNoErrorReportingRegression: execute-4's appends
+// must NOT add or remove the shared <error-reporting> reference (execute-2 owns
+// the single block; TestEmbeddedCommands_ReferenceErrorReporting stays green).
+func TestE2EEvaluatorXml_StateReportNoErrorReportingRegression(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+	assert.Equal(t, 1, strings.Count(content, "<error-reporting>"),
+		"the <error-reporting> reference must remain present exactly once")
+}

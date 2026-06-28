@@ -91,12 +91,10 @@ type TaskvisorSettings struct {
 	// where a stuck LLM was invisible until the 1h hard timeout. Default 300 (5m);
 	// a value <=0 disables the heartbeat. Values >0 override the daemon default.
 	ProgressTimeoutSec int `yaml:"progress_timeout_sec"`
-	// ValidateScriptTimeoutSec bounds ONE execution of a goal's validate.sh —
-	// the deterministic P7 anchor (runValidateScript). Default 600; a value <=0
-	// keeps the daemon seed. Raised 120→600 for the validation-as-goal model: the
-	// heavy validate stack runs in a dedicated validation goal's own cycle, so the
-	// 600s ceiling covers a Symfony stack with margin. A timeout kill
-	// is classified as reason "timeout" (not a red suite) in the P7 gate logs.
+	// ValidateScriptTimeoutSec bounds ONE execution of the worktree integration
+	// gate script (runIntegrationGate), which shares the daemon's script-runner
+	// seam. Default 600; a value <=0 keeps the daemon seed. The 600s ceiling
+	// covers a Symfony stack with margin.
 	ValidateScriptTimeoutSec int `yaml:"validate_script_timeout_sec"`
 	// TransientRetryMaxAttempts bounds the C4-cont transient-failure retry loop in
 	// investigate.xml: a preflight/probe failing for a transient infra reason
@@ -157,10 +155,10 @@ type TaskvisorSettings struct {
 	// generation bounce always forces planning regardless of an override.
 	DispatchOverrides map[string]string `yaml:"dispatch_overrides"`
 	// Validation gates the post-execution goal validation step: when ON (the
-	// default), a goal that finishes execution is handed to the validator
-	// (validate.sh + the reasoning investigator workers) before it can reach done.
-	// When OFF, the daemon marks the goal done DIRECTLY out of the supervising
-	// phase — no validate.sh, no validator windows. A *bool (not plain bool),
+	// default), a goal that finishes execution is handed to the reasoning
+	// validator/investigator workers before it can reach done. When OFF, the
+	// daemon marks the goal done DIRECTLY out of the supervising phase — no
+	// validator windows. A *bool (not plain bool),
 	// byte-for-byte mirroring AutoCommit, so a legacy setting.yaml predating the
 	// key (nil) is distinguishable from an explicit `validation: false` opt-out:
 	// nil is backfilled to true by LoadSettings. Read via ValidationEnabled(),

@@ -234,6 +234,26 @@ Examples:
 	RunE: runWindowsMessage,
 }
 
+var notifyOrchestratorCmd = &cobra.Command{
+	Use:   "notify-orchestrator <message>",
+	Short: "Send a reply message to the orchestrator pane",
+	Long: `Deliver a message (followed by a separate Enter) directly to the orchestrator
+pane identified by the TMUX_CLI_ORCHESTRATOR_PANE environment variable.
+
+The pane id (e.g. %3) is targeted directly — pane ids are session-global, so no
+session/window resolution occurs. This is the target→orchestrator reply channel
+used by the e2e-evaluator conductor tasks.
+
+An empty message delivers a bare Enter (a valid heartbeat/ack ping).
+If TMUX_CLI_ORCHESTRATOR_PANE is unset or empty, the command fails loudly without
+sending anything.
+
+Examples:
+  TMUX_CLI_ORCHESTRATOR_PANE=%3 tmux-cli notify-orchestrator "evaluation complete"`,
+	Args: cobra.ExactArgs(1),
+	RunE: runNotifyOrchestrator,
+}
+
 var (
 	windowName      string
 	windowIDFlag    string
@@ -410,6 +430,7 @@ func init() {
 	rootCmd.AddCommand(windowsSendCmd)
 	rootCmd.AddCommand(windowsUuidCmd)
 	rootCmd.AddCommand(windowsMessageCmd)
+	rootCmd.AddCommand(notifyOrchestratorCmd)
 	rootCmd.AddCommand(settingCmd)
 	rootCmd.AddCommand(sudoCmd)
 	rootCmd.AddCommand(mcpCmd)
@@ -1178,6 +1199,28 @@ func runWindowsMessage(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Message sent from %s to window %s (%s) in session %s\n",
 		sender, receiverWindowID, receiverWindowName, sessionID)
+	return nil
+}
+
+// runNotifyOrchestrator delivers args[0] to the orchestrator pane named by
+// TMUX_CLI_ORCHESTRATOR_PANE. Env reading lives here (the wrapper); the testable
+// core notifyOrchestrator stays tmux-free so it can be exercised with a mock.
+func runNotifyOrchestrator(cmd *cobra.Command, args []string) error {
+	pane := strings.TrimSpace(os.Getenv("TMUX_CLI_ORCHESTRATOR_PANE"))
+	return notifyOrchestrator(tmux.NewTmuxExecutor(), pane, args[0])
+}
+
+// notifyOrchestrator is the testable core of the notify-orchestrator command.
+// A missing/empty pane id is a loud usage error (exit 2) with NO send attempted.
+// An empty message is intentionally allowed — it delivers a bare Enter ping.
+func notifyOrchestrator(executor tmux.TmuxExecutor, pane, msg string) error {
+	if pane == "" {
+		return NewUsageError("TMUX_CLI_ORCHESTRATOR_PANE is not set; cannot notify orchestrator")
+	}
+	if err := executor.NotifyPane(pane, msg); err != nil {
+		return fmt.Errorf("notify orchestrator pane %s: %w", pane, err)
+	}
+	fmt.Printf("Notified orchestrator pane %s\n", pane)
 	return nil
 }
 
