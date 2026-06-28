@@ -39,6 +39,44 @@ func TestResume_MissingFileInitsCycle1(t *testing.T) {
 		"a missing state file is a fresh run, NOT an error")
 }
 
+// TestResume_FreshFromScratchDefault: a no-arg / no-explicit-resume invocation
+// must NOT continue a prior run — it CLEARS the scenario state + reports and
+// starts fresh at cycle 1. Resume is OPT-IN via an explicit resume directive.
+func TestResume_FreshFromScratchDefault(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "FRESH-FROM-SCRATCH IS THE DEFAULT",
+		"RESUME must make fresh-from-scratch the default, not continue prior work")
+	assert.Contains(t, content, "WIPED",
+		"the default path must WIPE a found prior STATE_FILE, not resume it")
+	assert.Contains(t, content, "e2e-report-cycle-*.md",
+		"the fresh-default clear must delete prior per-cycle reports too")
+	// Resume is opt-in via an explicit directive.
+	assert.True(t,
+		strings.Contains(content, "OPT-IN") && strings.Contains(content, "--resume"),
+		"resuming an in-progress run must be opt-in via an explicit resume/--resume arg")
+	assert.Contains(t, content, "STRICTLY defines resume",
+		"continue only when $ARGUMENTS strictly defines resume")
+}
+
+// TestProvision_ReapsStaleTestSessions: PROVISION must reap leftover disposable
+// /tmp test sessions from past runs by EXACT name (never pkill -f) before
+// starting a fresh target.
+func TestProvision_ReapsStaleTestSessions(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "REAP STALE TEST SESSIONS FROM PAST RUNS",
+		"PROVISION must reap stale test sessions left by past runs")
+	assert.Contains(t, content, "tmux-cli-tmp-",
+		"the stale-session reap must scope to disposable /tmp targets by the tmux-cli-tmp- name prefix")
+	assert.Contains(t, content, "tmux list-sessions",
+		"the reap must enumerate sessions by exact name via tmux list-sessions")
+	// Must reuse the never-pkill-f teardown discipline.
+	assert.True(t,
+		strings.Contains(content, "kill-session") && strings.Contains(content, "NEVER `pkill -f`"),
+		"the reap must kill by exact session name and never pkill -f (self-SIGTERM footgun)")
+}
+
 // TestResume_Exhausted: cycle>max_cycles ⇒ status=exhausted, escalate, no loop.
 func TestResume_Exhausted(t *testing.T) {
 	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
@@ -51,33 +89,23 @@ func TestResume_Exhausted(t *testing.T) {
 		"RESUME must escalate to the human when exhausted")
 }
 
-// --- STARTUP-ASSERT (step 1b slot, runs first) -------------------------------
+// --- STARTUP (step 1b slot) — no prerequisite gate ---------------------------
 
-// TestPrereq_ConsumerAbsentSoftPause: task-report consumer unreachable ⇒
-// soft-pause message printed, loop NOT entered, clean exit.
-func TestPrereq_ConsumerAbsentSoftPause(t *testing.T) {
+// TestStartup_NoPrerequisiteGate: the prerequisite/soft-pause gate was dropped
+// (reporting is task-report-only). The conductor must NOT reintroduce a
+// consumer-pipeline / auto-install-watcher prerequisite or a soft-pause gate.
+func TestStartup_NoPrerequisiteGate(t *testing.T) {
 	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
 
-	assert.Contains(t, content, "task-report consumer",
-		"STARTUP-ASSERT must probe the task-report consumer reachability")
-	assert.Contains(t, content, "⏸ paused",
-		"STARTUP-ASSERT must print a soft-pause line on an absent prerequisite")
-	assert.Contains(t, content, "make install",
-		"the soft-pause message must be human-actionable (make install)")
-	assert.Contains(t, content, "SOFT-PAUSE",
-		"STARTUP-ASSERT must label the degraded path a soft-pause, not an error")
-}
-
-// TestPrereq_WatcherAbsentSoftPause: auto-install watcher missing ⇒ same pause.
-func TestPrereq_WatcherAbsentSoftPause(t *testing.T) {
-	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
-
-	assert.Contains(t, content, "auto-install watcher",
-		"STARTUP-ASSERT must probe the auto-install watcher presence")
-	// Never self-heal the prerequisite — only file + wait (design §12).
-	assert.True(t,
-		strings.Contains(content, "NEVER") && strings.Contains(content, "make install"),
-		"STARTUP-ASSERT must forbid running git pull/make install itself")
+	assert.Contains(t, content, "task-report-only",
+		"reporting must be task-report-only — no external consumer prerequisite")
+	assert.Contains(t, content, "NEVER blocks waiting for a fix",
+		"the loop must never block waiting for a fix to land")
+	// The removed gate's vocabulary must not creep back in.
+	assert.NotContains(t, content, "SOFT-PAUSE",
+		"the dropped soft-pause gate must not be reintroduced")
+	assert.NotContains(t, content, "⏸ paused",
+		"the dropped soft-pause line must not be reintroduced")
 }
 
 // --- SUCCESS-CRITERIA (step 10, consulted by JUDGE step 7) -------------------
