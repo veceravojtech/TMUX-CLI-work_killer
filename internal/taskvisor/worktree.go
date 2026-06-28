@@ -337,6 +337,27 @@ func (d *Daemon) ensureWorktree(goal *Goal, parallel bool) (string, error) {
 		// fall through to add
 	}
 
+	// Born HEAD before `worktree add`: a freshly `git init`'d base (no initial
+	// commit) has an unborn HEAD, so `git worktree add … HEAD` fails with
+	// "fatal: invalid reference: HEAD" and the goal poll-wedges to failed
+	// (backend task 317). Probe HEAD through the same run/ctx and, ONLY when it is
+	// unborn, seed an empty baseline commit with INLINE identity (so it never
+	// depends on the base repo's ambient git config). A born HEAD (code 0) takes
+	// the existing add path unchanged; a transport error from the probe is a real
+	// fault (binary missing, ctx timeout), not "unborn" — propagate it rather than
+	// commit into a broken state.
+	if _, _, code, err := run(ctx, "-C", d.workDir, "rev-parse", "--verify", "-q", "HEAD"); err != nil {
+		return "", fmt.Errorf("probe HEAD for %s: %w", goal.ID, err)
+	} else if code != 0 {
+		if _, stderr, code, err := run(ctx, "-C", d.workDir,
+			"-c", "user.email=taskvisor@local", "-c", "user.name=taskvisor",
+			"commit", "--allow-empty", "-m", "taskvisor-baseline"); err != nil {
+			return "", fmt.Errorf("seed initial commit for %s: %w", goal.ID, err)
+		} else if code != 0 {
+			return "", fmt.Errorf("seed initial commit for %s failed (exit %d): %s", goal.ID, code, strings.TrimSpace(stderr))
+		}
+	}
+
 	_, stderr, code, err := run(ctx, "-C", d.workDir, "worktree", "add", "-B", branch, wtPath, "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("git worktree add for %s: %w", goal.ID, err)

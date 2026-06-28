@@ -3,6 +3,7 @@ package taskvisor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ type fakeGitRunner struct {
 	mu         sync.Mutex
 	calls      [][]string
 	respond    func(args []string) (stdout string, code int)
+	respondErr func(args []string) error // non-nil → simulate a runner TRANSPORT failure (err != nil)
 	sideEffect func(args []string)
 }
 
@@ -40,6 +42,11 @@ func (f *fakeGitRunner) run(_ context.Context, args ...string) (string, string, 
 	f.mu.Lock()
 	f.calls = append(f.calls, append([]string(nil), args...))
 	f.mu.Unlock()
+	if f.respondErr != nil {
+		if err := f.respondErr(args); err != nil {
+			return "", "", -1, err
+		}
+	}
 	if f.sideEffect != nil {
 		f.sideEffect(args)
 	}
@@ -61,6 +68,20 @@ func (f *fakeGitRunner) count(seq ...string) int {
 		}
 	}
 	return n
+}
+
+// firstIndex returns the index of the first recorded call that contains seq as a
+// contiguous subslice, or -1 if none. Used to assert call ordering (e.g. the seed
+// commit precedes `worktree add`) without depending on absolute call indices.
+func (f *fakeGitRunner) firstIndex(seq ...string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, c := range f.calls {
+		if argsContain(c, seq...) {
+			return i
+		}
+	}
+	return -1
 }
 
 func argsContain(args []string, seq ...string) bool {
@@ -139,6 +160,97 @@ func TestEnsureWorktree_ParallelGoal_CreatesAndBindsCwd(t *testing.T) {
 	assert.True(t, fake.count("-B", worktreeBranch("goal-001")) == 1, "branch -B taskvisor/goal-001 (idempotent create-or-reset)")
 	assert.Equal(t, wtPath, d.runtime("goal-001").WorktreeDir)
 	assert.Equal(t, worktreeBranch("goal-001"), d.runtime("goal-001").Branch)
+}
+
+// TestEnsureWorktree_UnbornHeadSeedsInitialCommit: a freshly git-init'd base has
+// an unborn HEAD, so `git worktree add … HEAD` fails (exit 128, "invalid
+// reference: HEAD") and the goal poll-wedges to failed (backend task 317). The
+// pre-add `rev-parse --verify -q HEAD` probe exits non-zero → ensureWorktree
+// seeds an `--allow-empty` baseline commit (inline identity) BEFORE the add.
+func TestEnsureWorktree_UnbornHeadSeedsInitialCommit(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+
+	fake := &fakeGitRunner{
+		respond: func(args []string) (string, int) {
+			if argsContain(args, "rev-parse", "--verify") {
+				return "", 1 // unborn HEAD
+			}
+			return "", 0
+		},
+		sideEffect: func(args []string) {
+			if argsContain(args, "worktree", "add") {
+				_ = os.MkdirAll(wtPath, 0o755)
+				_ = os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)
+			}
+		},
+	}
+	d.SetGitRunnerFunc(fake.run)
+
+	_, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err)
+
+	commitIdx := fake.firstIndex("commit", "--allow-empty")
+	addIdx := fake.firstIndex("worktree", "add")
+	require.GreaterOrEqual(t, commitIdx, 0, "unborn HEAD must seed a commit --allow-empty")
+	require.GreaterOrEqual(t, addIdx, 0, "worktree add must still run")
+	assert.Less(t, commitIdx, addIdx, "seed commit must precede worktree add")
+	// Inline identity so the seed never depends on the base repo's ambient git config.
+	assert.Equal(t, 1, fake.count("user.email=taskvisor@local"), "seed commit carries inline identity")
+}
+
+// TestEnsureWorktree_BornHeadSkipsSeedCommit: a base with a born HEAD (rev-parse
+// exits 0) takes the existing add path unchanged — NO seed commit is issued.
+func TestEnsureWorktree_BornHeadSkipsSeedCommit(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+	wtPath := d.worktreePath("goal-001")
+
+	fake := &fakeGitRunner{
+		respond: func(args []string) (string, int) {
+			return "", 0 // rev-parse --verify HEAD exits 0 → born
+		},
+		sideEffect: func(args []string) {
+			if argsContain(args, "worktree", "add") {
+				_ = os.MkdirAll(wtPath, 0o755)
+				_ = os.WriteFile(filepath.Join(wtPath, baseRootMarker), []byte("module x\n"), 0o644)
+			}
+		},
+	}
+	d.SetGitRunnerFunc(fake.run)
+
+	_, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, fake.count("commit", "--allow-empty"), "born HEAD must NOT seed a commit")
+	assert.Equal(t, 1, fake.count("worktree", "add"), "born HEAD takes the existing add path")
+}
+
+// TestEnsureWorktree_RevParseTransportErrorPropagates: a non-nil runner err from
+// the HEAD probe (git binary missing, ctx timeout) is a real fault, NOT "unborn".
+// It must propagate without seeding a commit or proceeding to the add.
+func TestEnsureWorktree_RevParseTransportErrorPropagates(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	goal := &Goal{ID: "goal-001"}
+
+	fake := &fakeGitRunner{
+		respondErr: func(args []string) error {
+			if argsContain(args, "rev-parse", "--verify") {
+				return errors.New("git: command not found")
+			}
+			return nil
+		},
+	}
+	d.SetGitRunnerFunc(fake.run)
+
+	_, err := d.ensureWorktree(goal, true)
+	require.Error(t, err, "a transport error from the HEAD probe must propagate")
+	assert.Equal(t, 0, fake.count("commit", "--allow-empty"), "transport error is not 'unborn' — no seed commit")
+	assert.Equal(t, 0, fake.count("worktree", "add"), "must not proceed to add after a probe transport error")
 }
 
 func TestEnsureWorktree_ReusedOnRetry(t *testing.T) {

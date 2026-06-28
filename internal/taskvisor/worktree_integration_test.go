@@ -79,6 +79,50 @@ func TestMergeWorktreeBack_Conflict(t *testing.T) {
 	assert.NotContains(t, wl, filepath.Join(worktreesDirName, "goal-001"))
 }
 
+// TestEnsureWorktree_UnbornHeadRealRepo reproduces backend task 317 against real
+// git: a freshly `git init`'d repo has an UNBORN HEAD, so `git worktree add …
+// HEAD` fails with "fatal: invalid reference: HEAD" and goal-001 poll-wedges to
+// failed. ensureWorktree must self-heal by seeding an empty baseline commit so
+// the add succeeds and HEAD is born in the worktree.
+//
+// A single base file is staged (but never committed) before the call so the
+// `commit --allow-empty` seed captures it — proving born HEAD AND satisfying the
+// baseCheckedOut guard (a worktree off a truly-empty commit has only `.git`,
+// which baseCheckedOut treats as control-plane → base-less). The unborn-HEAD
+// trigger is unchanged: rev-parse exits non-zero until the seed commit lands.
+//
+// Run with: go test -tags=integration ./internal/taskvisor/... -run TestEnsureWorktree_UnbornHeadRealRepo
+func TestEnsureWorktree_UnbornHeadRealRepo(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli"), 0o755))
+
+	// Unborn HEAD: init only, NO initial commit. Stage (don't commit) a base file
+	// so the seed commit materializes base content in the worktree.
+	runGit(t, dir, "init", "-b", "main")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("base\n"), 0o644))
+	runGit(t, dir, "add", "README.md")
+
+	// Precondition: HEAD really is unborn (the task-317 failure trigger).
+	unborn := exec.Command("git", "-C", dir, "rev-parse", "--verify", "-q", "HEAD")
+	require.Error(t, unborn.Run(), "precondition: HEAD must be unborn before ensureWorktree")
+
+	d := New(dir, nil) // executor unused on this path
+	goal := &Goal{ID: "goal-001"}
+
+	cwd, err := d.ensureWorktree(goal, true)
+	require.NoError(t, err, "unborn HEAD must self-heal — no 'invalid reference: HEAD'")
+
+	// HEAD is now born in the worktree.
+	born := exec.Command("git", "-C", cwd, "rev-parse", "HEAD")
+	require.NoError(t, born.Run(), "worktree HEAD must be born after the seed commit")
+
+	// The per-goal worktree is registered against its branch.
+	assert.Contains(t, runGit(t, dir, "worktree", "list"), worktreeBranch("goal-001"),
+		"git worktree list must show the goal-001 worktree")
+
+	require.NoError(t, d.discardWorktree(goal))
+}
+
 // TestMergeWorktreeBack_NeverCommitsControlPlaneSymlink is the regression guard
 // for the parallel-mode ELOOP that destroyed the control plane. A per-goal
 // worktree carries a .tmux-cli back-symlink into the shared base control plane.

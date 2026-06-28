@@ -186,6 +186,14 @@ func runE2EBootstrap(cmd *cobra.Command, args []string) error {
 	}
 	_ = runIn(targetDir, "git", "config", "user.email", "e2e@evaluator.local")
 	_ = runIn(targetDir, "git", "config", "user.name", "e2e-evaluator")
+	// Born HEAD before the daemon ticks: `git init` leaves an unborn HEAD, so the
+	// pipelined daemon's `git worktree add … HEAD` for goal-001 fails (exit 128,
+	// "invalid reference: HEAD") and the goal poll-wedges to failed (backend task
+	// 317). Seed an --allow-empty baseline commit (identity is configured above)
+	// so HEAD is born before startTarget launches the daemon.
+	if err := runIn(targetDir, "git", "commit", "--allow-empty", "-m", "e2e-baseline"); err != nil {
+		return failBootstrap(res, "provision", fmt.Sprintf("git commit baseline: %v", err))
+	}
 	progress("target dir %s (cycle %d)", targetDir, cycle)
 
 	// ── Step 2: seed ~/.claude.json trust BEFORE any claude launch ──────────
