@@ -85,7 +85,7 @@ func init() {
 	e2eBootstrapCmd.Flags().StringVar(&e2eOrchPane, "orchestrator-pane", "", "Orchestrator pane id (default: $TMUX_CLI_ORCHESTRATOR_PANE or current pane)")
 	e2eBootstrapCmd.Flags().IntVar(&e2eMaxCycles, "max-cycles", e2e.DefaultMaxCycles, "Self-heal cycle budget recorded in fresh state")
 	e2eBootstrapCmd.Flags().BoolVar(&e2eKeepOnFailure, "keep-on-failure", false, "Do not self-teardown the target on a prologue failure (for debugging)")
-	e2eBootstrapCmd.Flags().IntVar(&e2eHandshakeWait, "handshake-wait", 60, "Seconds to wait for the handshake token before retry/abort")
+	e2eBootstrapCmd.Flags().IntVar(&e2eHandshakeWait, "handshake-wait", 30, "Seconds to wait for the handshake token before retry/abort")
 
 	e2eTeardownCmd.Flags().StringVar(&e2eTeardownDir, "dir", "", "The /tmp target dir to rm (default: derived from the session's pane path)")
 
@@ -439,17 +439,28 @@ func doHandshake(pane, session, logPath string, wait time.Duration) bool {
 		_, err = tmuxOut("send-keys", "-t", pane, "Enter")
 		return err == nil
 	}
+	// The pipe-pane log is a live Claude Code TUI transcript: the success line
+	// is wrapped/positioned with ANSI escapes, so the literal "Notified
+	// orchestrator pane" (with spaces) never survives a substring match even
+	// though it landed. Normalize the log (strip escapes, drop ALL whitespace)
+	// and match whitespace-stripped needles so a genuinely-live channel is
+	// detected immediately instead of false-failing (the e2e-evaluator
+	// handshake false-negative).
+	needleToken := stripWS(token)
+	needleNotified := "Notifiedorchestratorpane"
 	verify := func(deadline time.Time) bool {
-		for time.Now().Before(deadline) {
+		for {
 			if raw, err := os.ReadFile(logPath); err == nil {
-				s := string(raw)
-				if strings.Contains(s, token) && strings.Contains(s, "Notified orchestrator pane") {
+				n := normalizeLog(string(raw))
+				if strings.Contains(n, needleToken) && strings.Contains(n, needleNotified) {
 					return true
 				}
 			}
-			time.Sleep(2 * time.Second)
+			if !time.Now().Before(deadline) {
+				return false
+			}
+			time.Sleep(1 * time.Second)
 		}
-		return false
 	}
 
 	if !send() {
@@ -467,6 +478,21 @@ func doHandshake(pane, session, logPath string, wait time.Duration) bool {
 	}
 	return verify(time.Now().Add(wait))
 }
+
+// ansiEscapeRe strips ANSI CSI (e.g. cursor moves, colours) and OSC (title)
+// escape sequences a TUI emits, plus stray ESC/BEL bytes, so a wrapped success
+// line reads as plain text.
+var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|[\x1b\x07]`)
+
+// allWS matches any run of whitespace (incl. NUL the pipe-pane log can carry).
+var allWS = regexp.MustCompile(`[\s\x00]+`)
+
+// stripWS removes all whitespace from s.
+func stripWS(s string) string { return allWS.ReplaceAllString(s, "") }
+
+// normalizeLog renders a TUI pipe-pane transcript into escape-free, whitespace-
+// free text so substring proofs survive line-wrapping and cursor positioning.
+func normalizeLog(s string) string { return stripWS(ansiEscapeRe.ReplaceAllString(s, "")) }
 
 func buildInitPrompt(session, token string) string {
 	return strings.Join([]string{
