@@ -69,6 +69,8 @@ The orchestrator drives via **CLI + send-keys**, never via the tmux-cli **MCP to
 
 **Primary — target → orchestrator (proactive reports).** The target reports milestones ("discovery done", "roadmap: 14 goals", "goal-007 failed: <reason>") so the orchestrator is event-driven, not polling.
 
+**Init-prompt handshake (first message, before any flow DRIVE).** The target does **not** report via `notify-orchestrator` unless it is told to — so the orchestrator's *very first* message into the target is an **init prompt**, not a flow `/command`. It (a) tells the target it runs under the e2e-evaluator orchestrator, (b) makes `tmux-cli notify-orchestrator "<msg>"` the mandatory milestone-reporting contract for the whole run (the milestone vocabulary WATCH expects: `discovery-done → roadmap-generated → preflight-passed → goals-dispatched → goals-done → app-up`, plus `goal-<id> failed: <reason>`), and (c) orders an immediate **comms-test** — the target echoes `E2E-HANDSHAKE-OK <session>` back, and the orchestrator verifies it landed in `TMUX_CLI_ORCHESTRATOR_PANE`. No flow DRIVE begins until the handshake passes; a dead channel aborts the cycle rather than silently degrading WATCH to blind log-polling. This is the e2e-evaluator.xml **step 3b** gate (BOOTSTRAP's handshake tail).
+
 The PoC proved this works but exposed the failure mode: the target hand-rolled `tmux send-keys -t %5 "msg" Enter` and **twice got it wrong** (forgot the separate `Enter`; quoting). A primary channel cannot depend on hand-rolled keystrokes. So:
 
 > **New primitive — `tmux-cli notify-orchestrator "<msg>"`** (decision #1, approved).
@@ -87,6 +89,8 @@ The PoC proved this works but exposed the failure mode: the target hand-rolled `
 ---
 
 ## 5. Provisioning & bootstrap
+
+> **Automated.** The entire prologue below is performed by a single command — `tmux-cli e2e-bootstrap <scenario> [--project <path>] [--resume]` — so the conductor LLM does not hand-drive it tool-call-by-tool-call (the original PoC wasted most of its time there). The command runs each item as a hard gate, self-tears-down on any failure, and prints one JSON line (`{ok, session, target_pane, orchestrator_pane, target_dir, log_path, state_file, cycle, human_view, handshake}`) the conductor reads once before DRIVE. The handshake is the real proof the orchestrator-pane env propagated (notify-orchestrator fails loudly without it), so the LLM takes over only for judgment after `ok:true`.
 
 - **Dir:** `--project <path>` or default `/tmp/<scenario>-<UTCstamp>` (kept under `/tmp/`). `git init` if the flow needs a repo.
 - **Session:** `tmux-cli start` (detached). Optionally also attach the discovered native terminal for the human view.
@@ -185,6 +189,8 @@ A full implementation run spawns artifacts **outside** `/tmp`: docker compose st
 | Item | Kind | Notes |
 |---|---|---|
 | `embedded/commands/tmux/e2e-evaluator.xml` | new embedded command | the conductor; installed like the rest |
+| `tmux-cli e2e-bootstrap <scenario>` | new CLI subcommand | **automates the whole deterministic prologue** (preconditions → reap stale `tmux-cli-tmp-*` → resolve/`git init` dir → seed `~/.claude.json` trust → `tmux-cli start` → attach human view → `pipe-pane` → init-prompt HANDSHAKE) and emits one JSON line the conductor reads before DRIVE. Every step is a hard gate; on failure it self-tears-down and exits non-zero. Pure logic lives in `internal/e2e/` (unit-tested); the conductor LLM only takes over for judgment after `ok:true`. |
+| `tmux-cli e2e-teardown <session>` | new CLI subcommand | the ordered §10 reap (daemon → `compose down` → worktrees → kill-session → `rm -rf`), best-effort, never `pkill -f`. |
 | `tmux-cli notify-orchestrator "<msg>"` | new CLI subcommand (decision #1) | reliable atomic reply channel; reads `TMUX_CLI_ORCHESTRATOR_PANE` |
 | `TMUX_CLI_ORCHESTRATOR_PANE` | new env, injected at target bootstrap | the orchestrator pane the target reports to |
 | `.tmux-cli/e2e-evaluator/` | runtime state + reports | `state.json`, `e2e-report-cycle-<n>.md` |
