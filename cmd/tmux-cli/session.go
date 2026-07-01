@@ -82,6 +82,7 @@ to recreate it or keep the existing one.
 
 The session is identified by project path and timestamp.
 Session state is stored in tmux itself — no session file needed.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runSessionStart,
 }
 
@@ -93,6 +94,7 @@ var startAttachCmd = &cobra.Command{
 If a session is already running for the current directory, you will be prompted
 to recreate it or keep the existing one. After session creation (or reuse),
 tmux will attach to the session.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runStartAttach,
 }
 
@@ -340,6 +342,12 @@ func init() {
 	startCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
 	startAttachCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
 
+	// Add --resume-state flag to start and start-attach commands. When set, a
+	// kickoff message pointing the supervisor window at the resume-state file is
+	// sent before attaching, so a resumed session picks up the interrupted work.
+	startCmd.Flags().String("resume-state", "", "Path to a resume-state file; the supervisor window is pointed at it on startup")
+	startAttachCmd.Flags().String("resume-state", "", "Path to a resume-state file; the supervisor window is pointed at it on startup")
+
 	// Taskvisor commands
 	taskvisorCmd.Flags().BoolVar(&taskvisorRun, "run", false, "Start daemon loop (internal)")
 	taskvisorCmd.Flags().MarkHidden("run")
@@ -522,9 +530,9 @@ func cleanProjectDir(projectPath string) error {
 }
 
 func runSessionStart(cmd *cobra.Command, args []string) error {
-	projectPath, err := os.Getwd()
+	projectPath, err := resolveProjectPath(args)
 	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
+		return err
 	}
 	if clean, _ := cmd.Flags().GetBool("clean"); clean {
 		if err := cleanProjectDir(projectPath); err != nil {
@@ -554,9 +562,9 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 }
 
 func runStartAttach(cmd *cobra.Command, args []string) error {
-	projectPath, err := os.Getwd()
+	projectPath, err := resolveProjectPath(args)
 	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
+		return err
 	}
 	if clean, _ := cmd.Flags().GetBool("clean"); clean {
 		if err := cleanProjectDir(projectPath); err != nil {
@@ -582,6 +590,12 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("sudo setup failed: %w", err)
 		}
 	}
+	resumeState, _ := cmd.Flags().GetString("resume-state")
+	if resumeState != "" {
+		if err := sendResumeKickoff(executor, sessionID, "supervisor", resumeState); err != nil {
+			return fmt.Errorf("send resume kickoff: %w", err)
+		}
+	}
 	fmt.Printf("Attaching to session '%s'...\n", sessionID)
 	return executor.AttachSession(sessionID)
 }
@@ -590,22 +604,42 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 // positional argument (falling back to the current working directory) and returns
 // its canonicalized absolute path (filepath.Abs then filepath.EvalSymlinks),
 // erroring when the resolved path does not exist or is not a directory.
-//
-// RED-phase stub: returns ("", nil). GREEN wires the getwd/positional selection,
-// canonicalization, and existence/is-directory validation.
 func resolveProjectPath(args []string) (string, error) {
-	return "", nil
+	var path string
+	if len(args) > 0 {
+		path = args[0]
+	} else {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("get current directory: %w", err)
+		}
+		path = wd
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	canonicalPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve symlinks: %w", err)
+	}
+	info, err := os.Stat(canonicalPath)
+	if err != nil {
+		return "", fmt.Errorf("stat project path: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("not a directory: %s", canonicalPath)
+	}
+	return canonicalPath, nil
 }
 
 // sendResumeKickoff sends the resume kickoff message (threading resumeStateFile)
 // to the supervisor window BEFORE the blocking AttachSession, so a resumed session
 // hands the supervisor its resume-state pointer. It is a separate injectable helper
 // because runStartAttach builds its executor internally and then blocks on attach.
-//
-// RED-phase stub: returns nil doing nothing. GREEN calls
-// executor.SendMessage(sessionID, supervisorWindowID, <kickoff referencing resumeStateFile>).
 func sendResumeKickoff(executor tmux.TmuxExecutor, sessionID, supervisorWindowID, resumeStateFile string) error {
-	return nil
+	msg := fmt.Sprintf("Resume state: read %s and continue the interrupted work.", resumeStateFile)
+	return executor.SendMessage(sessionID, supervisorWindowID, msg)
 }
 
 func runProjectInit(cmd *cobra.Command, args []string) error {

@@ -19,6 +19,9 @@ type SessionManager struct {
 	// back) so every window — the supervisor window, taskvisor, and all
 	// MCP-spawned workers — launches Claude with that model.
 	model string
+	// source, when non-empty, is recorded in the new session's environment as
+	// TMUX_CLI_SRC so windows can resolve the tmux-cli source tree.
+	source string
 }
 
 // NewSessionManager creates a new SessionManager with the given dependencies
@@ -42,10 +45,8 @@ func (m *SessionManager) WithModel(model string) *SessionManager {
 // WithSource returns the manager configured to record TMUX_CLI_SRC=<dir> in the
 // new session's environment at CreateSession time so windows can resolve the
 // tmux-cli source tree. Returns the receiver for chaining.
-//
-// RED-phase stub: returns the receiver WITHOUT storing or emitting TMUX_CLI_SRC
-// (a later GREEN goal wires the env). The env-recording test fails against this.
 func (m *SessionManager) WithSource(dir string) *SessionManager {
+	m.source = dir
 	return m
 }
 
@@ -107,6 +108,13 @@ func (m *SessionManager) CreateSession(id, path string) error {
 	// an optional override, so a set failure must not tear down a good session.
 	if m.model != "" {
 		_ = m.executor.SetSessionEnvironment(id, "TMUX_CLI_MODEL", m.model)
+	}
+
+	// 4.6. Record the tmux-cli source tree in the session environment as
+	// TMUX_CLI_SRC so windows can resolve it later. Best-effort like the model:
+	// an optional pointer must not tear down a good session.
+	if m.source != "" {
+		_ = m.executor.SetSessionEnvironment(id, "TMUX_CLI_SRC", m.source)
 	}
 
 	// 5. List windows in the newly created session to capture default window
