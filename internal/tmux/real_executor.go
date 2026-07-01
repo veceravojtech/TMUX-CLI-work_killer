@@ -591,3 +591,11 @@ func (e *RealTmuxExecutor) AttachSession(id string) error {
 	}
 	return nil
 }
+
+// InterruptWindow sends C-c to the window's active pane to interrupt the
+// running process without destroying the window (unlike KillWindow, which
+// discards window options such as WindowUUIDOption).
+// RED-phase stub: the real interrupt logic lands in the paired green goal.
+func (e *RealTmuxExecutor) InterruptWindow(windowID string) error {
+	return fmt.Errorf("InterruptWindow(%s): not implemented", windowID)
+}

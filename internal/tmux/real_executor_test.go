@@ -874,3 +874,62 @@ func TestRealTmuxExecutor_CaptureWindowOutput_InvalidWindow(t *testing.T) {
 	assert.Error(t, err, "CaptureWindowOutput should error for non-existent window")
 	assert.Empty(t, output, "Output should be empty on error")
 }
+
+// TestInterruptWindow_ErrorMentionsSendKeys pins that InterruptWindow issues a
+// tmux send-keys command: failing to interrupt a nonexistent window must
+// surface a wrapped error whose text names send-keys (mirroring SendMessage's
+// wrap style, NOT KillWindow's idempotent nil-swallow).
+// Unit test — behaves identically with or without a running tmux server.
+func TestInterruptWindow_ErrorMentionsSendKeys(t *testing.T) {
+	executor := NewTmuxExecutor()
+
+	err := executor.InterruptWindow("@999999")
+
+	require.Error(t, err, "InterruptWindow should error for a nonexistent window")
+	assert.Contains(t, err.Error(), "send-keys", "Error should indicate the tmux send-keys command failed")
+}
+
+// TestInterruptWindow_PreservesWindowAndUUIDOption pins the window-preserving
+// contract: interrupting the process in a window leaves the window alive and
+// its WindowUUIDOption intact (unlike KillWindow, which destroys both).
+func TestInterruptWindow_PreservesWindowAndUUIDOption(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	executor := NewTmuxExecutor()
+
+	sessionID := "test-interruptwindow-preserves"
+
+	// Clean up any existing session
+	_ = executor.KillSession(sessionID)
+	defer executor.KillSession(sessionID)
+
+	err := executor.CreateSession(sessionID, "/tmp")
+	require.NoError(t, err, "Failed to create test session")
+
+	// bash: C-c at a shell prompt must not terminate the pane (NOT cat)
+	windowID, err := executor.CreateWindow(sessionID, "interrupt-target", "bash")
+	require.NoError(t, err, "Failed to create test window")
+	require.NotEmpty(t, windowID, "Window ID should not be empty")
+
+	err = executor.SetWindowOption(sessionID, windowID, WindowUUIDOption, "red-uuid")
+	require.NoError(t, err, "Failed to set window UUID option")
+
+	err = executor.InterruptWindow(windowID)
+	require.NoError(t, err, "InterruptWindow should succeed on a live window")
+
+	windows, err := executor.ListWindows(sessionID)
+	require.NoError(t, err, "ListWindows should succeed after InterruptWindow")
+	found := false
+	for _, w := range windows {
+		if w.TmuxWindowID == windowID {
+			found = true
+		}
+	}
+	assert.True(t, found, "Window should still be listed after InterruptWindow")
+
+	value, err := executor.GetWindowOption(sessionID, windowID, WindowUUIDOption)
+	require.NoError(t, err, "WindowUUIDOption should still be readable after InterruptWindow")
+	assert.Equal(t, "red-uuid", value, "WindowUUIDOption should survive InterruptWindow")
+}

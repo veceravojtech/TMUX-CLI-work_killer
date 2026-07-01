@@ -77,6 +77,11 @@ func (m *MockTmuxExecutor) KillWindow(sessionID, windowID string) error {
 	return args.Error(0)
 }
 
+func (m *MockTmuxExecutor) InterruptWindow(windowID string) error {
+	args := m.Called(windowID)
+	return args.Error(0)
+}
+
 func (m *MockTmuxExecutor) SetWindowOption(sessionID, windowID, optionName, value string) error {
 	args := m.Called(sessionID, windowID, optionName, value)
 	return args.Error(0)

@@ -49,6 +49,14 @@ type TmuxExecutor interface {
 	// Returns nil if window doesn't exist (idempotent)
 	KillWindow(sessionID, windowID string) error
 
+	// InterruptWindow sends C-c to the window's active pane to interrupt the
+	// running process WITHOUT destroying the window (unlike KillWindow, which
+	// discards window options such as WindowUUIDOption). Takes only the tmux
+	// window ID (e.g. "@3") — window IDs are server-unique, so no sessionID
+	// join is needed. A missing window is a genuine failure and returns an
+	// error (no idempotent nil-swallow).
+	InterruptWindow(windowID string) error
+
 	// SetWindowOption sets a user-defined window option (@option-name)
 	// Window user-options are prefixed with @ and scoped to the specific window
 	// Returns error if session or window doesn't exist

@@ -112,6 +112,10 @@ func (m *MockExecutorWithFeedback) KillWindow(sessionID, windowID string) error 
 	return nil
 }
 
+func (m *MockExecutorWithFeedback) InterruptWindow(windowID string) error {
+	return nil
+}
+
 func (m *MockExecutorWithFeedback) RenameWindow(sessionID, windowID, newName string) error {
 	return nil
 }

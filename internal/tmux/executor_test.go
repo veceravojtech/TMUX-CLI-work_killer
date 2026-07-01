@@ -60,6 +60,10 @@ func (m *mockExecutor) KillWindow(sessionID, windowID string) error {
 	return nil
 }
 
+func (m *mockExecutor) InterruptWindow(windowID string) error {
+	return nil
+}
+
 func (m *mockExecutor) SetWindowOption(sessionID, windowID, optionName, value string) error {
 	return nil
 }
