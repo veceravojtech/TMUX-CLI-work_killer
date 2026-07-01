@@ -91,16 +91,19 @@ func TestResume_Exhausted(t *testing.T) {
 
 // --- STARTUP (step 1b slot) — no prerequisite gate ---------------------------
 
-// TestStartup_NoPrerequisiteGate: the prerequisite/soft-pause gate was dropped
-// (reporting is task-report-only). The conductor must NOT reintroduce a
-// consumer-pipeline / auto-install-watcher prerequisite or a soft-pause gate.
+// TestStartup_NoPrerequisiteGate: the prerequisite/soft-pause gate was dropped.
+// The conductor must NOT reintroduce a consumer-pipeline / auto-install-watcher
+// prerequisite or a soft-pause gate at startup. Reporting is now AUTO-filed and
+// then the filed task's lifecycle is monitored (new→in_progress→resolved): the
+// loop must neither blind-block on a fix nor thrash cycles against an unresolved
+// defect — it monitors the filed task instead.
 func TestStartup_NoPrerequisiteGate(t *testing.T) {
 	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
 
-	assert.Contains(t, content, "task-report-only",
-		"reporting must be task-report-only — no external consumer prerequisite")
-	assert.Contains(t, content, "NEVER blocks waiting for a fix",
-		"the loop must never block waiting for a fix to land")
+	assert.Contains(t, content, "auto-install-watcher prerequisite",
+		"startup must not require an external consumer / auto-install-watcher prerequisite")
+	assert.Contains(t, content, "monitors the filed task's lifecycle",
+		"after filing, the conductor monitors the task lifecycle (no blind block, no thrash)")
 	// The removed gate's vocabulary must not creep back in.
 	assert.NotContains(t, content, "SOFT-PAUSE",
 		"the dropped soft-pause gate must not be reintroduced")
