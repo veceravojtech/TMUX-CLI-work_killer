@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/console/tmux-cli/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -273,4 +276,101 @@ func TestStatusCmd_HumanOutputUnchanged(t *testing.T) {
 	err = runSessionStatus(statusCmd, nil)
 	require.Error(t, err, "no-flag path must still error when no session exists")
 	assert.Contains(t, err.Error(), "no tmux-cli session found for this directory")
+}
+
+// ============================================================================
+// start-attach positional + resume kickoff (RED — drives resolveProjectPath /
+// startAttachCmd MaximumNArgs(1) / sendResumeKickoff)
+// ============================================================================
+
+// TestResolveProjectPath_NoArgCanonicalizesCwd verifies that with no positional
+// arg, resolveProjectPath returns the Abs+EvalSymlinks canonicalized cwd.
+func TestResolveProjectPath_NoArgCanonicalizesCwd(t *testing.T) {
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(origWd) }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.Chdir(dir))
+
+	got, err := resolveProjectPath(nil)
+	require.NoError(t, err)
+
+	abs, err := filepath.Abs(dir)
+	require.NoError(t, err)
+	want, err := filepath.EvalSymlinks(abs)
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "no-arg resolveProjectPath must canonicalize the cwd")
+}
+
+// TestResolveProjectPath_PositionalCanonicalizesPath verifies a positional path
+// is returned as its Abs+EvalSymlinks canonicalized form.
+func TestResolveProjectPath_PositionalCanonicalizesPath(t *testing.T) {
+	dir := t.TempDir()
+
+	got, err := resolveProjectPath([]string{dir})
+	require.NoError(t, err)
+
+	abs, err := filepath.Abs(dir)
+	require.NoError(t, err)
+	want, err := filepath.EvalSymlinks(abs)
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "positional resolveProjectPath must canonicalize the path")
+}
+
+// TestResolveProjectPath_NonExistentPathErrors verifies a non-existent positional
+// path yields a non-nil error and an empty path.
+func TestResolveProjectPath_NonExistentPathErrors(t *testing.T) {
+	got, err := resolveProjectPath([]string{"/no/such/dir-xyz-12345"})
+	assert.Error(t, err, "non-existent path must error")
+	assert.Empty(t, got, "errored resolveProjectPath must return empty path")
+}
+
+// TestResolveProjectPath_FilePathNotDirErrors verifies a regular-file positional
+// path (not a directory) yields a non-nil error.
+func TestResolveProjectPath_FilePathNotDirErrors(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "afile.txt")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+
+	_, err := resolveProjectPath([]string{file})
+	assert.Error(t, err, "a file path (not a directory) must error")
+}
+
+// TestRunStartAttach_Positional verifies start-attach accepts at most one
+// positional (cobra.MaximumNArgs(1)): two args reject, one arg is accepted.
+func TestRunStartAttach_Positional(t *testing.T) {
+	err := startAttachCmd.ValidateArgs([]string{"a", "b"})
+	assert.Error(t, err, "start-attach must reject >1 positional (MaximumNArgs(1))")
+
+	err = startAttachCmd.ValidateArgs([]string{"/proj"})
+	assert.NoError(t, err, "start-attach must accept a single positional")
+}
+
+// TestSendResumeKickoff_SendsToSupervisorWindow verifies sendResumeKickoff sends
+// the kickoff via SendMessage to the supervisor window before the blocking attach.
+func TestSendResumeKickoff_SendsToSupervisorWindow(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("SendMessage", "sess", "supervisor-001", mock.AnythingOfType("string")).Return(nil)
+
+	err := sendResumeKickoff(mockExec, "sess", "supervisor-001", "/tmp/state.md")
+	require.NoError(t, err)
+
+	mockExec.AssertCalled(t, "SendMessage", "sess", "supervisor-001", mock.AnythingOfType("string"))
+}
+
+// TestSendResumeKickoff_ThreadsResumeFileIntoMessage verifies the SendMessage
+// message argument threads the resume-state file into the kickoff.
+func TestSendResumeKickoff_ThreadsResumeFileIntoMessage(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("SendMessage", "sess", "supervisor-001", mock.MatchedBy(func(s string) bool {
+		return strings.Contains(s, "state.md")
+	})).Return(nil)
+
+	err := sendResumeKickoff(mockExec, "sess", "supervisor-001", "/tmp/state.md")
+	require.NoError(t, err)
+
+	mockExec.AssertCalled(t, "SendMessage", "sess", "supervisor-001", mock.MatchedBy(func(s string) bool {
+		return strings.Contains(s, "state.md")
+	}))
 }

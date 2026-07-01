@@ -223,6 +223,44 @@ func TestCreateSession_WithModel_InjectsModelIntoLaunch(t *testing.T) {
 	}))
 }
 
+// TestWithSource_RecordsTMUXCLISRCEnv verifies WithSource records TMUX_CLI_SRC=<dir>
+// in the new session's environment at CreateSession time (mirrors the WithModel
+// exemplar's mock chain). RED: the stub does not wire the env, so this fails.
+func TestWithSource_RecordsTMUXCLISRCEnv(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	const wantSource = "/src/dir"
+
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_SRC", wantSource).Return(nil)
+	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	mockExec.On("SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return len(s) > 0
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return len(s) > 0
+	})).Return("", nil)
+
+	manager := NewSessionManager(mockExec).WithSource(wantSource)
+	require.NoError(t, manager.CreateSession("test-id", "/tmp"))
+
+	mockExec.AssertCalled(t, "SetSessionEnvironment", "test-id", "TMUX_CLI_SRC", wantSource)
+}
+
+// TestWithSource_ReturnsReceiverForChaining pins the builder-chaining contract:
+// WithSource returns the same manager pointer. Green against the stub — the RED
+// signal for internal/session comes from TestWithSource_RecordsTMUXCLISRCEnv.
+func TestWithSource_ReturnsReceiverForChaining(t *testing.T) {
+	mgr := NewSessionManager(new(MockTmuxExecutor))
+	assert.Same(t, mgr, mgr.WithSource("/x"), "WithSource must return the receiver for chaining")
+}
+
 // TestCreateSession_NoModel_NoModelFlagOrEnv verifies the default manager (no model
 // configured) never writes TMUX_CLI_MODEL and launches claude with no --model flag
 // — byte-identical to pre-flag behavior.

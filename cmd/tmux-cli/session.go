@@ -586,6 +586,28 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	return executor.AttachSession(sessionID)
 }
 
+// resolveProjectPath resolves the start-attach project directory from an optional
+// positional argument (falling back to the current working directory) and returns
+// its canonicalized absolute path (filepath.Abs then filepath.EvalSymlinks),
+// erroring when the resolved path does not exist or is not a directory.
+//
+// RED-phase stub: returns ("", nil). GREEN wires the getwd/positional selection,
+// canonicalization, and existence/is-directory validation.
+func resolveProjectPath(args []string) (string, error) {
+	return "", nil
+}
+
+// sendResumeKickoff sends the resume kickoff message (threading resumeStateFile)
+// to the supervisor window BEFORE the blocking AttachSession, so a resumed session
+// hands the supervisor its resume-state pointer. It is a separate injectable helper
+// because runStartAttach builds its executor internally and then blocks on attach.
+//
+// RED-phase stub: returns nil doing nothing. GREEN calls
+// executor.SendMessage(sessionID, supervisorWindowID, <kickoff referencing resumeStateFile>).
+func sendResumeKickoff(executor tmux.TmuxExecutor, sessionID, supervisorWindowID, resumeStateFile string) error {
+	return nil
+}
+
 func runProjectInit(cmd *cobra.Command, args []string) error {
 	var projectDir string
 	if len(args) > 0 {

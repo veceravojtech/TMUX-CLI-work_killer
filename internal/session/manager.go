@@ -39,6 +39,16 @@ func (m *SessionManager) WithModel(model string) *SessionManager {
 	return m
 }
 
+// WithSource returns the manager configured to record TMUX_CLI_SRC=<dir> in the
+// new session's environment at CreateSession time so windows can resolve the
+// tmux-cli source tree. Returns the receiver for chaining.
+//
+// RED-phase stub: returns the receiver WITHOUT storing or emitting TMUX_CLI_SRC
+// (a later GREEN goal wires the env). The env-recording test fails against this.
+func (m *SessionManager) WithSource(dir string) *SessionManager {
+	return m
+}
+
 // waitForSession polls HasSession until the newly created session is reachable.
 // Handles the race where the tmux server socket isn't ready immediately after
 // a fresh server start via new-session -d.
