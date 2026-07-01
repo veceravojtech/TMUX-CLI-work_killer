@@ -595,7 +595,54 @@ func (e *RealTmuxExecutor) AttachSession(id string) error {
 // InterruptWindow sends C-c to the window's active pane to interrupt the
 // running process without destroying the window (unlike KillWindow, which
 // discards window options such as WindowUUIDOption).
-// RED-phase stub: the real interrupt logic lands in the paired green goal.
+// Command: tmux send-keys -t <windowID> C-c
+//
+// Before sending, it waits (bounded, fail-open) for the pane to become
+// interrupt-safe: a C-c delivered while the pane's wrapper shell is still
+// initializing (WrapCommandForPersistence runs `tmux show-options` in a
+// command substitution before the user command) aborts the wrapper before
+// the user command starts and kills the pane — the exact window loss this
+// method exists to avoid.
 func (e *RealTmuxExecutor) InterruptWindow(windowID string) error {
-	return fmt.Errorf("InterruptWindow(%s): not implemented", windowID)
+	waitForInterruptSafePane(windowID)
+
+	cmd := exec.Command("tmux", "send-keys", "-t", windowID, "C-c")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if cmd.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux send-keys (C-c) failed (target: %s): %w: %s",
+			windowID, err, strings.TrimSpace(string(output)))
+	}
+
+	return nil
+}
+
+// waitForInterruptSafePane polls until the window's pane is safe to receive
+// C-c: its foreground command is past the wrapper's `tmux show-options`
+// substitution AND it has rendered output (an interactive shell has drawn its
+// prompt, so SIGINT is handled instead of killing the pane). Fail-open: on
+// timeout the caller sends the key anyway (a pane that never draws output is
+// indistinguishable from a quiet one), and on probe error it returns
+// immediately so send-keys surfaces the real failure (e.g. missing window).
+func waitForInterruptSafePane(windowID string) {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		fg, err := exec.Command("tmux", "display-message", "-p", "-t", windowID,
+			"#{pane_current_command}").Output()
+		if err != nil {
+			return
+		}
+		if strings.TrimSpace(string(fg)) != "tmux" {
+			content, err := exec.Command("tmux", "capture-pane", "-p", "-t", windowID).Output()
+			if err != nil {
+				return
+			}
+			if strings.TrimSpace(string(content)) != "" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
