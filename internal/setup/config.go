@@ -246,6 +246,17 @@ type Settings struct {
 	Plan       PlanSettings       `yaml:"plan"`
 	Sudo       SudoSettings       `yaml:"sudo"`
 	Taskvisor  TaskvisorSettings  `yaml:"taskvisor"`
+	SelfUpdate SelfUpdateSettings `yaml:"self_update"`
+}
+
+// SelfUpdateSettings configures the `tmux-cli self-update` command. Like the
+// api: block, it is deliberately NOT surfaced in the TUI (machine-specific,
+// not customer-configurable per project) — no items entry, no ToSettings()
+// arm; the overlay onto loaded settings preserves it through TUI round-trips.
+type SelfUpdateSettings struct {
+	// SourceDir is the tmux-cli source checkout used as the last-resort
+	// source resolution (after --source and TMUX_CLI_SRC).
+	SourceDir string `yaml:"source_dir"`
 }
 
 func DefaultSettings() *Settings {
