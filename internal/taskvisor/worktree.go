@@ -262,6 +262,32 @@ func (d *Daemon) isRegisteredWorktree(ctx context.Context, run GitRunnerFunc, wt
 	return false
 }
 
+// resolveWorktreeFromDisk re-derives a goal's worktree from disk when the
+// in-memory runtime lost it (daemon restart, crash recovery, lanes that never
+// re-ran ensureWorktree): it returns (path, true) ONLY when
+// .tmux-cli-worktrees/<goal-id> exists as a directory AND git registers it as a
+// worktree — mirroring ensureWorktree's reuse validation so a stale,
+// unregistered dir is never adopted (that would route validation into an
+// outdated tree, the exact wrong-results class goalWorkDir exists to prevent).
+// It is a pure probe: no runtime mutation (the caller caches), no teardown, and
+// fail-safe throughout — any stat/git failure returns false so the caller
+// degrades to base. The no-dir case is the COMMON path (MaxGoals=1 / non-git),
+// so only a present-but-rejected dir warn-logs.
+func (d *Daemon) resolveWorktreeFromDisk(goalID string) (string, bool) {
+	wtPath := d.worktreePath(goalID)
+	fi, err := os.Stat(wtPath)
+	if err != nil || !fi.IsDir() {
+		return "", false // no worktree on disk — expected at MaxGoals=1, no log
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	if !d.isRegisteredWorktree(ctx, d.gitRunner(), wtPath) {
+		log.Printf("warning: %s: on-disk worktree dir %s is not git-registered — using base", goalID, wtPath)
+		return "", false
+	}
+	return wtPath, true
+}
+
 // teardownStrayWorktree removes a directory at wtPath that is NOT a usable
 // registered worktree (stray dir, or registered-but-base-less stub) so the
 // caller can re-provision it cleanly with `git worktree add`. Every removal is

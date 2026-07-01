@@ -573,8 +573,14 @@ func (d *Daemon) clearRuntime(goalID string) {
 // (and, via the WORKTREE_DIR marker, the inv-* investigators) derives its cwd here,
 // so there is no duplicated worktree-path logic.
 //
-//   - empty WorktreeDir (MaxGoals=1, or a non-git repo) ⇒ base d.workDir — the cwd
-//     is byte-identical to the pre-worktree build and zero new behavior is added.
+//   - empty WorktreeDir with a registered worktree on disk (daemon restart, crash
+//     recovery, lanes that never re-ran ensureWorktree) ⇒ re-resolve via
+//     resolveWorktreeFromDisk, cache the adopted path back into rt.WorktreeDir
+//     (keeping marker/window/investigator cwd consistent within a cycle and
+//     avoiding repeated git probes), and return it — never silently the base.
+//   - empty WorktreeDir and no worktree on disk (MaxGoals=1, or a non-git repo) ⇒
+//     base d.workDir — the cwd is byte-identical to the pre-worktree build and
+//     zero new behavior is added.
 //   - WorktreeDir set and the directory exists ⇒ that worktree path.
 //   - WorktreeDir set but the directory is missing (stale/raced cleanup) ⇒ degrade
 //     to base d.workDir and log a warning. NEVER crash and NEVER run a goal's
@@ -583,8 +589,19 @@ func (d *Daemon) clearRuntime(goalID string) {
 // The script path and every .tmux-cli/ control-plane read/write stay rooted at base
 // d.workDir; only the cwd of the executed validation commands moves here.
 func (d *Daemon) goalWorkDir(goalID string) string {
-	wt := d.runtime(goalID).WorktreeDir
+	rt := d.runtime(goalID)
+	wt := rt.WorktreeDir
 	if wt == "" {
+		if path, ok := d.resolveWorktreeFromDisk(goalID); ok {
+			// Cache-back: goalWorkDir is the third WorktreeDir writer (after
+			// ensureWorktree's two sites); the poll loop is single-threaded, so no
+			// lock is taken — same discipline as runtime()/ensureWorktree
+			// (execute-31: add sync when >1 goal runs concurrently). Branch is
+			// restored alongside so merge-back/discard see a consistent runtime.
+			rt.WorktreeDir = path
+			rt.Branch = worktreeBranch(goalID)
+			return path
+		}
 		return d.workDir
 	}
 	if _, err := os.Stat(wt); err != nil {
