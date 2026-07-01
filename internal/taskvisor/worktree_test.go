@@ -1077,3 +1077,97 @@ func TestDiscardWorktree_GuardBlocksControlPlane(t *testing.T) {
 	assert.Contains(t, logBuf.String(), "refusing unsafe worktree remove",
 		"a refused remove must be logged loudly")
 }
+
+// --- copyClaudeCommands: embedded-template regeneration -------------------
+//
+// These four tests pin the fix for backend task 325: a goal worktree's
+// git-excluded .claude/commands/tmux mirror must be regenerated from the daemon
+// binary's compiled-in command templates (injected via SetCommandTemplates), not
+// copied from a possibly-stale base on-disk mirror — so the dual-write tests that
+// assert embedded==mirror never false-fail during a daemon-run `make test`.
+
+// TestCopyClaudeCommands_CreatePathWritesFromEmbedded: on the create path
+// (overwrite=true) with templates injected, the worktree mirror is written from the
+// TEMPLATES (byte-identical to embedded), never from the STALE base disk mirror.
+func TestCopyClaudeCommands_CreatePathWritesFromEmbedded(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	wtPath := filepath.Join(dir, "wt")
+	require.NoError(t, os.MkdirAll(wtPath, 0o755))
+
+	// Base disk mirror holds STALE content — must be ignored in favor of templates.
+	baseTmux := filepath.Join(dir, ".claude", "commands", "tmux")
+	require.NoError(t, os.MkdirAll(baseTmux, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseTmux, "e2e-evaluator.xml"), []byte("STALE"), 0o644))
+
+	d.commandTemplates = map[string]string{"e2e-evaluator.xml": "NEW"}
+
+	require.NoError(t, d.copyClaudeCommands(wtPath, true))
+
+	got, err := os.ReadFile(filepath.Join(wtPath, ".claude", "commands", "tmux", "e2e-evaluator.xml"))
+	require.NoError(t, err)
+	assert.Equal(t, "NEW", string(got), "create path must write from embedded templates, not stale base disk")
+}
+
+// TestCopyClaudeCommands_ReusePreservesEditedFile: on the reuse path
+// (overwrite=false) an existing goal-edited mirror file is preserved untouched while
+// a template file MISSING from the worktree is filled from templates.
+func TestCopyClaudeCommands_ReusePreservesEditedFile(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	wtPath := filepath.Join(dir, "wt")
+	wtTmux := filepath.Join(wtPath, ".claude", "commands", "tmux")
+	require.NoError(t, os.MkdirAll(wtTmux, 0o755))
+	// An in-flight goal-edited mirror file.
+	require.NoError(t, os.WriteFile(filepath.Join(wtTmux, "e2e-evaluator.xml"), []byte("EDITED"), 0o644))
+
+	// Templates provide a DIFFERENT value for the edited file (must NOT clobber) plus
+	// a second file MISSING from the worktree (must be filled).
+	d.commandTemplates = map[string]string{
+		"e2e-evaluator.xml": "FROM-TEMPLATE",
+		"supervisor.xml":    "SUP",
+	}
+
+	require.NoError(t, d.copyClaudeCommands(wtPath, false))
+
+	edited, err := os.ReadFile(filepath.Join(wtTmux, "e2e-evaluator.xml"))
+	require.NoError(t, err)
+	assert.Equal(t, "EDITED", string(edited), "reuse must preserve a goal-edited command file untouched")
+
+	filled, err := os.ReadFile(filepath.Join(wtTmux, "supervisor.xml"))
+	require.NoError(t, err, "a missing template file must be filled on reuse")
+	assert.Equal(t, "SUP", string(filled))
+}
+
+// TestCopyClaudeCommands_NilTemplatesFallsBackToDisk: with no templates injected,
+// the worktree mirror is copied from the base disk exactly as before — never empty
+// or removed.
+func TestCopyClaudeCommands_NilTemplatesFallsBackToDisk(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	require.Nil(t, d.commandTemplates)
+	wtPath := filepath.Join(dir, "wt")
+	require.NoError(t, os.MkdirAll(wtPath, 0o755))
+
+	// Populated base disk command set.
+	baseTmux := filepath.Join(dir, ".claude", "commands", "tmux")
+	require.NoError(t, os.MkdirAll(baseTmux, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseTmux, "supervisor.xml"), []byte("<sup-base/>"), 0o644))
+
+	require.NoError(t, d.copyClaudeCommands(wtPath, true))
+
+	got, err := os.ReadFile(filepath.Join(wtPath, ".claude", "commands", "tmux", "supervisor.xml"))
+	require.NoError(t, err, "nil templates must fall back to base disk-copy, not empty the mirror")
+	assert.Equal(t, "<sup-base/>", string(got))
+}
+
+// TestCopyClaudeCommands_NilTemplatesNoBaseIsNoop: nil templates and no base command
+// dir ⇒ silent no-op (returns nil, writes nothing).
+func TestCopyClaudeCommands_NilTemplatesNoBaseIsNoop(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	require.Nil(t, d.commandTemplates)
+	wtPath := filepath.Join(dir, "wt")
+	require.NoError(t, os.MkdirAll(wtPath, 0o755))
+
+	require.NoError(t, d.copyClaudeCommands(wtPath, true), "no base command set is a silent no-op")
+
+	_, err := os.Stat(filepath.Join(wtPath, ".claude"))
+	assert.True(t, os.IsNotExist(err), "no-op must write nothing (no .claude created)")
+}

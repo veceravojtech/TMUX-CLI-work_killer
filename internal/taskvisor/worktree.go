@@ -402,9 +402,49 @@ func (d *Daemon) ensureWorktree(goal *Goal, parallel bool) (string, error) {
 // overwrite=false (fill MISSING files only): a scoped goal whose deliverable IS a
 // .claude/commands/tmux/*.xml file edits its worktree command mirror (the
 // embedded↔.claude dual-write), so a reused worktree must never have that
-// in-flight edit overwritten. Best-effort: a missing base source dir (Commands
-// disabled / not yet set up) is a silent no-op.
+// in-flight edit overwritten.
+//
+// SOURCE OF TRUTH: when the daemon has the binary's compiled-in command templates
+// injected (d.commandTemplates, non-empty), the mirror is regenerated from THOSE —
+// byte-identical to the binary's embedded FS — not from d.workDir's possibly-stale
+// on-disk mirror. This is what keeps the two dual-write tests (which assert
+// embedded==mirror) from false-failing during a daemon-run `make test` in a worktree
+// whose base mirror drifted from the binary. On the create path (overwrite=true) it
+// is a clean-slate setup.WriteCommands (RemoveAll+write); on the reuse path
+// (overwrite=false) only MISSING files are written so an in-flight goal-edited mirror
+// is preserved. When templates are nil/empty (literal-Daemon tests, Commands
+// disabled) it falls back to the base disk-copy (copyTree) unchanged — a missing base
+// source dir stays a silent no-op; a nil/empty map never blanks or removes the mirror.
 func (d *Daemon) copyClaudeCommands(wtPath string, overwrite bool) error {
+	if len(d.commandTemplates) > 0 {
+		if overwrite {
+			// Create path: clean-slate regeneration from the embedded source. Safe
+			// here — a just-`worktree add`ed tree carries no .claude mirror (it is
+			// git-excluded), so RemoveAll wipes nothing in-flight.
+			return setup.WriteCommands(wtPath, d.commandTemplates)
+		}
+		// Reuse path: fill MISSING files only from the embedded source; NEVER
+		// overwrite an existing (possibly goal-edited) command file — the dual-write
+		// invariant. Do NOT use setup.WriteCommands here: its RemoveAll would wipe an
+		// in-flight edit.
+		dstRoot := filepath.Join(wtPath, ".claude", "commands", "tmux")
+		for relPath, content := range d.commandTemplates {
+			dst := filepath.Join(dstRoot, relPath)
+			if _, err := os.Stat(dst); err == nil {
+				continue // preserve an existing (possibly goal-edited) command file
+			}
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(dst, []byte(content), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Fallback (templates nil/empty): copy the base on-disk mirror as before. A
+	// missing base source dir (Commands disabled / not yet set up) is a silent no-op.
 	srcRoot := filepath.Join(d.workDir, ".claude", "commands", "tmux")
 	if fi, err := os.Stat(srcRoot); err != nil || !fi.IsDir() {
 		return nil // base has no installed command set — nothing to mirror

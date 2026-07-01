@@ -257,7 +257,15 @@ type Daemon struct {
 	// the (new) binary's embedded FS when checkStaleBinary fires. Injected from
 	// cmd/tmux-cli (where the embedded FS lives) so internal/taskvisor need not
 	// import package main; nil ⇒ refreshCommands() is a no-op (literal-Daemon tests).
-	commandRefreshFn   func() error
+	commandRefreshFn func() error
+	// commandTemplates is the binary's compiled-in .claude/commands/tmux/ set
+	// (relPath→content), injected from package main (buildCommandTemplates over the
+	// embed.FS) so internal/taskvisor need not import package main. copyClaudeCommands
+	// regenerates a goal worktree's git-excluded command mirror from it (byte-identical
+	// to the daemon binary's embedded source) instead of copying the possibly-stale
+	// base on-disk mirror; nil/empty ⇒ the worktree mirror falls back to the base
+	// disk-copy (literal-Daemon tests, or Commands disabled).
+	commandTemplates   map[string]string
 	vcsRevision        string
 	lastStaleCheck     time.Time
 	staleBanner        string
@@ -356,6 +364,15 @@ func (d *Daemon) SetExecReplaceFnForTest(fn func(string, []string, []string) err
 
 func (d *Daemon) SetCommandRefreshFn(fn func() error) {
 	d.commandRefreshFn = fn
+}
+
+// SetCommandTemplates injects the binary's compiled-in .claude/commands/tmux/ set
+// (relPath→content) so copyClaudeCommands regenerates a goal worktree's mirror from
+// the embedded source rather than the possibly-stale base on-disk copy. Injected from
+// package main (buildCommandTemplates) to keep internal/taskvisor free of an import
+// on package main; nil/empty ⇒ the worktree mirror falls back to the base disk-copy.
+func (d *Daemon) SetCommandTemplates(templates map[string]string) {
+	d.commandTemplates = templates
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
