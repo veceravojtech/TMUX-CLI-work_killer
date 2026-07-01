@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,6 +143,33 @@ func resolveBaselineCmd(body string) string {
 	return ""
 }
 
+// baselineMigrateBenignPatterns are the lowercased stderr fragments a baseline
+// migrate emits when there is legitimately NOTHING to do — a DB-less / no-registered-migrations
+// Symfony scaffold. Doctrine exits non-zero in these cases, but they are not
+// failures: "No migrations to execute." (bundle present, empty migration set)
+// and the namespace-absent message (doctrine-migrations bundle not installed at
+// all). Kept to EXACTLY these two so a real SQL/DDL/connection error stays fatal.
+var baselineMigrateBenignPatterns = []string{
+	"no migrations to execute",
+	`there are no commands defined in the "doctrine:migrations" namespace`,
+}
+
+// baselineMigrateBenign reports whether a non-zero baseline-migrate stderr means
+// "nothing to migrate" rather than a genuine failure. It lowercases stderr once
+// and matches any documented benign fragment as a substring (Symfony emits
+// capitalized, quoted text possibly wrapped in `[notice]`/`In Application.php:`
+// framing, so the compare is case-insensitive and tolerant of surrounding text).
+// Pure, no receiver — mirrors resolveBaselineCmd's style and is trivially unit-testable.
+func baselineMigrateBenign(stderr string) bool {
+	low := strings.ToLower(stderr)
+	for _, p := range baselineMigrateBenignPatterns {
+		if strings.Contains(low, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // portStripOverride is the override body that empties the inherited published
 // ports of the app and db services. `!reset []` (compose v2.24+) REPLACES the
 // inherited sequence — a plain `ports: []` would append-merge and leave the host
@@ -189,6 +217,10 @@ func (s *ComposeStack) Up(ctx context.Context) error {
 		return fmt.Errorf("composestack: baseline migrate exec error: %w", err)
 	}
 	if code != 0 {
+		if baselineMigrateBenign(stderr) {
+			log.Printf("[stack] %s: baseline migrate reported no work (exit %d) — treating as no-op: %s", s.Project, code, strings.TrimSpace(stderr))
+			return nil
+		}
 		return fmt.Errorf("composestack: baseline migrate failed (exit %d): %s", code, strings.TrimSpace(stderr))
 	}
 	return nil

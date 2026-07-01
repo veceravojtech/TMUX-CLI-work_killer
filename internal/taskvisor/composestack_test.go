@@ -21,17 +21,22 @@ type composeCall struct {
 // fakeComposeRunner is the test double mirroring the ScriptRunnerFunc seam: it
 // records every call and returns a configurable exit code / error keyed off argv.
 type fakeComposeRunner struct {
-	calls   []composeCall
-	exitFor func(args []string) (int, error)
+	calls     []composeCall
+	exitFor   func(args []string) (int, error)
+	stderrFor func(args []string) string // injected stderr keyed off argv; "" when nil
 }
 
 func (f *fakeComposeRunner) run(_ context.Context, dir string, _ []string, args ...string) (string, string, int, error) {
 	f.calls = append(f.calls, composeCall{dir: dir, args: append([]string(nil), args...)})
+	var stderr string
+	if f.stderrFor != nil {
+		stderr = f.stderrFor(args)
+	}
 	if f.exitFor != nil {
 		code, err := f.exitFor(args)
-		return "", "", code, err
+		return "", stderr, code, err
 	}
-	return "", "", 0, nil
+	return "", stderr, 0, nil
 }
 
 // containsSeq reports whether needle appears as a contiguous subsequence of hay.
@@ -215,4 +220,90 @@ func TestComposeStackUp_PropagatesRunnerNonZeroExit(t *testing.T) {
 	err := s.Up(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "exit")
+}
+
+// TC-13: a DB-less / no-registered-migrations Symfony worktree makes the baseline
+// migrate exit non-zero with a "nothing to do" stderr. Up must treat that as a
+// logged no-op and return nil so the goal stack brings up cleanly instead of
+// poll-wedging (backend task 324).
+func TestComposeStackUp_ToleratesNoMigrations(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+	}{
+		{
+			name:   "no migrations registered",
+			stderr: "No migrations to execute.",
+		},
+		{
+			name:   "migrations namespace absent",
+			stderr: `There are no commands defined in the "doctrine:migrations" namespace`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wt := t.TempDir()
+			writeComposeFile(t, wt, "docker-compose.yml")
+			fake := &fakeComposeRunner{
+				exitFor: func(args []string) (int, error) {
+					if containsSeq(args, "exec") {
+						return 1, nil
+					}
+					return 0, nil
+				},
+				stderrFor: func(args []string) string {
+					if containsSeq(args, "exec") {
+						return tc.stderr
+					}
+					return ""
+				},
+			}
+			s := NewComposeStack(ExecRuntime{RunTarget: "docker", AppSvc: "app"}, "goal-015", wt,
+				"bin/console doctrine:migrations:migrate -n", fake.run)
+
+			require.NoError(t, s.Up(context.Background()),
+				"benign baseline-migrate stderr must be tolerated as a no-op")
+		})
+	}
+}
+
+// TC-14: a genuine migration failure (real SQL/connection error) on the baseline
+// migrate step must stay fatal — the tolerance branch must NOT swallow it.
+func TestComposeStackUp_GenuineBaselineMigrateFailureStaysFatal(t *testing.T) {
+	wt := t.TempDir()
+	writeComposeFile(t, wt, "docker-compose.yml")
+	fake := &fakeComposeRunner{
+		exitFor: func(args []string) (int, error) {
+			if containsSeq(args, "exec") {
+				return 1, nil
+			}
+			return 0, nil
+		},
+		stderrFor: func(args []string) string {
+			if containsSeq(args, "exec") {
+				return "SQLSTATE[08006] connection refused"
+			}
+			return ""
+		},
+	}
+	s := NewComposeStack(ExecRuntime{RunTarget: "docker", AppSvc: "app"}, "goal-015", wt,
+		"bin/console doctrine:migrations:migrate -n", fake.run)
+
+	err := s.Up(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "baseline migrate failed")
+}
+
+// TC-15: unit test of the pure helper — true ONLY for the two documented
+// "nothing to do" fragments (case-insensitive, tolerant of surrounding text /
+// punctuation); false for empty and for real failures.
+func TestBaselineMigrateBenign_MatchesBenignFragmentsOnly(t *testing.T) {
+	assert.True(t, baselineMigrateBenign("No migrations to execute."))
+	assert.True(t, baselineMigrateBenign("[notice] No migrations to execute."))
+	assert.True(t, baselineMigrateBenign(`There are no commands defined in the "doctrine:migrations" namespace`))
+	assert.True(t, baselineMigrateBenign(`  In Application.php: There are no commands defined in the "doctrine:migrations" namespace.`))
+
+	assert.False(t, baselineMigrateBenign(""))
+	assert.False(t, baselineMigrateBenign("SQLSTATE[08006] connection refused"))
+	assert.False(t, baselineMigrateBenign("An exception occurred while executing a query"))
 }
