@@ -298,6 +298,72 @@ func TestCreateSession_NoModel_NoModelFlagOrEnv(t *testing.T) {
 	mockExec.AssertNotCalled(t, "SetSessionEnvironment", "test-id", "TMUX_CLI_MODEL", mock.Anything)
 }
 
+// TestCreateSession_WithSupervisorUUID_ReusesInjectedUUID verifies that a
+// caller-supplied UUID (WithSupervisorUUID) is REUSED verbatim for the
+// supervisor window instead of a freshly generated one: the SetWindowOption
+// stamp and the exported TMUX_WINDOW_UUID both carry the injected value. This
+// is the load-bearing property that lets `self-update --restart session`
+// resume the SAME Claude conversation (window UUID == claude --session-id).
+func TestCreateSession_WithSupervisorUUID_ReusesInjectedUUID(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	const fixed = "fixed-uuid-1234"
+
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
+	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	mockExec.On("SetWindowOption", "test-id", "@0", "window-uuid", fixed).Return(nil)
+	mockExec.On("SendMessage", "test-id", "@0", `export TMUX_WINDOW_UUID="fixed-uuid-1234"`).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-id", "@0", mock.Anything).Return("", nil)
+
+	manager := NewSessionManager(mockExec).WithSupervisorUUID(fixed)
+	require.NoError(t, manager.CreateSession("test-id", "/tmp"))
+
+	mockExec.AssertCalled(t, "SetWindowOption", "test-id", "@0", "window-uuid", fixed)
+	mockExec.AssertCalled(t, "SendMessage", "test-id", "@0", `export TMUX_WINDOW_UUID="fixed-uuid-1234"`)
+}
+
+// TestCreateSession_EmptySupervisorUUID_GeneratesFresh pins the default
+// (non-restart) path: with no WithSupervisorUUID injected, CreateSession stamps
+// a freshly generated, valid UUID — byte-for-byte the pre-flag behavior.
+func TestCreateSession_EmptySupervisorUUID_GeneratesFresh(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	var capturedUUID string
+
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
+	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	mockExec.On("SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string")).
+		Run(func(args mock.Arguments) { capturedUUID = args.String(3) }).Return(nil)
+	mockExec.On("SendMessage", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return len(s) > 0
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-id", "@0", mock.Anything).Return("", nil)
+
+	manager := NewSessionManager(mockExec) // no WithSupervisorUUID → default path
+	require.NoError(t, manager.CreateSession("test-id", "/tmp"))
+
+	assert.NotEmpty(t, capturedUUID, "default path must generate a UUID")
+	assert.NoError(t, ValidateUUID(capturedUUID), "generated UUID must be valid")
+}
+
+// TestWithSupervisorUUID_ReturnsReceiverForChaining pins the builder-chaining
+// contract: WithSupervisorUUID returns the same manager pointer (mirrors
+// WithModel/WithSource).
+func TestWithSupervisorUUID_ReturnsReceiverForChaining(t *testing.T) {
+	mgr := NewSessionManager(new(MockTmuxExecutor))
+	assert.Same(t, mgr, mgr.WithSupervisorUUID("U"), "WithSupervisorUUID must return the receiver for chaining")
+}
+
 // TestSessionManager_CreateSession_PathNotExist tests error when path doesn't exist
 func TestSessionManager_CreateSession_PathNotExist(t *testing.T) {
 	mockExec := new(MockTmuxExecutor)

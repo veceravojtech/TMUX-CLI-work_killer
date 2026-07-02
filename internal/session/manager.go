@@ -22,6 +22,12 @@ type SessionManager struct {
 	// source, when non-empty, is recorded in the new session's environment as
 	// TMUX_CLI_SRC so windows can resolve the tmux-cli source tree.
 	source string
+	// supervisorUUID, when non-empty, is REUSED as the supervisor window's UUID
+	// instead of generating a fresh one at CreateSession time. `self-update
+	// --restart session` captures the pre-restart UUID and injects it here so the
+	// recreated window's `claude --session-id="$TMUX_WINDOW_UUID"` reconnects the
+	// same conversation. Empty ⇒ GenerateUUID() (the default, non-restart path).
+	supervisorUUID string
 }
 
 // NewSessionManager creates a new SessionManager with the given dependencies
@@ -47,6 +53,15 @@ func (m *SessionManager) WithModel(model string) *SessionManager {
 // tmux-cli source tree. Returns the receiver for chaining.
 func (m *SessionManager) WithSource(dir string) *SessionManager {
 	m.source = dir
+	return m
+}
+
+// WithSupervisorUUID returns the manager configured to REUSE uuid as the
+// supervisor window's UUID at CreateSession time instead of generating a fresh
+// one. An empty uuid is a no-op (the default GenerateUUID() path is preserved).
+// Returns the receiver for chaining.
+func (m *SessionManager) WithSupervisorUUID(uuid string) *SessionManager {
+	m.supervisorUUID = uuid
 	return m
 }
 
@@ -126,7 +141,13 @@ func (m *SessionManager) CreateSession(id, path string) error {
 
 	// 6. Set UUID for supervisor window and run PostCommand
 	if len(windowList) > 0 && windowList[0].Name == "supervisor" {
-		supervisorUUID := GenerateUUID()
+		// Reuse a caller-injected UUID (self-update --restart session) so the
+		// recreated window resumes the same Claude conversation; otherwise mint a
+		// fresh one (the default, non-restart path).
+		supervisorUUID := m.supervisorUUID
+		if supervisorUUID == "" {
+			supervisorUUID = GenerateUUID()
+		}
 
 		// Store UUID in tmux user-option
 		err = m.executor.SetWindowOption(id, windowList[0].TmuxWindowID, tmux.WindowUUIDOption, supervisorUUID)

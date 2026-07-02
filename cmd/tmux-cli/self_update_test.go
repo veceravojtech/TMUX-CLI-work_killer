@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/console/tmux-cli/internal/testutil"
@@ -13,6 +14,23 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMain guards against the session-restart relaunch fork-bomb. When
+// dispatchSessionRestart self-execs `os.Executable()` (the test binary in
+// tests) with a `start-attach ...` argv, a plain `go test` binary would ignore
+// the unknown positional and RE-RUN THE WHOLE SUITE — which re-enters
+// TestDispatchSessionRestart_CapturesUUIDBeforeKill and spawns another
+// subprocess, recursing without bound ([[test-suite-spawns-live-sessions-restart-loop]]).
+// Normal `go test` always invokes the binary with `-test.*` flags (first arg
+// begins with '-'); a relaunch passes a bare subcommand as the first arg, so we
+// detect that and exit 0 immediately — making the relaunch the harmless no-op
+// the spec assumes, with NO real session launched.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // noEnv is a Getenv stub that reports every variable as unset.
 func noEnv(string) string { return "" }
@@ -302,4 +320,83 @@ func TestDoSelfUpdate_WarnsWhenExecutableNotInstallPath(t *testing.T) {
 	_, err := doSelfUpdate(cfg, mockExec)
 	require.NoError(t, err)
 	assert.Contains(t, stderr.String(), "warning")
+}
+
+// TestBuildSessionRestartArgs_IncludesCapturedUUID proves a captured supervisor
+// UUID is threaded through the relaunch argv as `--session-uuid <uuid>` so the
+// recreated window reuses it (and resumes the same Claude conversation).
+func TestBuildSessionRestartArgs_IncludesCapturedUUID(t *testing.T) {
+	cfg := selfUpdateConfig{ResumeState: "/s.json", SupervisorUUID: "U"}
+	got := buildSessionRestartArgs(cfg)
+	assert.Equal(t, []string{"start-attach", "--resume-state", "/s.json", "--session-uuid", "U"}, got)
+}
+
+// TestBuildSessionRestartArgs_OmitsWhenEmpty proves an empty captured UUID
+// (best-effort capture failed) omits the flag entirely — start-attach then
+// mints a fresh UUID and the restart still succeeds (graceful degrade).
+func TestBuildSessionRestartArgs_OmitsWhenEmpty(t *testing.T) {
+	cfg := selfUpdateConfig{ResumeState: "/s.json", SupervisorUUID: ""}
+	got := buildSessionRestartArgs(cfg)
+	assert.Equal(t, []string{"start-attach", "--resume-state", "/s.json"}, got)
+	assert.NotContains(t, got, "--session-uuid")
+}
+
+// TestCaptureSupervisorUUID_ReadsSupervisorWindow proves the helper resolves
+// the supervisor window by name and returns its window-uuid option.
+func TestCaptureSupervisorUUID_ReadsSupervisorWindow(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	mockExec.On("GetWindowOption", "sess-1", "@0", tmux.WindowUUIDOption).Return("U", nil)
+
+	assert.Equal(t, "U", captureSupervisorUUID(mockExec, "sess-1"))
+}
+
+// TestCaptureSupervisorUUID_ReturnsEmptyOnError proves capture is best-effort:
+// any error reading the UUID yields "" so the restart never breaks.
+func TestCaptureSupervisorUUID_ReturnsEmptyOnError(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	mockExec.On("GetWindowOption", "sess-1", "@0", tmux.WindowUUIDOption).Return("", fmt.Errorf("boom"))
+
+	assert.Equal(t, "", captureSupervisorUUID(mockExec, "sess-1"))
+}
+
+// TestDispatchSessionRestart_CapturesUUIDBeforeKill mirrors
+// TestDispatchClaudeRestart_TerminatesBeforeRelaunch: it records call order and
+// asserts the supervisor UUID is read (GetWindowOption) BEFORE KillSession, so
+// the pre-restart UUID is captured while the window still exists. The relaunch
+// Run() error is ignored — os.Executable() is the test binary, so no real
+// session is launched.
+func TestDispatchSessionRestart_CapturesUUIDBeforeKill(t *testing.T) {
+	projectDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(projectDir, ".tmux-cli"), 0o755))
+
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1"}, nil)
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+
+	var order []string
+	mockExec.On("GetWindowOption", "sess-1", "@0", tmux.WindowUUIDOption).Run(func(mock.Arguments) {
+		order = append(order, "capture")
+	}).Return("U", nil)
+	mockExec.On("KillSession", "sess-1").Run(func(mock.Arguments) {
+		order = append(order, "kill")
+	}).Return(nil)
+
+	cfg := selfUpdateConfig{ProjectDir: projectDir, ResumeState: "/s.json"}
+	// Ignore the relaunch Run() error: the exec target is the test binary, not a
+	// real tmux-cli, so no live session is spawned (see [[test-suite-spawns-live-sessions-restart-loop]]).
+	_ = dispatchSessionRestart(cfg, mockExec, &bytes.Buffer{})
+
+	mockExec.AssertCalled(t, "GetWindowOption", "sess-1", "@0", tmux.WindowUUIDOption)
+	mockExec.AssertCalled(t, "KillSession", "sess-1")
+	require.GreaterOrEqual(t, len(order), 2)
+	assert.Equal(t, "capture", order[0], "UUID capture must precede KillSession")
+	assert.Equal(t, "kill", order[1])
 }

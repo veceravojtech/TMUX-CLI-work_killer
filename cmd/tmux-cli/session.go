@@ -350,6 +350,11 @@ func init() {
 	startCmd.Flags().String("resume-state", "", "Path to a resume-state file; the supervisor window is pointed at it on startup")
 	startAttachCmd.Flags().String("resume-state", "", "Path to a resume-state file; the supervisor window is pointed at it on startup")
 
+	// Add --session-uuid flag to start-attach. When set, the supervisor window
+	// reuses this UUID instead of generating a fresh one, so `self-update
+	// --restart session` resumes the same Claude conversation across the restart.
+	startAttachCmd.Flags().String("session-uuid", "", "reuse this supervisor window UUID (self-update --restart session)")
+
 	// Taskvisor commands
 	taskvisorCmd.Flags().BoolVar(&taskvisorRun, "run", false, "Start daemon loop (internal)")
 	taskvisorCmd.Flags().MarkHidden("run")
@@ -465,8 +470,10 @@ func NewUsageError(msg string) error {
 // and session creation. Returns the session ID (existing or newly created) and whether a
 // new session was created (false when an existing session was kept). Human progress and
 // prompt lines go to out — os.Stdout normally, os.Stderr under `start --print-json` so
-// stdout stays pure for the JSON contract line.
-func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model string, out io.Writer) (string, bool, error) {
+// stdout stays pure for the JSON contract line. A non-empty supervisorUUID is
+// reused as the created supervisor window's UUID (self-update --restart session
+// conversation resume); empty means generate a fresh one (the default path).
+func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model, supervisorUUID string, out io.Writer) (string, bool, error) {
 	// Check if session already exists for this path
 	existingSessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", projectPath)
 
@@ -502,7 +509,7 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model string, 
 
 	// Create new session
 	sessionID := session.GenerateSessionID(projectPath)
-	manager := session.NewSessionManager(executor).WithModel(model)
+	manager := session.NewSessionManager(executor).WithModel(model).WithSupervisorUUID(supervisorUUID)
 
 	if err := manager.CreateSession(sessionID, projectPath); err != nil {
 		return "", false, err
@@ -570,7 +577,7 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	}
 	executor := tmux.NewTmuxExecutor()
 	model, _ := cmd.Flags().GetString("model")
-	sessionID, created, err := startOrReuseSession(executor, projectPath, model, progressOut)
+	sessionID, created, err := startOrReuseSession(executor, projectPath, model, "", progressOut)
 	if err != nil {
 		return err
 	}
@@ -605,7 +612,8 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	}
 	executor := tmux.NewTmuxExecutor()
 	model, _ := cmd.Flags().GetString("model")
-	sessionID, _, err := startOrReuseSession(executor, projectPath, model, os.Stdout)
+	sessionUUID, _ := cmd.Flags().GetString("session-uuid")
+	sessionID, _, err := startOrReuseSession(executor, projectPath, model, sessionUUID, os.Stdout)
 	if err != nil {
 		return err
 	}

@@ -36,6 +36,7 @@ type selfUpdateConfig struct {
 	SourceFlag       string
 	SettingSourceDir string
 	ResumeState      string
+	SupervisorUUID   string
 	InstallPath      string
 	Mode             restartMode
 	Getenv           func(string) string
@@ -200,6 +201,40 @@ func dispatchClaudeRestart(executor tmux.TmuxExecutor) error {
 	return session.ExecutePostCommandWithFallback(executor, sessionID, "supervisor", session.DefaultPostCommandConfig())
 }
 
+// captureSupervisorUUID reads the supervisor window's persistent UUID
+// (window-uuid option) for the given session. It is BEST-EFFORT: any failure
+// (no session, no supervisor window, GetWindowOption error) returns "" so a
+// caller can gracefully degrade to a freshly generated UUID and the restart
+// never breaks.
+func captureSupervisorUUID(executor tmux.TmuxExecutor, sessionID string) string {
+	windows, err := executor.ListWindows(sessionID)
+	if err != nil {
+		return ""
+	}
+	for _, w := range windows {
+		if w.Name == "supervisor" {
+			uuid, err := executor.GetWindowOption(sessionID, w.TmuxWindowID, tmux.WindowUUIDOption)
+			if err != nil {
+				return ""
+			}
+			return uuid
+		}
+	}
+	return ""
+}
+
+// buildSessionRestartArgs builds the argv (excluding the binary itself) for the
+// session-restart relaunch: always `start-attach --resume-state <path>`, plus
+// `--session-uuid <uuid>` ONLY when a UUID was captured. An empty
+// SupervisorUUID omits the flag so start-attach mints a fresh UUID.
+func buildSessionRestartArgs(cfg selfUpdateConfig) []string {
+	args := []string{"start-attach", "--resume-state", cfg.ResumeState}
+	if cfg.SupervisorUUID != "" {
+		args = append(args, "--session-uuid", cfg.SupervisorUUID)
+	}
+	return args
+}
+
 // dispatchSessionRestart stops the daemon process, kills the session, and
 // self-execs `start-attach --resume-state` so the relaunched session picks
 // up the interrupted work. All human-readable relaunch output goes to
@@ -209,6 +244,10 @@ func dispatchSessionRestart(cfg selfUpdateConfig, executor tmux.TmuxExecutor, st
 	if err != nil {
 		return err
 	}
+	// Capture the supervisor window's UUID BEFORE KillSession destroys it, so the
+	// relaunch can reuse it and resume the same Claude conversation. Best-effort:
+	// an empty result simply omits the flag and start-attach mints a fresh UUID.
+	cfg.SupervisorUUID = captureSupervisorUUID(executor, sessionID)
 	if err := stopDaemonProcess(cfg.ProjectDir); err != nil {
 		return fmt.Errorf("stop daemon: %w", err)
 	}
@@ -219,7 +258,7 @@ func dispatchSessionRestart(cfg selfUpdateConfig, executor tmux.TmuxExecutor, st
 	if err != nil {
 		self = "tmux-cli"
 	}
-	relaunch := exec.Command(self, "start-attach", "--resume-state", cfg.ResumeState)
+	relaunch := exec.Command(self, buildSessionRestartArgs(cfg)...)
 	relaunch.Dir = cfg.ProjectDir
 	relaunch.Stdin = os.Stdin
 	relaunch.Stdout = stderr

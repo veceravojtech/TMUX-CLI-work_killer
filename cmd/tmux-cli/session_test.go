@@ -395,7 +395,7 @@ func TestStartOrReuseSession_NewSession_CreatedTrue(t *testing.T) {
 	m.On("ListWindows", mock.AnythingOfType("string")).Return([]tmux.WindowInfo{}, nil)
 
 	var out bytes.Buffer
-	sessionID, created, err := startOrReuseSession(m, dir, "", &out)
+	sessionID, created, err := startOrReuseSession(m, dir, "", "", &out)
 
 	require.NoError(t, err)
 	assert.True(t, created, "a freshly created session must report created=true")
@@ -422,7 +422,7 @@ func TestStartOrReuseSession_ExistingRunning_CreatedFalse(t *testing.T) {
 	m.On("HasSession", "existing-sess").Return(true, nil)
 
 	var out bytes.Buffer
-	sessionID, created, err := startOrReuseSession(m, dir, "", &out)
+	sessionID, created, err := startOrReuseSession(m, dir, "", "", &out)
 
 	require.NoError(t, err)
 	assert.False(t, created, "a kept existing session must report created=false")
