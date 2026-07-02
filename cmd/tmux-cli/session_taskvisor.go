@@ -177,12 +177,15 @@ func runTaskvisorStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load goals: %w", err)
 	}
-	if gf == nil {
-		return fmt.Errorf("no goals.yaml found — add goals first with 'taskvisor goal add'")
+	hasStartable := false
+	if gf != nil {
+		_, hasPending := gf.NextPendingGoal()
+		hasStartable = hasPending || gf.HasRecoverableBlock()
 	}
-
-	_, hasPending := gf.NextPendingGoal()
-	if !hasPending && !gf.HasRecoverableBlock() {
+	switch taskvisor.EvaluateStartGuard(cwd, gf == nil, hasStartable) {
+	case taskvisor.StartRefusedNoLedger:
+		return fmt.Errorf("no goals.yaml found — add goals first with 'taskvisor goal add'")
+	case taskvisor.StartRefusedNoStartable:
 		return fmt.Errorf("no pending or recoverable goals — all goals are done or failed")
 	}
 

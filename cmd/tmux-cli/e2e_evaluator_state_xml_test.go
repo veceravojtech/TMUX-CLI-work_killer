@@ -115,7 +115,10 @@ func TestStartup_NoPrerequisiteGate(t *testing.T) {
 
 // --- SUCCESS-CRITERIA (step 10, consulted by JUDGE step 7) -------------------
 
-// TestSuccess_AppUpRequired: all goals done but GET /login≠200 ⇒ FAIL, app_up:false.
+// TestSuccess_AppUpRequired: all goals done but the scenario-derived app-up
+// probe failing ⇒ FAIL, app_up:false. The login endpoints (GET /login, 302/401)
+// remain in the file ONLY as the documented default-scenario EXAMPLE — the
+// false-pass guard itself is probe-agnostic.
 func TestSuccess_AppUpRequired(t *testing.T) {
 	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
 
@@ -124,11 +127,38 @@ func TestSuccess_AppUpRequired(t *testing.T) {
 	assert.Contains(t, content, "false pass",
 		"SUCCESS-CRITERIA must call a green-daemon/dead-app a false pass")
 	assert.Contains(t, content, "GET /login",
-		"app-up probe must hit GET /login")
+		"the default dashboard-LOGIN scenario example must still document GET /login")
 	// JUDGE may not PASS while the app is down.
 	assert.True(t,
 		strings.Contains(content, "may NOT return PASS") || strings.Contains(content, "never a pass"),
 		"SUCCESS-CRITERIA must block PASS while app_up:false")
+}
+
+// TestSuccess_ProbeScenarioDerived: the step-10 app-up probe is DERIVED from the
+// scenario's own discovered routes (docs/architecture/api-endpoints.md / the
+// scenario spec) at JUDGE time — never a fixed endpoint list. The login probe is
+// only the default-scenario EXAMPLE; a no-login scenario is judged by its own
+// routes (e.g. GET /=200, /api/metrics seeded JSON, /health=200), matching the
+// incremental generator's product-complete example (task-plan-generate.xml
+// step 0a) so the two never disagree at runtime (false FAIL).
+func TestSuccess_ProbeScenarioDerived(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "SCENARIO-DERIVED",
+		"the app-up probe must be declared SCENARIO-DERIVED")
+	assert.Contains(t, content, "never a fixed endpoint list",
+		"step 10 must forbid a fixed endpoint list — the probe is derived per scenario")
+	assert.Contains(t, content, "docs/architecture/api-endpoints.md",
+		"the probe derivation must read the discovered route inventory")
+	assert.Contains(t, content, "EXAMPLE",
+		"the login endpoints must be framed as the default-scenario EXAMPLE")
+	// The no-login example routes (the generator's product-complete vocabulary).
+	assert.Contains(t, content, "/api/metrics",
+		"the no-login example must include the /api/metrics route")
+	assert.Contains(t, content, "/health",
+		"the no-login example must include the /health route")
+	assert.Contains(t, content, "no-login",
+		"step 10 must state a no-login scenario is judged by its own routes")
 }
 
 // TestSuccess_FullFlowPass: docs+goals+all-done+login200+unauth302+authed200 ⇒ passed.

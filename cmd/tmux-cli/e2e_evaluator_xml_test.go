@@ -182,6 +182,12 @@ func TestE2EEvaluatorXml_CycleBody(t *testing.T) {
 	assert.Contains(t, content, ".tmux-cli/taskvisor-product-complete",
 		"JUDGE's product-complete trigger must name the daemon marker file")
 
+	// JUDGE (step 7) consults the SCENARIO-DERIVED app-up probe (step 10) — the
+	// login endpoints survive only as the documented default-scenario example,
+	// so a no-login scenario is judged by its own discovered routes.
+	assert.GreaterOrEqual(t, strings.Count(content, "SCENARIO-DERIVED"), 2,
+		"JUDGE (step 7) and the step-10 app-up probe must both carry the SCENARIO-DERIVED contract")
+
 	// WATCH: event-driven primary, capture-pane/pipe-pane fallback on silence.
 	assert.Contains(t, content, "notify-orchestrator",
 		"WATCH primary channel is the target's notify-orchestrator reports")
