@@ -70,7 +70,12 @@ func resolveSourceDir(cfg selfUpdateConfig) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("no source directory: pass --source, set TMUX_CLI_SRC, or set self_update.source_dir in setting.yaml")
 	}
-	if samePath(dir, cfg.ProjectDir) {
+	// source == project is refused so an arbitrary target project can never be
+	// "rebuilt as tmux-cli" — EXCEPT when the dir genuinely IS a tmux-cli source
+	// checkout (module path + Makefile): the default max_goals=1 inline mode has
+	// buildDir == workDir in the dogfood repo, and the daemon's repair-cycle
+	// self-reinstall hook must be able to build it.
+	if samePath(dir, cfg.ProjectDir) && !setup.IsCliSourceCheckout(dir) {
 		return "", fmt.Errorf("source directory %s is the target project itself — refusing self-target update", dir)
 	}
 	return dir, nil

@@ -738,6 +738,10 @@ func (gf *GoalsFile) ResetGoal(id string) bool {
 	// Clear the timeout-salvage marker too: a reset goal starts fresh, so the
 	// salvage scan must not keep watching (or late-flip) a re-pended goal.
 	g.FailedBy = ""
+	// Clear the self-reinstall cycle stamp: with counters zeroed the re-seeded
+	// goal restarts at cycle 1, and a stale stamp from a prior life must not
+	// suppress the fresh cycle's rebuild.
+	g.LastSelfReinstallCycle = 0
 	g.StartedAt = ""
 	g.FinishedAt = ""
 	return true

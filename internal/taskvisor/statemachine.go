@@ -397,6 +397,14 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 		return err
 	}
 
+	// Repair-cycle self-reinstall (design §6 forward hook 1): when this goal's
+	// changes touch tmux-cli's own source, rebuild+install via self-update so
+	// validation runs against the fixed binary, not the stale installed one.
+	// Placed after supervisor teardown and BEFORE the deferred-validation fork —
+	// the only site where "implementation done, validation not started" holds
+	// for both the inline and the deferred paths. Never fails the transition.
+	d.maybeSelfReinstall(goal, goals)
+
 	// taskvisor.validation=false redefined (validation-as-goal): "false" now means
 	// DEFER the checks to a dedicated validation goal, NOT "skip checks". So the
 	// impl goal may be marked done without an inline validate ONLY when a separate
