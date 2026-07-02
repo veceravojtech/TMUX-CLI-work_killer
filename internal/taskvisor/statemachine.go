@@ -51,8 +51,13 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 	// that no longer exists means the active goal vanished out from under us —
 	// tear down the idle supervisor surface and go idle. ReconcileBlocks does not
 	// add/remove goals, so the existence check is stable across the heal below.
+	// Incremental planning legitimately ticks with NO head at all (empty ledger
+	// before goal-001 is authored): an EMPTY CurrentGoal there is idle, not
+	// vanished. A non-empty head naming a missing goal deactivates in both modes.
 	if _, ok := goals.GoalByID(goals.CurrentGoal); !ok {
-		return d.deactivate()
+		if !d.incrementalPlanning() || goals.CurrentGoal != "" {
+			return d.deactivate()
+		}
 	}
 
 	// Heal stale block-state before acting on it (Bug A + self-recovery on load).
@@ -114,6 +119,16 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+	}
+
+	// (2c) Drive an open incremental generator episode (plannext.go). While the
+	// generator runs NOTHING else may dispatch (the one-goal-at-a-time guard), so
+	// the tick ends here; a goal the generator just authored dispatches on the
+	// NEXT tick, after drivePlanNext has closed the episode — generation and the
+	// goal dispatch never share a tick, mirroring the completion/dispatch tick
+	// separation above. Inert in roadmap mode and when no episode is open.
+	if d.incrementalPlanning() && d.planNext.inFlight {
+		return d.drivePlanNext(goals)
 	}
 
 	// (3) Free dispatch budget for this tick.
@@ -242,6 +257,13 @@ func (d *Daemon) tick(ctx context.Context, goals *GoalsFile) error {
 	if !goals.AnyRunning() && len(goals.RunnableCandidates()) == 0 &&
 		len(goals.ElaborationCandidates()) == 0 && len(d.elaboratingGoalIDs()) == 0 &&
 		!d.recurringActive() {
+		// Incremental planning replaces the roadmap teardown with the next-goal
+		// decision: dispatch the generator for the next single goal, or deactivate
+		// on the product-complete marker / runaway guards (plannext.go). Roadmap
+		// mode keeps the exact teardown call below.
+		if d.incrementalPlanning() {
+			return d.planNextOrComplete(goals)
+		}
 		return d.deactivateOnCompletion(goals)
 	}
 	return nil
@@ -1625,6 +1647,18 @@ func (d *Daemon) advanceToNextGoal(goals *GoalsFile, completedID string, resume 
 			// Siblings still in flight (MaxGoals>1) — persist the terminal state and
 			// stay active; the scheduler keeps driving them.
 			return d.persistAfterAdvance(goals, completedID)
+		}
+		// Incremental planning: a terminal goal with no pending successor is the
+		// LOOP CORE, not the end of the run — stay active so the next tick's
+		// no-work arm dispatches the generator (review + next goal). When the
+		// next-goal decision says stop (product-complete marker / runaway guards /
+		// a non-terminal block), planNextOrComplete owns the halt reason and the
+		// deactivation, keeping one source of truth with the tick arm.
+		if d.incrementalPlanning() {
+			if d.incrementalShouldGenerate(goals) {
+				return d.persistAfterAdvance(goals, completedID)
+			}
+			return d.planNextOrComplete(goals)
 		}
 		return d.deactivateOnCompletion(goals)
 	}

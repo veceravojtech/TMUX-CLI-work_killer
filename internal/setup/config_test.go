@@ -1032,3 +1032,67 @@ func TestSaveSettings_ValidationRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, s2.Taskvisor.ValidationEnabled(), "opt-out must survive the save-back round-trip")
 }
+
+func TestDefaultSettings_PlanningModeRoadmap(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, "roadmap", s.Taskvisor.PlanningMode)
+}
+
+func TestLoadSettings_PlanningModeCoercesUnknownToRoadmap(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  planning_mode: waterfall
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, "roadmap", s.Taskvisor.PlanningMode, "unknown value must coerce to roadmap, never fail the load")
+
+	// The save-back must persist the coerced value so the file self-heals.
+	data, err := os.ReadFile(settingFile)
+	require.NoError(t, err)
+	var reloaded Settings
+	require.NoError(t, yamlpkg.Unmarshal(data, &reloaded))
+	assert.Equal(t, "roadmap", reloaded.Taskvisor.PlanningMode)
+}
+
+func TestLoadSettings_PlanningModeEmptyCoercesToRoadmap(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	// Legacy setting.yaml predating the key entirely.
+	yaml := `taskvisor:
+  poll_interval: 5
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, "roadmap", s.Taskvisor.PlanningMode, "absent/empty value must coerce to roadmap")
+}
+
+func TestLoadSettings_PlanningModeIncrementalRoundTrips(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  planning_mode: incremental
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, "incremental", s.Taskvisor.PlanningMode)
+
+	// Load again after the save-back — incremental must survive, not be coerced.
+	s2, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.Equal(t, "incremental", s2.Taskvisor.PlanningMode, "incremental must survive the save/load round-trip")
+}

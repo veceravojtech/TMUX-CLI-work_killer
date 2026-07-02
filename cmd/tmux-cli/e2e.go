@@ -709,7 +709,7 @@ func buildInitPrompt(session, token string) string {
 	return strings.Join([]string{
 		"You are running UNDER the tmux-cli e2e-evaluator orchestrator (an automated self-test harness), not a normal interactive user. For the ENTIRE run, report every milestone by running this shell command via your Bash tool: tmux-cli notify-orchestrator \"<msg>\". The TMUX_CLI_ORCHESTRATOR_PANE env var is already set, so it just works. Do NOT hand-roll tmux send-keys.",
 		"",
-		"Milestone vocabulary you MUST emit (exact strings, one notify per milestone as you reach it): discovery-done | roadmap-generated | preflight-passed | goals-dispatched | goals-done | app-up. On any failure emit: goal-<id> failed: <reason>.",
+		"Milestone vocabulary you MUST emit (exact strings, one notify per milestone as you reach it): discovery-done | goal-authored <id> | goal-<id>-done | goal-<id> failed: <reason> | product-complete | app-up. While a goal is in flight, emit the heartbeat: goal-<id>-progress <note>.",
 		"",
 		fmt.Sprintf("RIGHT NOW, before anything else, prove the channel: run exactly this via Bash: tmux-cli notify-orchestrator %q  -- then STOP and wait for my next instruction. Do not begin any other work yet.", token),
 	}, "\n")

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/taskvisor"
 	"github.com/console/tmux-cli/internal/tmux"
 	"gopkg.in/yaml.v3"
@@ -191,30 +192,49 @@ func withGoalsFileLock(projectRoot string, fn func() error) error {
 	return taskvisor.WithGoalsLock(projectRoot, fn)
 }
 
+// startPlanningModeIncremental reports whether the project runs the daemon's
+// incremental planning loop (taskvisor.planning_mode == "incremental").
+// LoadSettings already coerces empty/unknown values to roadmap, so no
+// re-validation happens here; a settings load error conservatively reads as
+// roadmap, preserving the empty-ledger refusals below.
+func startPlanningModeIncremental(projectRoot string) bool {
+	settings, err := setup.LoadSettings(projectRoot)
+	return err == nil && settings != nil &&
+		settings.Taskvisor.PlanningMode == setup.PlanningModeIncremental
+}
+
 // TaskvisorStart checks for pending goals and writes the taskvisor-start signal file.
+// In incremental planning mode an EMPTY ledger (missing goals.yaml or zero
+// startable goals) is a valid start state — the daemon's idle poll synthesizes
+// an empty in-memory GoalsFile and the incremental loop authors goal-001 itself
+// (daemon.go poll / plannext.go) — so both refusals are bypassed. Roadmap mode
+// keeps them byte-identical; settings are only consulted when a refusal would
+// otherwise fire.
 func (s *Server) TaskvisorStart() (*TaskvisorStartOutput, error) {
 	gf, err := tvLoadGoals(s.workingDir)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to load goals.yaml: %w", ErrInvalidInput, err)
 	}
 	if gf == nil {
-		return nil, fmt.Errorf("%w: goals.yaml not found", ErrInvalidInput)
-	}
-
-	// A goals.yaml is startable when it has work the daemon can advance: a normal
-	// GoalPending goal, OR a GoalRoadmap skeleton (Tier-2 elaboration is real work —
-	// the daemon elaborates it, flipping it to pending). A roadmap-only plan (every
-	// goal a skeleton, as the director's Stage-1 generator emits) must therefore
-	// start, so this gate counts both statuses.
-	hasStartable := false
-	for _, g := range gf.Goals {
-		if g.Status == taskvisor.GoalPending || g.Status == taskvisor.GoalRoadmap {
-			hasStartable = true
-			break
+		if !startPlanningModeIncremental(s.workingDir) {
+			return nil, fmt.Errorf("%w: goals.yaml not found", ErrInvalidInput)
 		}
-	}
-	if !hasStartable {
-		return nil, fmt.Errorf("%w: no pending or roadmap goals in goals.yaml", ErrInvalidInput)
+	} else {
+		// A goals.yaml is startable when it has work the daemon can advance: a normal
+		// GoalPending goal, OR a GoalRoadmap skeleton (Tier-2 elaboration is real work —
+		// the daemon elaborates it, flipping it to pending). A roadmap-only plan (every
+		// goal a skeleton, as the director's Stage-1 generator emits) must therefore
+		// start, so this gate counts both statuses.
+		hasStartable := false
+		for _, g := range gf.Goals {
+			if g.Status == taskvisor.GoalPending || g.Status == taskvisor.GoalRoadmap {
+				hasStartable = true
+				break
+			}
+		}
+		if !hasStartable && !startPlanningModeIncremental(s.workingDir) {
+			return nil, fmt.Errorf("%w: no pending or roadmap goals in goals.yaml", ErrInvalidInput)
+		}
 	}
 
 	signalPath := filepath.Join(s.workingDir, ".tmux-cli", "taskvisor-start")

@@ -190,6 +190,16 @@ type Daemon struct {
 	// from taskvisor.auto_resume_interval_sec (default 30s) at construction/Run.
 	autoResumeInterval time.Duration
 
+	// planningMode selects roadmap (default) vs incremental planning. Seeded in
+	// Run() from Settings.Taskvisor.PlanningMode, which setup.LoadSettings has
+	// already coerced to roadmap|incremental — never re-validated here. The zero
+	// value ("") reads as roadmap via incrementalPlanning(), so a literal-
+	// constructed Daemon keeps roadmap behavior byte-identically. See plannext.go.
+	planningMode string
+	// planNext is the daemon-global incremental generator episode (plannext.go).
+	// Zero-valued = no episode open; reset on activate/deactivate.
+	planNext planNextState
+
 	// idleTicks / stallReported are the stall watchdog's only writable state
 	// (diagnostics, see checkStall). idleTicks counts consecutive ticks that
 	// failed to dispatch despite a runnable candidate; stallReported gates the
@@ -436,6 +446,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		// daemon field is the inverse so its zero value (false) means "validate".
 		d.skipValidation = !settings.Taskvisor.ValidationEnabled()
 		d.dispatchPhaseOverride = parseDispatchOverrides(settings.Taskvisor.DispatchOverrides)
+		// Load-coerced to roadmap|incremental by setup.LoadSettings — the single
+		// validation point; taken verbatim here (plannext.go gates on it).
+		d.planningMode = settings.Taskvisor.PlanningMode
 	}
 
 	// Backend failure reporting (goal-008/009). Config is read independently of
@@ -643,7 +656,13 @@ func (d *Daemon) poll(ctx context.Context) error {
 				return fmt.Errorf("load goals: %w", err)
 			}
 			if goals == nil {
-				return fmt.Errorf("no goals.yaml found")
+				if !d.incrementalPlanning() {
+					return fmt.Errorf("no goals.yaml found")
+				}
+				// Incremental planning activates on an EMPTY ledger: the generator
+				// authors goal-001 AFTER activation, so a missing goals.yaml is a
+				// valid start state, not an error.
+				goals = &GoalsFile{}
 			}
 
 			return d.activate(goals)
@@ -664,7 +683,13 @@ func (d *Daemon) poll(ctx context.Context) error {
 				return fmt.Errorf("load goals: %w", err)
 			}
 			if goals == nil {
-				return nil
+				if !d.incrementalPlanning() {
+					return nil
+				}
+				// Incremental planning ticks against an empty in-memory ledger until
+				// the generator's first goal-create materializes goals.yaml — without
+				// this the generator would never be dispatched on a virgin project.
+				goals = &GoalsFile{}
 			}
 			return d.tick(ctx, goals)
 		}
@@ -906,6 +931,9 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	d.activatedAt = d.now()
 	d.haltReason = ""
 	d.stackGateSkips = 0
+	// A (re)activation starts with no generator episode open and a fresh failure
+	// streak — a prior run's incremental state never leaks into this one.
+	d.planNext = planNextState{}
 	d.mode = modeActive
 	if d.execReplaceRestart {
 		d.execReplaceRestart = false
@@ -947,6 +975,18 @@ func (d *Daemon) deactivate() error {
 		return err
 	}
 
+	// The incremental generator window is daemon-global (not in any goal
+	// namespace), so a stop mid-generation sweeps it here. Gated on an open
+	// episode: roadmap mode (and an idle incremental daemon) makes ZERO extra
+	// tmux calls, keeping the roadmap deactivate byte-identical. A leftover
+	// window with no open episode (daemon restart) is pre-killed by the next
+	// dispatchPlanNext instead.
+	if d.planNext.inFlight {
+		if err := d.killWindowByName(planNextWindow); err != nil {
+			return err
+		}
+	}
+
 	// Ensure the human's window-0 bare "supervisor" exists once the daemon goes
 	// idle (supervisor.xml/standalone interaction lives here). We NEVER recreate a
 	// namespaced supervisor-<ns> here — those are per-goal, spawned only by
@@ -959,10 +999,12 @@ func (d *Daemon) deactivate() error {
 	d.cleanRuntimeMarkers()
 
 	// Deactivation closes any open stall episode (watchdog reset) and drops every
-	// per-goal runtime — no goal is in flight once the daemon is idle.
+	// per-goal runtime — no goal is in flight once the daemon is idle. The
+	// incremental generator episode (if any) is dropped with them.
 	d.idleTicks = 0
 	d.stallReported = false
 	d.runtimes = nil
+	d.planNext = planNextState{}
 	d.mode = modeIdle
 	d.notifySupervisor("[TASKVISOR:STATE from=active to=idle]")
 	d.renderBoard()

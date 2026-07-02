@@ -46,6 +46,15 @@ const (
 	// writes NO tasks.yaml, every re-dispatch routes back through dispatch() (not
 	// dispatchRetry, which gates on tasksYamlExists) and resolves here again.
 	DispatchGate
+	// DispatchPlanNext runs the incremental goal generator
+	// (/tmux:task-plan-generate incremental): it reviews the ledger + live tree
+	// and authors exactly ONE next concrete goal appended to goals.yaml, or
+	// writes the .tmux-cli/taskvisor-product-complete marker instead. The literal
+	// `incremental` argument is the seam's PRIMARY mode signal (the xml's step 0a
+	// gate), robust across setting.yaml rewrites. Sent by dispatchPlanNext()
+	// (plannext.go) when taskvisor.planning_mode == incremental and no goal is
+	// pending/running/roadmap.
+	DispatchPlanNext
 )
 
 // String returns a stable, human-readable kind name for logs and test output.
@@ -63,6 +72,8 @@ func (k DispatchKind) String() string {
 		return "recurring-supervisor"
 	case DispatchGate:
 		return "gate"
+	case DispatchPlanNext:
+		return "plan-next"
 	default:
 		return fmt.Sprintf("DispatchKind(%d)", int(k))
 	}
@@ -106,6 +117,10 @@ func dispatchCommand(kind DispatchKind, a DispatchArgs) string {
 		// DispatchImplement): the gate executor reloads its spec from the goal
 		// dir's goal.md, so no dispatch path is needed.
 		return fmt.Sprintf("/tmux:gate %s", a.GoalID)
+	case DispatchPlanNext:
+		// No args beyond the mode token: the generator reads goals.yaml, the live
+		// tree, and docs/architecture/* itself (task-plan-generate.xml step 0a).
+		return "/tmux:task-plan-generate incremental"
 	default:
 		panic(fmt.Sprintf("dispatchCommand: unknown DispatchKind %d", int(kind)))
 	}

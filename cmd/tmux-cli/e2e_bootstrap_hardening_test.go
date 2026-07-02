@@ -255,3 +255,49 @@ func TestSeedTrust_PreservesExistingConfig(t *testing.T) {
 		}
 	}
 }
+
+// ── Init prompt teaches the INCREMENTAL milestone vocabulary ────────────────
+
+func TestBuildInitPrompt_IncrementalMilestoneVocabulary(t *testing.T) {
+	token := e2e.HandshakeToken("tmux-cli-tmp-vocab")
+	prompt := buildInitPrompt("tmux-cli-tmp-vocab", token)
+
+	// The conductor XML (e2e-evaluator.xml) drives the incremental one-goal-
+	// at-a-time flow; the handshake must teach exactly those tokens.
+	for _, want := range []string{
+		"discovery-done",
+		"goal-authored <id>",
+		"goal-<id>-done",
+		"goal-<id> failed: <reason>",
+		"product-complete",
+		"app-up",
+		"goal-<id>-progress <note>",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("init prompt missing incremental milestone token %q", want)
+		}
+	}
+
+	// The retired roadmap-era vocabulary must be gone.
+	for _, stale := range []string{
+		"roadmap-generated",
+		"preflight-passed",
+		"goals-dispatched",
+		"goals-done",
+	} {
+		if strings.Contains(prompt, stale) {
+			t.Errorf("init prompt still teaches roadmap-era milestone %q", stale)
+		}
+	}
+
+	// Handshake token, notify-orchestrator contract, and self-drive framing stay.
+	if !strings.Contains(prompt, token) {
+		t.Errorf("init prompt lost the handshake token %q", token)
+	}
+	if !strings.Contains(prompt, "notify-orchestrator") {
+		t.Error("init prompt lost the notify-orchestrator contract")
+	}
+	if !strings.Contains(prompt, "e2e-evaluator orchestrator") {
+		t.Error("init prompt lost the under-the-orchestrator framing")
+	}
+}

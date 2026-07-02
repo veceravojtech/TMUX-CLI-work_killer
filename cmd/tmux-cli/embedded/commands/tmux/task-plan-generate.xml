@@ -2,7 +2,7 @@
   <objective>Read validated discovery outputs from docs/architecture/*, generate a precise sequence of taskvisor goal ROADMAP SKELETONS (Tier 1 of the two-tier director flow, docs/architecture/director-two-tier-design.md §5). Each emitted goal carries ONLY id + description + phase + depends_on + a coarse deliverable_area, with status=roadmap — NO validate/acceptance/scope/goal.md and NO per-goal [CODE-RULE-INJECTION]. Those concrete fields are authored just-in-time, against the REAL tree, by /tmux:elaborate at dispatch (§6) — never predicted here at the moment of least information. Goals are atomic and 1-indexed (goal-001, goal-002, …) with explicit dependencies. This skill starts with a validation gate (Step 0) that checks cross-file consistency before any goal generation begins, and after enumeration runs the Tier-1 DAG analyses that operate fine on skeletons: depinfer (produce/consume depends_on keyed on deliverable_area), G-04 phase-ordering, and the over-serialization plan-audit.</objective>
 
   <input>
-    <note>No $ARGUMENTS — reads docs/architecture/* files implicitly from the working directory. These files are produced by /tmux:project-discovery.</note>
+    <note>Optional $ARGUMENTS: the single token `incremental` selects INCREMENTAL mode (Step 0a) — one goal per invocation, or the product-complete marker. With no arguments (and no `planning_mode: incremental` in .tmux-cli/setting.yaml) the command runs the default ROADMAP mode, reading docs/architecture/* files implicitly from the working directory. These files are produced by /tmux:project-discovery.</note>
   </input>
 
   <output>
@@ -65,6 +65,36 @@ Inject ONLY into the STRUCTURED goal-create params (`acceptance` / `validate` / 
   </conventions>
 
   <flow>
+    <step n="0a" title="Planning-mode gate — incremental vs roadmap" critical="true">
+      <objective>Route the invocation before anything else runs. INCREMENTAL mode is the "admin supervisor" loop: each invocation reviews ground truth (repo tree + goals.yaml ledger + last goal result against the product spec), then authors AT MOST ONE goal — or, when every product deliverable is met AND verified, writes the product-complete marker instead of creating a goal. ROADMAP mode (the default) runs Steps 0–6 below exactly as written.</objective>
+      <action>Resolve MODE. PRIMARY signal: the invocation argument — if $ARGUMENTS contains the token `incremental`, MODE=incremental. FALLBACK signal: run `grep -Eq 'planning_mode:[[:space:]]*incremental' .tmux-cli/setting.yaml` — exit 0 → MODE=incremental. Neither signal → MODE=roadmap (a missing setting.yaml, an absent key, or `planning_mode: roadmap` all mean roadmap).</action>
+      <rule>The canonical setting is `taskvisor.planning_mode` in .tmux-cli/setting.yaml (Settings.Taskvisor.PlanningMode, internal/setup/config.go — values `roadmap`|`incremental`, anything else load-coerces to roadmap). The grep above deliberately matches the key at any nesting depth. The daemon reads the same field to decide HOW to invoke this command; passing the `incremental` argument explicitly keeps the dispatch unambiguous even mid-rewrite of setting.yaml.</rule>
+      <branch condition="MODE=roadmap">
+        <action>Proceed to Step 0 and run the roadmap flow below EXACTLY as written — nothing in this step alters roadmap behavior.</action>
+      </branch>
+      <branch condition="MODE=incremental">
+        <rule critical="true">HARD ONE-GOAL CAP: this invocation makes AT MOST ONE goal-creating call (the existing goal-create MCP tool / `taskvisor goal add` authoring path). Never two. Never the roadmap. A second goal-create in the same invocation is a protocol violation.</rule>
+        <action>MARKER NO-OP GUARD: if `.tmux-cli/taskvisor-product-complete` already exists, the product was already complete — print its body and STOP. Do nothing else; never overwrite it and never create a goal.</action>
+        <action>READ ground truth — all three, every invocation: (a) the PRODUCT SPEC: every docs/architecture/* file that exists (product-brief, bounded-contexts, api-endpoints, cross-cutting, test-environment, adrs/); incremental mode does NOT run the Step 0 blocking checklist — it grounds in whatever spec exists; (b) the CURRENT REPO TREE: `git ls-files` (fallback: recursive ls) — what actually exists NOW, never what a plan predicted; (c) the LEDGER: `.tmux-cli/goals.yaml` — every goal's status (done/failed/pending/running) and result. Bind LAST_GOAL = the finished (done or failed) goal with the highest ID, if any.</action>
+        <check condition="the ledger holds a goal still pending or running">
+          <action>Print: "Incremental: goal &lt;id&gt; is still &lt;status&gt; — the daemon drives it to completion before the next increment is authored." and STOP without creating a goal (the one-goal-in-flight discipline is what keeps increments grounded).</action>
+        </check>
+        <action>REVIEW LAST_GOAL (skip when the ledger is empty): re-verify its acceptance against the REAL tree — run its validate commands read-only where cheap, and judge holistic product fit (did the increment actually advance the spec, not merely turn its own checks green?). Note every gap; the next goal must address the most important one.</action>
+        <action>DECIDE — exactly one of the two branches below:</action>
+        <check condition="every product deliverable in the spec is present in the tree AND verifiable (its acceptance-level checks pass now)">
+          <action>Write the marker file `.tmux-cli/taskvisor-product-complete` with a SHORT one-line reason as its entire body (e.g. `all deliverables verified: GET /=200, /api/metrics exact JSON, /health=200`) — instead of creating a goal. This file is the product-done signal the daemon polls. Then STOP. NEVER both write the marker and create a goal.</action>
+        </check>
+        <check condition="any product deliverable is missing or unverified">
+          <action>Author EXACTLY ONE concrete goal via goal-create — the single most valuable next increment, sized to roughly 20 minutes of work, grounded in what exists now:</action>
+          <rule>FIRST INVOCATION (empty ledger): the one goal is goal-001, the environment/prerequisite gate — READ .claude/commands/tmux/task-plan-generate/step-1-gate0.xml NOW and emit its single Gate 0 goal (phase=gate, fully-specced) as a STANDALONE goal; do NOT continue into Step 2 or any later roadmap step.</rule>
+          <rule>LAST_GOAL FAILED: author a CORRECTIVE goal — smaller/re-scoped (e.g. split the work that was too big), never a verbatim repeat of the failed goal.</rule>
+          <rule>Goal shape (CONCRETE, born status=pending — NEVER a status=roadmap skeleton; there is no Tier-2 elaboration pass behind this mode): description ≤120 chars; a real `acceptance` list (atomic, individually-greppable criteria); a real `validate` list (project-runnable commands, NOT prose); a `scope` (file globs) so the goal is right-sized and self-contained; a `phase`. `depends_on` MAY be omitted — an incremental goal implicitly depends on everything already done.</rule>
+          <action>After the single goal-create succeeds, print the new goal ID and STOP.</action>
+        </check>
+        <action>In incremental mode NEVER run Steps 0–6 below, NEVER call taskvisor-start (the daemon invoked this command and is already running), and NEVER write plan-approval artifacts.</action>
+      </branch>
+    </step>
+
     <step n="0" title="Validate discovery outputs">
       <rule critical="true">This step is a blocking gate. If any validation error is found, abort with a numbered error list and do NOT proceed to Step 1.</rule>
 
@@ -437,6 +467,7 @@ Re-run /tmux:project-discovery to regenerate discovery outputs, or edit the file
       * Playwright conditional skip: When HAS_FRONTEND=false (from Step 1.2 line 141): skip PC-07..PC-14 in acceptance arrays (Step 3.18.3), skip E2E investigators in Investigation Config, skip E2E Final Gate goal (Step 3.29.3), and print a warning for each skip. HAS_FRONTEND=true preserves full behavior unchanged.
       * Ordering verification (Step 4): After all goals are generated, Step 4 validates phase ordering (G-04), depends_on acyclicity (G-15), per-BC ordering domain→application→infrastructure (G-04), and controller actions after fixtures (G-04b). Any violation is fatal — ABORT with diagnostic naming the violating goal ID and rule.
       * Step 5 (Escalation bounce) is CONDITIONAL — runs ONLY when generation is re-dispatched for a SINGLE bounced goal in phase=generation (after an [EXECUTE:ESCALATE need=…] was routed as a spec-defect); a full initial plan SKIPS it. Read the bounced goal's newest corrections/cycle-*.md, extract the escalation `need`, derive a prerequisite {description≤120, phase, validate, investigation_config} (auth/JWT/identity → phase=auth-bootstrap; else phase=gate/infrastructure), goal-create it with depends_on=[SCAFFOLD_ANCHOR] (NEVER the bounced goal — that is a cycle), then goal-add-prerequisite(goal_id=BOUNCED_GOAL_ID, prerequisite_id=NEW_PREREQ_ID). Append order is harmless (NextPendingGoal gates on DependsOnSatisfied, so the daemon runs the prerequisite first). On an escalation-cap error, print the diagnostic and STOP — never loop (let SpecRetries drain / a human halt take over). A worker must NEVER call goal-create/goal-add-prerequisite — these are generation-only (they race the daemon).
+      * Step 0a (Planning-mode gate) routes BEFORE everything: `incremental` in $ARGUMENTS (primary) or `planning_mode: incremental` in .tmux-cli/setting.yaml (fallback) → INCREMENTAL mode; otherwise the roadmap flow runs exactly as written. Incremental = review ground truth (repo tree + goals.yaml ledger + last goal vs product spec), then AT MOST ONE goal-create (concrete, born pending: description ≤120 + real acceptance/validate/scope/phase) — or write `.tmux-cli/taskvisor-product-complete` (one-line reason body) instead of a goal when all deliverables are met+verified. Empty ledger → goal-001 env gate via step-1-gate0.xml, standalone. Failed LAST_GOAL → corrective re-scoped goal. Never taskvisor-start, never Steps 0–6, never both marker and goal.
       * Subsequent tasks insert Steps 6+ above the closing comment in &lt;flow&gt;
     </critical-rules>
   </llm>

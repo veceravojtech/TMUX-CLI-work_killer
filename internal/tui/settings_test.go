@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 31)
+	assert.Len(t, m.items, 32)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -179,24 +179,24 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 23, m.cursor)
 
-	// Step down through the remaining items to the last one (31 items → max index 30)
-	for want := 24; want <= 30; want++ {
+	// Step down through the remaining items to the last one (32 items → max index 31)
+	for want := 24; want <= 31; want++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 		assert.Equal(t, want, m.cursor)
 	}
 
-	// Can't go past last item (31 items → max index 30)
+	// Can't go past last item (32 items → max index 31)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 30, m.cursor)
+	assert.Equal(t, 31, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 29, m.cursor)
+	assert.Equal(t, 30, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 31; i++ {
+	for i := 0; i < 32; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -955,7 +955,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 31)
+	assert.Len(t, m.items, 32)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -1005,7 +1005,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 31)
+	assert.Len(t, m.items, 32)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -1643,4 +1643,79 @@ taskvisor:
 	result := m.ToSettings()
 	require.NotNil(t, result.Taskvisor.AutoCommit)
 	assert.False(t, *result.Taskvisor.AutoCommit, "explicit false must survive the TUI round-trip")
+}
+
+// TestNewModel_IncludesPlanningModeItem proves taskvisor.planning_mode surfaces
+// in the TUI items list (AGENTS.md TUI INVARIANT) as an enum toggling between
+// roadmap and incremental, seeded from the loaded settings.
+func TestNewModel_IncludesPlanningModeItem(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	found := false
+	for _, item := range m.items {
+		if item.key == "taskvisor.planning_mode" {
+			found = true
+			assert.Equal(t, "enum", item.kind)
+			assert.Equal(t, "roadmap", item.strVal, "item must seed the default roadmap")
+			assert.Equal(t, []string{"roadmap", "incremental"}, item.options)
+		}
+	}
+	assert.True(t, found, "taskvisor.planning_mode must be in TUI items")
+}
+
+// TestUpdate_PlanningModeCyclesOnSpaceEnter proves space/enter toggles the enum
+// between roadmap and incremental instead of the bool [x]/[ ] behavior.
+func TestUpdate_PlanningModeCyclesOnSpaceEnter(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings()
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.planning_mode" {
+			m.cursor = i
+		}
+	}
+	require.Equal(t, "taskvisor.planning_mode", m.items[m.cursor].key)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = updated.(Model)
+	assert.Equal(t, "incremental", m.items[m.cursor].strVal, "space must cycle roadmap → incremental")
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	assert.Equal(t, "roadmap", m.items[m.cursor].strVal, "enter must cycle incremental → roadmap")
+}
+
+// TestToSettings_PlanningModeRoundTrips proves an edited planning_mode overlays
+// onto Taskvisor.PlanningMode while sibling/undisplayed Settings fields survive
+// (AGENTS.md TUI INVARIANT: overlay onto loaded settings, not DefaultSettings).
+func TestToSettings_PlanningModeRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `commands:
+  enabled: true
+supervisor:
+  max_cycles: 10
+  cycle_delay: 15
+taskvisor:
+  poll_interval: 7
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	for i, item := range m.items {
+		if item.key == "taskvisor.planning_mode" {
+			assert.Equal(t, "roadmap", item.strVal, "coerced load must seed roadmap")
+			m.items[i].strVal = "incremental"
+		}
+	}
+
+	result := m.ToSettings()
+	assert.Equal(t, "incremental", result.Taskvisor.PlanningMode, "edited value must overlay into ToSettings")
+	assert.Equal(t, 10, result.Supervisor.MaxCycles, "sibling fields must be preserved")
+	assert.Equal(t, 15, result.Supervisor.CycleDelay, "sibling fields must be preserved")
+	assert.Equal(t, 7, result.Taskvisor.PollInterval, "sibling taskvisor fields must be preserved")
+	assert.True(t, result.API.Enabled, "undisplayed api block must be preserved")
 }

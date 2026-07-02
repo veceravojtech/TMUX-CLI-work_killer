@@ -11,10 +11,28 @@ import (
 type settingItem struct {
 	key    string
 	label  string
-	kind   string // "bool", "int", or "string"
+	kind   string // "bool", "int", "string", or "enum"
 	value  bool
 	intVal int
 	strVal string
+	// options is the closed value set for kind "enum"; space/enter cycles
+	// strVal through it instead of accepting free text.
+	options []string
+}
+
+// cycleOption returns the option following current in options, wrapping to the
+// first. A current value not in options (defensive — LoadSettings coerces
+// before the TUI sees it) also lands on the first option.
+func cycleOption(options []string, current string) string {
+	if len(options) == 0 {
+		return current
+	}
+	for i, opt := range options {
+		if opt == current {
+			return options[(i+1)%len(options)]
+		}
+	}
+	return options[0]
 }
 
 type Model struct {
@@ -60,6 +78,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.auto_push", label: "Taskvisor Auto-Push", kind: "bool", value: settings.Taskvisor.AutoPush},
 			{key: "taskvisor.git_freshness", label: "Taskvisor Git-Freshness", kind: "bool", value: settings.Taskvisor.GitFreshnessEnabled()},
 			{key: "taskvisor.validation", label: "Taskvisor Validation", kind: "bool", value: settings.Taskvisor.ValidationEnabled()},
+			{key: "taskvisor.planning_mode", label: "Taskvisor Planning Mode", kind: "enum", strVal: settings.Taskvisor.PlanningMode, options: []string{setup.PlanningModeRoadmap, setup.PlanningModeIncremental}},
 		},
 	}
 }
@@ -114,6 +133,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case " ", "enter":
 			if cur.kind == "bool" {
 				cur.value = !cur.value
+			} else if cur.kind == "enum" {
+				cur.strVal = cycleOption(cur.options, cur.strVal)
 			}
 		case "right", "l":
 			if cur.kind == "int" {
@@ -148,7 +169,7 @@ func (m Model) View() string {
 			} else {
 				indicator = checkStyle.Render("[" + val + "]")
 			}
-		} else if item.kind == "string" {
+		} else if item.kind == "string" || item.kind == "enum" {
 			if item.strVal == "" {
 				indicator = uncheckStyle.Render("[ ]")
 			} else {
@@ -169,6 +190,8 @@ func (m Model) View() string {
 				hint += "  ←/→ adjust"
 			} else if item.kind == "string" {
 				hint += "  type to edit • ⌫ delete"
+			} else if item.kind == "enum" {
+				hint += "  space/enter cycle"
 			}
 			line = selectedStyle.Render("> "+line) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(hint)
 		} else {
@@ -251,6 +274,8 @@ func (m Model) ToSettings() *setup.Settings {
 		case "taskvisor.validation":
 			v := item.value
 			s.Taskvisor.Validation = &v
+		case "taskvisor.planning_mode":
+			s.Taskvisor.PlanningMode = item.strVal
 		case "plan.audit":
 			v := item.value
 			s.Plan.Audit = &v

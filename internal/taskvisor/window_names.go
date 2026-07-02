@@ -134,6 +134,12 @@ func SupervisorWindowForGoal(goalID string) string {
 // impurity behind the naming helpers; the daemon resolves it once per lifecycle
 // operation and threads the int into the pure helpers above.
 func (d *Daemon) maxGoals() int {
+	// Incremental planning is strictly one-goal-at-a-time: the mode coerces the
+	// cap to 1 AHEAD of both the operator override and setting.yaml (plannext.go
+	// owns the loop; its correctness depends on never co-scheduling).
+	if d.incrementalPlanning() {
+		return 1
+	}
 	if n, ok := ReadConcurrencyOverride(d.workDir); ok {
 		return n
 	}

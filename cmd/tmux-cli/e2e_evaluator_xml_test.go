@@ -108,16 +108,22 @@ func TestE2EEvaluatorMd_WrapperInstallable(t *testing.T) {
 		"wrapper must name the tmux-cli CLI requirement")
 }
 
-// TestE2EEvaluatorXml_CycleBody asserts the execute-3 cycle-body steps were
-// appended into the labelled steps 4–7 SLOT: the self-healing loop guard, the
-// two-step DRIVE, event-driven WATCH (notify-orchestrator primary / capture-pane
-// fallback on 300s silence or §9 ceiling breach), per-phase MEASURE with
-// p50/p90/p95 guardrails, defect-only TRIAGE gated on reproduce-on-clean-retry,
-// and the §13 parallelism preflight HARD GATE before taskvisor-start.
+// TestE2EEvaluatorXml_CycleBody asserts the execute-3 cycle-body steps drive
+// the INCREMENTAL single-goal flow inside the labelled steps 4–7 SLOT: the
+// self-healing loop guard, the two-step DRIVE (with the conductor pre-setting
+// taskvisor.planning_mode: incremental in the target's setting.yaml), the
+// incremental milestone vocabulary (discovery-done → goal-authored <id> →
+// goal-<id>-done|failed → … → product-complete → app-up, heartbeat
+// goal-<id>-progress), event-driven WATCH (notify-orchestrator primary /
+// capture-pane fallback on 600s silence or §9 ceiling breach), per-phase
+// MEASURE with p50/p90/p95 guardrails plus the per-goal incremental metrics
+// (parallelism is 1 by design — never a defect signal), defect-only TRIAGE
+// gated on reproduce-on-clean-retry, and the RETIRED roadmap-era preflight
+// parallelism audit (step 4b repurposed, numbering held).
 func TestE2EEvaluatorXml_CycleBody(t *testing.T) {
 	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
 
-	// Cycle-body step anchors live inside the 4–7 slot (4b = preflight sub-step).
+	// Cycle-body step anchors live inside the 4–7 slot (4b = retired preflight).
 	for _, anchor := range []string{`n="4"`, `n="4b"`, `n="5"`, `n="6"`, `n="7"`} {
 		assert.Contains(t, content, anchor,
 			"e2e-evaluator.xml cycle body must author step %s", anchor)
@@ -138,21 +144,65 @@ func TestE2EEvaluatorXml_CycleBody(t *testing.T) {
 	assert.Contains(t, content, "❯",
 		"DRIVE must readiness-poll the idle prompt before sending")
 
+	// Incremental mode: the conductor enables one-goal-at-a-time planning in the
+	// target's setting.yaml BEFORE the kickoff drives taskvisor-start (the
+	// execute-1 setting seam).
+	assert.Contains(t, content, "taskvisor.planning_mode: incremental",
+		"DRIVE must pre-set taskvisor.planning_mode: incremental in the target")
+	assert.Contains(t, content, "setting.yaml",
+		"the planning-mode write targets the target's .tmux-cli/setting.yaml")
+
+	// New incremental milestone vocabulary — kickoff, WATCH, JUDGE, glossary.
+	for _, tok := range []string{
+		"discovery-done",
+		"goal-authored",
+		"goal-&lt;id&gt;-done",
+		"goal-&lt;id&gt;-progress",
+		"product-complete",
+		"app-up",
+	} {
+		assert.Contains(t, content, tok,
+			"the incremental milestone vocabulary must include %q", tok)
+	}
+
+	// The roadmap-era milestone vocabulary is retired EVERYWHERE.
+	for _, tok := range []string{
+		"roadmap-generated",
+		"preflight-passed",
+		"goals-dispatched",
+		"goals-done",
+		"roadmap-progress",
+	} {
+		assert.NotContains(t, content, tok,
+			"the retired roadmap milestone %q must not remain", tok)
+	}
+
+	// JUDGE fires on product-complete, backed by the daemon's marker file (the
+	// execute-2/3 seam).
+	assert.Contains(t, content, ".tmux-cli/taskvisor-product-complete",
+		"JUDGE's product-complete trigger must name the daemon marker file")
+
 	// WATCH: event-driven primary, capture-pane/pipe-pane fallback on silence.
 	assert.Contains(t, content, "notify-orchestrator",
 		"WATCH primary channel is the target's notify-orchestrator reports")
 	assert.Contains(t, content, "capture-pane",
 		"WATCH fallback reads capture-pane on silence")
 	assert.Contains(t, content, "300s",
-		"WATCH silence window is 300s (ties to ProgressTimeoutSec)")
+		"WATCH must contrast its window against the daemon's ~300s ProgressTimeoutSec")
 
-	// MEASURE: per-phase timings, percentile guardrails, achieved parallelism.
-	for _, tok := range []string{"p50", "p90", "p95", "in-flight"} {
+	// MEASURE: per-phase percentile guardrails + the incremental per-goal
+	// metrics; achieved parallelism is 1 by design and NEVER a defect signal.
+	for _, tok := range []string{"p50", "p90", "p95", "wall-clock",
+		"#goals authored", "#corrective re-scopes"} {
 		assert.Contains(t, content, tok,
-			"MEASURE must record %q timing/parallelism metric", tok)
+			"MEASURE must record the %q metric", tok)
 	}
-	assert.Contains(t, content, "p95",
-		"MEASURE ceiling derives from p95×1.5")
+	assert.Contains(t, content, "1 by design",
+		"MEASURE must state parallelism is 1 by design (not a defect signal)")
+	assert.Contains(t, content, "~20-min",
+		"a goal over the ~20-min right-size target is a generator signal")
+	assert.Contains(t, content, "right-siz",
+		"MEASURE routes oversized goals as generator right-sizing signals")
 
 	// TRIAGE: defect-only, reproduce-on-clean-retry, signature dedupe, escalate.
 	assert.Contains(t, content, "DEFECT SIGNATURE",
@@ -164,21 +214,20 @@ func TestE2EEvaluatorXml_CycleBody(t *testing.T) {
 	assert.Contains(t, content, "variance",
 		"TRIAGE must distinguish variance from defect")
 
-	// Preflight HARD GATE: depinfer + scope_gate signals, runtime cap override.
-	assert.Contains(t, content, "DetectOverSerialized",
-		"preflight must use DetectOverSerialized, not a hand-rolled DAG check")
-	assert.Contains(t, content, "DisjointReadySet",
-		"preflight must verify disjoint scope via DisjointReadySet")
-	assert.Contains(t, content, "taskvisor-concurrency",
-		"preflight writes max_goals via the .tmux-cli/taskvisor-concurrency override")
-	assert.Contains(t, content, "max_goals=3",
-		"preflight initial cap is max_goals=3")
-
-	// Timing levers: generous wall-clock net, never the 1200s kill-borderline value.
-	assert.Contains(t, content, "1800",
-		"preflight sets max_wall_clock_sec in [1800,2700]")
-	assert.NotContains(t, content, "1200",
-		"preflight must NEVER set max_wall_clock_sec to 1200s")
+	// The roadmap-era preflight parallelism audit is RETIRED: no DAG audit, no
+	// disjoint-scope check, no concurrency-cap override (max_goals is 1 by
+	// construction in incremental mode).
+	for _, tok := range []string{
+		"DetectOverSerialized",
+		"DisjointReadySet",
+		"taskvisor-concurrency",
+		"max_goals=3",
+	} {
+		assert.NotContains(t, content, tok,
+			"the retired preflight parallelism audit token %q must not remain", tok)
+	}
+	assert.Contains(t, content, "1 by construction",
+		"step 4b must state max_goals is 1 by construction in incremental mode")
 
 	// The shared error-reporting reference must appear EXACTLY once (execute-2
 	// already added it; execute-3 must not duplicate it).
