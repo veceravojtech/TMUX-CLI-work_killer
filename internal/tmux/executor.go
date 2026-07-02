@@ -57,6 +57,20 @@ type TmuxExecutor interface {
 	// error (no idempotent nil-swallow).
 	InterruptWindow(windowID string) error
 
+	// TerminateWindowProcess deterministically terminates the pane's
+	// foreground child process and waits for the pane to return to a shell
+	// prompt, WITHOUT destroying the window (unlike KillWindow, which discards
+	// window options such as WindowUUIDOption). Where InterruptWindow sends a
+	// single C-c — an interrupt a process may catch and ignore (Claude Code
+	// does) — this sends SIGTERM then, if needed, SIGKILL to the pane's
+	// foreground child (pgrep -P #{pane_pid}), so the running program is
+	// guaranteed gone before the caller relaunches. The pane shell
+	// (#{pane_pid}) itself is NEVER killed. Takes only the tmux window ID
+	// (e.g. "@3") — window IDs are server-unique. Returns nil if the pane is
+	// already at an idle shell (no foreground child); returns an error if the
+	// window/pane is unreadable or the child survives SIGKILL.
+	TerminateWindowProcess(windowID string) error
+
 	// SetWindowOption sets a user-defined window option (@option-name)
 	// Window user-options are prefixed with @ and scoped to the specific window
 	// Returns error if session or window doesn't exist

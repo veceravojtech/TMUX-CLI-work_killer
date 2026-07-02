@@ -169,9 +169,12 @@ func singleSessionID(executor tmux.TmuxExecutor) (string, error) {
 	return sessions[0], nil
 }
 
-// dispatchClaudeRestart interrupts the supervisor window's Claude process
+// dispatchClaudeRestart terminates the supervisor window's Claude process
 // (window preserved, so window options survive) and relaunches Claude via
-// the standard fallback chain, which includes `claude --resume`.
+// the standard fallback chain, which includes `claude --resume`. A single
+// C-c (InterruptWindow) does not exit Claude Code, so termination is
+// deterministic — the pane's foreground child is killed and the pane is back
+// at a shell before the relaunch chain types the launch commands.
 func dispatchClaudeRestart(executor tmux.TmuxExecutor) error {
 	sessionID, err := singleSessionID(executor)
 	if err != nil {
@@ -191,8 +194,8 @@ func dispatchClaudeRestart(executor tmux.TmuxExecutor) error {
 	if windowID == "" {
 		return fmt.Errorf("no supervisor window in session %s", sessionID)
 	}
-	if err := executor.InterruptWindow(windowID); err != nil {
-		return fmt.Errorf("interrupt supervisor window: %w", err)
+	if err := executor.TerminateWindowProcess(windowID); err != nil {
+		return fmt.Errorf("terminate supervisor Claude before relaunch: %w", err)
 	}
 	return session.ExecutePostCommandWithFallback(executor, sessionID, "supervisor", session.DefaultPostCommandConfig())
 }

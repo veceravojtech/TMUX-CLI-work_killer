@@ -5,7 +5,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -617,6 +619,128 @@ func (e *RealTmuxExecutor) InterruptWindow(windowID string) error {
 	}
 
 	return nil
+}
+
+// TerminateWindowProcess deterministically terminates the pane's foreground
+// child process (SIGTERM, escalating to SIGKILL) and waits for the pane to
+// return to a shell prompt, WITHOUT destroying the window. Unlike
+// InterruptWindow's single C-c — which a process may catch and ignore — this
+// guarantees the running program is gone before the caller relaunches.
+//
+// Steps: (1) read the pane pid via `tmux display-message -p '#{pane_pid}'`;
+// (2) `pgrep -P <panePID>` for the pane shell's foreground children — none
+// means the pane is already at an idle shell, so return nil; (3) SIGTERM each
+// child and poll ~2s for exit, escalating to SIGKILL and polling ~2s more;
+// (4) waitForShellPrompt for the pane to settle. The pane shell (#{pane_pid})
+// is NEVER signalled — killing it would destroy the window and its options.
+func (e *RealTmuxExecutor) TerminateWindowProcess(windowID string) error {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", windowID,
+		"#{pane_pid}").Output()
+	if err != nil {
+		if execErr, ok := err.(*exec.Error); ok && execErr.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("read pane_pid for window %s: %w", windowID, err)
+	}
+	panePID, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || panePID <= 0 {
+		return fmt.Errorf("parse pane_pid %q for window %s: %w", strings.TrimSpace(string(out)), windowID, err)
+	}
+
+	children := paneForegroundChildren(panePID)
+	if len(children) == 0 {
+		// Pane already at an idle shell — nothing to terminate.
+		return nil
+	}
+
+	// SIGTERM, then poll for graceful exit.
+	for _, pid := range children {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
+	alive := pollProcessesGone(children, 2*time.Second)
+
+	// Escalate any survivors to SIGKILL and poll again.
+	if len(alive) > 0 {
+		for _, pid := range alive {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+		alive = pollProcessesGone(alive, 2*time.Second)
+	}
+	if len(alive) > 0 {
+		return fmt.Errorf("window %s: %d child process(es) survived SIGKILL: %v", windowID, len(alive), alive)
+	}
+
+	waitForShellPrompt(windowID)
+	return nil
+}
+
+// paneForegroundChildren returns the direct child PIDs of the pane shell via
+// `pgrep -P <panePID>`. A non-zero pgrep exit (no children) yields an empty
+// slice. Only numeric PIDs are parsed; anything non-numeric is skipped.
+func paneForegroundChildren(panePID int) []int {
+	out, err := exec.Command("pgrep", "-P", strconv.Itoa(panePID)).Output()
+	if err != nil {
+		// pgrep exits 1 when there are no matches — treat as "no children".
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Fields(string(out)) {
+		if pid, err := strconv.Atoi(line); err == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// pollProcessesGone polls the given PIDs with syscall.Kill(pid, 0) (the same
+// liveness probe as daemonPIDAlive) until they are all gone or the deadline
+// elapses, returning the PIDs still alive at the end.
+func pollProcessesGone(pids []int, timeout time.Duration) []int {
+	deadline := time.Now().Add(timeout)
+	for {
+		var alive []int
+		for _, pid := range pids {
+			if syscall.Kill(pid, 0) == nil {
+				alive = append(alive, pid)
+			}
+		}
+		if len(alive) == 0 || !time.Now().Before(deadline) {
+			return alive
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitForShellPrompt polls (bounded, fail-open) until the window's pane
+// foreground command is an interactive/login shell — i.e. the pane has
+// returned to its prompt after its child was terminated. Modeled on
+// waitForInterruptSafePane: on probe error it returns immediately, and after
+// the deadline it returns anyway (the child's death is already confirmed by
+// TerminateWindowProcess, so this wait only lets the shell redraw).
+func waitForShellPrompt(windowID string) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		fg, err := exec.Command("tmux", "display-message", "-p", "-t", windowID,
+			"#{pane_current_command}").Output()
+		if err != nil {
+			return
+		}
+		if isShellCommand(strings.TrimSpace(string(fg))) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// isShellCommand reports whether a #{pane_current_command} value names an
+// interactive/login shell (a leading '-' marks a login shell, e.g. "-bash").
+func isShellCommand(cmd string) bool {
+	cmd = strings.TrimPrefix(cmd, "-")
+	switch cmd {
+	case "sh", "bash", "zsh", "dash", "ksh", "fish":
+		return true
+	}
+	return false
 }
 
 // waitForInterruptSafePane polls until the window's pane is safe to receive

@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/console/tmux-cli/internal/testutil"
+	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -212,6 +214,80 @@ func TestDoSelfUpdate_SessionModeWithoutResumeStateRefuses(t *testing.T) {
 	// Refusal happens before build and restart: no build ran, no marker.
 	assert.NoFileExists(t, sentinel)
 	assert.NoFileExists(t, marker)
+}
+
+// chdirToTemp changes into a fresh temp dir for the duration of the test so
+// ExecutePostCommandWithFallback's best-effort .tmux-cli/logs writes never
+// pollute the repo. Restores the original cwd on cleanup.
+func chdirToTemp(t *testing.T) {
+	t.Helper()
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(t.TempDir()))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+}
+
+// claudeRestartMock wires a MockTmuxExecutor with exactly one tmux session and
+// a supervisor window so dispatchClaudeRestart resolves a target. ListWindows /
+// ListSessions are Maybe() so they don't force a call count.
+func claudeRestartMock() *testutil.MockTmuxExecutor {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1"}, nil).Maybe()
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil).Maybe()
+	return mockExec
+}
+
+// TestDispatchClaudeRestart_TerminatesBeforeRelaunch proves the supervisor
+// Claude process is terminated (TerminateWindowProcess) BEFORE the first
+// relaunch command is typed (SendMessageWithFeedback) — the ordering that makes
+// the relaunch land on a shell rather than as chat into a still-running Claude.
+func TestDispatchClaudeRestart_TerminatesBeforeRelaunch(t *testing.T) {
+	chdirToTemp(t)
+	mockExec := claudeRestartMock()
+
+	var order []string
+	mockExec.On("TerminateWindowProcess", "@0").Run(func(mock.Arguments) {
+		order = append(order, "terminate")
+	}).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "sess-1", "supervisor", mock.Anything).Run(func(mock.Arguments) {
+		order = append(order, "relaunch")
+	}).Return("", nil)
+
+	require.NoError(t, dispatchClaudeRestart(mockExec))
+
+	mockExec.AssertCalled(t, "TerminateWindowProcess", "@0")
+	require.NotEmpty(t, order)
+	assert.Equal(t, "terminate", order[0], "terminate must precede any relaunch send")
+}
+
+// TestDispatchClaudeRestart_DoesNotUseInterruptWindow is the regression guard:
+// the restart path must no longer rely on a single C-c (InterruptWindow), which
+// Claude Code ignores.
+func TestDispatchClaudeRestart_DoesNotUseInterruptWindow(t *testing.T) {
+	chdirToTemp(t)
+	mockExec := claudeRestartMock()
+	mockExec.On("TerminateWindowProcess", "@0").Return(nil)
+	mockExec.On("SendMessageWithFeedback", "sess-1", "supervisor", mock.Anything).Return("", nil)
+
+	require.NoError(t, dispatchClaudeRestart(mockExec))
+
+	mockExec.AssertNotCalled(t, "InterruptWindow", mock.Anything)
+}
+
+// TestDispatchClaudeRestart_TerminateErrorAbortsRelaunch proves a terminate
+// failure returns the wrapped error and never types the relaunch commands.
+func TestDispatchClaudeRestart_TerminateErrorAbortsRelaunch(t *testing.T) {
+	chdirToTemp(t)
+	mockExec := claudeRestartMock()
+	mockExec.On("TerminateWindowProcess", "@0").Return(fmt.Errorf("child survived SIGKILL"))
+
+	err := dispatchClaudeRestart(mockExec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "terminate supervisor Claude before relaunch")
+	assert.Contains(t, err.Error(), "child survived SIGKILL")
+	mockExec.AssertNotCalled(t, "SendMessageWithFeedback", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestDoSelfUpdate_WarnsWhenExecutableNotInstallPath(t *testing.T) {

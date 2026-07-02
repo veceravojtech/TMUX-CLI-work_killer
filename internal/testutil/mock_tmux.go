@@ -101,6 +101,12 @@ func (m *MockTmuxExecutor) InterruptWindow(windowID string) error {
 	return args.Error(0)
 }
 
+// TerminateWindowProcess mocks terminating a window's foreground child process without destroying the window
+func (m *MockTmuxExecutor) TerminateWindowProcess(windowID string) error {
+	args := m.Called(windowID)
+	return args.Error(0)
+}
+
 // SetWindowOption mocks setting a user-defined window option
 func (m *MockTmuxExecutor) SetWindowOption(sessionID, windowID, optionName, value string) error {
 	args := m.Called(sessionID, windowID, optionName, value)
