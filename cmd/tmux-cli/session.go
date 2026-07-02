@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -340,6 +341,7 @@ func init() {
 
 	// Add --clean flag to start and start-attach commands
 	startCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
+	startCmd.Flags().Bool("print-json", false, "Emit exactly one JSON line {\"session\":\"<id>\",\"created\":true|false} on stdout (human progress moves to stderr)")
 	startAttachCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
 
 	// Add --resume-state flag to start and start-attach commands. When set, a
@@ -460,37 +462,40 @@ func NewUsageError(msg string) error {
 }
 
 // startOrReuseSession handles session discovery, interactive prompts for existing sessions,
-// and session creation. Returns the session ID (existing or newly created).
-func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model string) (string, error) {
+// and session creation. Returns the session ID (existing or newly created) and whether a
+// new session was created (false when an existing session was kept). Human progress and
+// prompt lines go to out — os.Stdout normally, os.Stderr under `start --print-json` so
+// stdout stays pure for the JSON contract line.
+func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model string, out io.Writer) (string, bool, error) {
 	// Check if session already exists for this path
 	existingSessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", projectPath)
 
 	if existingSessionID != "" {
 		running, _ := executor.HasSession(existingSessionID)
 		if running {
-			fmt.Printf("Session '%s' is already running for %s\n", existingSessionID, projectPath)
-			fmt.Println("What would you like to do?")
-			fmt.Println("  [r] Recreate session (kill existing + create new)")
-			fmt.Println("  [c] Cancel and keep existing session")
-			fmt.Print("Choice (r/c): ")
+			fmt.Fprintf(out, "Session '%s' is already running for %s\n", existingSessionID, projectPath)
+			fmt.Fprintln(out, "What would you like to do?")
+			fmt.Fprintln(out, "  [r] Recreate session (kill existing + create new)")
+			fmt.Fprintln(out, "  [c] Cancel and keep existing session")
+			fmt.Fprint(out, "Choice (r/c): ")
 
 			var response string
 			if _, err := fmt.Scanln(&response); err != nil {
 				// EOF or pipe input — treat as cancel
-				fmt.Printf("Keeping existing session '%s'\n", existingSessionID)
+				fmt.Fprintf(out, "Keeping existing session '%s'\n", existingSessionID)
 				applyModelToExistingSession(executor, existingSessionID, model)
-				return existingSessionID, nil
+				return existingSessionID, false, nil
 			}
 
 			if response == "r" || response == "R" {
 				if err := executor.KillSession(existingSessionID); err != nil {
-					return "", fmt.Errorf("kill existing session '%s': %w", existingSessionID, err)
+					return "", false, fmt.Errorf("kill existing session '%s': %w", existingSessionID, err)
 				}
 				// Fall through to create new session
 			} else {
-				fmt.Printf("Keeping existing session '%s'\n", existingSessionID)
+				fmt.Fprintf(out, "Keeping existing session '%s'\n", existingSessionID)
 				applyModelToExistingSession(executor, existingSessionID, model)
-				return existingSessionID, nil
+				return existingSessionID, false, nil
 			}
 		}
 	}
@@ -500,11 +505,25 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model string) 
 	manager := session.NewSessionManager(executor).WithModel(model)
 
 	if err := manager.CreateSession(sessionID, projectPath); err != nil {
-		return "", err
+		return "", false, err
 	}
 
-	fmt.Printf("Created session '%s' for %s\n", sessionID, projectPath)
-	return sessionID, nil
+	fmt.Fprintf(out, "Created session '%s' for %s\n", sessionID, projectPath)
+	return sessionID, true, nil
+}
+
+// startJSONResult is the machine-readable line emitted by `start --print-json`.
+// The JSON tags are the stable contract e2e-bootstrap's startTarget consumes —
+// exactly one compact line on stdout: {"session":"<id>","created":true|false}.
+type startJSONResult struct {
+	Session string `json:"session"`
+	Created bool   `json:"created"`
+}
+
+// startSessionJSON renders the single compact --print-json stdout line.
+func startSessionJSON(sessionID string, created bool) string {
+	b, _ := json.Marshal(startJSONResult{Session: sessionID, Created: created})
+	return string(b)
 }
 
 // applyModelToExistingSession records TMUX_CLI_MODEL on a reused session so
@@ -542,9 +561,16 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	if err := runAutoSetup(projectPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-setup: %v\n", err)
 	}
+	// Under --print-json stdout carries EXACTLY one JSON contract line; all
+	// human progress moves to stderr. Without the flag output is unchanged.
+	printJSON, _ := cmd.Flags().GetBool("print-json")
+	progressOut := io.Writer(os.Stdout)
+	if printJSON {
+		progressOut = os.Stderr
+	}
 	executor := tmux.NewTmuxExecutor()
 	model, _ := cmd.Flags().GetString("model")
-	sessionID, err := startOrReuseSession(executor, projectPath, model)
+	sessionID, created, err := startOrReuseSession(executor, projectPath, model, progressOut)
 	if err != nil {
 		return err
 	}
@@ -557,6 +583,9 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 		if err := promptAndStoreSudoPassword(executor, sessionID); err != nil {
 			return fmt.Errorf("sudo setup failed: %w", err)
 		}
+	}
+	if printJSON {
+		fmt.Fprintln(cmd.OutOrStdout(), startSessionJSON(sessionID, created))
 	}
 	return nil
 }
@@ -576,7 +605,7 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	}
 	executor := tmux.NewTmuxExecutor()
 	model, _ := cmd.Flags().GetString("model")
-	sessionID, err := startOrReuseSession(executor, projectPath, model)
+	sessionID, _, err := startOrReuseSession(executor, projectPath, model, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -1260,16 +1289,23 @@ func runWindowsMessage(cmd *cobra.Command, args []string) error {
 
 // runNotifyOrchestrator delivers args[0] to the orchestrator pane named by
 // TMUX_CLI_ORCHESTRATOR_PANE. Env reading lives here (the wrapper); the testable
-// core notifyOrchestrator stays tmux-free so it can be exercised with a mock.
+// core notifyOrchestrator stays env-free so it can be exercised with a mock.
+// TMUX_CLI_NOTIFY_RECEIPT (optional) names a receipt file that records each
+// successfully delivered message — a deterministic proof surface for the
+// e2e-evaluator handshake.
 func runNotifyOrchestrator(cmd *cobra.Command, args []string) error {
 	pane := strings.TrimSpace(os.Getenv("TMUX_CLI_ORCHESTRATOR_PANE"))
-	return notifyOrchestrator(tmux.NewTmuxExecutor(), pane, args[0])
+	receipt := strings.TrimSpace(os.Getenv("TMUX_CLI_NOTIFY_RECEIPT"))
+	return notifyOrchestrator(tmux.NewTmuxExecutor(), pane, args[0], receipt)
 }
 
 // notifyOrchestrator is the testable core of the notify-orchestrator command.
 // A missing/empty pane id is a loud usage error (exit 2) with NO send attempted.
 // An empty message is intentionally allowed — it delivers a bare Enter ping.
-func notifyOrchestrator(executor tmux.TmuxExecutor, pane, msg string) error {
+// After a successful pane delivery, a non-empty receiptPath gets the delivered
+// message appended (plus newline). Receipt writes FAIL OPEN: the pane delivery
+// already succeeded, so a write error only warns on stderr and returns nil.
+func notifyOrchestrator(executor tmux.TmuxExecutor, pane, msg, receiptPath string) error {
 	if pane == "" {
 		return NewUsageError("TMUX_CLI_ORCHESTRATOR_PANE is not set; cannot notify orchestrator")
 	}
@@ -1277,7 +1313,27 @@ func notifyOrchestrator(executor tmux.TmuxExecutor, pane, msg string) error {
 		return fmt.Errorf("notify orchestrator pane %s: %w", pane, err)
 	}
 	fmt.Printf("Notified orchestrator pane %s\n", pane)
+	if receiptPath != "" {
+		if err := appendNotifyReceipt(receiptPath, msg); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: notify receipt %s: %v\n", receiptPath, err)
+		}
+	}
 	return nil
+}
+
+// appendNotifyReceipt appends msg plus a trailing newline to receiptPath,
+// creating the parent directory if missing.
+func appendNotifyReceipt(receiptPath, msg string) error {
+	if err := os.MkdirAll(filepath.Dir(receiptPath), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(receiptPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(msg + "\n")
+	return err
 }
 
 func runWindowsUuid(cmd *cobra.Command, args []string) error {

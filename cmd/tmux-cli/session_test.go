@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/console/tmux-cli/internal/testutil"
+	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -345,6 +349,163 @@ func TestRunStartAttach_Positional(t *testing.T) {
 
 	err = startAttachCmd.ValidateArgs([]string{"/proj"})
 	assert.NoError(t, err, "start-attach must accept a single positional")
+}
+
+// ============================================================================
+// start --print-json (Fix A)
+// ============================================================================
+
+// TestStartCmd_HasPrintJSONFlag verifies the --print-json opt-in flag is
+// registered on the start command and defaults to false (byte-identical
+// human output without it).
+func TestStartCmd_HasPrintJSONFlag(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"start"})
+	require.NoError(t, err)
+	require.NotNil(t, cmd)
+
+	flag := cmd.Flags().Lookup("print-json")
+	require.NotNil(t, flag, "start must register a --print-json flag")
+	assert.Equal(t, "bool", flag.Value.Type())
+	assert.Equal(t, "false", flag.DefValue, "--print-json must be a strict opt-in")
+}
+
+// TestStartSessionJSON_CreatedTrue pins the exact compact contract line the
+// e2e-bootstrap consumer parses: {"session":"<id>","created":true}.
+func TestStartSessionJSON_CreatedTrue(t *testing.T) {
+	line := startSessionJSON("proj-abc123", true)
+	assert.Equal(t, `{"session":"proj-abc123","created":true}`, line)
+}
+
+// TestStartSessionJSON_CreatedFalse pins created:false on the reuse path.
+func TestStartSessionJSON_CreatedFalse(t *testing.T) {
+	line := startSessionJSON("proj-abc123", false)
+	assert.Equal(t, `{"session":"proj-abc123","created":false}`, line)
+}
+
+// TestStartOrReuseSession_NewSession_CreatedTrue verifies the create path
+// reports created=true and writes its human progress line to the given writer.
+func TestStartOrReuseSession_NewSession_CreatedTrue(t *testing.T) {
+	dir := t.TempDir()
+	m := new(testutil.MockTmuxExecutor)
+	m.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return("", nil)
+	m.On("HasSession", mock.AnythingOfType("string")).Return(false, nil).Once() // pre-create existence check
+	m.On("CreateSession", mock.AnythingOfType("string"), dir).Return(nil)
+	m.On("HasSession", mock.AnythingOfType("string")).Return(true, nil) // waitForSession poll
+	m.On("SetSessionEnvironment", mock.AnythingOfType("string"), "TMUX_CLI_PROJECT_PATH", dir).Return(nil)
+	m.On("ListWindows", mock.AnythingOfType("string")).Return([]tmux.WindowInfo{}, nil)
+
+	var out bytes.Buffer
+	sessionID, created, err := startOrReuseSession(m, dir, "", &out)
+
+	require.NoError(t, err)
+	assert.True(t, created, "a freshly created session must report created=true")
+	require.NotEmpty(t, sessionID)
+	assert.Equal(t, fmt.Sprintf("Created session '%s' for %s\n", sessionID, dir), out.String(),
+		"human progress must go to the provided writer, byte-identical to today")
+}
+
+// TestStartOrReuseSession_ExistingRunning_CreatedFalse verifies the
+// keep-existing-session path (EOF on the interactive prompt = cancel) reports
+// created=false with the existing session id, and prompts on the writer.
+func TestStartOrReuseSession_ExistingRunning_CreatedFalse(t *testing.T) {
+	dir := t.TempDir()
+	// The prompt reads os.Stdin; pin it to /dev/null so Scanln EOFs
+	// deterministically into the cancel/keep branch.
+	devNull, err := os.Open(os.DevNull)
+	require.NoError(t, err)
+	oldStdin := os.Stdin
+	os.Stdin = devNull
+	t.Cleanup(func() { os.Stdin = oldStdin; _ = devNull.Close() })
+
+	m := new(testutil.MockTmuxExecutor)
+	m.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return("existing-sess", nil)
+	m.On("HasSession", "existing-sess").Return(true, nil)
+
+	var out bytes.Buffer
+	sessionID, created, err := startOrReuseSession(m, dir, "", &out)
+
+	require.NoError(t, err)
+	assert.False(t, created, "a kept existing session must report created=false")
+	assert.Equal(t, "existing-sess", sessionID)
+	assert.Contains(t, out.String(), "Keeping existing session 'existing-sess'")
+	m.AssertNotCalled(t, "CreateSession", mock.Anything, mock.Anything)
+}
+
+// ============================================================================
+// notify-orchestrator receipt file (Fix B)
+// ============================================================================
+
+// TestNotifyOrchestrator_ReceiptAppendsDeliveredMessage verifies that after a
+// successful pane delivery each message is appended to the receipt file with a
+// trailing newline (O_APPEND semantics across calls).
+func TestNotifyOrchestrator_ReceiptAppendsDeliveredMessage(t *testing.T) {
+	receipt := filepath.Join(t.TempDir(), "receipt.log")
+	m := new(testutil.MockTmuxExecutor)
+	m.On("NotifyPane", "%3", "first").Return(nil)
+	m.On("NotifyPane", "%3", "second").Return(nil)
+
+	require.NoError(t, notifyOrchestrator(m, "%3", "first", receipt))
+	require.NoError(t, notifyOrchestrator(m, "%3", "second", receipt))
+
+	data, err := os.ReadFile(receipt)
+	require.NoError(t, err)
+	assert.Equal(t, "first\nsecond\n", string(data))
+}
+
+// TestNotifyOrchestrator_ReceiptCreatesParentDir verifies a receipt path with a
+// missing parent directory is created (MkdirAll before O_CREATE).
+func TestNotifyOrchestrator_ReceiptCreatesParentDir(t *testing.T) {
+	receipt := filepath.Join(t.TempDir(), "nested", "deeper", "receipt.log")
+	m := new(testutil.MockTmuxExecutor)
+	m.On("NotifyPane", "%1", "hello").Return(nil)
+
+	require.NoError(t, notifyOrchestrator(m, "%1", "hello", receipt))
+
+	data, err := os.ReadFile(receipt)
+	require.NoError(t, err)
+	assert.Equal(t, "hello\n", string(data))
+}
+
+// TestNotifyOrchestrator_ReceiptWriteErrorFailOpen verifies a receipt write
+// failure does NOT fail the notify: the pane delivery already succeeded, so the
+// command returns nil (warning goes to stderr).
+func TestNotifyOrchestrator_ReceiptWriteErrorFailOpen(t *testing.T) {
+	// A directory at the receipt path makes OpenFile fail deterministically.
+	receipt := t.TempDir()
+	m := new(testutil.MockTmuxExecutor)
+	m.On("NotifyPane", "%2", "hello").Return(nil)
+
+	err := notifyOrchestrator(m, "%2", "hello", receipt)
+
+	assert.NoError(t, err, "receipt is an observability bonus — write errors must fail open")
+	m.AssertCalled(t, "NotifyPane", "%2", "hello")
+}
+
+// TestNotifyOrchestrator_NoReceiptWhenDeliveryFails verifies the receipt is
+// only written AFTER successful pane delivery — a NotifyPane error leaves no file.
+func TestNotifyOrchestrator_NoReceiptWhenDeliveryFails(t *testing.T) {
+	receipt := filepath.Join(t.TempDir(), "receipt.log")
+	m := new(testutil.MockTmuxExecutor)
+	m.On("NotifyPane", "%9", "x").Return(errors.New("send-keys failed"))
+
+	err := notifyOrchestrator(m, "%9", "x", receipt)
+
+	require.Error(t, err)
+	_, statErr := os.Stat(receipt)
+	assert.True(t, os.IsNotExist(statErr), "no receipt may be written on delivery failure")
+}
+
+// TestNotifyOrchestrator_EmptyReceiptPath_NoWrite verifies an empty receipt
+// path (unset env) keeps the exact current behavior — delivery succeeds, no
+// filesystem side effects.
+func TestNotifyOrchestrator_EmptyReceiptPath_NoWrite(t *testing.T) {
+	m := new(testutil.MockTmuxExecutor)
+	m.On("NotifyPane", "%1", "hello").Return(nil)
+
+	err := notifyOrchestrator(m, "%1", "hello", "")
+
+	require.NoError(t, err)
+	m.AssertCalled(t, "NotifyPane", "%1", "hello")
 }
 
 // TestSendResumeKickoff_SendsToSupervisorWindow verifies sendResumeKickoff sends

@@ -29,7 +29,7 @@ func TestNotifyOrchestrator_SendsTextThenEnter(t *testing.T) {
 	m := &testutil.MockTmuxExecutor{}
 	m.On("NotifyPane", "%3", "hello").Return(nil)
 
-	err := notifyOrchestrator(m, "%3", "hello")
+	err := notifyOrchestrator(m, "%3", "hello", "")
 
 	require.NoError(t, err)
 	m.AssertCalled(t, "NotifyPane", "%3", "hello")
@@ -42,7 +42,7 @@ func TestNotifyOrchestrator_MissingEnv_FailsLoud(t *testing.T) {
 	m := &testutil.MockTmuxExecutor{}
 	// No .On — any call would panic, asserting NotifyPane is NOT invoked.
 
-	err := notifyOrchestrator(m, "", "hello")
+	err := notifyOrchestrator(m, "", "hello", "")
 
 	require.Error(t, err)
 	var usageErr UsageError
@@ -84,7 +84,7 @@ func TestNotifyOrchestrator_EmptyMessage_Delivered(t *testing.T) {
 	m := &testutil.MockTmuxExecutor{}
 	m.On("NotifyPane", "%1", "").Return(nil)
 
-	err := notifyOrchestrator(m, "%1", "")
+	err := notifyOrchestrator(m, "%1", "", "")
 
 	require.NoError(t, err)
 	m.AssertCalled(t, "NotifyPane", "%1", "")
@@ -97,7 +97,7 @@ func TestNotifyOrchestrator_PropagatesExecutorError(t *testing.T) {
 	sentinel := errors.New("send-keys failed")
 	m.On("NotifyPane", "%9", "x").Return(sentinel)
 
-	err := notifyOrchestrator(m, "%9", "x")
+	err := notifyOrchestrator(m, "%9", "x", "")
 
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, sentinel), "underlying executor error must be wrapped with %%w")

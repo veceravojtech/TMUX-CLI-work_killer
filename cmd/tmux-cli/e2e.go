@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -159,14 +160,22 @@ func runE2EBootstrap(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
 		return failBootstrap(res, "state", fmt.Sprintf("mkdir state dir: %v", err))
 	}
-	cycle, err := resolveCycle(repoRoot, scenario, stateFile)
+	cycle, err := resolveCycle(repoRoot, scenario)
 	if err != nil {
 		return failBootstrap(res, "state", err.Error())
 	}
 	res.Cycle = cycle
+	// On --resume, surface the ledger's pending fix-verification so the
+	// conductor knows it is entering a confirm-fix cycle (self-update handoff).
+	if e2eResume {
+		if v := readLedgerVerify(stateFile); v != nil {
+			res.VerifySignature = v.Signature
+			res.VerifyTaskID = v.TaskID
+		}
+	}
 
 	// ── Step 2: reap stale tmux-cli-tmp-* sessions from past runs ────────────
-	res.ReapedSessions = reapStaleSessions(scenario)
+	res.ReapedSessions = reapStaleSessions()
 
 	// ── Step 2: resolve + provision the target dir ──────────────────────────
 	stamp := time.Now().UTC().Format("20060102T150405Z")
@@ -180,6 +189,11 @@ func runE2EBootstrap(cmd *cobra.Command, args []string) error {
 	}
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return failBootstrap(res, "provision", fmt.Sprintf("mkdir target dir: %v", err))
+	}
+	// Mark the dir disposable NOW (session recorded post-start): the orphan
+	// reaper selects dirs by this marker, never by name pattern.
+	if err := writeDisposableMarker(targetDir, scenario, stamp); err != nil {
+		return failBootstrap(res, "provision", fmt.Sprintf("write disposable marker: %v", err))
 	}
 	if err := runIn(targetDir, "git", "init", "-q"); err != nil {
 		return failBootstrap(res, "provision", fmt.Sprintf("git init: %v", err))
@@ -202,15 +216,30 @@ func runE2EBootstrap(cmd *cobra.Command, args []string) error {
 	}
 	progress("seeded trust for %s", targetDir)
 
-	// ── Step 2/3: inject orchestrator pane into the tmux server env, then start ─
+	// ── Step 2/3: inject orchestrator pane + notify receipt into the tmux
+	// server env, then start. Both MUST land before startTarget so the
+	// auto-launched claude inherits them. The receipt is keyed by the run's
+	// own identity (<scenario>-<stamp>, the target-dir basename) because the
+	// session name embeds a start-time timestamp that does not exist yet.
 	if _, err := tmuxOut("setenv", "-g", "TMUX_CLI_ORCHESTRATOR_PANE", orchPane); err != nil {
 		return failBootstrap(res, "bootstrap", fmt.Sprintf("setenv -g orchestrator pane: %v", err))
 	}
+	receiptPath := e2e.ReceiptPath(repoRoot, scenario+"-"+stamp)
+	if err := os.MkdirAll(filepath.Dir(receiptPath), 0o755); err != nil {
+		return failBootstrap(res, "bootstrap", fmt.Sprintf("mkdir receipt dir: %v", err))
+	}
+	if _, err := tmuxOut("setenv", "-g", "TMUX_CLI_NOTIFY_RECEIPT", receiptPath); err != nil {
+		return failBootstrap(res, "bootstrap", fmt.Sprintf("setenv -g notify receipt: %v", err))
+	}
+	res.ReceiptPath = receiptPath
 	session, err := startTarget(targetDir)
 	if err != nil {
 		return failBootstrap(res, "start", err.Error())
 	}
 	res.Session = session
+	if err := recordDisposableSession(targetDir, session); err != nil {
+		return failBootstrap(res, "start", fmt.Sprintf("record session in disposable marker: %v", err))
+	}
 	progress("started detached session %s", session)
 
 	pane, err := tmuxOut("list-panes", "-t", session, "-F", "#{pane_id}")
@@ -231,7 +260,7 @@ func runE2EBootstrap(cmd *cobra.Command, args []string) error {
 
 	// ── Step 3: wait for claude idle, then pipe-pane BEFORE any drive ───────
 	if !waitForIdlePrompt(pane, 40*time.Second) {
-		return failBootstrap(res, "bootstrap", "target claude did not reach an idle ❯ prompt in time")
+		return failBootstrap(res, "bootstrap", "target never reached a stable idle prompt — Claude Code TUI markers (idle ❯ / busy-hint words) may have changed and this probe may be stale")
 	}
 	logPath := e2e.LogPath(repoRoot, session)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
@@ -244,7 +273,7 @@ func runE2EBootstrap(cmd *cobra.Command, args []string) error {
 	progress("pipe-pane logging → %s", logPath)
 
 	// ── Step 3b: init-prompt HANDSHAKE — prove notify-orchestrator live ─────
-	if !doHandshake(pane, session, logPath, time.Duration(e2eHandshakeWait)*time.Second) {
+	if !doHandshake(pane, session, logPath, receiptPath, time.Duration(e2eHandshakeWait)*time.Second) {
 		return failBootstrap(res, "handshake", "notify-orchestrator channel did not prove live (handshake token never landed)")
 	}
 	res.Handshake = "ok"
@@ -256,13 +285,19 @@ func runE2EBootstrap(cmd *cobra.Command, args []string) error {
 }
 
 // resolveCycle implements fresh-from-scratch-by-default vs --resume (step 1b).
-func resolveCycle(repoRoot, scenario, stateFile string) (int, error) {
+// It derives the ledger path itself (e2e.StateFilePath) so its reads stay
+// coherent with writeE2ELedger's writes, and routes every ledger write through
+// writeE2ELedger so the <scenario>.state.md rendering — the self-update
+// resume-handoff artifact — never goes stale beside state.json.
+func resolveCycle(repoRoot, scenario string) (int, error) {
+	stateFile := e2e.StateFilePath(repoRoot, scenario)
 	if !e2eResume {
 		// Clear prior artifacts and start fresh at cycle 1.
 		_ = os.Remove(stateFile)
 		clearReports(repoRoot, scenario)
+		clearRunArtifacts(repoRoot, scenario)
 		st := e2e.NewState(scenario, e2eMaxCycles)
-		if err := writeStateAtomic(stateFile, st); err != nil {
+		if err := writeE2ELedger(repoRoot, scenario, st); err != nil {
 			return 0, fmt.Errorf("init fresh state: %w", err)
 		}
 		return 1, nil
@@ -272,7 +307,7 @@ func resolveCycle(repoRoot, scenario, stateFile string) (int, error) {
 	if err != nil {
 		// Missing on resume == fresh cycle 1 (not an error).
 		st := e2e.NewState(scenario, e2eMaxCycles)
-		if werr := writeStateAtomic(stateFile, st); werr != nil {
+		if werr := writeE2ELedger(repoRoot, scenario, st); werr != nil {
 			return 0, fmt.Errorf("init state on resume: %w", werr)
 		}
 		return 1, nil
@@ -282,22 +317,79 @@ func resolveCycle(repoRoot, scenario, stateFile string) (int, error) {
 		return 0, err
 	}
 	if st.Status != e2e.StatusInProgress {
+		// Already terminal — leave the ledger byte-identical.
 		return 0, fmt.Errorf("run already terminal (status=%s); nothing to resume", st.Status)
 	}
 	if st.Cycle > st.MaxCycles {
-		return 0, fmt.Errorf("self-heal budget exhausted (cycle %d > max %d)", st.Cycle, st.MaxCycles)
+		// Flip the ledger terminal BEFORE erroring — otherwise it stays
+		// in-progress forever and e2e-evaluator.xml step 1b keeps resuming it.
+		if werr := writeE2ELedger(repoRoot, scenario, st.MarkExhausted()); werr != nil {
+			return 0, fmt.Errorf("self-heal budget exhausted (cycle %d > max %d); also failed to mark ledger exhausted: %v", st.Cycle, st.MaxCycles, werr)
+		}
+		return 0, fmt.Errorf("self-heal budget exhausted (cycle %d > max %d); ledger marked exhausted", st.Cycle, st.MaxCycles)
 	}
 	return st.Cycle, nil
 }
 
+// clearRunArtifacts sweeps THIS scenario's stale run artifacts before a fresh
+// (non-resume) bootstrap: the <scenario>.state.md resume-handoff plus the
+// scenario's receipts and pipe-pane logs under logs/. Matching is tighter than
+// a bare <scenario>-* glob: the slug must be immediately followed by a run
+// stamp, so a scenario whose slug extends this one ("scn-two" vs "scn") is
+// never swept.
+func clearRunArtifacts(repoRoot, scenario string) {
+	_ = os.Remove(e2e.StateMDPath(repoRoot, scenario))
+	q := regexp.QuoteMeta(scenario)
+	// The bootstrap's UTC run stamp (20060102T150405Z); tmux session names
+	// carry it lowercased (GenerateSessionID sanitizes the target dir path).
+	const stamp = `[0-9]{8}[Tt][0-9]{6}[Zz]`
+	// Receipts are named <scenario>-<stamp>.receipt (e2e.ReceiptPath).
+	receiptRe := regexp.MustCompile(`^` + q + `-` + stamp)
+	// Pipe-pane logs are named after the target session
+	// (tmux-cli-…-tmp-<scenario>-<stamp>-<started>.log, e2e.LogPath), so the
+	// slug sits mid-name behind a tmp- marker; a <scenario>-<stamp> prefix is
+	// also accepted for spec-shaped names.
+	logRe := regexp.MustCompile(`^(?:.*-)?tmp-` + q + `-` + stamp + `|^` + q + `-` + stamp)
+	logsDir := filepath.Join(repoRoot, ".tmux-cli", "e2e-evaluator", "logs")
+	entries, _ := os.ReadDir(logsDir)
+	for _, e := range entries {
+		name := e.Name()
+		matched := (strings.HasSuffix(name, ".receipt") && receiptRe.MatchString(name)) ||
+			(strings.HasSuffix(name, ".log") && logRe.MatchString(name))
+		if matched {
+			_ = os.Remove(filepath.Join(logsDir, name))
+		}
+	}
+}
+
+// clearReports sweeps ONLY this scenario's per-cycle reports before a fresh
+// (non-resume) bootstrap — e2e.IsScenarioReport anchors the slug with the
+// following "-cycle-", so a sibling scenario is never cross-swept. Legacy
+// unscoped e2e-report-cycle-<n>.md files predate the scenario-scoped naming
+// and belong to no scenario; they are removed too (one-time orphan migration).
 func clearReports(repoRoot, scenario string) {
 	dir := filepath.Join(repoRoot, ".tmux-cli", "e2e-evaluator")
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "e2e-report-cycle-") && strings.HasSuffix(e.Name(), ".md") {
+		if e2e.IsScenarioReport(e.Name(), scenario) || e2e.IsLegacyReport(e.Name()) {
 			_ = os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
+}
+
+// readLedgerVerify extracts the pending fix-verification from a ledger file,
+// tolerantly: a missing/corrupt file or an absent verify field yields nil
+// (resolveCycle already gated the strict parse on the resume path).
+func readLedgerVerify(stateFile string) *e2e.VerifyState {
+	raw, err := os.ReadFile(stateFile)
+	if err != nil {
+		return nil
+	}
+	st, err := e2e.ParseState(raw)
+	if err != nil {
+		return nil
+	}
+	return st.Verify
 }
 
 func writeStateAtomic(stateFile string, st e2e.State) error {
@@ -312,45 +404,73 @@ func writeStateAtomic(stateFile string, st e2e.State) error {
 	return os.Rename(tmp, stateFile)
 }
 
+// seedTrust seeds ~/.claude.json trust for targetDir with a
+// read-transform-rename cycle that re-reads the file IMMEDIATELY before the
+// rename (SeedTrustConfig is pure and idempotent, so re-applying to fresh
+// bytes is free), verifies the three seeded keys after the rename, and
+// retries the whole cycle once on a verify miss.
+//
+// Residual race (documented, not eliminable here): claude honors no lock on
+// ~/.claude.json, so a concurrent claude process can still rewrite the file
+// between our post-rename verify and the target's own config load. The fresh
+// read + verify + single retry only shrinks that clobber window.
 func seedTrust(targetDir string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("resolve home: %w", err)
 	}
 	p := filepath.Join(home, ".claude.json")
-	raw, _ := os.ReadFile(p) // missing → seed from empty
-	out, err := e2e.SeedTrustConfig(raw, targetDir)
-	if err != nil {
-		return err
+	attempt := func() error {
+		raw, _ := os.ReadFile(p) // fresh read right before the rename; missing → seed from empty
+		out, err := e2e.SeedTrustConfig(raw, targetDir)
+		if err != nil {
+			return err
+		}
+		tmp := p + ".e2e.tmp"
+		if err := os.WriteFile(tmp, out, 0o600); err != nil {
+			return fmt.Errorf("write trust config: %w", err)
+		}
+		if err := os.Rename(tmp, p); err != nil {
+			return fmt.Errorf("rename trust config: %w", err)
+		}
+		back, err := os.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("read back trust config: %w", err)
+		}
+		if !e2e.TrustSeeded(back, targetDir) {
+			return fmt.Errorf("trust keys missing after seed of %s (concurrent ~/.claude.json writer?)", targetDir)
+		}
+		return nil
 	}
-	tmp := p + ".e2e.tmp"
-	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		return fmt.Errorf("write trust config: %w", err)
+	if err := attempt(); err != nil {
+		progress("trust seed verify failed (%v) — retrying once", err)
+		return attempt()
 	}
-	return os.Rename(tmp, p)
+	return nil
 }
 
-var createdSessionRe = regexp.MustCompile(`Created session '([^']+)'`)
-
-// startTarget runs `tmux-cli start` in the target dir (auto-launching claude
-// with the seeded trust + bypass) and returns the exact session name.
+// startTarget runs `tmux-cli start --print-json` in the target dir
+// (auto-launching claude with the seeded trust + bypass) and returns the
+// exact session name from the machine contract: stdout is exactly one
+// compact JSON line {"session":...,"created":true|false}, human output on
+// stderr. There is deliberately no human-output fallback parse.
 func startTarget(targetDir string) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		self = "tmux-cli"
 	}
-	c := exec.Command(self, "start")
+	c := exec.Command(self, "start", "--print-json")
 	c.Dir = targetDir
-	out, err := c.CombinedOutput()
-	text := string(out)
+	var stdout, stderr bytes.Buffer
+	c.Stdout, c.Stderr = &stdout, &stderr
+	if err := c.Run(); err != nil {
+		return "", fmt.Errorf("tmux-cli start: %v: %s", err, strings.TrimSpace(stderr.String()+stdout.String()))
+	}
+	out, err := e2e.ParseStartOutput(stdout.String())
 	if err != nil {
-		return "", fmt.Errorf("tmux-cli start: %v: %s", err, strings.TrimSpace(text))
+		return "", err
 	}
-	m := createdSessionRe.FindStringSubmatch(text)
-	if m == nil {
-		return "", fmt.Errorf("could not parse session name from start output: %s", strings.TrimSpace(text))
-	}
-	return m[1], nil
+	return out.Session, nil
 }
 
 // attachHumanView attaches a native terminal when a GUI exists and verifies a
@@ -402,31 +522,115 @@ func findNativeTerminal() string {
 	return ""
 }
 
-// waitForIdlePrompt polls the target pane for a stable idle ❯ with no spinner.
-func waitForIdlePrompt(pane string, timeout time.Duration) bool {
-	spinners := []string{"Cogitating", "Germinating", "Gitifying", "Transfiguring", "Brewed", "esc to interrupt"}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		out, _ := tmuxOut("capture-pane", "-p", "-t", pane)
-		busy := false
-		for _, s := range spinners {
-			if strings.Contains(out, s) {
-				busy = true
-				break
+// ── Claude Code TUI probe constants ─────────────────────────────────────────
+// Deliberately TUI-coupled: these mirror Claude Code's terminal rendering and
+// are the ONLY place that coupling lives. idlePromptMarker is the input-box
+// prompt glyph; busyHintWords are spinner/status words that mean "definitely
+// busy" (they only short-circuit the stability wait — idleness itself is
+// decided structurally by two identical snapshots). If Claude Code's TUI
+// changes, update this block and nothing else.
+const (
+	idlePromptMarker   = "❯"
+	idleStableInterval = 2 * time.Second
+)
+
+var busyHintWords = []string{"Cogitating", "Germinating", "Gitifying", "Transfiguring", "Brewed", "esc to interrupt"}
+
+// writeDisposableMarker drops the provision-time disposable marker in dir.
+func writeDisposableMarker(dir, scenario, stamp string) error {
+	return os.WriteFile(filepath.Join(dir, e2e.DisposableMarkerName), []byte(e2e.NewMarker(scenario, stamp)), 0o644)
+}
+
+// recordDisposableSession rewrites dir's marker with the started session name.
+// A marker that cannot be updated is a hard error: without a session line the
+// next bootstrap's orphan scan would reap this (live) run's dir.
+func recordDisposableSession(dir, session string) error {
+	p := filepath.Join(dir, e2e.DisposableMarkerName)
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return fmt.Errorf("read disposable marker: %w", err)
+	}
+	return os.WriteFile(p, []byte(e2e.MarkerWithSession(string(raw), session)), 0o644)
+}
+
+// reapOrphanDisposables scans root/*/ for disposable markers and removes every
+// marked dir whose recorded session is not live (or was never recorded).
+// Unmarked dirs are NEVER touched. Returns the removed dirs.
+func reapOrphanDisposables(root string, liveSessions []string) []string {
+	markers, _ := filepath.Glob(filepath.Join(root, "*", e2e.DisposableMarkerName))
+	var removed []string
+	for _, mp := range markers {
+		raw, err := os.ReadFile(mp)
+		if err != nil {
+			continue
+		}
+		if e2e.ShouldReapDisposable(e2e.ParseMarker(string(raw)), liveSessions) {
+			dir := filepath.Dir(mp)
+			if os.RemoveAll(dir) == nil {
+				removed = append(removed, dir)
 			}
 		}
-		if !busy && strings.Contains(out, "❯") {
+	}
+	return removed
+}
+
+// handshakeSeen verifies the handshake token: receipt file PRIMARY (exact
+// token line — notify-orchestrator appends each delivered message verbatim),
+// normalized pipe-pane log FALLBACK (still proves the pane saw it when the
+// receipt is missing, e.g. an old binary in the target).
+func handshakeSeen(receiptPath, logPath, token string) bool {
+	if raw, err := os.ReadFile(receiptPath); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.TrimSpace(line) == token {
+				return true
+			}
+		}
+	}
+	if raw, err := os.ReadFile(logPath); err == nil {
+		n := normalizeLog(string(raw))
+		if strings.Contains(n, stripWS(token)) && strings.Contains(n, "Notifiedorchestratorpane") {
 			return true
 		}
-		time.Sleep(2 * time.Second)
 	}
 	return false
 }
 
-// doHandshake sends the init prompt (two-step) and verifies the channel by
-// finding the handshake token + notify success line in the target log. Retries
-// the prompt once before giving up.
-func doHandshake(pane, session, logPath string, wait time.Duration) bool {
+// waitForIdlePrompt polls the target pane until it is structurally idle: two
+// consecutive capture-pane snapshots taken idleStableInterval apart are
+// IDENTICAL (after trimming) and contain the idle prompt marker. A matched
+// busy-hint word only short-circuits the stability compare (definitely busy);
+// it is not required for the idle decision, so new spinner words can't cause
+// a false "idle" — at worst they cost one extra compare cycle.
+func waitForIdlePrompt(pane string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	prev := ""
+	for time.Now().Before(deadline) {
+		out, _ := tmuxOut("capture-pane", "-p", "-t", pane)
+		snap := strings.TrimSpace(out)
+		busy := false
+		for _, w := range busyHintWords {
+			if strings.Contains(snap, w) {
+				busy = true
+				break
+			}
+		}
+		if busy {
+			prev = "" // definitely busy — restart the stability window
+		} else {
+			if snap != "" && snap == prev && strings.Contains(snap, idlePromptMarker) {
+				return true
+			}
+			prev = snap
+		}
+		time.Sleep(idleStableInterval)
+	}
+	return false
+}
+
+// doHandshake sends the init prompt (two-step) and verifies the channel via
+// handshakeSeen (receipt file primary, normalized log fallback). Retries the
+// prompt once before giving up.
+func doHandshake(pane, session, logPath, receiptPath string, wait time.Duration) bool {
 	token := e2e.HandshakeToken(session)
 	prompt := buildInitPrompt(session, token)
 	send := func() bool {
@@ -447,22 +651,10 @@ func doHandshake(pane, session, logPath string, wait time.Duration) bool {
 		_, err = tmuxOut("send-keys", "-t", pane, "Enter")
 		return err == nil
 	}
-	// The pipe-pane log is a live Claude Code TUI transcript: the success line
-	// is wrapped/positioned with ANSI escapes, so the literal "Notified
-	// orchestrator pane" (with spaces) never survives a substring match even
-	// though it landed. Normalize the log (strip escapes, drop ALL whitespace)
-	// and match whitespace-stripped needles so a genuinely-live channel is
-	// detected immediately instead of false-failing (the e2e-evaluator
-	// handshake false-negative).
-	needleToken := stripWS(token)
-	needleNotified := "Notifiedorchestratorpane"
 	verify := func(deadline time.Time) bool {
 		for {
-			if raw, err := os.ReadFile(logPath); err == nil {
-				n := normalizeLog(string(raw))
-				if strings.Contains(n, needleToken) && strings.Contains(n, needleNotified) {
-					return true
-				}
+			if handshakeSeen(receiptPath, logPath, token) {
+				return true
 			}
 			if !time.Now().Before(deadline) {
 				return false
@@ -606,33 +798,33 @@ func e2eReap(session, dir string) []string {
 }
 
 // reapStaleSessions kills leftover disposable targets from crashed prior runs
-// and removes orphan /tmp dirs. Returns the names reaped.
-func reapStaleSessions(scenario string) []string {
-	names, err := tmuxOut("list-sessions", "-F", "#{session_name}")
-	if err != nil {
-		return nil
-	}
-	stale := e2e.SelectStaleSessions(strings.Split(names, "\n"))
+// and removes orphan /tmp dirs by their disposable marker (any scenario, not
+// just the current one). Returns the session names reaped.
+func reapStaleSessions() []string {
 	var reaped []string
-	for _, s := range stale {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		dir := ""
-		if p, derr := tmuxOut("display-message", "-p", "-t", s, "#{pane_current_path}"); derr == nil {
-			dir = strings.TrimSpace(strings.SplitN(p, "\n", 2)[0])
-		}
-		e2eReap(s, dir)
-		reaped = append(reaped, s)
-	}
-	// Orphan /tmp/<scenario>-* dirs whose session is already gone.
-	if matches, _ := filepath.Glob(filepath.Join("/tmp", scenario+"-*")); matches != nil {
-		for _, d := range matches {
-			if isDir(d) {
-				_ = os.RemoveAll(d)
+	if names, err := tmuxOut("list-sessions", "-F", "#{session_name}"); err == nil {
+		for _, s := range e2e.SelectStaleSessions(strings.Split(names, "\n")) {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
 			}
+			dir := ""
+			if p, derr := tmuxOut("display-message", "-p", "-t", s, "#{pane_current_path}"); derr == nil {
+				dir = strings.TrimSpace(strings.SplitN(p, "\n", 2)[0])
+			}
+			e2eReap(s, dir)
+			reaped = append(reaped, s)
 		}
+	}
+	// Marker-based orphan-dir sweep, AFTER the kills so the live list is
+	// current. A tmux-less environment yields an empty live list — every
+	// marked dir is an orphan then.
+	var live []string
+	if names, err := tmuxOut("list-sessions", "-F", "#{session_name}"); err == nil {
+		live = strings.Split(names, "\n")
+	}
+	for _, d := range reapOrphanDisposables("/tmp", live) {
+		progress("reaped orphan disposable dir %s", d)
 	}
 	return reaped
 }

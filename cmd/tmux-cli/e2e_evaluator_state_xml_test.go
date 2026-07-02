@@ -49,8 +49,10 @@ func TestResume_FreshFromScratchDefault(t *testing.T) {
 		"RESUME must make fresh-from-scratch the default, not continue prior work")
 	assert.Contains(t, content, "WIPED",
 		"the default path must WIPE a found prior STATE_FILE, not resume it")
+	assert.Contains(t, content, "e2e-report-&lt;scenario&gt;-cycle-*.md",
+		"the fresh-default clear must name the scenario-scoped report glob")
 	assert.Contains(t, content, "e2e-report-cycle-*.md",
-		"the fresh-default clear must delete prior per-cycle reports too")
+		"the clear must still mention the pre-scoping legacy orphans (one-time migration)")
 	// Resume is opt-in via an explicit directive.
 	assert.True(t,
 		strings.Contains(content, "OPT-IN") && strings.Contains(content, "--resume"),
@@ -165,8 +167,20 @@ func TestReport_HasAllSections(t *testing.T) {
 		"Timing Table must record per-phase p90")
 	assert.Contains(t, content, "in-flight",
 		"Timing Table must record mean in-flight goals (achieved parallelism)")
-	assert.Contains(t, content, "e2e-report-cycle-",
-		"REPORT must write e2e-report-cycle-<n>.md")
+	assert.Contains(t, content, "e2e-report-&lt;scenario&gt;-cycle-",
+		"REPORT must write the scenario-scoped e2e-report-<scenario>-cycle-<n>.md")
+}
+
+// TestReport_ScenarioScopedReportFile: REPORT_FILE carries the scenario slug
+// (e2e-report-<scenario>-cycle-<n>.md) in the glossary term, the <output>
+// primary note, AND step 9's rule — so a fresh run of one scenario never
+// sweeps another scenario's per-cycle reports.
+func TestReport_ScenarioScopedReportFile(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.GreaterOrEqual(t,
+		strings.Count(content, "e2e-report-&lt;scenario&gt;-cycle-&lt;n&gt;.md"), 3,
+		"glossary REPORT_FILE + <output> primary + step 9 rule must all carry the scenario-scoped report shape")
 }
 
 // TestState_AtomicRewrite: state is rewritten atomically (temp + rename), so a
@@ -183,6 +197,54 @@ func TestState_AtomicRewrite(t *testing.T) {
 	// cycle is bumped only after REPORT, never off-by-one.
 	assert.Contains(t, content, "NEXT cycle to run",
 		"STATE must keep cycle = the NEXT cycle to run (no off-by-one)")
+}
+
+// TestState_RecordCommandMandate: steps 8–9 mandate the deterministic Go
+// writer (`tmux-cli e2e-state record`) instead of LLM-authored ledger JSON —
+// the same automated-prologue pattern as e2e-bootstrap/e2e-teardown.
+func TestState_RecordCommandMandate(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "tmux-cli e2e-state record",
+		"step 8 must mandate the deterministic e2e-state record writer")
+	assert.GreaterOrEqual(t, strings.Count(content, "e2e-state record"), 2,
+		"both step 8 (STATE) and step 9 (REPORT trailing action) must point at e2e-state record")
+	// The flag mapping is documented so the conductor never guesses the surface.
+	for _, flag := range []string{"--scenario", "--outcome", "--signature", "--app-up", "--task-id", "--task-status", "--git-after", "--durations-json"} {
+		assert.Contains(t, content, flag,
+			"step 8 must document the %s flag mapping", flag)
+	}
+	// Hand-writing the ledger is forbidden; record never initializes it.
+	assert.Contains(t, content, "NEVER hand-write",
+		"step 8 must forbid LLM-authored state JSON")
+	assert.Contains(t, content, "never initializes",
+		"step 8 must state that record refuses a missing ledger (init is e2e-bootstrap's job)")
+}
+
+// TestReport_ReportCommandMandate: step 9 mandates the deterministic Go writer
+// (`tmux-cli e2e-state report`) with the full flag mapping instead of an
+// LLM-hand-authored REPORT_FILE — the same automated-prologue pattern as
+// e2e-bootstrap / e2e-teardown / e2e-state record.
+func TestReport_ReportCommandMandate(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "tmux-cli e2e-state report",
+		"step 9 must mandate the deterministic e2e-state report writer")
+	// The full flag mapping is documented so the conductor never guesses the surface.
+	for _, flag := range []string{"--scenario", "--cycle", "--driven-summary", "--failure-point",
+		"--defect-signature", "--filed-task", "--timing-table", "--verdict PASS|FAIL|EXHAUSTED",
+		"--verdict-reason", "--app-up"} {
+		assert.Contains(t, content, flag,
+			"step 9 must document the %s flag mapping", flag)
+	}
+	// Hand-writing the report is forbidden; refusals are fixed at the input.
+	assert.Contains(t, content, "NEVER hand-author",
+		"step 9 must forbid LLM-authored report markdown")
+	assert.Contains(t, content, "REFUSED",
+		"step 9 must document the refusal semantics (ok:false + non-zero exit)")
+	// Report-then-record ordering: the ledger is still in-progress at the report.
+	assert.Contains(t, content, "BEFORE step 8",
+		"the report command runs before the step-8 record, while the ledger is still in-progress")
 }
 
 // TestState_GlossaryTerms: STATE_FILE / REPORT_FILE are declared in the glossary
@@ -205,4 +267,69 @@ func TestE2EEvaluatorXml_StateReportNoErrorReportingRegression(t *testing.T) {
 	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
 	assert.Equal(t, 1, strings.Count(content, "<error-reporting>"),
 		"the <error-reporting> reference must remain present exactly once")
+}
+
+// --- SELF-UPDATE HANDOFF (step 7b resolved branch + step 1b resume routing) ---
+
+// TestDefectLifecycle_ResolvedRecordsPendingVerification: the step-7b resolved
+// branch first records the pending verification with the verify-flagged
+// e2e-state record, which also renders the <scenario>.state.md handoff artifact.
+func TestDefectLifecycle_ResolvedRecordsPendingVerification(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "--verify-signature",
+		"step 7b must record the pending verification via --verify-signature")
+	assert.Contains(t, content, "--verify-task-id",
+		"step 7b must record the pending verification via --verify-task-id")
+	assert.Contains(t, content, ".state.md",
+		"the verify record renders the <scenario>.state.md handoff artifact alongside the JSON")
+}
+
+// TestDefectLifecycle_SelfUpdateGuardThenRestart: the mark-self-update guard
+// (one session restart per resolved task) gates the managed session restart;
+// a guard refusal or an unchanged binary skips the restart.
+func TestDefectLifecycle_SelfUpdateGuardThenRestart(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "e2e-state mark-self-update",
+		"step 7b must consult the mark-self-update restart-loop guard before restarting")
+	assert.Contains(t, content, "self-update --restart session",
+		"step 7b must relaunch via the managed self-update session restart")
+	assert.Contains(t, content, "--resume-state",
+		"the session restart must carry the state.md resume pointer")
+	assert.Contains(t, content, "binary_changed:false",
+		"an unchanged binary means no restart — fall through to the verification cycle")
+	assert.Contains(t, content, "SKIP the restart",
+		"a guard refusal (ok:false) must skip the restart, not retry it")
+	assert.Contains(t, content, "never restart twice",
+		"the guard exists to forbid a second restart for the same resolved task")
+}
+
+// TestDefectLifecycle_VerificationCycleSurfacesVerify: after (or instead of)
+// the restart, e2e-bootstrap --resume surfaces verify_signature/verify_task_id
+// and the JUDGE of that one pristine cycle checks the signature cleared; the
+// clearing record runs WITHOUT verify flags.
+func TestDefectLifecycle_VerificationCycleSurfacesVerify(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "verify_signature",
+		"the resume bootstrap JSON surfaces verify_signature for the confirm-fix cycle")
+	assert.Contains(t, content, "verify_task_id",
+		"the resume bootstrap JSON surfaces verify_task_id for the confirm-fix cycle")
+	assert.Contains(t, content, "signature cleared",
+		"JUDGE of the verification cycle checks the defect signature cleared")
+	assert.Contains(t, content, "WITHOUT verify flags",
+		"the converged record clears the ledger's verify field by omitting the flags")
+}
+
+// TestResume_VerifyRoutedFixVerification: step 1b's resume notes route a
+// verify-carrying resume into the fix-verification cycle (the relaunched
+// session's kickoff points at state.md, which says to resume).
+func TestResume_VerifyRoutedFixVerification(t *testing.T) {
+	content := readEmbeddedCommand(t, "e2e-evaluator.xml")
+
+	assert.Contains(t, content, "fix-verification",
+		"step 1b must name the verify-flagged resume a fix-verification resume")
+	assert.Contains(t, content, "/tmux:e2e-evaluator resume",
+		"the state.md next-action contract (invoke /tmux:e2e-evaluator resume) must be documented")
 }
