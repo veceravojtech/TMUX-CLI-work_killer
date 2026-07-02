@@ -37,6 +37,7 @@ type selfUpdateConfig struct {
 	SettingSourceDir string
 	ResumeState      string
 	SupervisorUUID   string
+	SessionFlag      string
 	InstallPath      string
 	Mode             restartMode
 	Getenv           func(string) string
@@ -150,15 +151,81 @@ func resolveAutoMode(cfg selfUpdateConfig, executor tmux.TmuxExecutor) restartMo
 		return restartDaemon
 	}
 	if executor != nil {
-		if sessions, err := executor.ListSessions(); err == nil && len(sessions) == 1 {
+		if _, err := resolveRestartSession(cfg, executor); err == nil {
 			return restartClaude
 		}
 	}
 	return ""
 }
 
+// sessionForWindowUUID returns the tmux session that owns the window whose
+// WindowUUIDOption equals uuid, mirroring internal/mcp resolveSelfWindowName
+// but scanning across ALL sessions (self-update runs outside the MCP server,
+// so it cannot assume a single discovered session). Returns "" when uuid is
+// empty or ListSessions errors; per-session ListWindows / per-window
+// GetWindowOption failures are skipped (a dead or permission-denied session
+// must not abort resolution), never fatal.
+func sessionForWindowUUID(executor tmux.TmuxExecutor, uuid string) string {
+	if uuid == "" {
+		return ""
+	}
+	sessions, err := executor.ListSessions()
+	if err != nil {
+		return ""
+	}
+	for _, sessionID := range sessions {
+		windows, err := executor.ListWindows(sessionID)
+		if err != nil {
+			continue
+		}
+		for _, w := range windows {
+			got, err := executor.GetWindowOption(sessionID, w.TmuxWindowID, tmux.WindowUUIDOption)
+			if err != nil {
+				continue
+			}
+			if got == uuid {
+				return sessionID
+			}
+		}
+	}
+	return ""
+}
+
+// resolveRestartSession derives the tmux session a restart should target from
+// the invoking context, with precedence: (1) an explicit --session flag,
+// validated against ListSessions and erroring when absent — silently
+// restarting the wrong session is worse than refusing; (2) the caller's
+// TMUX_WINDOW_UUID, resolved to the session owning that window; (3)
+// singleSessionID as the last-resort fallback (preserving the exact
+// "expected exactly 1" error on a multi-session host with no hint). getenv
+// defaults to os.Getenv when cfg.Getenv is nil, matching resolveSourceDir, so
+// zero-value-cfg callers never nil-panic.
+func resolveRestartSession(cfg selfUpdateConfig, executor tmux.TmuxExecutor) (string, error) {
+	getenv := cfg.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if cfg.SessionFlag != "" {
+		sessions, err := executor.ListSessions()
+		if err != nil {
+			return "", fmt.Errorf("list tmux sessions: %w", err)
+		}
+		for _, s := range sessions {
+			if s == cfg.SessionFlag {
+				return s, nil
+			}
+		}
+		return "", fmt.Errorf("--session %q not found among running tmux sessions", cfg.SessionFlag)
+	}
+	if sessionID := sessionForWindowUUID(executor, getenv("TMUX_WINDOW_UUID")); sessionID != "" {
+		return sessionID, nil
+	}
+	return singleSessionID(executor)
+}
+
 // singleSessionID resolves the one running tmux session, refusing when zero
-// or several exist — no guessing across sessions.
+// or several exist — no guessing across sessions. It is the last-resort
+// fallback inside resolveRestartSession.
 func singleSessionID(executor tmux.TmuxExecutor) (string, error) {
 	sessions, err := executor.ListSessions()
 	if err != nil {
@@ -176,8 +243,8 @@ func singleSessionID(executor tmux.TmuxExecutor) (string, error) {
 // C-c (InterruptWindow) does not exit Claude Code, so termination is
 // deterministic — the pane's foreground child is killed and the pane is back
 // at a shell before the relaunch chain types the launch commands.
-func dispatchClaudeRestart(executor tmux.TmuxExecutor) error {
-	sessionID, err := singleSessionID(executor)
+func dispatchClaudeRestart(cfg selfUpdateConfig, executor tmux.TmuxExecutor) error {
+	sessionID, err := resolveRestartSession(cfg, executor)
 	if err != nil {
 		return err
 	}
@@ -240,7 +307,7 @@ func buildSessionRestartArgs(cfg selfUpdateConfig) []string {
 // up the interrupted work. All human-readable relaunch output goes to
 // stderr — stdout stays the single JSON result line.
 func dispatchSessionRestart(cfg selfUpdateConfig, executor tmux.TmuxExecutor, stderr io.Writer) error {
-	sessionID, err := singleSessionID(executor)
+	sessionID, err := resolveRestartSession(cfg, executor)
 	if err != nil {
 		return err
 	}
@@ -340,7 +407,7 @@ func doSelfUpdate(cfg selfUpdateConfig, executor tmux.TmuxExecutor) (selfUpdateR
 		}
 		result.Restart = string(restartDaemon)
 	case restartClaude:
-		if err := dispatchClaudeRestart(executor); err != nil {
+		if err := dispatchClaudeRestart(cfg, executor); err != nil {
 			result.Stage = "restart"
 			return result, err
 		}
@@ -361,6 +428,7 @@ var (
 	selfUpdateResumeState string
 	selfUpdateProject     string
 	selfUpdateBuildCmd    string
+	selfUpdateSession     string
 	selfUpdateDryRun      bool
 )
 
@@ -417,6 +485,7 @@ func runSelfUpdate(cmd *cobra.Command, args []string) error {
 		SourceFlag:       selfUpdateSource,
 		SettingSourceDir: settingSourceDir,
 		ResumeState:      selfUpdateResumeState,
+		SessionFlag:      selfUpdateSession,
 		InstallPath:      filepath.Join(home, ".local", "bin", "tmux-cli"),
 		Mode:             mode,
 		Getenv:           os.Getenv,
@@ -461,6 +530,7 @@ func init() {
 	selfUpdateCmd.Flags().StringVar(&selfUpdateRestart, "restart", string(restartAuto), "What to restart after update: daemon|claude|session|auto")
 	selfUpdateCmd.Flags().StringVar(&selfUpdateResumeState, "resume-state", "", "Resume-state path required for session restart mode")
 	selfUpdateCmd.Flags().StringVar(&selfUpdateProject, "project", "", "Target project directory (default: current directory)")
+	selfUpdateCmd.Flags().StringVar(&selfUpdateSession, "session", "", "Restart target tmux session (default: resolve from TMUX_WINDOW_UUID, else the sole session)")
 	selfUpdateCmd.Flags().StringVar(&selfUpdateBuildCmd, "build-cmd", "", "Override the build command (default: 'make install')")
 	selfUpdateCmd.Flags().BoolVar(&selfUpdateDryRun, "dry-run", false, "Resolve the source directory and print the plan without building")
 

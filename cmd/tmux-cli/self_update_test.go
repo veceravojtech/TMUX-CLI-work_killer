@@ -273,7 +273,7 @@ func TestDispatchClaudeRestart_TerminatesBeforeRelaunch(t *testing.T) {
 		order = append(order, "relaunch")
 	}).Return("", nil)
 
-	require.NoError(t, dispatchClaudeRestart(mockExec))
+	require.NoError(t, dispatchClaudeRestart(selfUpdateConfig{Getenv: noEnv}, mockExec))
 
 	mockExec.AssertCalled(t, "TerminateWindowProcess", "@0")
 	require.NotEmpty(t, order)
@@ -289,7 +289,7 @@ func TestDispatchClaudeRestart_DoesNotUseInterruptWindow(t *testing.T) {
 	mockExec.On("TerminateWindowProcess", "@0").Return(nil)
 	mockExec.On("SendMessageWithFeedback", "sess-1", "supervisor", mock.Anything).Return("", nil)
 
-	require.NoError(t, dispatchClaudeRestart(mockExec))
+	require.NoError(t, dispatchClaudeRestart(selfUpdateConfig{Getenv: noEnv}, mockExec))
 
 	mockExec.AssertNotCalled(t, "InterruptWindow", mock.Anything)
 }
@@ -301,7 +301,7 @@ func TestDispatchClaudeRestart_TerminateErrorAbortsRelaunch(t *testing.T) {
 	mockExec := claudeRestartMock()
 	mockExec.On("TerminateWindowProcess", "@0").Return(fmt.Errorf("child survived SIGKILL"))
 
-	err := dispatchClaudeRestart(mockExec)
+	err := dispatchClaudeRestart(selfUpdateConfig{Getenv: noEnv}, mockExec)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "terminate supervisor Claude before relaunch")
 	assert.Contains(t, err.Error(), "child survived SIGKILL")
@@ -389,7 +389,9 @@ func TestDispatchSessionRestart_CapturesUUIDBeforeKill(t *testing.T) {
 		order = append(order, "kill")
 	}).Return(nil)
 
-	cfg := selfUpdateConfig{ProjectDir: projectDir, ResumeState: "/s.json"}
+	// Getenv: noEnv so a stray TMUX_WINDOW_UUID in the worker's env can't leak into
+	// resolveRestartSession and trigger an extra GetWindowOption scan before Kill.
+	cfg := selfUpdateConfig{ProjectDir: projectDir, ResumeState: "/s.json", Getenv: noEnv}
 	// Ignore the relaunch Run() error: the exec target is the test binary, not a
 	// real tmux-cli, so no live session is spawned (see [[test-suite-spawns-live-sessions-restart-loop]]).
 	_ = dispatchSessionRestart(cfg, mockExec, &bytes.Buffer{})
@@ -399,4 +401,131 @@ func TestDispatchSessionRestart_CapturesUUIDBeforeKill(t *testing.T) {
 	require.GreaterOrEqual(t, len(order), 2)
 	assert.Equal(t, "capture", order[0], "UUID capture must precede KillSession")
 	assert.Equal(t, "kill", order[1])
+}
+
+// TestResolveRestartSession_SessionFlagWins — an explicit --session takes
+// precedence over everything and is returned when present among the running
+// sessions, even on a multi-session host.
+func TestResolveRestartSession_SessionFlagWins(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1", "sess-2"}, nil)
+
+	cfg := selfUpdateConfig{SessionFlag: "sess-2", Getenv: noEnv}
+	sessionID, err := resolveRestartSession(cfg, mockExec)
+	require.NoError(t, err)
+	assert.Equal(t, "sess-2", sessionID)
+}
+
+// TestResolveRestartSession_SessionFlagMissingErrors — a --session naming a
+// session that does not exist errors rather than falling through to a wrong
+// session.
+func TestResolveRestartSession_SessionFlagMissingErrors(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1", "sess-2"}, nil)
+
+	cfg := selfUpdateConfig{SessionFlag: "ghost", Getenv: noEnv}
+	sessionID, err := resolveRestartSession(cfg, mockExec)
+	require.Error(t, err)
+	assert.Empty(t, sessionID)
+	assert.Contains(t, err.Error(), "ghost")
+}
+
+// TestResolveRestartSession_EnvWindowUUIDResolvesSession — with no flag, the
+// caller's TMUX_WINDOW_UUID resolves to the session owning the matching
+// window, even across multiple sessions.
+func TestResolveRestartSession_EnvWindowUUIDResolvesSession(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1", "sess-2"}, nil)
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil).Maybe()
+	mockExec.On("ListWindows", "sess-2").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@1", Name: "supervisor"},
+	}, nil).Maybe()
+	mockExec.On("GetWindowOption", "sess-1", "@0", tmux.WindowUUIDOption).Return("other", nil).Maybe()
+	mockExec.On("GetWindowOption", "sess-2", "@1", tmux.WindowUUIDOption).Return("U", nil).Maybe()
+
+	cfg := selfUpdateConfig{Getenv: envWith("TMUX_WINDOW_UUID", "U")}
+	sessionID, err := resolveRestartSession(cfg, mockExec)
+	require.NoError(t, err)
+	assert.Equal(t, "sess-2", sessionID)
+}
+
+// TestResolveRestartSession_FallbackSingleSession — no flag, no env hint, and
+// exactly one session ⇒ the singleSessionID fallback returns it.
+func TestResolveRestartSession_FallbackSingleSession(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1"}, nil)
+
+	cfg := selfUpdateConfig{Getenv: noEnv}
+	sessionID, err := resolveRestartSession(cfg, mockExec)
+	require.NoError(t, err)
+	assert.Equal(t, "sess-1", sessionID)
+}
+
+// TestResolveRestartSession_MultiSessionNoHintErrors — no flag, no env hint,
+// several sessions ⇒ the singleSessionID fallback preserves the existing
+// "expected exactly 1" refusal.
+func TestResolveRestartSession_MultiSessionNoHintErrors(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1", "sess-2"}, nil)
+
+	cfg := selfUpdateConfig{Getenv: noEnv}
+	sessionID, err := resolveRestartSession(cfg, mockExec)
+	require.Error(t, err)
+	assert.Empty(t, sessionID)
+	assert.Contains(t, err.Error(), "expected exactly 1")
+}
+
+// TestSessionForWindowUUID_EmptyUUIDReturnsEmpty — an empty uuid short-circuits
+// to "" without touching the executor at all.
+func TestSessionForWindowUUID_EmptyUUIDReturnsEmpty(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+
+	assert.Equal(t, "", sessionForWindowUUID(mockExec, ""))
+	mockExec.AssertNotCalled(t, "ListSessions")
+}
+
+// TestDispatchClaudeRestart_TargetsFlaggedSessionMultiSession — THE
+// multi-session targeting test the acceptance criteria require: with >1
+// session and --session sess-2, the terminate + relaunch fire for sess-2's
+// supervisor window and NOT the "expected exactly 1" error.
+func TestDispatchClaudeRestart_TargetsFlaggedSessionMultiSession(t *testing.T) {
+	chdirToTemp(t)
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1", "sess-2"}, nil)
+	mockExec.On("ListWindows", "sess-2").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@7", Name: "supervisor"},
+	}, nil)
+	mockExec.On("TerminateWindowProcess", "@7").Return(nil)
+	mockExec.On("SendMessageWithFeedback", "sess-2", "supervisor", mock.Anything).Return("", nil)
+
+	cfg := selfUpdateConfig{SessionFlag: "sess-2", Getenv: noEnv}
+	require.NoError(t, dispatchClaudeRestart(cfg, mockExec))
+
+	mockExec.AssertCalled(t, "TerminateWindowProcess", "@7")
+	mockExec.AssertCalled(t, "SendMessageWithFeedback", "sess-2", "supervisor", mock.Anything)
+	mockExec.AssertNotCalled(t, "ListWindows", "sess-1")
+}
+
+// TestResolveAutoMode_MultiSessionWithFlagPicksClaude — daemon dead, several
+// sessions, but a --session flag resolves ⇒ restartClaude (not "").
+func TestResolveAutoMode_MultiSessionWithFlagPicksClaude(t *testing.T) {
+	projectDir := t.TempDir()
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1", "sess-2"}, nil)
+
+	cfg := selfUpdateConfig{ProjectDir: projectDir, SessionFlag: "sess-2", Getenv: noEnv}
+	assert.Equal(t, restartClaude, resolveAutoMode(cfg, mockExec))
+}
+
+// TestResolveAutoMode_MultiSessionNoHintNoRestart — daemon dead, several
+// sessions, no flag/env hint ⇒ "" (no restart; the update stays installed).
+func TestResolveAutoMode_MultiSessionNoHintNoRestart(t *testing.T) {
+	projectDir := t.TempDir()
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1", "sess-2"}, nil)
+
+	cfg := selfUpdateConfig{ProjectDir: projectDir, Getenv: noEnv}
+	assert.Equal(t, restartMode(""), resolveAutoMode(cfg, mockExec))
 }
