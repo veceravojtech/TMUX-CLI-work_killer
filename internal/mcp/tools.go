@@ -704,8 +704,19 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	// goal. The bare "supervisor" now denotes ONLY window-0 / a standalone
 	// interactive supervisor, which never spawns goal workers, so the prefix is
 	// left unchanged for it.
-	if ns := strings.TrimPrefix(supervisorWid, "supervisor-"); ns != "" && ns != supervisorWid {
-		prefix = strings.TrimSuffix(prefix, "-") + "-" + ns + "-"
+	//
+	// The namespace is derived generically from whichever goal-scoped caller-role
+	// prefix matched: a supervisor spawns execute workers, but a validator-<ns>
+	// window spawns investigator workers — keying only on "supervisor-" left those
+	// bare (investigator-1), so their pane logs collided/appended across goals.
+	// Iterate the fixed set of caller-role prefixes and strip the first that yields
+	// a non-empty namespace; a truly-bare caller ("supervisor"/"validator") matches
+	// none with a non-empty remainder, so the prefix stays bare (window-0 / fallback).
+	for _, rolePrefix := range []string{"supervisor-", "validator-"} {
+		if ns := strings.TrimPrefix(supervisorWid, rolePrefix); ns != "" && ns != supervisorWid {
+			prefix = strings.TrimSuffix(prefix, "-") + "-" + ns + "-"
+			break
+		}
 	}
 
 	windows, err := s.WindowsList()

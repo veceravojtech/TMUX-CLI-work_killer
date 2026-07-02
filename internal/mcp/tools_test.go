@@ -1307,6 +1307,44 @@ func TestWindowsSpawnWorker_WorkingDirectory_ThreadsToCreateWindow(t *testing.T)
 	mockExec.AssertNotCalled(t, "CreateWindow", "test-session", "investigator-1", "")
 }
 
+// TestSpawnWorker_InvestigatorNamespacedFromValidatorWindow verifies that an
+// investigator spawned by a namespaced validator-<ns> caller inherits the goal
+// namespace: window name investigator-<ns>-N and pane log
+// panes/investigator-<ns>-N.log. Before the fix the namespace strip keyed only on
+// the "supervisor-" prefix, so a validator-001 caller produced a bare
+// investigator-1 whose pane log (panes/investigator-1.log) collided/appended
+// across goals.
+func TestSpawnWorker_InvestigatorNamespacedFromValidatorWindow(t *testing.T) {
+	t.Setenv("TMUX_WINDOW_UUID", "")
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", "/test/dir").Return("test-session", nil)
+	mockExec.On("ListWindows", "test-session").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "validator-001"},
+	}, nil)
+	mockExec.On("CreateWindow", "test-session", "investigator-001-1", "").Return("@1", nil)
+	mockExec.On("SetWindowOption", "test-session", "@1", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", mock.MatchedBy(func(s string) bool {
+		return strings.HasPrefix(s, "export TMUX_WINDOW_UUID=")
+	})).Return(nil)
+	mockExec.On("GetSessionEnvironment", mock.Anything, "TMUX_CLI_MODEL").Return("", nil)
+	mockExec.On("SendMessageWithFeedback", "test-session", "@1", mock.Anything).Return("", nil)
+	// The pane log must carry the {ns} token so per-goal evidence globbing works.
+	mockExec.On("PipePane", "test-session", "@1", mock.MatchedBy(func(path string) bool {
+		return strings.HasSuffix(path, "panes/investigator-001-1.log")
+	})).Return(nil)
+	mockExec.On("SendMessage", "test-session", "@1", "/tmux:execute").Return(nil)
+	mockExec.On("SendMessageWithDelay", "test-session", "@1", mock.Anything).Return(nil)
+
+	server := newTestServer(mockExec, "/test/dir")
+	_, name, _, err := server.WindowsSpawnWorker("validator-001", "Investigate: tests", "goal.md", "run tests", "", "", "investigator-", "", "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "investigator-001-1", name, "validator-001 caller must namespace investigators")
+	mockExec.AssertExpectations(t)
+	// No bare investigator-1 window/log may be produced.
+	mockExec.AssertNotCalled(t, "CreateWindow", "test-session", "investigator-1", "")
+}
+
 // TestWindowsSpawnWorker_EmptyWorkingDirectory_UsesSessionDefault verifies that an
 // empty workingDirectory (every pre-E1-1c caller) keeps the original
 // session-default CreateWindow path — byte-identical to today, never touching the
