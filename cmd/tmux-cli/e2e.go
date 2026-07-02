@@ -33,6 +33,7 @@ var (
 	e2eMaxCycles     int
 	e2eKeepOnFailure bool
 	e2eHandshakeWait int
+	e2eModel         string
 	e2eTeardownDir   string
 )
 
@@ -87,6 +88,11 @@ func init() {
 	e2eBootstrapCmd.Flags().IntVar(&e2eMaxCycles, "max-cycles", e2e.DefaultMaxCycles, "Self-heal cycle budget recorded in fresh state")
 	e2eBootstrapCmd.Flags().BoolVar(&e2eKeepOnFailure, "keep-on-failure", false, "Do not self-teardown the target on a prologue failure (for debugging)")
 	e2eBootstrapCmd.Flags().IntVar(&e2eHandshakeWait, "handshake-wait", 30, "Seconds to wait for the handshake token before retry/abort")
+	// The e2e-evaluator is a self-test harness — it must exercise the flow on the
+	// STRONG model, never a cheaper account-default (e.g. Fable 5). Default the
+	// target session (and thus every daemon window/worker, via TMUX_CLI_MODEL) to
+	// Opus 4.8; pass --model "" to fall back to the account default.
+	e2eBootstrapCmd.Flags().StringVar(&e2eModel, "model", "claude-opus-4-8", "Claude model for the target session + all daemon windows/workers (default Opus 4.8; \"\" = account default)")
 
 	e2eTeardownCmd.Flags().StringVar(&e2eTeardownDir, "dir", "", "The /tmp target dir to rm (default: derived from the session's pane path)")
 
@@ -232,7 +238,7 @@ func runE2EBootstrap(cmd *cobra.Command, args []string) error {
 		return failBootstrap(res, "bootstrap", fmt.Sprintf("setenv -g notify receipt: %v", err))
 	}
 	res.ReceiptPath = receiptPath
-	session, err := startTarget(targetDir)
+	session, err := startTarget(targetDir, e2eModel)
 	if err != nil {
 		return failBootstrap(res, "start", err.Error())
 	}
@@ -454,12 +460,17 @@ func seedTrust(targetDir string) error {
 // exact session name from the machine contract: stdout is exactly one
 // compact JSON line {"session":...,"created":true|false}, human output on
 // stderr. There is deliberately no human-output fallback parse.
-func startTarget(targetDir string) (string, error) {
+func startTarget(targetDir, model string) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		self = "tmux-cli"
 	}
-	c := exec.Command(self, "start", "--print-json")
+	args := []string{"start", "--print-json"}
+	if model != "" {
+		// Propagates as TMUX_CLI_MODEL to every window + worker (session.go).
+		args = append(args, "--model", model)
+	}
+	c := exec.Command(self, args...)
 	c.Dir = targetDir
 	var stdout, stderr bytes.Buffer
 	c.Stdout, c.Stderr = &stdout, &stderr
