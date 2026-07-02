@@ -86,6 +86,29 @@ func TestResolveSourceDir_RefusesSelfTarget(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestResolveSourceDir_AllowsSelfWhenCliCheckout — the source==project refusal
+// is relaxed ONLY when the dir IS a tmux-cli source checkout (module path +
+// Makefile): the default max_goals=1 inline mode has buildDir == workDir in the
+// dogfood repo, and the repair-cycle self-reinstall hook must be able to build
+// it. The guard's intent ("never build an arbitrary target project") is
+// preserved via setup.IsCliSourceCheckout; a non-cli dir still refuses
+// (TestResolveSourceDir_RefusesSelfTarget above).
+func TestResolveSourceDir_AllowsSelfWhenCliCheckout(t *testing.T) {
+	projectDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "Makefile"), []byte("install:\n\ttrue\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "go.mod"),
+		[]byte("module github.com/console/tmux-cli\n\ngo 1.25.5\n"), 0o644))
+	cfg := selfUpdateConfig{
+		ProjectDir: projectDir,
+		SourceFlag: projectDir,
+		Getenv:     noEnv,
+	}
+
+	dir, err := resolveSourceDir(cfg)
+	require.NoError(t, err)
+	assert.Equal(t, projectDir, dir)
+}
+
 func TestBinaryChanged_DetectsRewrite(t *testing.T) {
 	binPath := filepath.Join(t.TempDir(), "tmux-cli")
 	require.NoError(t, os.WriteFile(binPath, []byte("old-binary"), 0o755))

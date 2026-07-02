@@ -218,6 +218,16 @@ type Goal struct {
 	// late verdict on such goals. Cleared by ResetGoal and by salvage itself.
 	FailedBy string `yaml:"failed_by,omitempty"`
 
+	// LastSelfReinstallCycle is the goal cycle (CurrentCycle) whose
+	// supervising→validating transition already ran the repair-cycle
+	// self-reinstall rebuild (maybeSelfReinstall, selfreinstall.go). Persisted
+	// so the at-most-one-rebuild-per-cycle guarantee survives a daemon
+	// crash/restart mid-transition; 0 = never rebuilt. Cleared by ResetGoal so
+	// a re-pended goal rebuilds on its fresh cycle. DUAL-STRUCT: mirrored by
+	// mcp.tvGoal (tools_taskvisor.go) so an MCP load-resave never erases the
+	// stamp (TestGoalTvGoalYamlTagParity guards the mirror).
+	LastSelfReinstallCycle int `yaml:"last_self_reinstall_cycle,omitempty"`
+
 	BlockedBy string `yaml:"blocked_by,omitempty"`
 	// BlockedByPrecondition marks a goal parked on an unmet env/infra
 	// precondition (set by haltBlockedEnv). It is the query key for the §5

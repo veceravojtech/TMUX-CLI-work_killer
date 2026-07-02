@@ -253,6 +253,12 @@ type Daemon struct {
 	restartOnStaleBinary  bool
 	restartAttempted      bool
 	execReplaceFn         func(string, []string, []string) error
+	// selfUpdateFn shells out to `tmux-cli self-update --restart daemon` for the
+	// repair-cycle self-reinstall hook (selfreinstall.go). Injectable so unit
+	// tests never run a real build; mirrors execReplaceFn. New() wires
+	// defaultSelfUpdate; the selfUpdate() accessor lazily defaults so a
+	// literal-constructed Daemon never nil-panics.
+	selfUpdateFn func(sourceDir, projectDir string) (selfUpdateResult, error)
 	// commandRefreshFn rewrites the installed .claude/commands/tmux/ templates from
 	// the (new) binary's embedded FS when checkStaleBinary fires. Injected from
 	// cmd/tmux-cli (where the embedded FS lives) so internal/taskvisor need not
@@ -325,6 +331,7 @@ func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
 		scriptTimeout:      validateScriptTimeout,
 		autoResumeInterval: 30 * time.Second,
 		execReplaceFn:      syscall.Exec,
+		selfUpdateFn:       defaultSelfUpdate,
 		// autoCommit seeds ON (matching DefaultSettings) so the per-goal commit
 		// boundary reaches a literal-Daemon run that never loads settings; Run()
 		// overrides it from taskvisor.auto_commit unconditionally.

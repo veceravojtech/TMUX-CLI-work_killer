@@ -125,6 +125,13 @@ type tvGoal struct {
 	// (critical): an MCP load-resave that drops it stops the scan forever, so a
 	// late pass verdict for the marked goal is silently discarded again.
 	FailedBy string `yaml:"failed_by,omitempty"`
+	// LastSelfReinstallCycle mirrors taskvisor.Goal.LastSelfReinstallCycle
+	// (same yaml key) — the repair-cycle self-reinstall stamp guaranteeing at
+	// most one rebuild per goal cycle. DUAL-STRUCT (critical): an MCP
+	// load-resave that drops it re-arms the rebuild for the same cycle, so a
+	// crash/resume re-entry would rebuild twice — exactly the thrash the
+	// persisted stamp exists to prevent.
+	LastSelfReinstallCycle int `yaml:"last_self_reinstall_cycle,omitempty"`
 	// Scope mirrors taskvisor.Goal.Scope (same yaml key) so goal-create persists
 	// the disjoint-scope co-scheduling footprint that the daemon reads back.
 	Scope     []string `yaml:"scope,omitempty"`
