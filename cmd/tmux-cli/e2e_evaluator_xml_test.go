@@ -61,6 +61,18 @@ func TestE2EEvaluatorXml_Skeleton(t *testing.T) {
 	assert.True(t,
 		strings.Contains(content, "send-keys") && strings.Contains(content, "MCP"),
 		"e2e-evaluator.xml must state the CLI/send-keys-not-MCP driving rule")
+
+	// Fully-autonomous contract: the conductor must NEVER convert a mid-flow
+	// decision into an operator question — not even under an "I hit limits"
+	// resource-limit signal or when AskUserQuestion is unavailable in a tmux
+	// worker window. This closes the operator-corrected automation defect where
+	// a FAIL was handed back to the operator as an A/B/C/D question.
+	assert.Contains(t, content, "FULLY AUTONOMOUS — NEVER CONVERT A DECISION INTO AN OPERATOR QUESTION",
+		"e2e-evaluator.xml must carry the fully-autonomous no-operator-question mandate")
+	assert.Contains(t, content, "AskUserQuestion",
+		"e2e-evaluator.xml must name AskUserQuestion as a forbidden fallback")
+	assert.Contains(t, content, "I hit limits",
+		"e2e-evaluator.xml must state that a resource-limit signal is not a request to ask what to do")
 }
 
 // TestE2EEvaluatorMd_WrapperInstallable asserts the user-facing slash-command
