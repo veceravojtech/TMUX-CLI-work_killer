@@ -299,7 +299,25 @@ func buildSessionRestartArgs(cfg selfUpdateConfig) []string {
 	if cfg.SupervisorUUID != "" {
 		args = append(args, "--session-uuid", cfg.SupervisorUUID)
 	}
+	// --force is unconditional on the restart self-exec so start-attach recreates
+	// the (now-empty) target dir non-interactively — never blocking on the
+	// [r]/[c] prompt. Keyed on the restart path itself, not on --session-uuid, so
+	// interactive start/start-attach keep their prompt.
+	args = append(args, "--force")
 	return args
+}
+
+// recreateDirForSession resolves the directory the restart self-exec should
+// recreate: the KILLED session's own TMUX_CLI_PROJECT_PATH (so the recreate
+// targets the session actually being restarted), falling back to fallback
+// (cfg.ProjectDir — the legacy single-session behavior) when the session's
+// environment is unreadable or empty. It MUST be called BEFORE KillSession — a
+// dead session has no tmux environment to read.
+func recreateDirForSession(executor tmux.TmuxExecutor, sessionID, fallback string) string {
+	if dir, err := executor.GetSessionEnvironment(sessionID, "TMUX_CLI_PROJECT_PATH"); err == nil && dir != "" {
+		return dir
+	}
+	return fallback
 }
 
 // dispatchSessionRestart stops the daemon process, kills the session, and
@@ -315,6 +333,11 @@ func dispatchSessionRestart(cfg selfUpdateConfig, executor tmux.TmuxExecutor, st
 	// relaunch can reuse it and resume the same Claude conversation. Best-effort:
 	// an empty result simply omits the flag and start-attach mints a fresh UUID.
 	cfg.SupervisorUUID = captureSupervisorUUID(executor, sessionID)
+	// Resolve the recreate dir from the KILLED session's own environment BEFORE
+	// KillSession destroys it — the restart must recreate the session actually
+	// being restarted, not cfg.ProjectDir (--project/CWD), which may host a
+	// DIFFERENT running session (the cross-dir hang bug).
+	recreateDir := recreateDirForSession(executor, sessionID, cfg.ProjectDir)
 	if err := stopDaemonProcess(cfg.ProjectDir); err != nil {
 		return fmt.Errorf("stop daemon: %w", err)
 	}
@@ -326,7 +349,7 @@ func dispatchSessionRestart(cfg selfUpdateConfig, executor tmux.TmuxExecutor, st
 		self = "tmux-cli"
 	}
 	relaunch := exec.Command(self, buildSessionRestartArgs(cfg)...)
-	relaunch.Dir = cfg.ProjectDir
+	relaunch.Dir = recreateDir
 	relaunch.Stdin = os.Stdin
 	relaunch.Stdout = stderr
 	relaunch.Stderr = stderr

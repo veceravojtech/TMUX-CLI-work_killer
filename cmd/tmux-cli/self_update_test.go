@@ -328,7 +328,7 @@ func TestDoSelfUpdate_WarnsWhenExecutableNotInstallPath(t *testing.T) {
 func TestBuildSessionRestartArgs_IncludesCapturedUUID(t *testing.T) {
 	cfg := selfUpdateConfig{ResumeState: "/s.json", SupervisorUUID: "U"}
 	got := buildSessionRestartArgs(cfg)
-	assert.Equal(t, []string{"start-attach", "--resume-state", "/s.json", "--session-uuid", "U"}, got)
+	assert.Equal(t, []string{"start-attach", "--resume-state", "/s.json", "--session-uuid", "U", "--force"}, got)
 }
 
 // TestBuildSessionRestartArgs_OmitsWhenEmpty proves an empty captured UUID
@@ -337,8 +337,79 @@ func TestBuildSessionRestartArgs_IncludesCapturedUUID(t *testing.T) {
 func TestBuildSessionRestartArgs_OmitsWhenEmpty(t *testing.T) {
 	cfg := selfUpdateConfig{ResumeState: "/s.json", SupervisorUUID: ""}
 	got := buildSessionRestartArgs(cfg)
-	assert.Equal(t, []string{"start-attach", "--resume-state", "/s.json"}, got)
+	assert.Equal(t, []string{"start-attach", "--resume-state", "/s.json", "--force"}, got)
 	assert.NotContains(t, got, "--session-uuid")
+}
+
+// TestBuildSessionRestartArgs_IncludesForce proves the restart self-exec argv
+// always ends with --force (so start-attach recreates non-interactively),
+// whether or not a supervisor UUID was captured.
+func TestBuildSessionRestartArgs_IncludesForce(t *testing.T) {
+	withUUID := buildSessionRestartArgs(selfUpdateConfig{ResumeState: "/s.json", SupervisorUUID: "U"})
+	assert.Equal(t, "--force", withUUID[len(withUUID)-1], "argv must end with --force when a UUID is present")
+	assert.Contains(t, withUUID, "--force")
+
+	noUUID := buildSessionRestartArgs(selfUpdateConfig{ResumeState: "/s.json", SupervisorUUID: ""})
+	assert.Equal(t, "--force", noUUID[len(noUUID)-1], "argv must end with --force when no UUID is present")
+	assert.Contains(t, noUUID, "--force")
+}
+
+// TestRecreateDirForSession_UsesKilledSessionDir is the core cross-dir
+// regression assertion: the recreate dir comes from the KILLED session's own
+// TMUX_CLI_PROJECT_PATH (/dir/B), NOT the cfg.ProjectDir fallback (/dir/A).
+func TestRecreateDirForSession_UsesKilledSessionDir(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("GetSessionEnvironment", "sess-X", "TMUX_CLI_PROJECT_PATH").Return("/dir/B", nil)
+
+	got := recreateDirForSession(mockExec, "sess-X", "/dir/A")
+	assert.Equal(t, "/dir/B", got, "recreate dir must be the killed session's own dir, not the fallback")
+}
+
+// TestRecreateDirForSession_FallsBackWhenEnvMissing proves an unreadable/empty
+// session environment falls back to cfg.ProjectDir (legacy single-session path
+// preserved, restart never fails on this).
+func TestRecreateDirForSession_FallsBackWhenEnvMissing(t *testing.T) {
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("GetSessionEnvironment", "sess-X", "TMUX_CLI_PROJECT_PATH").Return("", fmt.Errorf("no such variable"))
+
+	got := recreateDirForSession(mockExec, "sess-X", "/dir/A")
+	assert.Equal(t, "/dir/A", got, "unreadable env must fall back to the provided fallback dir")
+}
+
+// TestDispatchSessionRestart_ResolvesDirBeforeKill mirrors
+// TestDispatchSessionRestart_CapturesUUIDBeforeKill: it asserts the killed
+// session's dir is read (GetSessionEnvironment) BEFORE KillSession — a dead
+// session has no environment — and that KillSession targets exactly the
+// resolved sessionID and no other. The relaunch Run() error is ignored
+// (os.Executable() is the test binary, a no-op per TestMain).
+func TestDispatchSessionRestart_ResolvesDirBeforeKill(t *testing.T) {
+	projectDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(projectDir, ".tmux-cli"), 0o755))
+
+	mockExec := new(testutil.MockTmuxExecutor)
+	mockExec.On("ListSessions").Return([]string{"sess-1"}, nil)
+	mockExec.On("ListWindows", "sess-1").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	mockExec.On("GetWindowOption", "sess-1", "@0", tmux.WindowUUIDOption).Return("U", nil)
+
+	var order []string
+	mockExec.On("GetSessionEnvironment", "sess-1", "TMUX_CLI_PROJECT_PATH").Run(func(mock.Arguments) {
+		order = append(order, "resolve-dir")
+	}).Return("/dir/B", nil)
+	mockExec.On("KillSession", "sess-1").Run(func(mock.Arguments) {
+		order = append(order, "kill")
+	}).Return(nil)
+
+	cfg := selfUpdateConfig{ProjectDir: projectDir, ResumeState: "/s.json", Getenv: noEnv}
+	_ = dispatchSessionRestart(cfg, mockExec, &bytes.Buffer{})
+
+	mockExec.AssertCalled(t, "GetSessionEnvironment", "sess-1", "TMUX_CLI_PROJECT_PATH")
+	mockExec.AssertCalled(t, "KillSession", "sess-1")
+	mockExec.AssertNumberOfCalls(t, "KillSession", 1) // only the resolved session, never a second
+	require.GreaterOrEqual(t, len(order), 2)
+	assert.Equal(t, "resolve-dir", order[0], "dir resolution must precede KillSession")
+	assert.Equal(t, "kill", order[1])
 }
 
 // TestCaptureSupervisorUUID_ReadsSupervisorWindow proves the helper resolves
@@ -385,6 +456,9 @@ func TestDispatchSessionRestart_CapturesUUIDBeforeKill(t *testing.T) {
 	mockExec.On("GetWindowOption", "sess-1", "@0", tmux.WindowUUIDOption).Run(func(mock.Arguments) {
 		order = append(order, "capture")
 	}).Return("U", nil)
+	// recreateDirForSession reads the killed session's dir before KillSession; the
+	// result is unused here (relaunch is a no-op test binary), so Maybe().
+	mockExec.On("GetSessionEnvironment", "sess-1", "TMUX_CLI_PROJECT_PATH").Return("", nil).Maybe()
 	mockExec.On("KillSession", "sess-1").Run(func(mock.Arguments) {
 		order = append(order, "kill")
 	}).Return(nil)

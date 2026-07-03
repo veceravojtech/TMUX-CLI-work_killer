@@ -395,7 +395,7 @@ func TestStartOrReuseSession_NewSession_CreatedTrue(t *testing.T) {
 	m.On("ListWindows", mock.AnythingOfType("string")).Return([]tmux.WindowInfo{}, nil)
 
 	var out bytes.Buffer
-	sessionID, created, err := startOrReuseSession(m, dir, "", "", &out)
+	sessionID, created, err := startOrReuseSession(m, dir, "", "", false, &out)
 
 	require.NoError(t, err)
 	assert.True(t, created, "a freshly created session must report created=true")
@@ -422,12 +422,72 @@ func TestStartOrReuseSession_ExistingRunning_CreatedFalse(t *testing.T) {
 	m.On("HasSession", "existing-sess").Return(true, nil)
 
 	var out bytes.Buffer
-	sessionID, created, err := startOrReuseSession(m, dir, "", "", &out)
+	sessionID, created, err := startOrReuseSession(m, dir, "", "", false, &out)
 
 	require.NoError(t, err)
 	assert.False(t, created, "a kept existing session must report created=false")
 	assert.Equal(t, "existing-sess", sessionID)
 	assert.Contains(t, out.String(), "Keeping existing session 'existing-sess'")
+	m.AssertNotCalled(t, "CreateSession", mock.Anything, mock.Anything)
+}
+
+// TestStartOrReuseSession_ForceRecreatesWithoutPrompt proves the force path
+// (self-update --restart session self-exec) kills the running session found FOR
+// the target dir and creates a new one WITHOUT printing the [r]/[c] prompt or
+// reading stdin — deterministic here because no stdin is fed. It also proves
+// exactly one session (the target dir's) is killed, never a second.
+func TestStartOrReuseSession_ForceRecreatesWithoutPrompt(t *testing.T) {
+	dir := t.TempDir()
+	m := new(testutil.MockTmuxExecutor)
+	m.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return("existing-sess", nil)
+	m.On("HasSession", "existing-sess").Return(true, nil)
+	m.On("KillSession", "existing-sess").Return(nil)
+	// New-session id (!= "existing-sess"): pre-create existence check false, then
+	// CreateSession, then the waitForSession poll returns true.
+	m.On("HasSession", mock.AnythingOfType("string")).Return(false, nil).Once()
+	m.On("CreateSession", mock.AnythingOfType("string"), dir).Return(nil)
+	m.On("HasSession", mock.AnythingOfType("string")).Return(true, nil)
+	m.On("SetSessionEnvironment", mock.AnythingOfType("string"), "TMUX_CLI_PROJECT_PATH", dir).Return(nil)
+	m.On("ListWindows", mock.AnythingOfType("string")).Return([]tmux.WindowInfo{}, nil)
+
+	var out bytes.Buffer
+	sessionID, created, err := startOrReuseSession(m, dir, "", "", true, &out)
+
+	require.NoError(t, err)
+	assert.True(t, created, "force recreate must create a new session")
+	require.NotEmpty(t, sessionID)
+	assert.NotEqual(t, "existing-sess", sessionID, "a NEW session must be created, not the killed one reused")
+	m.AssertCalled(t, "KillSession", "existing-sess")
+	m.AssertCalled(t, "CreateSession", mock.AnythingOfType("string"), dir)
+	m.AssertNumberOfCalls(t, "KillSession", 1) // only the target-dir session, never a second
+	assert.Contains(t, out.String(), "Force-recreating session 'existing-sess'")
+	assert.NotContains(t, out.String(), "Choice (r/c):", "force must NOT print the interactive prompt")
+}
+
+// TestStartOrReuseSession_ForceFalseKeepsPrompt guards the no-regression
+// boundary: with force=false and EOF stdin, the prompt is printed and the
+// cancel/keep path is taken unchanged (no kill, no create).
+func TestStartOrReuseSession_ForceFalseKeepsPrompt(t *testing.T) {
+	dir := t.TempDir()
+	// Pin stdin to /dev/null so Scanln EOFs into the cancel/keep branch.
+	devNull, err := os.Open(os.DevNull)
+	require.NoError(t, err)
+	oldStdin := os.Stdin
+	os.Stdin = devNull
+	t.Cleanup(func() { os.Stdin = oldStdin; _ = devNull.Close() })
+
+	m := new(testutil.MockTmuxExecutor)
+	m.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return("existing-sess", nil)
+	m.On("HasSession", "existing-sess").Return(true, nil)
+
+	var out bytes.Buffer
+	sessionID, created, err := startOrReuseSession(m, dir, "", "", false, &out)
+
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, "existing-sess", sessionID)
+	assert.Contains(t, out.String(), "Choice (r/c):", "force=false must keep the interactive prompt")
+	m.AssertNotCalled(t, "KillSession", mock.Anything)
 	m.AssertNotCalled(t, "CreateSession", mock.Anything, mock.Anything)
 }
 

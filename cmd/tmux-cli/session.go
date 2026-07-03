@@ -344,6 +344,11 @@ func init() {
 	startCmd.Flags().Bool("print-json", false, "Emit exactly one JSON line {\"session\":\"<id>\",\"created\":true|false} on stdout (human progress moves to stderr)")
 	startAttachCmd.Flags().Bool("clean", false, "Delete and recreate .tmux-cli/ folder before session creation")
 
+	// Add --force to start-attach ONLY (not start): non-interactive recreate for
+	// the self-update --restart session self-exec, so start-attach never blocks on
+	// the interactive [r]/[c] prompt on the restart path.
+	startAttachCmd.Flags().Bool("force", false, "Non-interactive recreate: kill+recreate an existing session for the target dir without the [r]/[c] prompt (used by self-update --restart session)")
+
 	// Add --resume-state flag to start and start-attach commands. When set, a
 	// kickoff message pointing the supervisor window at the resume-state file is
 	// sent before attaching, so a resumed session picks up the interrupted work.
@@ -473,13 +478,25 @@ func NewUsageError(msg string) error {
 // stdout stays pure for the JSON contract line. A non-empty supervisorUUID is
 // reused as the created supervisor window's UUID (self-update --restart session
 // conversation resume); empty means generate a fresh one (the default path).
-func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model, supervisorUUID string, out io.Writer) (string, bool, error) {
+// When force is true and an existing session is running for projectPath, the
+// interactive [r]/[c] prompt is SKIPPED — the existing session is killed and a
+// new one created non-interactively (the self-update --restart session path,
+// which must never block on stdin). force=false preserves the interactive prompt
+// (and EOF-as-cancel) unchanged.
+func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model, supervisorUUID string, force bool, out io.Writer) (string, bool, error) {
 	// Check if session already exists for this path
 	existingSessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", projectPath)
 
 	if existingSessionID != "" {
 		running, _ := executor.HasSession(existingSessionID)
-		if running {
+		if running && force {
+			// Non-interactive recreate: kill exactly the session found FOR this dir
+			// and fall through to create. No prompt, no stdin read.
+			fmt.Fprintf(out, "Force-recreating session '%s' for %s\n", existingSessionID, projectPath)
+			if err := executor.KillSession(existingSessionID); err != nil {
+				return "", false, fmt.Errorf("kill existing session '%s': %w", existingSessionID, err)
+			}
+		} else if running {
 			fmt.Fprintf(out, "Session '%s' is already running for %s\n", existingSessionID, projectPath)
 			fmt.Fprintln(out, "What would you like to do?")
 			fmt.Fprintln(out, "  [r] Recreate session (kill existing + create new)")
@@ -577,7 +594,8 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	}
 	executor := tmux.NewTmuxExecutor()
 	model, _ := cmd.Flags().GetString("model")
-	sessionID, created, err := startOrReuseSession(executor, projectPath, model, "", progressOut)
+	// start (interactive) never force-recreates: keep the [r]/[c] prompt.
+	sessionID, created, err := startOrReuseSession(executor, projectPath, model, "", false, progressOut)
 	if err != nil {
 		return err
 	}
@@ -613,7 +631,8 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	executor := tmux.NewTmuxExecutor()
 	model, _ := cmd.Flags().GetString("model")
 	sessionUUID, _ := cmd.Flags().GetString("session-uuid")
-	sessionID, _, err := startOrReuseSession(executor, projectPath, model, sessionUUID, os.Stdout)
+	force, _ := cmd.Flags().GetBool("force")
+	sessionID, _, err := startOrReuseSession(executor, projectPath, model, sessionUUID, force, os.Stdout)
 	if err != nil {
 		return err
 	}
