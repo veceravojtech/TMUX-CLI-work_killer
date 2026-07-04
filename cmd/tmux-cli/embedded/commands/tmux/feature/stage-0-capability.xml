@@ -12,6 +12,13 @@
       <action>Print exactly: "ERROR: tmux-cli MCP required but not available — enable it and retry."</action>
       <action>STOP.</action>
     </check>
+    <action>VALIDATION-RESUME check — detect a resumed run whose implementation was ALREADY handed to the daemon: locate the flow's persisted handoff file feature-goals.md by resolving the research-root the SAME way stage-1-context.xml substep 1.1 does (GOAL mode &#8594; .tmux-cli/goals/{GOAL_ID}/research/feature-goals.md; STANDALONE &#8594; glob .tmux-cli/research/*/feature-goals.md and take the NEWEST match — a resumed run's current hour differs from the original run's timestamp directory, so NEVER re-derive {y-m-d-hh}; glob).</action>
+    <check condition="a feature-goals.md exists AND its recorded FEATURE description matches $ARGUMENTS (the SAME feature — allow trivial whitespace/casing differences, not a different feature)">
+      <action>This is a RESUMED run: Stage 4 already emitted the goal DAG and handed it to the daemon; re-running Stages 0&#8211;4 would re-probe and re-emit duplicate goals. Announce exactly: "VALIDATION-RESUME: feature-goals.md matches this feature — implementation already handed to the daemon; skipping Stages 0-4, resuming at Stage 5." Then SKIP Stages 0&#8211;4 ENTIRELY (no signal resolution, no investigators, no ADR, no goal emission) and jump DIRECTLY to Stage 5, which reads feature-goals.md as its authoritative handoff (stage-5-validation.xml substep 5.1).</action>
+    </check>
+    <check condition="a feature-goals.md exists but records a DIFFERENT feature description">
+      <action>Not a resume — proceed normally as a FRESH run (do not delete or modify the other feature's file).</action>
+    </check>
     <action>Read .tmux-cli/setting.yaml from the project root (model the read on task-list.xml step 0). Record whether the file is present; capture any settings the later stages reference (it is NOT required to exist — record "absent" and proceed if missing).</action>
   </substep>
 
@@ -60,6 +67,7 @@
       • CODE RULES: the resolved code-rule file paths (pointers for the implementation/validation stages to read), or "none".
       • SETTINGS: relevant .tmux-cli/setting.yaml values, or "absent".
     </emit>
+    <action critical="true">PERSIST the block durably — the in-conversation copy does NOT survive compaction or a resumed session: resolve the research-root EXACTLY as stage-1-context.xml substep 1.1 does (GOAL mode &#8594; .tmux-cli/goals/{GOAL_ID}/research/, NO timestamp; STANDALONE &#8594; .tmux-cli/research/{y-m-d-hh}/, current timestamp; create the directory if absent — Stage 1 resolves the SAME directory) and WRITE the composed context block VERBATIM to {research-root}/feature-context.md. Any later stage whose in-conversation Stage-0 block is MISSING (compaction / resumed session) RE-READS this file instead of re-probing the filesystem or re-running `tmux-cli rules resolve`.</action>
     <action>Hand this context block to Stage 1. Proceed to Stage 1.</action>
   </substep>
 </stage>

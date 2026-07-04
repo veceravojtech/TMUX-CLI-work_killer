@@ -33,6 +33,7 @@
     <term name="autonomy">Supervisor operates without user confirmation after initial invocation; see &lt;autonomy-policy&gt;.</term>
     <term name="pushback catalogue">The G1–G5 taxonomy in step 6 used to gate DONE acceptance.</term>
     <term name="PRE_PLANNED">Internal flag set when tasks.yaml was created by /tmux:plan (detected in step 1c). Causes steps 3 and 3b to skip fan-out planning.</term>
+    <term name="SELF_WAVE">Counter (starts at 0 per invocation) of self-generated waves: a wave whose tasks originate from the supervisor's OWN synthesis/step-8a output rather than from requirements traceable to the original $ARGUMENTS input. Each such wave increments SELF_WAVE; the cap is 2 per invocation (see &lt;stop-conditions&gt;). Waves whose tasks map to the original input's requirements do NOT increment SELF_WAVE and are never capped.</term>
     <term name="lane / solo-lane">Per-goal execution lane, decided UPSTREAM (at /tmux:task-list consume or /tmux:plan step 3d) and only READ by this supervisor. Resolution order: tasks-path top-level `lane` key → goal.md `## Lane` section → full. Exactly the value `solo` (the solo-lane) routes a single-pending-task goal through step 3c's inline execution; `full`, an absent lane, or any malformed/unknown value resolves to full (the worker path). The supervisor NEVER writes, decides, or infers the lane.</term>
   </glossary>
 
@@ -70,7 +71,7 @@ escalation_count: &lt;N&gt;
     <rule>For ambiguity: pick the highest-yield interpretation per &lt;ranking&gt; and record the chosen rationale in the step-9 synthesis so the user can redirect.</rule>
     <rule>Escalate to user ONLY at one of the two defined exits: (a) zero executable workers can be constructed from input, OR (b) a &lt;stop-conditions&gt; rule fires.</rule>
     <rule>Decision-resolution policy (quality-in-scope): a worker decision/verdict/correction presenting RESOLVABLE options (a technical/architectural fork, a waiver-vs-quality choice) is auto-resolved — answer the worker with the highest-quality option that does NOT expand the goal's scope (real domain types over asserted strings, no waivers, no shortcuts, no new tech-debt), plus a one-line rationale. Consistent with the user-only-knowledge escalation below: bounce to the user ONLY for credentials, intent, or out-of-band facts no file-reading can supply; a purely technical/architectural choice is NEVER user-only.</rule>
-    <rule>Synthesis output (§9) is NOT a stop gate — writing a session-synthesis .md is routine. After writing it, re-run &lt;step n="8a"&gt; replan against its own contents; any "proposed next wave" / "queue changes" / "follow-up workers" / "wave N+1" sections in the synthesis are executable-queue entries, spawn them per §3 fan-out.</rule>
+    <rule>Synthesis output (§9) is NOT a stop gate — writing a session-synthesis .md is routine. After writing it, re-run &lt;step n="8a"&gt; replan against its own contents; any "proposed next wave" / "queue changes" / "follow-up workers" / "wave N+1" sections in the synthesis are executable-queue entries, spawn them per §3 fan-out (subject to the SELF_WAVE cap in &lt;stop-conditions&gt; — purely self-generated waves are capped at 2 per invocation).</rule>
     <rule>Self-imposed stage gates (plan documents saying "Stage 2 after Stage 1", "wave 6 after wave 5", "deferred to next session", numbered-wave boundaries) are ORGANIZATIONAL, not authorizational. The initial /supervisor invocation authorizes the entire chain until a real &lt;stop-conditions&gt; fires. Do NOT treat a stage gate you wrote yourself as a user-imposed pause.</rule>
   </autonomy-policy>
 
@@ -145,9 +146,11 @@ escalation_count: &lt;N&gt;
       </check>
       <check condition="tasks-path exists AND has tasks with status=pending or status=in_progress">
         <check condition="this supervisor was called WITH tasks-path as $ARGUMENTS (continuation cycle)">
+          <action>IN_PROGRESS RECOVERY (mirrors plan.xml step 0c): collect every task with status=in_progress from tasks-path. If any exist, call windows-list ONCE — an in_progress task whose window is dead (name absent from windows-list, or window-id mismatch per step 4's worker-windows.yaml LIVENESS RULE) is an ORPHAN whose worker died with the previous cycle: reset it to status=pending in tasks-path and log "Recovered {wid} (in_progress, dead window) &#8594; pending — step 4 respawns it". If the windows-list call fails, reset NOTHING (fail-safe — liveness cannot be verified).</action>
           <action>This IS a continuation cycle — proceed to step 2 and work on pending tasks from tasks-path.</action>
         </check>
         <check condition="this supervisor was called with OTHER input (new invocation) AND GOAL_MODE is true">
+          <action>Apply the same IN_PROGRESS RECOVERY as the continuation branch above (reset in_progress tasks with dead windows to pending; windows-list failure &#8594; reset nothing).</action>
           <action>Proceed WITHOUT user interaction: treat the pending/in_progress tasks in tasks-path as the work queue and continue to step 2. The per-goal queue is owned by the daemon/planner handoff — unfinished tasks here mean "execute these", and a daemon-dispatched supervisor has no human to answer a stop gate (the silence would burn the goal's cycle timeout as a misclassified code defect).</action>
         </check>
         <check condition="this supervisor was called with OTHER input (new invocation) AND GOAL_MODE is false">
@@ -165,9 +168,12 @@ escalation_count: &lt;N&gt;
       </check>
     </step>
 
-    <step n="2" title="Identify SUPERVISOR_WID">
-      <action>From windows-list, pick the entry with active: true if present.</action>
-      <fallback>If the tmux-cli implementation does not expose active:true (e.g. returns only {"name":...}), and exactly one window exists, treat its NAME as SUPERVISOR_WID. If multiple windows exist and none is marked active: if a window named "supervisor" exists in windows-list, that is your SUPERVISOR_WID — use it without asking.</fallback>
+    <step n="2" title="Identify SUPERVISOR_WID — verify the step-0b binding">
+      <rule critical="true">SUPERVISOR_WID is ALREADY BOUND: step 0b resolved it authoritatively in ALL branches (per-goal supervisor-window marker read verbatim in GOAL_MODE; bare `supervisor` in standalone). Do NOT re-derive it here and do NOT overwrite it — step 0b documents that the active-window probe is unreliable at MaxGoals&gt;1 (it names the session's ACTIVE window, not this agent's pane).</rule>
+      <action>VERIFY only: confirm a window whose name equals the step-0b SUPERVISOR_WID appears in the step-1 windows-list output. If it is ABSENT, log the discrepancy ("SUPERVISOR_WID={name} not found in windows-list — keeping the step-0b binding") but KEEP the step-0b value: the daemon-written marker is authoritative, and the window may simply not be the active one.</action>
+      <branch condition="step 0b somehow left SUPERVISOR_WID unset (should not happen)">
+        <fallback>Last resort only: from windows-list, pick the entry with active: true if present. If the tmux-cli implementation does not expose active:true (e.g. returns only {"name":...}), and exactly one window exists, treat its NAME as SUPERVISOR_WID. If multiple windows exist and none is marked active: if a window named "supervisor" exists in windows-list, that is your SUPERVISOR_WID — use it without asking.</fallback>
+      </branch>
       <action>Store SUPERVISOR_WID (name form, e.g. "supervisor") for the whole session.</action>
     </step>
 
@@ -207,6 +213,7 @@ escalation_count: &lt;N&gt;
       <action>Call the tasks-validate MCP tool. In GOAL_MODE pass goal_id={GOAL_ID} so it validates the per-goal file (.tmux-cli/goals/{GOAL_ID}/tasks.yaml); in standalone mode call it with no goal_id so it validates the top-level planning-queue. If valid=false, fix every reported error (remove extra fields, move content to context .md file) and re-run until valid=true.</action>
       <check condition="tasks-path exists AND contains all planned pending tasks AND tasks-validate returns valid=true">
         <action>Set the top-level status in tasks-path to "ready". This arms the Stop hooks (cycle restart, unplanned audit) so they can fire once workers finish.</action>
+        <note>OVERLOADED STATUS — top-level `status: ready` carries TWO meanings across flows: in plan.xml it means "finalized plan awaiting supervisor consumption"; HERE it is set BEFORE spawning and means "fan-out armed for Stop hooks". Step 1c's PRE_PLANNED detection distinguishes the two by the SHAPE of the context files (plan-written spec .md files vs supervisor-written research-task files). Doc-only clarification — no behavior change.</note>
         <action>Proceed to step 3c (solo-lane inline gate — non-solo goals fall through to step 4 unchanged).</action>
       </check>
       <rule critical="true">This is a BLOCKING GATE. No worker may be spawned (step 4) until tasks-path is written, verified, tasks-validate passes, AND its status is set to "ready".</rule>
@@ -256,6 +263,13 @@ escalation_count: &lt;N&gt;
         - workingDirectory: WORKTREE_DIR if set (resolved above), else OMIT the field. E1: this starts the execute-N worker's shell in the goal's git worktree (tmux -c) so its file edits land in the isolated checkout and merge back. When WORKTREE_DIR is unset, omitting the field keeps the session-default base cwd — byte-identical to before.</action>
       <action>The tool atomically: picks the next execute-N name, creates the window, sends /tmux:execute, assembles and sends the task message with DELIVERABLE + RESPONSE PROTOCOL.</action>
       <action>Record from the response: workerName, window.tmuxWindowId, taskMessage (for your tracking table).</action>
+      <action>WID RECONCILE: windows-spawn-worker picks the next free execute-N ITSELF, so under concurrent goals the returned workerName can differ from the wid pre-recorded in tasks-path. If workerName differs from the task's recorded wid, UPDATE the task's wid in tasks-path to workerName AND rewrite any depends_on entries in OTHER tasks that reference the old wid, then log "wid reconciled: &lt;old wid&gt; &#8594; &lt;workerName&gt;". Step-5 routing and liveness checks key on wid == actual window name — a stale wid breaks both.</action>
+      <action>WINDOW-ID LEDGER: after each spawn, append a row to {research-root}/worker-windows.yaml (create the file if absent):
+- wid: &lt;workerName&gt;
+  window_id: "&lt;window.tmuxWindowId&gt;"
+  cycle: &lt;current cycle&gt;
+This is a SIDECAR ledger — NEVER add fields to tasks.yaml task entries (tasks-validate rejects extra fields). Rows are APPEND-ONLY and one wid can carry MULTIPLE rows over a goal's life (the planner and this supervisor share the goal-scoped research-root ledger, and respawns append too) — the MOST RECENT (last-appended) row for a wid is the authoritative one for liveness matching.</action>
+      <rule>LIVENESS RULE (name AND id): execute-N names are RECYCLED after kills, so a live window with the right name can belong to ANOTHER goal — making a dead worker look alive. Wherever this flow judges a worker window live/dead by name, when a worker-windows.yaml row exists for that wid, the window counts as THIS task's worker ONLY if BOTH the name AND the tmux window id match the wid's MOST RECENT (last-appended) ledger row — earlier rows for the same wid are stale (a prior spec-worker or pre-respawn window; matching them would misclassify a live current worker as recycled); a name-match with a DIFFERENT id than the most recent row is a RECYCLED name — treat the worker as DEAD. Name-only matching remains the conservative fallback when no ledger row exists.</rule>
       <critical>ALWAYS use windows-spawn-worker — never assemble the spawn steps manually via windows-create + windows-send.</critical>
       <rule>Report save paths are UNCHANGED by WORKTREE_DIR: research-root and tasks-path stay rooted at the shared .tmux-cli control plane (the worktree symlinks .tmux-cli → base), so worker reports never land inside the worktree's working set.</rule>
       <rule condition="PRE_PLANNED is true">When consuming pre-planned tasks, read the context .md file for each task and pass to windows-spawn-worker:
@@ -263,12 +277,14 @@ escalation_count: &lt;N&gt;
         - contextFile: task.context
         - scope: derived from the context .md file (read it, summarize key scope points)
         - context: derived from the context .md file (dependencies, constraints, prior findings)
-        - workingDirectory: WORKTREE_DIR if set (resolved above), else OMIT — same rule as the non-pre-planned spawn.</rule>
+        - workingDirectory: WORKTREE_DIR if set (resolved above), else OMIT — same rule as the non-pre-planned spawn.
+        After each pre-planned spawn, apply the same WID RECONCILE: if the returned workerName differs from task.wid, update the task's wid (and any depends_on references to the old wid) in tasks-path and log the reconciliation.</rule>
     </step>
 
     <step n="5" title="Idle and route">
       <action>Do NOTHING. Wait for windows-message from workers.</action>
       <rule>NEVER use sleep. NEVER poll windows-list while idle.</rule>
+      <rule>ORPHAN RECONCILE (event-triggered, NOT polling): on EVERY inbound worker message, BEFORE handling it, if OTHER tasks are in_progress, call windows-list ONCE and reconcile — any in_progress task whose window is dead (name absent from windows-list, or window-id mismatch per step 4's worker-windows.yaml LIVENESS RULE) is an ORPHAN: reset it to status=pending in tasks-path, log "Recovered {wid} (in_progress, dead window) &#8594; pending", and respawn it per step 4 AFTER the current message is handled. This bounds silent worker death (wedged process, externally killed window) to the next inbound event. It does NOT weaken the "NEVER poll windows-list while idle" rule above: this reconcile fires ONLY on an inbound message — event-triggered, never a timer, never an idle loop.</rule>
       <rule>Stop-hook idle notifications of the form "Idling — awaiting supervisor task payload" / "Idling for supervisor acceptance or pushback" / "Report delivered to supervisor. Idling for accept or pushback" are EXPECTED lifecycle output from the /tmux:execute skill and DO NOT count as untagged-output violations. They mean the worker has finished its turn and is waiting. Do not REMIND, do not advance state — simply wait for the next real message.</rule>
       <branch tag="[EXECUTE:NEED_INPUT ...]">
         <action>Answer with windows-message to that wid, drawing from (a) the task's SCOPE/CONTEXT, (b) prior accepted reports in research-root, (c) files on disk. If the NEED_INPUT presents RESOLVABLE options (a technical/architectural fork), auto-resolve per the Decision-resolution policy (quality-in-scope, see &lt;autonomy-policy&gt;): answer with the highest-quality option that does NOT expand the goal's scope, plus a one-line rationale — do NOT bounce it to the user. If still unanswerable, reply [SUPERVISOR:NARROW-SCOPE] with a reduced problem statement the worker CAN answer, rather than escalating. Escalate to user ONLY for user-only knowledge (credentials, intent, out-of-band facts) that no file-reading can supply.</action>
@@ -368,7 +384,7 @@ escalation_count: &lt;N&gt;
       <condition>all workers have been killed</condition>
       <action>Merge all accepted file= contents into a single user-facing answer. State overlaps and conflicts explicitly. Keep it tight.</action>
       <action>For long-running sessions, consider writing a session-synthesis .md (e.g. NN_session-&lt;topic&gt;.md) into research-root that cites each per-worker file and captures the consolidated state. The user often asks for this at the end anyway.</action>
-      <action critical="true">Writing synthesis does NOT return control to the user. After synthesis, re-run §8a against the synthesis's OWN "proposed next wave" / "queue changes" / "follow-ups" sections. If any listed workers are executable (scope fully self-contained — no user-only authorization required), LOOP BACK to §3 (fan-out decision) and spawn in parallel. Return to the user ONLY when the synthesis's replan produces zero new executable workers AND a real &lt;stop-conditions&gt; rule fires. The flow is a LOOP (3→4→5→6→7→[5a]→[8a]→9→[9b]→3), not a one-pass.</action>
+      <action critical="true">Writing synthesis does NOT return control to the user. After synthesis, re-run §8a against the synthesis's OWN "proposed next wave" / "queue changes" / "follow-ups" sections. If any listed workers are executable (scope fully self-contained — no user-only authorization required), CLASSIFY the wave first: if its tasks trace back to requirements in the original $ARGUMENTS input, it is NOT self-generated — loop freely; if its tasks originate solely from the supervisor's own synthesis/§8a output, increment SELF_WAVE. If SELF_WAVE would exceed 2, do NOT spawn — list the remaining self-generated follow-ups in the synthesis as RECOMMENDED NEXT WORK (not executed) and stop per &lt;stop-conditions&gt;. Otherwise LOOP BACK to §3 (fan-out decision) and spawn in parallel. Return to the user ONLY when the synthesis's replan produces zero new executable workers AND a real &lt;stop-conditions&gt; rule fires (the SELF_WAVE cap is such a rule). The flow is a LOOP (3→4→5→6→7→[5a]→[8a]→9→[9b]→3), not a one-pass — but the loop is BOUNDED: it must not perpetually generate work from its own output.</action>
     </step>
 
     <step n="9b" title="Cycle completion and continuation">
@@ -457,6 +473,7 @@ RESPONSE PROTOCOL (MANDATORY):
       - Headline finding requiring user-only authorization (credentials, out-of-band intent, scope change beyond project).
       - Token/time budget exhausted (if user set one).
       - Cycle limit reached (supervisor.max_cycles in .tmux-cli/setting.yaml; step 9b).
+      - SELF_WAVE cap reached (2 self-generated waves per invocation; see glossary): the next wave's tasks originate solely from the supervisor's own synthesis/§8a output and SELF_WAVE is already 2 — list the remaining self-generated follow-ups in the synthesis as RECOMMENDED NEXT WORK (not executed) and stop. Waves traceable to the original $ARGUMENTS requirements are NOT capped.
       - STOP GATE triggered (step 1c) — unfinished tasks from a previous run.
       - Explicit user interrupt.</rule>
     <not-stop>These are NOT stop conditions — resolve autonomously per &lt;autonomy-policy&gt;:
@@ -464,9 +481,9 @@ RESPONSE PROTOCOL (MANDATORY):
       - "Queued worker scope needs adjustment" → adjust and continue.
       - "Worker recommended a new follow-up" → add and continue.
       - "Worker finding contradicts a prior worker" → record; most-recent-with-most-evidence is truth-of-record.
-      - "I just wrote a session-synthesis .md" → synthesis does not terminate the session; re-run §8a against its own contents and loop to §3 if new workers are executable.
+      - "I just wrote a session-synthesis .md" → synthesis does not terminate the session; re-run §8a against its own contents and loop to §3 if new workers are executable AND the SELF_WAVE cap (2 self-generated waves) is not yet reached — at the cap, self-generated follow-ups become RECOMMENDED NEXT WORK instead.
       - "A plan document I wrote says Stage N after Stage M closes" / "wave N+1 after wave N" → self-imposed organizational gate; NOT user-imposed authorization. Continue through stages.
-      - "A recommended wave-N+1 set exists in synthesis" → those are §8a replan items; spawn them in parallel per &lt;ranking&gt; unless stop-conditions actually fire.</not-stop>
+      - "A recommended wave-N+1 set exists in synthesis" → those are §8a replan items; spawn them in parallel per &lt;ranking&gt; unless stop-conditions actually fire — the SELF_WAVE cap IS such a stop-condition: purely self-generated waves beyond 2 are listed as RECOMMENDED NEXT WORK, not spawned.</not-stop>
   </stop-conditions>
 
   <llm final="true">
@@ -483,7 +500,7 @@ RESPONSE PROTOCOL (MANDATORY):
       • DO NOT let a running worker finish on a now-pointless scope — amend or kill via [SUPERVISOR:AMEND]/[SUPERVISOR:KILL] when new findings refute its premise (step 5a)
       • DO NOT skip the step-5a effectivity check after each DONE — it is the mechanism that keeps the pool effective, not just busy
       • DO NOT treat self-written plan documents (stage gates, "wave 6 after wave 5", "Stage 2 after Stage 1", "deferred to next session", numbered-wave boundaries) as user-imposed pauses — they are organizational, not authorization boundaries; continue per &lt;autonomy-policy&gt;
-      • DO NOT stop after writing a session-synthesis .md — re-run §8a against the synthesis itself; if it names executable follow-up workers in "proposed next wave" / "queue changes", spawn them per §3 fan-out, do not return to the user
+      • DO NOT stop after writing a session-synthesis .md — re-run §8a against the synthesis itself; if it names executable follow-up workers in "proposed next wave" / "queue changes", spawn them per §3 fan-out, do not return to the user — UNLESS the SELF_WAVE cap (2 self-generated waves per invocation) is reached: then list them as RECOMMENDED NEXT WORK and stop per &lt;stop-conditions&gt;
       • SOLE solo-lane carve-out (data-driven only): when the upstream-decided lane resolves to solo (resolution order: tasks-path top-level `lane` key → goal.md `## Lane` → full) AND exactly 1 task is pending in tasks-path, step 3c executes that task inline in this window with zero spawns — perceived simplicity remains an INVALID activation reason; only the upstream lane value activates this carve-out, never the supervisor's own judgment.
     </critical-rules>
   </llm>
