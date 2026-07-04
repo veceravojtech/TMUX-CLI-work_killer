@@ -5,16 +5,42 @@
 // (cmd/tmux-cli/e2e.go) wires these to tmux/claude/docker side effects.
 //
 // Everything here is pure (inputs in, values out, no exec/clock) so it can be
-// unit-tested without a tmux server; callers inject the UTC stamp.
+// unit-tested without a tmux server; callers inject the UTC stamp. The lone
+// exception is SeedTrustConfig's best-effort Claude version resolution, which
+// execs `claude --version` through an injectable package-level var so tests
+// stay deterministic and exec-free (same DI convention as the UTC stamp).
 package e2e
 
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+// claudeVersionRe matches a leading semver (e.g. "2.1.201") anywhere in the
+// `claude --version` output, tolerating surrounding text like "(Claude Code)".
+var claudeVersionRe = regexp.MustCompile(`\d+\.\d+\.\d+`)
+
+// parseClaudeVersion extracts the first semver token from `claude --version`
+// output, or "" when none is present. Pure.
+func parseClaudeVersion(out string) string {
+	return claudeVersionRe.FindString(out)
+}
+
+// claudeVersion resolves the running Claude Code version best-effort by execing
+// `claude --version`. Any failure (missing binary, non-zero exit, unparsable
+// output) yields "" so SeedTrustConfig silently skips the version-seen fields.
+// Declared as a package-level var so tests can override it deterministically.
+var claudeVersion = func() string {
+	out, err := exec.Command("claude", "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return parseClaudeVersion(string(out))
+}
 
 // StatusInProgress and friends are the run-state lifecycle values (design §6).
 const (
@@ -413,8 +439,15 @@ func SelectStaleSessions(names []string) []string {
 // SeedTrustConfig returns a new ~/.claude.json body with the target dir marked
 // trusted + onboarded and bypass-permissions accepted globally, so the
 // auto-launched claude lands straight at the idle prompt (config-then-run,
-// step 2). It is a pure transform over the raw config bytes; the caller writes
-// the result atomically. A nil/empty input starts from an empty object.
+// step 2). It additionally seeds the version-seen fields — top-level
+// lastReleaseNotesSeen and projects[targetDir].lastVersionBase — with the
+// current Claude version so a freshly auto-updated Claude does not re-trigger
+// the "Bypass Permissions mode — accept?" release dialog that otherwise kills
+// the e2e-bootstrap handshake. Version resolution is best-effort: if
+// claudeVersion() returns "" (claude missing / exec error / unparsable), both
+// version fields are skipped and the exact prior three-key behavior holds. The
+// caller writes the result atomically. A nil/empty input starts from an empty
+// object.
 func SeedTrustConfig(raw []byte, targetDir string) ([]byte, error) {
 	if strings.TrimSpace(targetDir) == "" {
 		return nil, fmt.Errorf("targetDir must be non-empty to seed trust")
@@ -442,6 +475,15 @@ func SeedTrustConfig(raw []byte, targetDir string) ([]byte, error) {
 	}
 	proj["hasTrustDialogAccepted"] = json.RawMessage("true")
 	proj["hasCompletedProjectOnboarding"] = json.RawMessage("true")
+
+	// Best-effort version-seen seed: Claude re-shows the release dialog when its
+	// running version exceeds the last-seen version, so pin both fields to the
+	// current version. On resolution failure, skip both (preserve prior shape).
+	if v := claudeVersion(); v != "" {
+		b, _ := json.Marshal(v) // string → quoted JSON; reused for byte-consistency
+		root["lastReleaseNotesSeen"] = json.RawMessage(b)
+		proj["lastVersionBase"] = json.RawMessage(b)
+	}
 	projects[targetDir] = proj
 
 	projBytes, err := json.Marshal(projects)
