@@ -360,6 +360,13 @@ func init() {
 	// --restart session` resumes the same Claude conversation across the restart.
 	startAttachCmd.Flags().String("session-uuid", "", "reuse this supervisor window UUID (self-update --restart session)")
 
+	// Add --resume flag to start-attach: the user-facing alias of --session-uuid.
+	// It reconciles to the SAME supervisorUUID field, so the recreated supervisor
+	// window's UUID is set to <id> and the relaunched Claude resumes conversation
+	// <id> (recover-a-killed-session flow). --session-uuid is kept for the internal
+	// self-update caller; passing both with different non-empty values is a usage error.
+	startAttachCmd.Flags().String("resume", "", "resume conversation <id>: recreate the session reusing this supervisor window UUID so Claude resumes conversation <id> (user-facing alias of --session-uuid)")
+
 	// Taskvisor commands
 	taskvisorCmd.Flags().BoolVar(&taskvisorRun, "run", false, "Start daemon loop (internal)")
 	taskvisorCmd.Flags().MarkHidden("run")
@@ -469,6 +476,24 @@ func (e UsageError) Error() string {
 // NewUsageError creates a new usage error
 func NewUsageError(msg string) error {
 	return UsageError{msg: msg}
+}
+
+// resolveSupervisorUUID reconciles the start-attach --session-uuid (internal
+// self-update caller) and --resume (user-facing alias) flags into the single
+// supervisorUUID value that startOrReuseSession stamps onto the recreated
+// supervisor window. Both flags set the same field; --resume wins when only it
+// is set, --session-uuid is preserved when only it is set, and passing both with
+// different non-empty values is a usage error (returned BEFORE any session
+// kill/create so the both-differ case never leaves a dead-end killed session).
+// Both-empty yields "" so the default fresh-UUID path is preserved.
+func resolveSupervisorUUID(sessionUUID, resume string) (string, error) {
+	if sessionUUID != "" && resume != "" && sessionUUID != resume {
+		return "", NewUsageError("--resume and --session-uuid were set to different values; pass only one — both set the same supervisor window UUID")
+	}
+	if resume != "" {
+		return resume, nil
+	}
+	return sessionUUID, nil
 }
 
 // startOrReuseSession handles session discovery, interactive prompts for existing sessions,
@@ -631,8 +656,13 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	executor := tmux.NewTmuxExecutor()
 	model, _ := cmd.Flags().GetString("model")
 	sessionUUID, _ := cmd.Flags().GetString("session-uuid")
+	resume, _ := cmd.Flags().GetString("resume")
+	supervisorUUID, err := resolveSupervisorUUID(sessionUUID, resume)
+	if err != nil {
+		return err
+	}
 	force, _ := cmd.Flags().GetBool("force")
-	sessionID, _, err := startOrReuseSession(executor, projectPath, model, sessionUUID, force, os.Stdout)
+	sessionID, _, err := startOrReuseSession(executor, projectPath, model, supervisorUUID, force, os.Stdout)
 	if err != nil {
 		return err
 	}

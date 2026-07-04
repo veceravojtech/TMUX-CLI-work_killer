@@ -492,6 +492,105 @@ func TestStartOrReuseSession_ForceFalseKeepsPrompt(t *testing.T) {
 }
 
 // ============================================================================
+// start-attach --resume flag (goal-012): user-facing alias of --session-uuid
+// ============================================================================
+
+// TestStartAttach_HasResumeFlag proves the --resume flag is registered on
+// start-attach (so --help lists it and no `unknown flag: --resume` error can
+// occur), is string-typed, and defaults to "".
+func TestStartAttach_HasResumeFlag(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"start-attach"})
+	require.NoError(t, err)
+	require.NotNil(t, cmd)
+
+	flag := cmd.Flags().Lookup("resume")
+	require.NotNil(t, flag, "start-attach must register a --resume flag")
+	assert.Equal(t, "string", flag.Value.Type())
+	assert.Equal(t, "", flag.DefValue, "--resume must default to empty")
+}
+
+// TestResolveSupervisorUUID_ResumeMapsToSameField proves --resume feeds the
+// same supervisorUUID field --session-uuid does.
+func TestResolveSupervisorUUID_ResumeMapsToSameField(t *testing.T) {
+	got, err := resolveSupervisorUUID("", "abc")
+	require.NoError(t, err)
+	assert.Equal(t, "abc", got)
+}
+
+// TestResolveSupervisorUUID_SessionUUIDPreserved proves the internal
+// self-update caller path (--session-uuid alone) is unbroken.
+func TestResolveSupervisorUUID_SessionUUIDPreserved(t *testing.T) {
+	got, err := resolveSupervisorUUID("abc", "")
+	require.NoError(t, err)
+	assert.Equal(t, "abc", got)
+}
+
+// TestResolveSupervisorUUID_BothEqualOK verifies passing both flags with the
+// same value is accepted (they reconcile to that value).
+func TestResolveSupervisorUUID_BothEqualOK(t *testing.T) {
+	got, err := resolveSupervisorUUID("abc", "abc")
+	require.NoError(t, err)
+	assert.Equal(t, "abc", got)
+}
+
+// TestResolveSupervisorUUID_BothDifferErrors verifies passing both flags with
+// different non-empty values is a usage error, returned with an empty value so
+// no session work proceeds.
+func TestResolveSupervisorUUID_BothDifferErrors(t *testing.T) {
+	got, err := resolveSupervisorUUID("abc", "xyz")
+	require.Error(t, err)
+	assert.Empty(t, got)
+	var usageErr UsageError
+	assert.True(t, errors.As(err, &usageErr), "conflict must be a UsageError")
+}
+
+// TestResolveSupervisorUUID_NeitherSet pins the default fresh-UUID path:
+// both-empty yields "" with no error.
+func TestResolveSupervisorUUID_NeitherSet(t *testing.T) {
+	got, err := resolveSupervisorUUID("", "")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+// TestStartAttachResume_RecreatesWithWindowUUID is the end-to-end regression:
+// the value --resume <id> reconciles to (via resolveSupervisorUUID) is threaded
+// through startOrReuseSession's force-recreate + full CreateSession chain and
+// ends up stamped as the recreated supervisor window's UUID — proving
+// `start-attach --resume <id>` recreates the session with window UUID == <id>.
+func TestStartAttachResume_RecreatesWithWindowUUID(t *testing.T) {
+	dir := t.TempDir()
+	const resumeID = "resume-conv-9876"
+
+	supervisorUUID, err := resolveSupervisorUUID("", resumeID)
+	require.NoError(t, err)
+	require.Equal(t, resumeID, supervisorUUID)
+
+	m := new(testutil.MockTmuxExecutor)
+	m.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return("existing-sess", nil)
+	m.On("HasSession", "existing-sess").Return(true, nil)
+	m.On("KillSession", "existing-sess").Return(nil)
+	// New-session id (!= "existing-sess"): pre-create check false, create, poll true.
+	m.On("HasSession", mock.AnythingOfType("string")).Return(false, nil).Once()
+	m.On("CreateSession", mock.AnythingOfType("string"), dir).Return(nil)
+	m.On("HasSession", mock.AnythingOfType("string")).Return(true, nil)
+	m.On("SetSessionEnvironment", mock.AnythingOfType("string"), "TMUX_CLI_PROJECT_PATH", dir).Return(nil)
+	m.On("ListWindows", mock.AnythingOfType("string")).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	m.On("SetWindowOption", mock.AnythingOfType("string"), "@0", tmux.WindowUUIDOption, resumeID).Return(nil)
+	m.On("SendMessage", mock.AnythingOfType("string"), "@0", mock.Anything).Return(nil)
+	m.On("SendMessageWithFeedback", mock.AnythingOfType("string"), "@0", mock.Anything).Return("", nil)
+
+	var out bytes.Buffer
+	sessionID, created, err := startOrReuseSession(m, dir, "", supervisorUUID, true, &out)
+
+	require.NoError(t, err)
+	assert.True(t, created)
+	require.NotEmpty(t, sessionID)
+	m.AssertCalled(t, "SetWindowOption", mock.AnythingOfType("string"), "@0", tmux.WindowUUIDOption, resumeID)
+}
+
+// ============================================================================
 // notify-orchestrator receipt file (Fix B)
 // ============================================================================
 
