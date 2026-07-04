@@ -1,0 +1,65 @@
+<task id="self-upgrade" name="Self-upgrade this tmux-cli session and continue the conversation">
+  <objective>Rebuild tmux-cli from source, install it, and restart THIS Claude session onto the fresh binary WITHOUT losing the conversation — so the relaunched Claude spawns a NEW MCP server that reflects the upgraded binary. The invoking session cannot restart itself in place (Ctrl-C does NOT exit Claude Code, and MCP tools are frozen at Claude startup), so the upgrade is performed by a DETACHED helper that: builds → prewrites the bypass-dialog config → kills this session → recreates it with `tmux-cli start-attach --resume &lt;conversation-id&gt;`, which relaunches Claude resuming the same conversation on the new binary. Every step below was proven live; do not improvise around them.</objective>
+
+  <input>
+    <note>$ARGUMENTS (optional): `--source &lt;dir&gt;` to pin the tmux-cli source tree to rebuild (else resolved from `TMUX_CLI_SRC`, `self_update.source_dir` in setting.yaml, or the current dir if it is the tmux-cli repo). `--build-cmd "&lt;cmd&gt;"` to override the default build (`make install`). No args → rebuild from the resolved source with `make install` and restart this session.</note>
+  </input>
+
+  <requirements critical="true">
+    <req>MUST be invoked from INSIDE a tmux-cli session (a resolvable `#{session_name}` and a Claude conversation).</req>
+    <req>A NATIVE TERMINAL MUST exist (`$DISPLAY` set + konsole/gnome-terminal/xterm/alacritty/kitty/wezterm): `start-attach` ATTACHES, so the recreate needs a real TTY to attach to. With no GUI, STOP and hand the operator the recovery command instead of killing the session (a headless kill+start-attach dead-ends — start-attach's `tmux attach` fails "not a terminal").</req>
+    <req>The tmux-cli SOURCE tree MUST be resolvable and BUILD CLEAN — the build runs BEFORE the session is killed, and a build failure ABORTS without killing (never leave a dead session behind a broken build).</req>
+  </requirements>
+
+  <glossary>
+    <term name="REPO">The invoking session's project dir (`pwd`, or `$TMUX_CLI_PROJECT_PATH`). `start-attach` recreates THIS dir's session; it is also the project entry whose bypass-version config is prewritten.</term>
+    <term name="SRC">The tmux-cli source tree to rebuild (`--source` / `TMUX_CLI_SRC` / `self_update.source_dir` / REPO if REPO is the tmux-cli repo). Often == REPO when self-upgrading from the tmux-cli checkout.</term>
+    <term name="MYSESS">This tmux session's exact name (`tmux display-message -p '#{session_name}'`). Killed by EXACT name only — never `pkill -f`.</term>
+    <term name="CONV_ID">The CLAUDE CONVERSATION ID to resume — the newest `~/.claude/projects/&lt;escaped-REPO&gt;/&lt;id&gt;.jsonl` (escaped-REPO = REPO with `/`→`-`). This is the id Claude prints as "Resume this session with: claude --resume &lt;id&gt;". It is NOT the tmux window UUID (`@window-uuid`), which can DIVERGE from the conversation id — resuming by the window UUID errors "No conversation found" and strands the session (the historical dead-end).</term>
+    <term name="VER">The running Claude Code version (`claude --version`, e.g. `2.1.201`) — prewritten into the bypass-version config so the recreated Claude skips the "Bypass Permissions mode — accept?" dialog.</term>
+  </glossary>
+
+  <llm critical="true">
+    <mandate critical="true">NEVER RESTART IN PLACE. Ctrl-C does NOT exit Claude Code (it interrupts the turn), so `send-keys C-c` + a relaunch command lands the command in Claude's input box, not a shell — the process is never replaced. The ONLY working restart is to KILL THE WHOLE TMUX SESSION and recreate it with `start-attach`. Proven: an in-place kill of just the Claude process also works but does not refresh session-level state; the session recreate is the sanctioned path.</mandate>
+    <mandate critical="true">RESUME BY CONVERSATION ID, NOT WINDOW UUID. Pass CONV_ID (newest jsonl) to `tmux-cli start-attach --resume &lt;CONV_ID&gt;`. The window UUID (`@window-uuid`) is NOT guaranteed to equal the conversation id; using it errors "No conversation found with session ID" and, because the session was already killed, dead-ends the conversation. Resolve CONV_ID from the jsonl, never from `@window-uuid`.</mandate>
+    <mandate critical="true">RUN DETACHED (setsid) — THE HELPER MUST SURVIVE KILLING ITS OWN SESSION. The kill of MYSESS destroys the invoking pane; a foreground helper dies with it and never runs `start-attach`. Launch the whole build→kill→recreate sequence as a `setsid` process (its own session/process group, reparented to init), with stdio detached, so it outlives this Claude. `start-attach` itself runs inside a freshly-spawned native terminal (konsole -e …) that provides the TTY it attaches.</mandate>
+    <mandate critical="true">PREWRITE THE BYPASS-DIALOG CONFIG. Claude Code re-shows the "Bypass Permissions mode — accept?" dialog after an auto-update whenever its running version &gt; the seen version — gated by `~/.claude.json` top-level `lastReleaseNotesSeen` and per-project `projects[REPO].lastVersionBase` (NOT `bypassPermissionsModeAccepted`, which stays true). start-attach's normal path does not seed these, so BEFORE the recreate, atomically write `lastReleaseNotesSeen=VER`, `projects[REPO].lastVersionBase=VER`, `projects[REPO].hasTrustDialogAccepted=true`, `projects[REPO].hasCompletedProjectOnboarding=true`, `bypassPermissionsModeAccepted=true`. Do the prewrite AFTER killing MYSESS (this session's Claude, the in-project writer, is then dead) to minimize the concurrent-writer race. Without it the recreated Claude stalls on the dialog and dead-ends.</mandate>
+    <mandate critical="true">BUILD BEFORE KILL; ABORT ON BUILD FAIL. Run the build+install FIRST while this session is still alive. If it fails (non-zero), LOG and ABORT — do NOT kill the session. Only a green build proceeds to kill+recreate.</mandate>
+    <mandate critical="true">SAFETY: NEVER KILL WITHOUT A RESUME TARGET. Verify `&lt;CONV_ID&gt;.jsonl` exists immediately before killing; if missing, ABORT (killing would strand the conversation with nothing to resume).</mandate>
+    <mandate>ANNOUNCE + RECOVERY COMMAND. Before launching the helper, tell the operator the screen will close and a new terminal will reappear continuing the conversation, and print the manual recovery command: `cd &lt;REPO&gt; &amp;&amp; tmux-cli start-attach --resume &lt;CONV_ID&gt;`. Then STOP — this Claude is about to be replaced.</mandate>
+    <mandate>NEVER `pkill -f` — kill MYSESS by EXACT name (`tmux kill-session -t &lt;MYSESS&gt;`); a cmdline-pattern kill can SIGTERM the helper itself.</mandate>
+  </llm>
+
+  <flow>
+    <step n="1" title="Resolve handles (read-only)">
+      <action>REPO = `pwd` (or `$TMUX_CLI_PROJECT_PATH`). MYSESS = `tmux display-message -p '#{session_name}'`. VER = `claude --version` leading semver. CONV_ID = basename of the NEWEST `~/.claude/projects/&lt;REPO with / → ->/*.jsonl` (strip `.jsonl`). SRC = `--source` arg, else `TMUX_CLI_SRC`, else `self_update.source_dir` from setting.yaml, else REPO.</action>
+      <action>Print the resolved handles so the operator can eyeball them before anything destructive.</action>
+    </step>
+    <step n="2" title="Preconditions — abort loudly on any miss">
+      <action>Assert: in a tmux session (MYSESS non-empty); CONV_ID resolved AND its jsonl exists; a native terminal exists (`$DISPLAY` + a terminal binary on PATH); SRC resolvable. If a native terminal is missing, STOP: print the recovery command and instruct the operator to run it in their terminal (headless self-upgrade would dead-end).</action>
+    </step>
+    <step n="3" title="Compose the detached self-upgrade helper (a bash script)">
+      <action>Write a helper script that runs, in order, logging to a file under the scratchpad:
+        1. `sleep 6` (let this invoking turn finish rendering).
+        2. Re-verify `&lt;CONV_ID&gt;.jsonl` exists — else ABORT.
+        3. BUILD: `cd &lt;SRC&gt; &amp;&amp; &lt;build-cmd, default: make install&gt;`. On non-zero exit, LOG "build failed — aborting, session preserved" and EXIT (do not kill).
+        4. KILL: `tmux kill-session -t &lt;MYSESS&gt;` (exact name).
+        5. PREWRITE ~/.claude.json atomically (temp-file + rename): set the five bypass/trust keys per the mandate, with VER.
+        6. RECREATE in a native terminal: `DISPLAY=$DISPLAY setsid &lt;terminal&gt; -e bash -c "cd '&lt;REPO&gt;' &amp;&amp; tmux-cli start-attach --resume '&lt;CONV_ID&gt;'; exec bash"` — start-attach recreates MYSESS's dir, reuses CONV_ID as the supervisor window UUID, and Claude relaunches `--resume &lt;CONV_ID&gt;` (no dialog, conversation resumed) on the new binary.</action>
+    </step>
+    <step n="4" title="Launch detached + announce, then STOP">
+      <action>Launch the helper fully detached: `DISPLAY=$DISPLAY setsid bash &lt;helper&gt; &lt;/dev/null &gt;/dev/null 2&gt;&amp;1 &amp;` then `disown`.</action>
+      <action>Announce to the operator: the build runs (~30-60s), then this session is killed and reappears in a new terminal continuing the conversation on the fresh binary; print the recovery command `cd &lt;REPO&gt; &amp;&amp; tmux-cli start-attach --resume &lt;CONV_ID&gt;`. Then STOP — do not continue working; this Claude is about to be replaced.</action>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>Build BEFORE kill; abort (session preserved) on build failure.</rule>
+    <rule>Kill MYSESS by EXACT name; never `pkill -f` (self-SIGTERM hazard).</rule>
+    <rule>Resume by CONV_ID (newest jsonl), never the tmux window UUID.</rule>
+    <rule>Prewrite the bypass-version config (lastReleaseNotesSeen + projects[REPO].lastVersionBase = VER) after the kill; atomic temp+rename.</rule>
+    <rule>The helper is `setsid`-detached and `start-attach` runs in a native terminal (real TTY); a headless run is refused, not attempted.</rule>
+    <rule>Always surface the recovery command before launching.</rule>
+    <note>HARDENING (recommended future work): promote this orchestration into a `tmux-cli self-upgrade` CLI command that reuses internal/setup + cmd/tmux-cli/self_update.go (dispatchSessionRestart already does build→stop-daemon→kill-session→self-exec start-attach; extend it to resolve CONV_ID + prewrite the version config + pass `--resume &lt;id&gt;`), so the flow is deterministic Go rather than an LLM-composed helper.</note>
+  </execution-rules>
+</task>
