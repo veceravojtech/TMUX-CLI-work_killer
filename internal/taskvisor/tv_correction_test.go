@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -167,4 +168,126 @@ func TestWriteCorrectionFile_StructuredPerFinding(t *testing.T) {
 	// Pass finding is omitted and the NextAction one-liner is not used.
 	assert.NotContains(t, content, "### Finding: smoke")
 	assert.NotContains(t, content, "should not appear when structured findings exist")
+}
+
+// writeInvestigatorReport is a hermetic helper: it lays down a single on-disk
+// investigator report under research/cycle-<cycle>/investigator-<name>.md,
+// mirroring the investigate-worker.xml layout (## VERDICT / ## FINDINGS /
+// ## EVIDENCE, each heading on its own line with the body beneath).
+func writeInvestigatorReport(t *testing.T, goalDir string, cycle int, name, verdict, findings string) {
+	t.Helper()
+	dir := filepath.Join(goalDir, "research", "cycle-"+itoa(cycle))
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	report := "## VERDICT\n" + verdict + "\n## FINDINGS\n" + findings + "\n## EVIDENCE\n- raw output excerpt\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "investigator-"+name+".md"), []byte(report), 0o644))
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
+
+// TestWriteCorrectionFile_FoldsOnDiskInvestigatorReports locks task 424: a fail
+// verdict with a rich FINDINGS body but NO structured signal.Findings folds the
+// on-disk investigator report's FINDINGS into the correction — so the worker
+// retries with actionable detail instead of the generic no-findings string.
+func TestWriteCorrectionFile_FoldsOnDiskInvestigatorReports(t *testing.T) {
+	d, _, _ := setupDaemon(t)
+	goalDir := filepath.Join(t.TempDir(), "goal-001")
+	require.NoError(t, os.MkdirAll(goalDir, 0o755))
+
+	findings := `- Finding: dispatch-fold — status: fail
+  failing_command: go test ./internal/taskvisor -run TestFold
+  output_excerpt: want folded body got generic string
+  expected_state: correction carries the investigator FINDINGS body
+  correction: fold research/cycle-N/investigator-*.md FINDINGS into the correction
+  failure_class: code-defect
+  owner: implementer`
+	writeInvestigatorReport(t, goalDir, 1, "1-code-review", "fail", findings)
+
+	// signal has NO structured findings (the blind-retry condition).
+	sig := &ValidatorSignal{Verdict: "fail", NextAction: "Implementation completed but failed acceptance criteria.\n\nsome captured raw output"}
+	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true))
+
+	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	// The folded FINDINGS body is present under a per-report heading...
+	assert.Contains(t, content, "### Finding: investigator-1-code-review.md (fail)")
+	assert.Contains(t, content, "fold research/cycle-N/investigator-*.md FINDINGS into the correction")
+	assert.Contains(t, content, "failing_command: go test ./internal/taskvisor -run TestFold")
+	// ...and the generic no-findings fallback is bypassed entirely.
+	assert.NotContains(t, content, "no structured validator findings")
+}
+
+// TestWriteCorrectionFile_MultipleFailReportsFoldedInOrder asserts one block per
+// fail report in sorted glob order, and that a pass report is dropped.
+func TestWriteCorrectionFile_MultipleFailReportsFoldedInOrder(t *testing.T) {
+	d, _, _ := setupDaemon(t)
+	goalDir := filepath.Join(t.TempDir(), "goal-001")
+	require.NoError(t, os.MkdirAll(goalDir, 0o755))
+
+	writeInvestigatorReport(t, goalDir, 2, "1-alpha", "fail", "- alpha failing detail")
+	writeInvestigatorReport(t, goalDir, 2, "2-beta", "pass", "- beta all good")
+	writeInvestigatorReport(t, goalDir, 2, "3-gamma", "fail", "- gamma failing detail")
+
+	sig := &ValidatorSignal{Verdict: "fail", NextAction: "framing\n\nraw"}
+	require.NoError(t, d.writeCorrectionFile(goalDir, 2, sig, true))
+
+	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-2.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "### Finding: investigator-1-alpha.md (fail)")
+	assert.Contains(t, content, "alpha failing detail")
+	assert.Contains(t, content, "### Finding: investigator-3-gamma.md (fail)")
+	assert.Contains(t, content, "gamma failing detail")
+	// pass report is dropped; sorted order (alpha before gamma).
+	assert.NotContains(t, content, "investigator-2-beta.md")
+	assert.Less(t, strings.Index(content, "1-alpha"), strings.Index(content, "3-gamma"))
+	assert.NotContains(t, content, "no structured validator findings")
+}
+
+// TestWriteCorrectionFile_NoReportsFallsThrough: with no research/cycle dir, the
+// env-noise ops fallback (RC-3, owner=ops) renders byte-for-byte unchanged.
+func TestWriteCorrectionFile_NoReportsFallsThrough(t *testing.T) {
+	d, _, _ := setupDaemon(t)
+	goalDir := filepath.Join(t.TempDir(), "goal-001")
+	require.NoError(t, os.MkdirAll(goalDir, 0o755))
+
+	header := "Implementation completed but failed acceptance criteria."
+	noise := `time="2026-06-15T20:21:03+02:00" level=warning msg="The \"DATADOG_API_KEY\" variable is not set. Defaulting to a blank string."`
+	sig := &ValidatorSignal{NextAction: header + "\n\n" + noise}
+	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true))
+
+	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.True(t, strings.HasPrefix(content, header))
+	assert.Contains(t, content, "### Finding: validation failed (no structured validator findings)")
+	assert.Contains(t, content, "owner=ops")
+	assert.NotContains(t, content, "### Finding: investigator-")
+}
+
+// TestWriteCorrectionFile_SkipsPassOnlyReports: a cycle dir with only pass (and
+// empty-FINDINGS) reports contributes nothing, so the generic fallback renders.
+func TestWriteCorrectionFile_SkipsPassOnlyReports(t *testing.T) {
+	d, _, _ := setupDaemon(t)
+	goalDir := filepath.Join(t.TempDir(), "goal-001")
+	require.NoError(t, os.MkdirAll(goalDir, 0o755))
+
+	writeInvestigatorReport(t, goalDir, 1, "1-code-review", "pass", "- all checks green")
+	// a fail report whose FINDINGS body is whitespace-only contributes nothing.
+	writeInvestigatorReport(t, goalDir, 1, "2-empty", "fail", "   ")
+
+	sig := &ValidatorSignal{NextAction: "Implementation completed but failed acceptance criteria.\n\nfix the pricing"}
+	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, false))
+
+	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	// Fold skipped → verbatim NextAction fallback renders, no fold heading.
+	assert.True(t, strings.HasPrefix(content, "Implementation completed but failed acceptance criteria."))
+	assert.Contains(t, content, "fix the pricing")
+	assert.NotContains(t, content, "### Finding: investigator-")
 }

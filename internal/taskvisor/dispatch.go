@@ -785,6 +785,81 @@ func splitFraming(nextAction string) (framing, body string) {
 	return na, ""
 }
 
+// investigatorSection returns the trimmed body of the `## <heading>` section in
+// an on-disk investigator report — the lines strictly AFTER the heading line up
+// to the next line beginning "## " (or EOF). Matches the producer layout in
+// investigate-worker.xml (heading on its own line, value/body beneath). Returns
+// "" when the heading is absent.
+func investigatorSection(report, heading string) string {
+	lines := strings.Split(report, "\n")
+	start := -1
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == heading {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	var body []string
+	for _, ln := range lines[start:] {
+		if strings.HasPrefix(ln, "## ") {
+			break
+		}
+		body = append(body, ln)
+	}
+	return strings.TrimSpace(strings.Join(body, "\n"))
+}
+
+// foldInvestigatorReports best-effort renders the FAILING on-disk investigator
+// reports for the given cycle into a structured correction body, so a fail with
+// a rich `## FINDINGS` body but no machine-structured signal.Findings no longer
+// retries BLIND (backend task 424). It globs research/cycle-<cycleNum>/investigator-*.md,
+// keeps only reports whose `## VERDICT` first word is "fail", extracts each
+// report's non-empty `## FINDINGS` body, and emits one `### Finding: <base> (fail)`
+// block per contributing report in sorted (deterministic) order.
+//
+// It keys STRICTLY on the passed cycleNum — the code-defect caller passes
+// CurrentCycle(goal), the same counter the orchestrator writes cycle dirs under,
+// so the fold matches there; the spec-defect caller's different counter yields a
+// dir that won't exist → harmless fall-through. Best-effort by design: absent
+// dir, glob/read error, zero matches, or pass/blocked-only / empty-FINDINGS
+// reports all return ("", false) so the caller runs the existing generic
+// fallback unchanged. NO error return — every I/O miss is a false result.
+func foldInvestigatorReports(goalDir string, cycleNum int) (string, bool) {
+	dir := filepath.Join(goalDir, "research", fmt.Sprintf("cycle-%d", cycleNum))
+	matches, err := filepath.Glob(filepath.Join(dir, "investigator-*.md"))
+	if err != nil || len(matches) == 0 {
+		return "", false
+	}
+	sort.Strings(matches)
+
+	var sb strings.Builder
+	ok := false
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		report := string(data)
+		fields := strings.Fields(investigatorSection(report, "## VERDICT"))
+		if len(fields) == 0 || strings.ToLower(fields[0]) != "fail" {
+			continue
+		}
+		body := investigatorSection(report, "## FINDINGS")
+		if body == "" {
+			continue
+		}
+		fmt.Fprintf(&sb, "### Finding: %s (fail)\n%s\n\n", filepath.Base(path), body)
+		ok = true
+	}
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(sb.String()), true
+}
+
 // writeCorrectionFile renders the per-cycle correction. INVARIANT (RC-3/RC-4):
 // every fail is recorded as a STRUCTURED block pointing to what ran (Command),
 // what failed (the finding rule), and how (Output) — never a raw stderr dump —
@@ -827,47 +902,58 @@ func (d *Daemon) writeCorrectionFile(goalDir string, cycleNum int, signal *Valid
 		}
 	}
 	if !wrote {
-		// No structured findings. Split the daemon framing header from any captured
-		// output beneath it.
-		full := ""
-		if signal != nil {
-			full = strings.TrimSpace(signal.NextAction)
-		}
-		framing, body := splitFraming(full)
-		if !rawCaptured || body == "" {
-			// Verbatim: the NextAction is already an actionable instruction (a
-			// spec-defect bounce or primed next-action), or there is no captured
-			// output to restructure. Writing a synthetic finding would only add noise.
-			fallback := full
-			if fallback == "" {
-				fallback = "Implementation failed acceptance criteria — re-check the goal acceptance and fix."
-			}
-			sb.WriteString(fallback)
-			log.Printf("%s: validator fail [cycle %d]: no structured findings; verbatim correction=%q",
-				goalID, cycleNum, clipEvidence(fallback, 160))
+		// No structured signal.Findings. Before the generic framing/env-noise
+		// fallback, best-effort fold this cycle's FAILING on-disk investigator
+		// reports (research/cycle-<cycleNum>/investigator-*.md) so a fail with a
+		// rich FINDINGS body but no machine-structured findings no longer retries
+		// blind (backend task 424). Any I/O miss → (,false) → existing fallback.
+		if folded, ok := foldInvestigatorReports(goalDir, cycleNum); ok {
+			sb.WriteString(folded)
+			log.Printf("%s: validator fail [cycle %d]: no structured findings; folded on-disk investigator FINDINGS into correction",
+				goalID, cycleNum)
 		} else {
-			// RC-3: captured raw output with NO structured finding. NEVER dump it
-			// raw. Preserve the framing, then render a STRUCTURED, classified finding
-			// pointing to how it failed — and env/infra noise is never blamed on code.
-			if framing != "" {
-				sb.WriteString(framing)
-				sb.WriteString("\n\n")
+			// No structured findings. Split the daemon framing header from any captured
+			// output beneath it.
+			full := ""
+			if signal != nil {
+				full = strings.TrimSpace(signal.NextAction)
 			}
-			evidence, hasSignal := substantiveEvidence(body)
-			sb.WriteString("### Finding: validation failed (no structured validator findings)\n")
-			if hasSignal {
-				sb.WriteString("Command: (the validator did not report the failing command — fix the Investigation Config so the next cycle names it)\n")
-				fmt.Fprintf(&sb, "Output: %s\n", evidence)
-				sb.WriteString("Expected: the goal's acceptance criteria are met\n")
-				sb.WriteString("Correction: address the captured failure above; if it is not a code defect, repair the validation command so the next cycle reports a structured finding\n")
-				log.Printf("%s: validator fail [cycle %d]: no structured findings; captured failure=%q",
-					goalID, cycleNum, clipEvidence(evidence, 200))
+			framing, body := splitFraming(full)
+			if !rawCaptured || body == "" {
+				// Verbatim: the NextAction is already an actionable instruction (a
+				// spec-defect bounce or primed next-action), or there is no captured
+				// output to restructure. Writing a synthetic finding would only add noise.
+				fallback := full
+				if fallback == "" {
+					fallback = "Implementation failed acceptance criteria — re-check the goal acceptance and fix."
+				}
+				sb.WriteString(fallback)
+				log.Printf("%s: validator fail [cycle %d]: no structured findings; verbatim correction=%q",
+					goalID, cycleNum, clipEvidence(fallback, 160))
 			} else {
-				fmt.Fprintf(&sb, "Command: (not reported)\nOutput: %s\n", strings.TrimSpace(body))
-				sb.WriteString("Expected: a code-level validation signal\n")
-				sb.WriteString("Correction: the validator produced NO actionable code finding — the captured output is environment/infrastructure noise only. Verify the validation command can execute (owner=ops); do NOT change code on this signal.\n")
-				log.Printf("%s: validator fail [cycle %d]: NO structured findings and captured output is env-noise only — owner=ops, NOT a code defect",
-					goalID, cycleNum)
+				// RC-3: captured raw output with NO structured finding. NEVER dump it
+				// raw. Preserve the framing, then render a STRUCTURED, classified finding
+				// pointing to how it failed — and env/infra noise is never blamed on code.
+				if framing != "" {
+					sb.WriteString(framing)
+					sb.WriteString("\n\n")
+				}
+				evidence, hasSignal := substantiveEvidence(body)
+				sb.WriteString("### Finding: validation failed (no structured validator findings)\n")
+				if hasSignal {
+					sb.WriteString("Command: (the validator did not report the failing command — fix the Investigation Config so the next cycle names it)\n")
+					fmt.Fprintf(&sb, "Output: %s\n", evidence)
+					sb.WriteString("Expected: the goal's acceptance criteria are met\n")
+					sb.WriteString("Correction: address the captured failure above; if it is not a code defect, repair the validation command so the next cycle reports a structured finding\n")
+					log.Printf("%s: validator fail [cycle %d]: no structured findings; captured failure=%q",
+						goalID, cycleNum, clipEvidence(evidence, 200))
+				} else {
+					fmt.Fprintf(&sb, "Command: (not reported)\nOutput: %s\n", strings.TrimSpace(body))
+					sb.WriteString("Expected: a code-level validation signal\n")
+					sb.WriteString("Correction: the validator produced NO actionable code finding — the captured output is environment/infrastructure noise only. Verify the validation command can execute (owner=ops); do NOT change code on this signal.\n")
+					log.Printf("%s: validator fail [cycle %d]: NO structured findings and captured output is env-noise only — owner=ops, NOT a code defect",
+						goalID, cycleNum)
+				}
 			}
 		}
 	}
