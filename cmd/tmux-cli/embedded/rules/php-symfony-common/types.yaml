@@ -3,7 +3,7 @@
 #
 # Path globs use the {src}/{infra} discovery tokens (see ../SCHEMA.md): {src}
 # expands to every resolved source root, {infra} to the infra-layer directory
-# name. For the P2 monorepo topology a `## Layers` doc resolves {src} to
+# name. For the multi-package monorepo topology a `## Layers` doc resolves {src} to
 # contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src and {infra}
 # to Bundle. Tokenizing COLLAPSES the former context-vs-project glob distinction
 # (contexts/*/src/**/*Handler.php and projects/*/src/... both become {src}/...);
@@ -42,7 +42,7 @@
   acceptance:
     - "GIVEN a UUID value THEN it is typed as a UUID value object, not an asserted string"
   validate:
-    - "review: the project's resolved static-analysis entrypoint (e.g. P2 `composer p2:phpstan`) stays analyzer-clean on the changed UUID paths"
+    - "review: the project's resolved static-analysis entrypoint (e.g. the monorepo entrypoint `composer mono:phpstan`) stays analyzer-clean on the changed UUID paths"
     - "No `Assert\\Uuid` / `Assert::uuid` remains where a UUID type fits on the changed UUID paths — grep returns nothing"
   validate_kind: mixed
   phase: domain

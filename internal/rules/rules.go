@@ -55,7 +55,8 @@ func (t Tri) MarshalJSON() ([]byte, error) {
 type Signals struct {
 	Lang             string `json:"lang"`
 	Framework        string `json:"framework"`
-	RunTarget        string `json:"run_target"` // "docker" | "local" | "" (unknown)
+	Architecture     string `json:"architecture"` // "ddd" | "basic" | "" (unknown); see matches for the ddd default
+	RunTarget        string `json:"run_target"`   // "docker" | "local" | "" (unknown)
 	HasDatabase      Tri    `json:"has_database"`
 	HasFrontend      Tri    `json:"has_frontend"`
 	FrontendMode     string `json:"frontend_mode"` // "vue" | "twig" | "none" | "" (unknown); a stack-style signal
@@ -77,6 +78,7 @@ type Condition struct {
 	Lang         string  `yaml:"lang"`
 	Framework    string  `yaml:"framework"`
 	FrontendMode *string `yaml:"frontend_mode"` // stack-style: must be KNOWN to match
+	Architecture string  `yaml:"architecture"`  // "ddd" | "basic"; unknown signal matches only "ddd" (the generator default), with a warning
 }
 
 // Pack is one manifest entry. Conventions are planner-binding rule files;
@@ -234,6 +236,20 @@ func matches(c *Condition, sig Signals) (bool, string) {
 			return false, ""
 		}
 	}
+	// Architecture is stack-style with ONE deliberate asymmetry: an unknown
+	// signal still matches an `architecture: ddd` condition (with a warning),
+	// because ddd is the topology this generator scaffolds by default and the
+	// pre-architecture-signal packs loaded that way. "basic" (and any future
+	// value) must be KNOWN — declared by discovery — to match.
+	if c.Architecture != "" {
+		switch {
+		case strings.EqualFold(sig.Architecture, c.Architecture):
+		case sig.Architecture == "" && strings.EqualFold(c.Architecture, "ddd"):
+			conservative = append(conservative, "architecture unknown (assuming ddd)")
+		default:
+			return false, ""
+		}
+	}
 
 	if len(conservative) > 0 {
 		return true, "included conservatively (" + strings.Join(conservative, ", ") + ")"
@@ -305,6 +321,16 @@ func Detect(projectRoot string) Signals {
 		}
 	}
 
+	// Architecture: an explicit "Architecture:" line in test-environment.md is
+	// authoritative; otherwise DDD markers on disk (a bounded-context inventory
+	// doc, or contexts/*/composer.json path-packages) derive "ddd". Anything
+	// else stays unknown — matches() then still admits `architecture: ddd`
+	// packs conservatively, so pre-signal projects keep resolving as before.
+	sig.Architecture = parseArchitecture(testEnv)
+	if sig.Architecture == "" && hasDDDMarkers(projectRoot) {
+		sig.Architecture = "ddd"
+	}
+
 	var crossCutting string
 	if body, err := os.ReadFile(filepath.Join(projectRoot, "docs", "architecture", "cross-cutting.md")); err == nil {
 		crossCutting = string(body)
@@ -349,6 +375,36 @@ func parseStackLine(body string) (lang, framework string, ok bool) {
 		return lang, framework, true
 	}
 	return "", "", false
+}
+
+// parseArchitecture extracts the declared architecture ("ddd" | "basic") from
+// an "**Architecture:** <value>" line (parseStackLine idiom: strip markdown
+// decoration, drop a trailing parenthetical qualifier). Any other value is
+// ignored — an unrecognized architecture must stay unknown, not misroute packs.
+func parseArchitecture(body string) string {
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimLeft(raw, "*# \t")
+		if !strings.HasPrefix(strings.ToLower(line), "architecture:") {
+			continue
+		}
+		val := stripQualifier(strings.ToLower(strings.TrimSpace(strings.Trim(strings.TrimSpace(line[len("architecture:"):]), "*_` "))))
+		switch val {
+		case "ddd", "basic":
+			return val
+		}
+	}
+	return ""
+}
+
+// hasDDDMarkers reports on-disk evidence of the DDD monorepo topology: a
+// bounded-context inventory doc, or any contexts/<bc>/composer.json
+// path-package. A flat basic app has neither.
+func hasDDDMarkers(projectRoot string) bool {
+	if _, err := os.Stat(filepath.Join(projectRoot, "docs", "architecture", "bounded-contexts.md")); err == nil {
+		return true
+	}
+	matches, err := filepath.Glob(filepath.Join(projectRoot, "contexts", "*", "composer.json"))
+	return err == nil && len(matches) > 0
 }
 
 // composerRequires reads composer.json's `require` map. found is false when

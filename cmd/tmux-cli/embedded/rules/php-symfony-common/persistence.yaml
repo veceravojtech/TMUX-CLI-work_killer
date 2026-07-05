@@ -1,0 +1,204 @@
+# Pack: php-symfony-common — persistence rules shared by EVERY Symfony
+# architecture profile (category: persistence). Loaded for lang=php,
+# framework=symfony regardless of the architecture signal. The DDD-only
+# persistence rules (aggregate DAO/DTO triad, typed-Id references, the
+# no-foreign-keys policy) live in ../php-symfony/persistence-ddd.yaml.
+#
+# Path globs use the {src}/{infra} discovery tokens (see ../SCHEMA.md): {src}
+# expands to every resolved source root, {infra} to the infra-layer directory
+# name. In a multi-package DDD monorepo a `## Layers` doc resolves {src} to
+# contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src and
+# {infra} to Bundle; a flat app keeps the greenfield default src/Infrastructure.
+
+- id: PHP-PERS-001
+  category: persistence
+  scope: generic
+  severity: must
+  title: "Persist via Doctrine entities, not raw array repositories"
+  rule: >
+    Persistence goes through mapped Doctrine entities. No repositories that
+    read/write associative arrays against hand-written SQL for domain state.
+  why: >
+    Mapped entities carry types, identity, and migrations; array bags carry
+    typos.
+  adapted_from: "PHP-PERS-001"
+  applies_to:
+    - "{src}/{infra}/**/*.php"
+    - "{src}/**/*Repository.php"
+  detect:
+    - "repositories returning/accepting associative arrays for domain state"
+  fix: >
+    Map the entity and rewrite the repository against it.
+  autofix: structural
+  acceptance:
+    - "GIVEN domain persistence THEN it uses mapped Doctrine entities"
+  validate:
+    - "review: changed repositories operate on mapped entities, not raw arrays, and the project's resolved DB-schema validator (e.g. `bin/console doctrine:schema:validate`, or the monorepo's `composer mono:db-validate` entrypoint) stays green"
+  validate_kind: review
+  phase: domain
+
+- id: PHP-PERS-002
+  category: persistence
+  scope: generic
+  severity: should
+  title: "Map UUID columns as binary UUID, not string"
+  rule: >
+    UUID columns use the binary UUID Doctrine type (e.g. uuid/binaryUuid per
+    the project's Doctrine stack, stored BINARY(16)), not VARCHAR(36).
+  why: >
+    Binary UUIDs are 16 bytes with index-friendly ordering; string UUIDs bloat
+    indexes.
+  adapted_from: "PHP-PERS-002"
+  depends_on_rules:
+    - "PHP-PERS-001"
+  applies_to:
+    - "{src}/{infra}/**/*.php"
+    - "{src}/Domain/**/*.php"
+    - "{src}/**/Entity/**/*.php"
+  detect:
+    - "ORM column type string/varchar holding UUIDs"
+  fix: >
+    Switch the column mapping to the UUID type and migrate.
+  autofix: structural
+  acceptance:
+    - "GIVEN a UUID column THEN its Doctrine type is the binary UUID type"
+  validate:
+    - "review: new UUID columns in the diff use the uuid Doctrine type, and the project's resolved DB-schema validator stays green"
+  validate_kind: review
+  phase: domain
+
+- id: PHP-PERS-003
+  category: persistence
+  scope: generic
+  severity: must
+  title: "Model collections as their own entity/table, not a JSON blob"
+  rule: >
+    A collection of structured child records (messages of a thread, items of
+    an order) is its own mapped entity with a relation — never a JSON column
+    on the parent.
+  why: >
+    JSON blobs can't be queried, indexed, migrated, or constrained; they decay
+    into schema-less mud.
+  adapted_from: "PHP-PERS-003"
+  depends_on_rules:
+    - "PHP-PERS-001"
+  applies_to:
+    - "{src}/Domain/**/*.php"
+    - "{src}/{infra}/**/*.php"
+  detect:
+    - "json ORM column holding an array of structured records"
+  fix: >
+    Extract the child entity + relation; migrate the blob.
+  autofix: structural
+  acceptance:
+    - "GIVEN a structured collection THEN it is a mapped child entity, not a JSON column"
+  validate:
+    - "review: no new JSON columns holding structured collections in the diff, and the project's resolved DB-schema validator stays green"
+  validate_kind: review
+  phase: domain
+
+- id: PHP-PERS-004
+  category: persistence
+  scope: generic
+  severity: should
+  title: "Map enum/value columns with a dedicated custom Doctrine DBAL type"
+  rule: >
+    Enum and value-object columns get a custom DBAL type that converts to/from
+    the PHP type — not string columns converted ad hoc at every read site.
+  why: >
+    The DBAL type converts once, centrally; ad-hoc conversion scatters and
+    drifts.
+  adapted_from: "PHP-PERS-004"
+  depends_on_rules:
+    - "PHP-PERS-001"
+  applies_to:
+    - "{src}/{infra}/**/*.php"
+  detect:
+    - "string columns + manual from()/value conversions around enum fields"
+  fix: >
+    Add a custom DBAL type and map the column with it.
+  autofix: structural
+  acceptance:
+    - "GIVEN an enum/VO column THEN a custom DBAL type owns the conversion"
+  validate:
+    - "review: new enum/VO columns in the diff are mapped via custom DBAL types, and the project's resolved DB-schema validator stays green"
+  validate_kind: review
+  phase: domain
+
+- id: PHP-PERS-006
+  category: persistence
+  scope: generic
+  severity: should
+  title: "Cover every FK-less relation/foreign-id column with an explicit index"
+  rule: >
+    In a project that does not use database foreign keys, every relation /
+    foreign-id column — a typed aggregate Id paired with a #[PersistentReference]
+    back-reference, or any join column pointing at another table without an FK
+    constraint — carries an explicit covering index, declared in the migration
+    that creates or alters the column. A column governed by a real DB foreign key
+    is exempt: the foreign key already creates that index.
+  why: >
+    A project on the no-foreign-keys policy references a foreign aggregate by a
+    typed Id instead of a mapped foreign-entity association, so the schema has no
+    foreign-key constraint on that id column. A foreign key would auto-create the
+    backing index; without one, nothing guarantees the column is indexed and every
+    join or filter on it table-scans. The covering index restores the lookup
+    performance the missing FK would otherwise have provided.
+  applies_to:
+    - "**/migrations/**/*.php"
+    - "{src}/{infra}/**/*.php"
+    - "{src}/**/*Data.php"
+  detect:
+    - "a relation/foreign-id column (a typed Id + #[PersistentReference], or any FK-less join column) created or altered in a migration with no covering index on it"
+    - "a foreign-id column carrying neither a DB foreign-key constraint nor a covering index"
+  fix: >
+    Add a covering index on the relation/foreign-id column in the migration that
+    creates or alters it (an index line naming that column). In a project that does
+    use DB foreign keys, add the foreign-key constraint instead — it creates the
+    index and this rule no longer applies.
+  autofix: structural
+  acceptance:
+    - "GIVEN a project with no DB foreign keys, WHEN a relation/foreign-id column is added or altered, THEN a covering index on that column is declared in the same migration"
+    - "GIVEN a column governed by a DB foreign-key constraint THEN the rule is inert — the foreign key already provides the index"
+  validate:
+    - "review: every FK-less relation/foreign-id column added or altered in the diff has a covering index declared in its migration"
+    - "review: the rule stays inert where a DB foreign-key constraint governs the column — no covering-index demand on FK-backed columns"
+  validate_kind: review
+  phase: domain
+
+- id: PHP-MIG-001
+  category: persistence
+  scope: generic
+  severity: should
+  title: "Migrations are final, strict, reversible, idempotent, and component-owned"
+  rule: >
+    A database migration is a final class with declare(strict_types=1), named
+    <timestamp>_<scope>_<snake_description> and colocated with the component that
+    owns the tables it touches. Prefer a reversible change() over paired up()/down();
+    guard structural edits with existence checks (hasColumn/hasIndex or platform
+    equivalent) so a re-run is idempotent; use the migration API's type constants,
+    not raw SQL type strings; store datetimes in UTC.
+  why: >
+    Migrations are the one code path that cannot be hot-fixed after it runs in
+    production: irreversible, non-idempotent, or misplaced migrations turn a bad
+    deploy into a manual data-recovery incident, and per-component ownership keeps
+    a monorepo's schema history attributable.
+  applies_to:
+    - "**/migrations/**/*.php"
+  detect:
+    - "a migration class that is not final or missing declare(strict_types=1)"
+    - "an up()/down() pair where a reversible change() suffices"
+    - "a structural edit without an existence guard, or raw SQL type strings where API constants exist"
+    - "a migration placed outside the component that owns its tables"
+  fix: >
+    Make the class final + strict, convert to change() where reversible, add
+    hasColumn/hasIndex guards, switch to the API's type constants, and move the
+    file next to the owning component's migration path.
+  autofix: structural
+  acceptance:
+    - "GIVEN a new migration THEN it is a final strict class, named <timestamp>_<scope>_<snake_description>, colocated with its owning component"
+    - "GIVEN a reversible structural change THEN it uses change(), guarded to be idempotent"
+  validate:
+    - "review: new migrations in the diff are final + strict_types, timestamp-named, colocated with the owning component, reversible (change() preferred), and guarded for idempotent re-runs"
+  validate_kind: review
+  phase: domain

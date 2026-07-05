@@ -8,7 +8,7 @@ namespace** — the vendor prefix discovered from the project's `composer.json`
 PSR-4 autoload (or the `docs/architecture/layout.md` `## Layers` doc), falling
 back to `App\` only for a greenfield project, and ASK when ambiguous. So
 namespaces follow `<RootNs>\<Bc>\<Layer>\<Module>\...` (shown here with the
-greenfield `App\` default; substitute the discovered vendor, e.g. `Previo2\`).
+greenfield `App\` default; substitute the discovered vendor, e.g. `Acme\`).
 
 ## Domain — the aggregate triad
 
@@ -69,7 +69,7 @@ catalogue rule PHP-ARCH-017 carries this ownership check.
   query-repository interface declared in the Application layer — it does **not**
   reuse the Domain repository. Query services are standalone (they never call each
   other) and return `readonly` result DTOs. Naming: `<X>QueryService` implementing
-  the shared `<X>QueryContract` (the contract lives in `contexts/previo/src` — see
+  the shared `<X>QueryContract` (the contract lives in `contexts/shared/src` — see
   shared-kernel.md).
 - **Command handlers** (`Command/`) do the writing. The handler entry method is
   `handle()` and everything inside it is **atomic** — Symfony wraps `handle()` in a

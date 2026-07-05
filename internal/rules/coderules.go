@@ -68,8 +68,14 @@ type MatchResult struct {
 // []CodeRule sequence — the authored catalogue shape (no `rules:` wrapper), the
 // same shape resolve enumerates and the golden catalogue test asserts — and
 // concatenates the rules, stamping each with its source path.
+//
+// Duplicate ids implement the SCHEMA.md override contract: a later definition
+// REPLACES the earlier one in place (resolve order puts local/ last, so a
+// project-local rule reusing an embedded id wins), keeping the catalogue's
+// first-seen ordering stable and Match/Check free of double payloads.
 func LoadCodeRules(projectRoot string, resolved []ResolvedFile) ([]CodeRule, error) {
 	var out []CodeRule
+	index := map[string]int{}
 	for _, f := range resolved {
 		if f.Kind != KindCodeRules {
 			continue
@@ -84,8 +90,13 @@ func LoadCodeRules(projectRoot string, resolved []ResolvedFile) ([]CodeRule, err
 		}
 		for i := range ruleSet {
 			ruleSet[i].sourcePath = f.Path
+			if prev, dup := index[ruleSet[i].ID]; dup && ruleSet[i].ID != "" {
+				out[prev] = ruleSet[i]
+				continue
+			}
+			index[ruleSet[i].ID] = len(out)
+			out = append(out, ruleSet[i])
 		}
-		out = append(out, ruleSet...)
 	}
 	return out, nil
 }
@@ -234,9 +245,11 @@ func RenderAcceptanceLine(r CodeRule) string {
 // recursive grep over the matched footprint. grep matching a forbidden pattern
 // exits 0 → `!` flips it to a non-zero (failed) check, so a violation fails the
 // gate. The runnable-ness baseline must NEVER be run against this negated form
-// (its `!` would mask a grep exit-2 as success).
+// (its `!` would mask a grep exit-2 as success). The `-e` flag marks the signal
+// as a pattern so a dash-leading regex (`->persist…`) is never parsed as an
+// option — the same guard runnable and signalMatches apply.
 func RenderValidateCmd(signal string, files []string) string {
-	return `sh -c '! grep -rE "` + signal + `" ` + strings.Join(files, " ") + `'`
+	return `sh -c '! grep -rE -e "` + signal + `" ` + strings.Join(files, " ") + `'`
 }
 
 // runnable is the plan-time gate separating "bad regex" (drop) from "file not
@@ -252,7 +265,7 @@ func runnable(signal, examplesBad string) bool {
 	if examplesBad == "" {
 		return true // compile success is the whole gate when there is no example
 	}
-	cmd := exec.Command("grep", "-E", signal)
+	cmd := exec.Command("grep", "-E", "-e", signal)
 	cmd.Stdin = strings.NewReader(examplesBad)
 	err := cmd.Run()
 	if err == nil {

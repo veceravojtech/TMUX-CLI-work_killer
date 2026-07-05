@@ -1,0 +1,65 @@
+# Pack: docker — code rules for compose topology files (category: docker).
+# Loaded whenever the project runs in docker mode (run_target: docker,
+# conservative on unknown). Globs are literal compose-file paths — no
+# {src}/{infra} source-root semantics.
+
+- id: DOCKER-NAME-001
+  category: docker
+  scope: generic
+  severity: must
+  title: "Compose stack is named for the application — no bare generic container names"
+  rule: >
+    The compose stack carries the application's name, not generic role names.
+    The compose project name IS the app name (a top-level `name:` in the compose
+    file or COMPOSE_PROJECT_NAME in the main .env), and every service declares a
+    project-prefixed `container_name: <app>_<role>` (e.g. myshop_app, myshop_db,
+    myshop_fe). A bare role as the container name (app, php, web, db, mysql,
+    node, …) is a violation. The service KEY may stay the plain role (service
+    keys are already project-scoped); the app-toolchain service and the compose
+    project name are additionally documented in
+    docs/architecture/test-environment.md ("App Service:" / "Compose Project:"
+    fields) so the daemon's container wrap resolves them deterministically.
+  why: >
+    A container literally named "app" or "db" collides with every other project
+    on the same host, makes docker ps / logs / metrics unattributable, and hides
+    which stack a stray container belongs to; naming the project after the app
+    prefixes its networks and volumes too, so the whole stack stays identifiable
+    and multiple projects coexist on one machine.
+  applies_to:
+    - "**/docker-compose*.yml"
+    - "**/docker-compose*.yaml"
+    - "**/compose.yml"
+    - "**/compose.yaml"
+    - "docker-compose*.yml"
+    - "docker-compose*.yaml"
+    - "compose.yml"
+    - "compose.yaml"
+  detect:
+    - "a container_name that is a bare generic role (app, php, web, db, mysql, node, …) with no app-name prefix"
+    - "a compose file without a project name (no top-level name: and no COMPOSE_PROJECT_NAME in the main .env)"
+    - "an app service rename not reflected in test-environment.md's App Service / Compose Project fields"
+  fix: >
+    Set the compose project name to the app name (top-level `name:` or
+    COMPOSE_PROJECT_NAME) and prefix every container_name with it
+    (<app>_<role>); record the app-toolchain service and project name in
+    docs/architecture/test-environment.md.
+  autofix: safe
+  acceptance:
+    - "GIVEN a compose file THEN the compose project name equals the application name (top-level name: or COMPOSE_PROJECT_NAME)"
+    - "GIVEN a service with a container_name THEN it is app-prefixed (<app>_<role>), never a bare generic role"
+    - "GIVEN the app-toolchain service THEN test-environment.md documents it (App Service / Compose Project fields)"
+  validate:
+    - "review: compose project name equals the app name and container_name values are app-prefixed; test-environment.md App Service / Compose Project fields match the compose file"
+  validate_kind: mixed
+  phase: deployment
+  signal: 'container_name:\s*(app|php|web|db|mysql|mariadb|postgres|node|fe|frontend|redis|rabbitmq|nginx|mailhog|elastic|elasticsearch)\s*$'
+  examples:
+    bad: |
+      services:
+        php:
+          container_name: app
+    good: |
+      name: myshop
+      services:
+        php:
+          container_name: myshop_app

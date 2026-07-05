@@ -1,44 +1,16 @@
-# Pack: php-symfony — architecture rules (category: architecture).
-# Split per-category from the former code-rules.yaml monolith. See ../SCHEMA.md
-# for the schema and the sibling convention docs (monorepo-layout.md,
-# context-layers.md, shared-kernel.md, app-layer.md) for the layer contract
-# these rules enforce point-wise.
+# Pack: php-symfony — DDD-monorepo architecture rules (category: architecture).
+# Loaded only for architecture=ddd (see ../manifest.yaml). The architecture
+# rules every Symfony profile shares (view logic, PSR-4 mirroring, speculative
+# seams, module roots) live in ../php-symfony-common/architecture.yaml.
 #
 # Path globs use the {src}/{infra} discovery tokens (see ../SCHEMA.md): {src}
 # expands to every resolved source root, {infra} to the infra-layer directory
-# name. For the P2 monorepo topology a `## Layers` doc resolves {src} to
-# contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src and {infra}
-# to Bundle. Tokenizing COLLAPSES the former context-vs-project glob distinction
-# (contexts/*/src/**/*Handler.php and projects/*/src/... both become {src}/...);
-# this is intentional — the goal is portability (rules match the real tree), and
-# deptrac remains the authoritative boundary enforcer for the mixed rules.
-
-- id: PHP-ARCH-001
-  category: architecture
-  scope: generic
-  severity: must
-  title: "No business logic in views/templates — push it into the service/domain"
-  rule: >
-    Twig templates and view-layer classes contain no business rules. Compute
-    the decision in the domain/service and expose a simple accessor.
-  why: >
-    Logic in views is untestable and duplicates per template; the model stays
-    the single source of truth.
-  adapted_from: "PHP-ARCH-001"
-  applies_to:
-    - "**/templates/**/*.twig"
-    - "{src}/**/View/**/*.php"
-  detect:
-    - "conditional business rules computed inside a template"
-  fix: >
-    Move the computation into the domain/service; the view reads one accessor.
-  autofix: structural
-  acceptance:
-    - "GIVEN a view/template THEN it contains no business conditionals"
-  validate:
-    - "review: changed templates/views contain no business logic"
-  validate_kind: review
-  phase: application
+# name. For the multi-package monorepo topology a `## Layers` doc resolves
+# {src} to contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src
+# and {infra} to Bundle. Tokenizing COLLAPSES the former context-vs-project
+# glob distinction; this is intentional — the goal is portability (rules match
+# the real tree), and deptrac remains the authoritative boundary enforcer for
+# the mixed rules.
 
 - id: PHP-ARCH-002
   category: architecture
@@ -122,66 +94,6 @@
   validate_kind: mixed
   phase: application
 
-- id: PHP-ARCH-005
-  category: architecture
-  scope: generic
-  severity: should
-  title: "Don't add an interface or async message bus when a synchronous call suffices"
-  rule: >
-    No single-implementation interface and no async bus hop for a call that is
-    inherently synchronous. Add the seam when a second implementation or a
-    real async need exists.
-  why: >
-    Needless indirection adds files and cognitive load with no benefit.
-  adapted_from: "PHP-ARCH-005"
-  applies_to:
-    - "{src}/**/*.php"
-  detect:
-    - "a new interface with exactly one implementation and no test double need"
-    - "a message dispatched async where the caller awaits the outcome"
-  fix: >
-    Call the service directly; drop the interface/bus indirection.
-  autofix: structural
-  acceptance:
-    - "GIVEN a synchronous use case THEN no speculative interface or bus hop wraps it"
-  validate:
-    - "review: no speculative interfaces or async hops introduced in the diff"
-  validate_kind: review
-  phase: application
-
-- id: PHP-ARCH-006
-  category: architecture
-  scope: generic
-  severity: should
-  title: "Module root holds only controllers; one controller per resource, support classes in a subfolder"
-  rule: >
-    In a feature module the root contains only *Controller.php. Each REST
-    resource gets its own thin controller; that resource's Request/Response/
-    Command DTOs and helpers live in a matching subfolder.
-  why: >
-    Keeps the module root navigable; one fat controller serving two resources
-    tangles unrelated concerns.
-  adapted_from: "PHP-ARCH-006"
-  applies_to:
-    - "{src}/*/*Controller.php"
-    - "{src}/*/*Request.php"
-    - "{src}/*/*Response.php"
-  detect:
-    - "Request/Response/Command DTOs loose in a module root"
-    - "one controller exposing actions for two distinct resources"
-  fix: >
-    Split per resource; move support classes into a folder named after the
-    resource; leave only controllers at the root.
-  autofix: structural
-  acceptance:
-    - "GIVEN a module root THEN it holds only controllers; support classes sit in resource subfolders"
-    - "GIVEN a controller THEN it serves a single resource"
-  validate:
-    - "review: module roots in the diff hold only *Controller.php; DTOs live in resource subfolders"
-    - "review: each changed controller serves exactly one resource"
-  validate_kind: review
-  phase: application
-
 - id: PHP-ARCH-007
   category: architecture
   scope: generic
@@ -250,9 +162,9 @@
   title: "Cross-context reads go through a published query contract, not a foreign service"
   rule: >
     When one context needs another context's data, it consumes a published
-    XxxQueryContract/XxxContract from the shared kernel (contexts/previo/src) and
-    receives contract-typed result objects — never a foreign concrete query
-    service or DTO.
+    XxxQueryContract/XxxContract from the shared-kernel context (greenfield
+    default contexts/shared/src) and receives contract-typed result objects —
+    never a foreign concrete query service or DTO.
   why: >
     Reading through the contract keeps the consumer decoupled from the producer's
     internal shape; the producer can change its query service without a ripple.
@@ -270,38 +182,6 @@
   validate_kind: review
   phase: architecture
 
-- id: PHP-ARCH-010
-  category: architecture
-  scope: generic
-  severity: must
-  title: "A class's namespace mirrors its directory path under the resolved root namespace"
-  rule: >
-    Every class's namespace mirrors its directory path under the project's
-    resolved root namespace (the PSR-4 vendor prefix discovered from composer.json
-    autoload / docs/architecture/layout.md; App\ only as the greenfield default).
-    A file at <root>/<A>/<B>/Foo.php is namespaced <RootNs>\<A>\<B>; the prefix is
-    never hardcoded.
-  why: >
-    PSR-4 autoloading binds the root namespace to a directory and each sub-namespace
-    to a subdirectory; a namespace that does not mirror its path silently fails to
-    autoload and a hardcoded vendor prefix misdirects every other project.
-  applies_to:
-    - "{src}/**/*.php"
-  detect:
-    - "a class whose namespace does not mirror its directory path under the resolved root"
-    - "a hardcoded vendor/root prefix that ignores the project's PSR-4 root"
-  fix: >
-    Align the namespace to the file's path under the resolved PSR-4 root (or move
-    the file); never hardcode the vendor prefix.
-  autofix: structural
-  acceptance:
-    - "GIVEN a class THEN its namespace mirrors its directory path under the resolved root namespace"
-  validate:
-    - "composer dump-autoload --strict-psr"
-    - "review: changed classes' namespaces mirror their directory path under the resolved root namespace"
-  validate_kind: mixed
-  phase: architecture
-
 - id: PHP-ARCH-011
   category: architecture
   scope: generic
@@ -311,7 +191,7 @@
     A framework entry point — a controller, CLI command, message consumer/processor,
     event listener, or external-system adapter — lives in the project's resolved
     framework entry-point layer (the app layer: contexts/<bc>/app or
-    projects/<app>/src in the P2 monorepo; the entry location resolved from
+    projects/<app>/src in the monorepo topology; the entry location resolved from
     discovery / the generated skeleton for other layouts — ASK when unknown), never
     inside the pure domain/application library (contexts/<bc>/src Domain/Application).
     That app layer is the only layer permitted to use framework attributes
@@ -606,3 +486,42 @@
   examples:
     bad: 'public function __construct(public readonly string $userId, public readonly string $email) {}'
     good: 'public function __construct(public readonly UserRegisteredEventRecord $record) {}'
+
+- id: PHP-ARCH-019
+  category: architecture
+  scope: generic
+  severity: must
+  title: "The Domain layer imports no ORM, DBAL, or framework namespace"
+  rule: >
+    Code under Domain/ never imports Doctrine\ORM, Doctrine\DBAL, or a Symfony
+    framework namespace (Symfony\Component, Symfony\Bundle, Symfony\Bridge).
+    The domain vendor allow-list is deliberately tiny — collection primitives
+    (Doctrine\Common\Collections), uuid/math value libraries, assertion and
+    contract interfaces (Symfony\Contracts, Psr\*) — everything technology-bound
+    belongs in the {infra} layer. deptrac pins the full allow-list per context;
+    this rule catches the direct import before deptrac runs.
+  why: >
+    One ORM or framework import in Domain drags the whole persistence/HTTP stack
+    into the layer that must stay unit-testable in memory and portable across
+    infrastructure rewrites; the allow-list is the layer contract.
+  applies_to:
+    - "{src}/Domain/**/*.php"
+  detect:
+    - "use Doctrine\\ORM\\... / use Doctrine\\DBAL\\... inside a Domain class"
+    - "use Symfony\\Component\\... / Symfony\\Bundle\\... inside a Domain class"
+  fix: >
+    Move the technology-bound code to the {infra} layer behind a Domain-owned
+    interface, or replace the import with an allowed vendor (Collections,
+    Contracts, Psr) primitive.
+  autofix: structural
+  acceptance:
+    - "GIVEN a Domain-layer file THEN it imports no Doctrine\\ORM, Doctrine\\DBAL, or Symfony framework namespace"
+  validate:
+    - "vendor/bin/deptrac analyse"
+    - "review: changed Domain files import only allow-listed vendors (Collections, uuid/math, Contracts, Psr) — no ORM/DBAL/framework namespace"
+  validate_kind: mixed
+  phase: architecture
+  signal: 'use\s+(Doctrine\\(ORM|DBAL)|Symfony\\(Component|Bundle|Bridge))'
+  examples:
+    bad: 'use Doctrine\ORM\Mapping as ORM;'
+    good: 'use Doctrine\Common\Collections\ArrayCollection;'

@@ -3,7 +3,7 @@
 > Extends: `_base/quality-gates.md` — phase gates (DG/MG/IG/PG/CC/GM) are defined there.
 > This template adds PHP-specific tooling: PHPStan, ECS, and Deptrac enforcement.
 
-> **Monorepo topology:** P2 has no root `src/`; code lives in `contexts/*/src`, `projects/*/src`, and `packages/*/src`. Quality runs per-component via `make` targets (`make check-all` / `make stan` / `make cs` / `make deptrac`) or `composer p2:*` — never against a flat repo-root `src/`.
+> **Monorepo topology:** The monorepo has no root `src/`; code lives in `contexts/*/src`, `projects/*/src`, and `packages/*/src`. Quality runs per-component via `make` targets (`make check-all` / `make stan` / `make cs` / `make deptrac`) or `composer mono:*` — never against a flat repo-root `src/`.
 
 ## PHPStan Configuration
 
@@ -87,8 +87,8 @@ Extends base IG gates with concrete PHP commands:
 
 | Base Gate | PHP Pass Condition | Command |
 |-----------|--------------------|---------|
-| IG-01 | Unit tests pass | `composer p2:test --component=<name> --type=unit` exit 0 |
-| IG-02 | Integration tests pass | `composer p2:test --component=<name> --type=integration` exit 0 |
+| IG-01 | Unit tests pass | `composer mono:test --component=<name> --type=unit` exit 0 |
+| IG-02 | Integration tests pass | `composer mono:test --component=<name> --type=integration` exit 0 |
 | IG-06 | No cross-layer violations | `make deptrac` exit 0 |
 
 ## Final Gate Checks
@@ -114,8 +114,8 @@ FG-08, FG-09 are Playwright (non-PHP) — see base template.
 make check-all
 
 # Or scope to a single component under change:
-composer p2:test --component=<name> --type=unit \
-  && composer p2:test --component=<name> --type=integration \
+composer mono:test --component=<name> --type=unit \
+  && composer mono:test --component=<name> --type=integration \
   && make stan \
   && make cs \
   && make deptrac

@@ -21,8 +21,8 @@
   </substep>
 
   <substep n="0.3" title="Topology + quality-gate resolution">
-    <action>Run via Bash: `tmux-cli rules resolve --kind=convention` (append `--lang=&lt;LANG&gt; --framework=&lt;FRAMEWORK&gt;` when those signals are known, to override filesystem detection). It prints one convention rule-file path per line for THIS project's stack. Read EVERY printed file.</action>
-    <action>Run via Bash: `tmux-cli rules resolve --kind=code-rules` (same `--lang`/`--framework` flags when known). It prints the project's code-rule file paths. Read EVERY printed file — these define the catalogue Stage 1 checks the diff against.</action>
+    <action>Run via Bash: `tmux-cli rules resolve --kind=convention` (append `--lang=&lt;LANG&gt; --framework=&lt;FRAMEWORK&gt; --architecture=&lt;ARCHITECTURE&gt;` when those signals are known, to override filesystem detection). It prints one convention rule-file path per line for THIS project's stack. Read EVERY printed file.</action>
+    <action>Run via Bash: `tmux-cli rules resolve --kind=code-rules` (same `--lang`/`--framework`/`--architecture` flags when known). It prints the project's code-rule file paths. Read EVERY printed file — these define the catalogue Stage 1 checks the diff against.</action>
     <action>From the loaded convention packs, resolve the TOPOLOGY: SOURCE ROOTS (where production code lives), LAYER NAMES (the architectural layering the packs declare), ROOT NAMESPACE (the project's top-level namespace/module prefix), and the QUALITY-GATE COMMANDS (ALL gate commands the packs prescribe — static-analysis, lint/style, tests, AND any further gates such as architecture/boundary, manifest/schema, and db-schema — emitted bare, host-style; the daemon wraps them at dispatch). Carry the quality-gate command list forward IN FULL — the COMPLETE resolved set, never just the static-analysis/lint/style/tests triad — it is the GATE_SET floor every emitted goal's validate renders.</action>
     <check condition="`tmux-cli rules resolve` prints no convention files (empty catalogue / greenfield)">
       <action>Apply greenfield DEFAULTS and mark each as a default (not a detected value): SOURCE ROOTS = ["src"]; LAYER NAMES = none declared; ROOT NAMESPACE = empty; QUALITY-GATE COMMANDS = none. With no catalogue and no quality gates there is nothing to enforce — record this; Stage 1 will report "no resolved rules / skeleton topology" and likely emit zero goals.</action>
@@ -43,7 +43,7 @@
     <action>Compose ONE structured context block carrying everything the later stages consume:</action>
     <emit>
       • SCOPE: the raw $ARGUMENTS scope token (empty &#8594; working-tree default) for Stage 1 to resolve into `tmux-cli rules check` flags.
-      • SIGNALS: lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows — each with its source (detected / greenfield-default) and rationale for any filled-in unknown.
+      • SIGNALS: lang, framework, architecture, run_target, has_database, has_frontend, frontend_mode, n_auth_flows — each with its source (detected / greenfield-default) and rationale for any filled-in unknown.
       • TOPOLOGY: source roots, layer names, root namespace, and the FULL quality-gate command list (static-analysis, lint/style, tests, plus any architecture/boundary, manifest/schema, and db-schema gates the packs prescribe) — each tagged detected-from-packs vs greenfield-default.
       • EXEC ENVIRONMENT: RUN_TARGET (docker | local) + the app / node container services + the published host ports (0.3a) — the env the daemon threads into EVERY fix-goal so its validate runs where the toolchain lives (validates stay bare; the daemon wraps toolchain commands into their container in docker mode).
       • CODE RULES: the resolved code-rule file paths (the catalogue Stage 1 checks against), or "none".

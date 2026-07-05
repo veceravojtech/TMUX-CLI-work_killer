@@ -16,5 +16,5 @@ location and style, shared-component reuse, boolean-prop shape, date handling,
 in this pack.
 
 Changed `*.vue`/`*.ts` files must also pass the frontend machine gate: `make jsf`
-(the previo2_fe toolchain = ESLint + Stylelint + vue-tsc + Vitest), or the
+(the frontend-container toolchain = ESLint + Stylelint + vue-tsc + Vitest), or the
 equivalent run scoped to the changed files — a lint or type error turns it red.

@@ -36,7 +36,7 @@
     <check condition="no guideline docs found in the project">
       <action>Record "no project guideline docs discovered" and contribute no guideline violations. (portable — never fabricate a doc.)</action>
     </check>
-    <rule critical="true">PORTABILITY: guideline docs are DISCOVERED by glob + nearest-wins precedence, NEVER a hardcoded `docs/ai/PREVIO2.md` / `AGENTS.md` literal in this command — any markdown the project ships is a candidate. The catalogue (`tmux-cli rules check`) and the discovered guideline docs are COMPLEMENTARY rule sources: the catalogue is the machine-matchable rules, the docs are the project's written conventions the catalogue may not yet encode. Audit against BOTH.</rule>
+    <rule critical="true">PORTABILITY: guideline docs are DISCOVERED by glob + nearest-wins precedence, NEVER a hardcoded `docs/ai/{PROJECT}.md` / `AGENTS.md` literal in this command — any markdown the project ships is a candidate. The catalogue (`tmux-cli rules check`) and the discovered guideline docs are COMPLEMENTARY rule sources: the catalogue is the machine-matchable rules, the docs are the project's written conventions the catalogue may not yet encode. Audit against BOTH.</rule>
   </substep>
 
   <substep n="1.4" title="Detect failing quality gates on the footprint">

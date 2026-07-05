@@ -15,7 +15,7 @@
       </substep>
 
       <substep n="3.21b.2" title="Derive the coarse deliverable_area">
-        <action>Set I18N_FOUNDATION_AREA = the translator-foundation deliverable directory in the resolved topology — contexts/previo/src/Exception/ (the contexts/previo shared-kernel exception directory the shard's old DELIVERABLES referenced, home of the TranslatableDomainException base every other context depends on), where contexts/previo is the published shared-kernel context from the resolved conventions/topology. This is a COARSE path (the depinfer produce/consume seed + the elaborator's tree-read anchor), NOT a glob and NOT a per-file path.</action>
+        <action>Set I18N_FOUNDATION_AREA = the translator-foundation deliverable directory in the resolved topology — contexts/shared/src/Exception/ (the contexts/shared shared-kernel exception directory the shard's old DELIVERABLES referenced, home of the TranslatableDomainException base every other context depends on), where contexts/shared is the published shared-kernel context from the resolved conventions/topology. This is a COARSE path (the depinfer produce/consume seed + the elaborator's tree-read anchor), NOT a glob and NOT a per-file path.</action>
         <rule>Do NOT read layout.md to bind SRC_ROOTS, resolve translation.yaml, or author any acceptance/validate/investigator/not-in-scope/scope here — those are Tier-2 (/tmux:elaborate authors them at dispatch, including the genuine PHP-I18N-001 cross-cutting injection). The roadmap skeleton commits only to the coarse deliverable_area.</rule>
       </substep>
 
@@ -24,7 +24,7 @@
         <params>
           <param name="description">Establish single-locale translator foundation + TranslatableDomainException base (PHP-I18N-001)</param>
           <param name="phase">cross-cutting</param>
-          <param name="deliverable_area">I18N_FOUNDATION_AREA (coarse, e.g. contexts/previo/src/Exception/)</param>
+          <param name="deliverable_area">I18N_FOUNDATION_AREA (coarse, e.g. contexts/shared/src/Exception/)</param>
           <param name="depends_on">[SCAFFOLD_GOAL_ID] — the scaffold goal ID collected in substep 3.21b.1 (NEVER the domain/error-handling goals)</param>
           <param name="status">roadmap</param>
           <param name="max_retries">3</param>

@@ -381,7 +381,7 @@
     committing.
   why: >
     A committed debug call leaks internals, can dump sensitive data into output,
-    and dd() halts execution in production — P2 bans them outright.
+    and dd() halts execution in production — production catalogues ban them outright.
   applies_to:
     - "{src}/**/*.php"
   detect:

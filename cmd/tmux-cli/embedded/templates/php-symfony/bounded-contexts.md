@@ -104,7 +104,7 @@ deptrac:
           value: App\\Share\\.*
 ```
 
-### DomainAndShare Composite Layer (previo2 pattern)
+### DomainAndShare Composite Layer (composite-layer pattern)
 
 Each BC's domain layer is grouped with Share into a composite layer. This allows domain code to use shared types without Deptrac violations:
 

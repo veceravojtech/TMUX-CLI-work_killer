@@ -12,13 +12,13 @@ here — keep them separate:
 ## Resolving
 
 ```
-tmux-cli rules resolve [--kind=convention|code-rules] [--lang=php] [--framework=symfony] [--json]
+tmux-cli rules resolve [--kind=convention|code-rules] [--lang=php] [--framework=symfony] [--architecture=ddd|basic] [--json]
 ```
 
 Prints one project-relative file path per line (stderr carries warnings).
-`--lang`/`--framework` pass the discovery session state (LANG/FRAMEWORK) —
-they beat filesystem detection and are how greenfield projects (no manifest
-file yet) resolve their stack packs.
+`--lang`/`--framework`/`--architecture` pass the discovery session state
+(LANG/FRAMEWORK/ARCHITECTURE) — they beat filesystem detection and are how
+greenfield projects (no manifest file yet) resolve their stack packs.
 
 Unknown capability signals (missing/unparseable discovery docs) load their
 packs conservatively with a warning. Unknown stack signals load nothing
@@ -45,17 +45,43 @@ front-end code rules:
   lint, so it ships binding planner conventions and nothing more.
 - **`none`** — no front-end packs load.
 
-**`lang: php` + `framework: symfony`** selects the `php-symfony` pack, which
-targets a **P2 multi-package DDD monorepo** (not a flat `src/<BC>` skeleton). Its
-conventions — `monorepo-layout`, `context-layers`, `shared-kernel`, `app-layer`
-— describe the layout the planner emits:
+## Symfony architecture profiles
+
+**`lang: php` + `framework: symfony`** always selects the `php-symfony-common`
+pack — the practices every Symfony profile shares: the PHPStan/ECS/manifest
+quality gates, env/config hygiene, i18n, UUID typing, tenant-isolation testing,
+persistence hygiene (mapped entities, binary UUIDs, custom DBAL types, the
+JSON-blob ban, FK-less index coverage, migration hygiene) and the
+architecture rules that hold in any layout (no view logic, PSR-4 mirroring,
+no speculative seams, controller-per-resource module roots).
+
+A third stack axis, **`architecture: ddd | basic`**, then picks the profile:
+
+- **`ddd`** (also the fallback when the signal is unknown — it is the topology
+  this generator scaffolds by default; unknown loads it with a warning) — the
+  full-grade **multi-package DDD monorepo** `php-symfony` pack.
+- **`basic`** (must be declared — an `**Architecture:** basic` line in
+  `docs/architecture/test-environment.md`, or `--architecture=basic`) — the
+  `php-symfony-basic` pack: a flat single-package Symfony app. Conventions-only
+  (services own business logic, boundary validation, voter authorization,
+  migration-only schema changes, one entrypoint per quality gate); every
+  point-wise code rule it needs already loads via `php` + `php-symfony-common`.
+
+The signal is detected from an explicit `Architecture:` line, else derived
+`ddd` from on-disk DDD markers (`docs/architecture/bounded-contexts.md`,
+`contexts/*/composer.json`), else unknown.
+
+The `php-symfony` (ddd) pack targets a **multi-package DDD monorepo** (not a
+flat `src/<BC>` skeleton). Its conventions — `monorepo-layout`,
+`context-layers`, `shared-kernel`, `app-layer`, `security` — describe the
+layout the planner emits:
 
 - `contexts/<bc>/src/{Domain,Application}` — the bounded-context library
   (framework-free), with `contexts/<bc>/src/Bundle/{Domain,Application}` as the
   **infrastructure layer** (the only layer touching Doctrine/MySQL — there is no
   `Infrastructure/` directory) and `contexts/<bc>/app/` as the framework
   entry-point (controllers/CLI/processors).
-- `contexts/previo/src` — the **shared kernel** context (published language +
+- `contexts/shared/src` — the **shared kernel** context (published language +
   contracts), the only legal cross-context touchpoint.
 - `projects/<app>/` — deployables composing one or more contexts; `packages/<pkg>`
   — shared libraries with no domain ownership.
@@ -64,7 +90,21 @@ The `php-symfony` code rules glob onto `contexts/**`, `projects/**`, and
 `packages/**` (e.g. PHP-TYPE-003's automated `Assert\Uuid|Assert::uuid` UUID
 check over `contexts/*/src/**` and `contexts/*/app/src/**`), so an illegal
 cross-context import or a layering breach is an analysis-time failure, not a
-review guess.
+review guess. Two hard house policies of the ddd profile are code rules with
+automated signals: **PHP-PERS-009** — NO database foreign keys (relations are
+typed-Id columns with covering indexes; migrations never call `addForeignKey`
+or emit `FOREIGN KEY` DDL) — and **PHP-PERS-010** — Doctrine mapping lives in
+infra-layer **PHP mapping files** (`{infra}/Persistence/Doctrine/Mapping/`);
+Domain/Application classes carry no `#[ORM\...]` attribute. **PHP-ARCH-019**
+backs deptrac by grepping Domain files for ORM/DBAL/framework imports.
+
+The `docker` pack additionally ships **DOCKER-NAME-001** for every
+`docker-compose*.yml` / `compose*.yaml`: the compose project name IS the app
+name and every `container_name` is app-prefixed (`<app>_<role>`) — a bare
+generic role (`container_name: app`) is an automated violation. Keep the
+service KEY as the role and document it in `test-environment.md`'s
+`App Service:` / `Compose Project:` fields so the daemon's container wrap
+resolves it.
 
 ## code-rules YAML schema (per rule)
 
@@ -79,8 +119,8 @@ from a hardcoded source layout, resolved once at load time before matching:
 - `{src}` — the project's source-root globs. Expands to one glob per resolved
   source root, so a rule routes to wherever code actually lives (top-level
   `src/` greenfield, or `contexts/*/src`, `projects/*/src`, … in a monorepo).
-- `{infra}` — the infra-layer directory name (greenfield `Infrastructure`; a P2
-  monorepo's `Bundle`).
+- `{infra}` — the infra-layer directory name (greenfield `Infrastructure`; a
+  multi-package monorepo's `Bundle`).
 
 The Layout is resolved (read-only, never interactive) in precedence order:
 `docs/architecture/layout.md` `## Layers` (authoritative) → `composer.json`
@@ -118,7 +158,11 @@ Project-local rules go under:
 
 `local/` is always included by resolve and never touched by setup. When a
 local rule reuses an embedded rule's `id`, the local definition wins —
-that's how a project tightens or overrides a default.
+`LoadCodeRules` replaces the embedded rule in place, so `match`/`check` see
+exactly one definition, and `rules lint --embedded` treats the local/embedded
+id collision as the override it is (a duplicate WITHIN local files, or within
+the embedded catalogue, is still flagged). That's how a project tightens or
+overrides a default.
 
 Ingesting review feedback (GitLab MRs etc.) into rules is a per-project
 workflow: distill the feedback into the schema above (the MR comment is a

@@ -10,11 +10,11 @@ import (
 
 // TestPhpSymfonyDiscoveryTriad locks the php-symfony aggregate-implementation
 // triad capture into BOTH embedded templates. The discovery template must ASK
-// the pattern (defaulting to the previo2 triad for the monorepo pack) and the
+// the pattern (defaulting to the aggregate triad for the monorepo pack) and the
 // domain-model output template must DESCRIBE each aggregate as a triad, so
 // downstream generation emits triad specs (root + <X>Data DAO + readonly <X>DTO
 // + <X>EventRecord events implementing <Aggregate>EventInterface + shared <X>Id
-// under previo/src/Domain/<Module>) rather than classic aggregates.
+// under shared/src/Domain/<Module>) rather than classic aggregates.
 //
 // Tokens are matched by substring (the validate gate greps the raw files), so
 // they must appear VERBATIM in each template. Mirrors the embed_templates_test.go
@@ -26,7 +26,7 @@ func TestPhpSymfonyDiscoveryTriad(t *testing.T) {
 		"EventInterface",     // <Aggregate>EventInterface
 		"Data",               // <X>Data DAO
 		"DTO",                // readonly <X>DTO
-		"previo/src/Domain/", // shared aggregate Id placement
+		"shared/src/Domain/", // shared aggregate Id placement
 	}
 
 	for _, tc := range []struct {
@@ -42,7 +42,7 @@ func TestPhpSymfonyDiscoveryTriad(t *testing.T) {
 			body := string(content)
 			for _, tok := range triadTokens {
 				assert.Contains(t, body, tok,
-					"%s must contain triad token %q so generation emits previo2 triad aggregates", tc.path, tok)
+					"%s must contain triad token %q so generation emits triad aggregates", tc.path, tok)
 			}
 		})
 	}

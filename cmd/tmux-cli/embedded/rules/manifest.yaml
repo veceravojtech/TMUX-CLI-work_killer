@@ -4,7 +4,7 @@
 #   conventions: — BINDING planner conventions (loaded by task-plan-generate's
 #                  <conventions> block; bodies were extracted verbatim from it)
 #   code_rules:  — code rules for spec/implementation/review agents
-#                  (previo-style catalogue; see SCHEMA.md)
+#                  (house-style catalogue; see SCHEMA.md)
 #
 # `when` is a structured condition (no expression language):
 #   run_target: docker|local      — from test-environment.md "Run Target"
@@ -15,17 +15,25 @@
 #   min_auth_flows: N             — from cross-cutting.md "## Auth Flows"
 #   lang / framework: slug        — --lang/--framework flags (discovery state),
 #                                   else project manifests (composer.json, go.mod, ...)
+#   architecture: ddd|basic       — from test-environment.md "Architecture:" or
+#                                   the --architecture flag; derived "ddd" from
+#                                   on-disk DDD markers (bounded-contexts.md,
+#                                   contexts/*/composer.json). UNKNOWN matches
+#                                   only `architecture: ddd` (with a warning) —
+#                                   ddd is the topology this generator scaffolds
+#                                   by default; "basic" must be declared.
 # Omitted when ⇒ always.
 #
 # Matching asymmetry (deliberate): capability signals (run_target,
 # has_database, has_frontend, min_auth_flows) that are UNKNOWN match
 # conservatively — the pack loads with a warning, because a missing safety
-# convention is worse than an extra one. Stack signals (lang, framework) must
-# be KNOWN to match — wrong-stack code rules misdirect rather than protect.
+# convention is worse than an extra one. Stack signals (lang, framework,
+# frontend_mode) must be KNOWN to match — wrong-stack code rules misdirect
+# rather than protect. architecture sits between the two: see above.
 #
 # Project-local rules: .tmux-cli/rules/local/conventions/*.md and
 # .tmux-cli/rules/local/code-rules/* are always included and never touched by
-# setup. See SCHEMA.md.
+# setup; a local rule reusing an embedded id OVERRIDES it. See SCHEMA.md.
 
 version: 1
 packs:
@@ -34,10 +42,15 @@ packs:
       - command-execution.md
       - goal-structure.md
 
+  # docker pack: the runtime-frontload planner convention PLUS the compose
+  # naming code rule (DOCKER-NAME-001: project name = app name, container_name
+  # app-prefixed — never a bare generic role like "app").
   - id: docker
     when: { run_target: docker }
     conventions:
       - runtime-frontload.md
+    code_rules:
+      - code-rules.yaml
 
   - id: database
     when: { has_database: true }
@@ -80,18 +93,39 @@ packs:
     code_rules:
       - code-rules.yaml
 
-  # php-symfony pack: a P2 multi-package DDD monorepo (contexts/**, projects/**,
-  # packages/**), NOT a flat src/<BC> skeleton. The conventions describe the layout:
+  # php-symfony-common: Symfony practices shared by EVERY architecture profile
+  # — quality gates (PHPStan, ECS), env/config hygiene, i18n, UUID typing,
+  # tenant-isolation testing, persistence hygiene (mapped entities, binary
+  # UUIDs, DBAL types, JSON-blob ban, FK-less index coverage, migration
+  # hygiene), and the architecture rules that hold in a flat app as much as in
+  # the monorepo (view logic, PSR-4 mirroring, speculative seams, module roots).
+  - id: php-symfony-common
+    when: { lang: php, framework: symfony }
+    code_rules:
+      - architecture.yaml
+      - persistence.yaml
+      - config.yaml
+      - i18n.yaml
+      - types.yaml
+      - code-style.yaml
+      - analysis.yaml
+      - testing.yaml
+
+  # php-symfony: the FULL-GRADE multi-package DDD monorepo profile
+  # (contexts/**, projects/**, packages/**), gated on architecture=ddd (the
+  # default when the signal is unknown). The conventions describe the layout:
   #   monorepo-layout — contexts/<bc>/src/{Domain,Application}; Bundle/ IS the
   #     infrastructure layer (the only layer touching Doctrine/MySQL); app/ is the
   #     framework entry-point (controllers/CLI/processors).
   #   context-layers  — the Domain <- Application <- Bundle <- app dependency chain.
-  #   shared-kernel   — contexts/previo/src: the only legal cross-context contract.
+  #   shared-kernel   — contexts/shared/src: the only legal cross-context contract.
   #   app-layer       — contexts/<bc>/app: thin framework adapters, no business logic.
-  # code_rules glob onto contexts/** / projects/** / packages/** (e.g. PHP-TYPE-003,
-  # the automated Assert\Uuid|Assert::uuid UUID-type check).
+  # code_rules carry the DDD-only seams: layer/boundary rules (deptrac-backed),
+  # the aggregate DAO/DTO triad, typed-Id references, NO database foreign keys
+  # (PHP-PERS-009), infra-owned Doctrine PHP mapping files (PHP-PERS-010), and
+  # the component-manifest schema gate.
   - id: php-symfony
-    when: { lang: php, framework: symfony }
+    when: { lang: php, framework: symfony, architecture: ddd }
     conventions:
       - monorepo-layout.md
       - context-layers.md
@@ -99,12 +133,15 @@ packs:
       - app-layer.md
       - security.md
     code_rules:
-      - architecture.yaml
-      - persistence.yaml
-      - config.yaml
-      - i18n.yaml
-      - types.yaml
+      - architecture-ddd.yaml
+      - persistence-ddd.yaml
       - scaffold.yaml
-      - code-style.yaml
-      - analysis.yaml
-      - testing.yaml
+
+  # php-symfony-basic: a flat, single-package Symfony app that deliberately
+  # opts OUT of the DDD monorepo. conventions-only — the shareable point-wise
+  # rules already load via php + php-symfony-common. Gated on an EXPLICIT
+  # architecture=basic declaration (unknown never matches this pack).
+  - id: php-symfony-basic
+    when: { lang: php, framework: symfony, architecture: basic }
+    conventions:
+      - conventions.md

@@ -15,7 +15,7 @@ contexts/<bc>/        a bounded-context LIBRARY (no HTTP kernel of its own)
   src/Bundle/{Domain,Application}/  infrastructure impls (the ONLY layer touching Doctrine/MySQL)
   app/<Module>/               framework layer — controllers/CLI/processors (see app-layer.md)
   tests/{Unit,Integration,Resources}/
-contexts/previo/src/  the SHARED KERNEL context — published language + contracts (see shared-kernel.md)
+contexts/shared/src/  the SHARED KERNEL context — published language + contracts (see shared-kernel.md)
 projects/<app>/src/<Module>/  a DEPLOYABLE app composing one or more contexts (wiring + controllers)
 packages/<pkg>/       shared libraries reused across contexts/projects (e.g. packages/ui)
 composer.json         root: path repositories pointing at every package
@@ -52,7 +52,7 @@ Domain  ←  Application  ←  Bundle  ←  app
 ```
 
 Across packages, deptrac adds **package edges**: a context may depend on the
-shared kernel (`contexts/previo/src`) and on `packages/*`, but never on another
+shared kernel (`contexts/shared/src`) and on `packages/*`, but never on another
 context's internal `Domain`/`Application`. Cross-context collaboration is allowed
 only through a published contract from the shared kernel. A `projects/<app>`
 deployable may depend on the contexts it composes plus the shared kernel; a
@@ -75,7 +75,7 @@ ruleset:
 - The package graph *is* the architecture: an illegal cross-context import is a
   compile-/analysis-time failure (`vendor/bin/deptrac analyse`), not a code-review
   guess.
-- Shared concepts live in exactly one place (`contexts/previo/src` for domain
+- Shared concepts live in exactly one place (`contexts/shared/src` for domain
   language, `packages/*` for cross-cutting libraries), so duplication can't drift.
 - **Place a module in the context that owns its concept.** Author a module's read
   models, query services and repositories in the bounded context that ALREADY holds

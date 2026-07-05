@@ -13,7 +13,7 @@
         <action>Maintain a running GOAL_INDEX starting at 3 (goal-003 is the first domain goal).</action>
 
         <per-bc>
-          <action>Set DOMAIN_AREA = contexts/{{BC}}/src/Domain/ — the Domain layer directory for this BC in the resolved monorepo topology. COARSE deliverable path (depinfer seed + elaborator tree-read anchor), NOT a glob, NOT a per-file path. (Shared-kernel types this BC may own under contexts/previo/ are re-derived at elaboration against the real tree — the roadmap commits only to the BC's own Domain dir.)</action>
+          <action>Set DOMAIN_AREA = contexts/{{BC}}/src/Domain/ — the Domain layer directory for this BC in the resolved monorepo topology. COARSE deliverable path (depinfer seed + elaborator tree-read anchor), NOT a glob, NOT a per-file path. (Shared-kernel types this BC may own under contexts/shared/ are re-derived at elaboration against the real tree — the roadmap commits only to the BC's own Domain dir.)</action>
 
           <action>Call the goal-create MCP tool with a roadmap SKELETON:</action>
           <params>

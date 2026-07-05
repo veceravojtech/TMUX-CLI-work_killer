@@ -42,6 +42,14 @@ type RuleSet struct {
 	Rules  []CodeRule
 }
 
+// isLocalSource reports whether a rule-set source label points into the
+// project-local override tree (.tmux-cli/rules/local/code-rules/). Embedded
+// selftest labels are pack-relative ("php-symfony/architecture.yaml") and
+// never contain the local prefix.
+func isLocalSource(source string) bool {
+	return strings.Contains(filepath.ToSlash(source), "local/code-rules/")
+}
+
 // weakOnly matches validate lines that may not be a rule's SOLE machine check
 // (a green build the rule doesn't earn). Moved verbatim from the catalogue
 // selftest so the embedded guard and the CLI share one definition.
@@ -73,13 +81,19 @@ func LintRuleSets(sets []RuleSet) []LintFinding {
 				findings = append(findings, LintFinding{Source: set.Source, RuleID: r.ID, Message: msg})
 			}
 
-			// Schema completeness + global id-uniqueness.
+			// Schema completeness + global id-uniqueness. A local rule
+			// redefining an EMBEDDED id is not a breach — it is the SCHEMA.md
+			// override contract (LoadCodeRules replaces the embedded rule) —
+			// but a duplicate within local files (or within the embedded
+			// catalogue) is still ambiguous and flagged.
 			switch {
 			case r.ID == "":
 				add("missing id")
 			default:
 				if prev, dup := seen[r.ID]; dup {
-					add(fmt.Sprintf("id %s already defined in %s", r.ID, prev))
+					if isLocalSource(set.Source) == isLocalSource(prev) {
+						add(fmt.Sprintf("id %s already defined in %s", r.ID, prev))
+					}
 				} else {
 					seen[r.ID] = set.Source
 				}
@@ -198,8 +212,9 @@ func LintRuleSets(sets []RuleSet) []LintFinding {
 // LintFinding and that file is skipped; sibling files keep loading. Source
 // labels are project-relative slash paths.
 //
-// NOTE: parsing is the bare-list schema — it MUST NOT route through
-// LoadCodeRules, which expects a `{rules: [...]}` wrapper.
+// NOTE: parsing stays here (bare-list schema, per-file RuleSet labels) rather
+// than routing through LoadCodeRules, which flattens sets and applies the
+// local-override dedup — lint must see every definition, including overridden ones.
 func LoadLocalRuleSets(projectRoot string, includeEmbedded bool) ([]RuleSet, []LintFinding) {
 	var sets []RuleSet
 	var findings []LintFinding

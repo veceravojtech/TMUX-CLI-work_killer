@@ -1,7 +1,7 @@
 # Security conventions (pack: php-symfony)
 
-Binding planning conventions distilled from P2's `docs/docs/security.md` (the
-canonical source — read it for the full rules). Each `<rule>` below is BINDING on
+Binding planning conventions distilled from a production Symfony DDD monorepo's
+security handbook. Each `<rule>` below is BINDING on
 every later planning and implementation step for backend code, and on review.
 These hold IN ADDITION to ownership coverage — never as a substitute for it.
 

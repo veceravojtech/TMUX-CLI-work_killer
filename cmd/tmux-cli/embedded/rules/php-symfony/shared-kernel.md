@@ -1,13 +1,15 @@
 # Shared kernel (pack: php-symfony)
 
-`contexts/previo/src` is the **shared-kernel context**: the one published language
-that every other context and project may depend on. Keep this directory name
-literal — it is the canonical shared-kernel context for this pack. Its namespace
-is `<RootNs>\Previo\<Layer>\<Module>\...` — the resolved root namespace
-(greenfield `App\`; substitute the discovered vendor), with `Previo` the literal
-shared-kernel context segment. Nothing here may depend on any other
-context; everything here is hard to change, so changes must stay **non-breaking**
-(additive only).
+`contexts/shared/src` is the **shared-kernel context**: the one published language
+that every other context and project may depend on. `shared` is the canonical
+greenfield directory name for this pack; a brownfield monorepo may already name
+its shared-kernel context differently — resolve the actual name from discovery
+and substitute it consistently. Its namespace is
+`<RootNs>\Shared\<Layer>\<Module>\...` — the resolved root namespace
+(greenfield `App\`; substitute the discovered vendor), with `Shared` the
+shared-kernel context segment (matching the directory). Nothing here may depend
+on any other context; everything here is hard to change, so changes must stay
+**non-breaking** (additive only).
 
 ## Published language (Domain layer)
 
@@ -28,7 +30,7 @@ The shared kernel's Domain layer is the vocabulary other contexts speak:
   concrete event.
 
 ```php
-namespace App\Previo\Domain\Order;          // App\ = greenfield root; substitute the discovered vendor
+namespace App\Shared\Domain\Order;          // App\ = greenfield root; substitute the discovered vendor
 
 final class OrderId extends AbstractIntId {}                 // shared identity
 
@@ -43,7 +45,7 @@ final class OrderCreated implements OrderEventInterface
 ## Contracts (Application layer)
 
 Contracts are the **only** way one context may consume another. They live in
-`contexts/previo/src/Application/` and exist in two shapes used side by side:
+`contexts/shared/src/Application/` and exist in two shapes used side by side:
 
 - **`<X>QueryContract`** — what a query service can do (read methods returning
   `<X>Contract` objects), e.g. `OrdersQueryContract`, `CustomerQueryContract`.
@@ -73,7 +75,7 @@ A command-side `<X>Contract` (a write service callable cross-context, e.g.
 
 ## Share layer
 
-`contexts/previo/src/Share/` holds cross-cutting base classes and value objects
+`contexts/shared/src/Share/` holds cross-cutting base classes and value objects
 reused everywhere — always prefer these over raw primitives:
 
 - **`Share/Model/AbstractIntId`** — base for integer aggregate ids (above).

@@ -88,7 +88,7 @@ func TestRulesMatch_SignalRuleRendersFailClosedValidateCmd(t *testing.T) {
 	}
 	result, _ := Match([]CodeRule{r}, []string{"src/A/BarHandler.php"}, "")
 	require.Len(t, result.Rules, 1)
-	assert.Equal(t, `sh -c '! grep -rE "new \w+\(" src/A/BarHandler.php'`, result.Rules[0].ValidateCmd)
+	assert.Equal(t, `sh -c '! grep -rE -e "new \w+\(" src/A/BarHandler.php'`, result.Rules[0].ValidateCmd)
 }
 
 func TestRulesMatch_NoSignalNoValidateCmd(t *testing.T) {

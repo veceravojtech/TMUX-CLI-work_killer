@@ -86,7 +86,7 @@ What programming language and framework will this project use?
 
       <branch condition="LANG=php AND FRAMEWORK=symfony">
         <action critical="true">Ask the §1b source-layout question from TEMPLATE_DIR/discovery.md (where source code actually lives + the infrastructure-layer directory name), then ALWAYS write docs/architecture/layout.md with a `## Layers` section — the two authoritative lines `- Source roots: &lt;comma-joined globs&gt;` and `- Infrastructure layer: &lt;dir&gt;`. This is what the code-rules engine resolves `{src}`/`{infra}` globs from (and task-plan-generate's scaffold step reads it); the write is UNCONDITIONAL for php-symfony — never skip it. Create docs/architecture/ first if absent.</action>
-        <action>Default for the P2 monorepo topology when the user has no override: `- Source roots: contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src` and `- Infrastructure layer: Bundle` (authoritative over PSR-4 detection).</action>
+        <action>Default for the DDD monorepo topology when the user has no override: `- Source roots: contexts/*/src, contexts/*/app/src, projects/*/src, packages/*/src` and `- Infrastructure layer: Bundle` (authoritative over PSR-4 detection).</action>
         <output-format>
 ## Layers
 
@@ -210,14 +210,14 @@ Should I save this to `docs/architecture/product-brief.md`, or would you like to
       </substep>
 
       <substep n="3.6" title="Deployables &amp; Packages Inventory" interactive="true">
-        <action>Map the discovered bounded contexts onto the P2 monorepo layout — a DOCUMENT-only inventory (no scaffolding, no code generation; per the step-732 documents-only rule). Capture three lists:</action>
+        <action>Map the discovered bounded contexts onto the DDD monorepo layout — a DOCUMENT-only inventory (no scaffolding, no code generation; per the step-732 documents-only rule). Capture three lists:</action>
         <inventory>
           <item kind="contexts">Which BCs become domain libraries under `contexts/&lt;bc&gt;/` — DEFAULT: every BC from substep 3.1 is a `contexts/` library.</item>
           <item kind="projects">Which `projects/&lt;app&gt;` deployables compose those contexts — DEFAULT: a single `projects/api` wiring ALL contexts. Only add more (e.g. a separate `projects/admin`, `projects/worker`) when discovery surfaced a distinct deployable; otherwise keep the one-api default.</item>
           <item kind="packages">Which shared value objects / types (from substep 3.5's share namespace) become reusable `packages/&lt;name&gt;/` — DEFAULT: none unless 3.5 named cross-BC shared types.</item>
         </inventory>
         <action>Confirm the mapping with the user (present the three lists; offer the defaults so a single-deployable project is a one-keystroke confirm).</action>
-        <action>Persist the result as a `## Deployables &amp; Packages Inventory` section appended to `docs/architecture/bounded-contexts.md` — a table of `contexts/`, `projects/`, and `packages/` entries with the BC(s) each composes. Do NOT create any source directories or files; this records the intended layout for later P2-monorepo generator phases only.</action>
+        <action>Persist the result as a `## Deployables &amp; Packages Inventory` section appended to `docs/architecture/bounded-contexts.md` — a table of `contexts/`, `projects/`, and `packages/` entries with the BC(s) each composes. Do NOT create any source directories or files; this records the intended layout for later DDD-monorepo generator phases only.</action>
       </substep>
 
       <output>
@@ -243,6 +243,7 @@ Should I save this to `docs/architecture/product-brief.md`, or would you like to
           <decision topic="api-style">API style (REST, GraphQL, gRPC)</decision>
           <decision topic="message-bus">Message bus (synchronous, async with Messenger, RabbitMQ)</decision>
           <decision topic="deployment">Deployment target (Docker, bare metal, cloud)</decision>
+          <decision topic="architecture-profile" critical="true">Architecture profile — capture the discrete value ARCHITECTURE = ddd | basic. `ddd` (the DEFAULT and the generator's native topology) is the full-grade multi-package DDD monorepo (contexts/projects/packages, shared-kernel context, Bundle infra layer); `basic` is a deliberate flat single-package app (src/Controller|Entity|Service, no bounded contexts) for small tools/prototypes where the monorepo would be overhead. Recommend `ddd` unless the product is explicitly a small flat app and the user confirms; record the choice and rationale. This drives the `**Architecture:**` line in test-environment.md and the `--architecture` flag on every `tmux-cli rules resolve` call, which gates the php-symfony (ddd) vs php-symfony-basic rule packs.</decision>
           <decision topic="run-target" critical="true">Run target — DETECT first, then confirm (never silently default to local on a host with no PHP). STEP 1, probe the host with these commands and record results: `command -v php`, `php -v` (compare the version to composer.json require.php when present), `command -v composer`, `command -v docker`, `docker compose version`. STEP 2, form a RECOMMENDATION: (a) a local PHP toolchain present AND satisfying the project's PHP constraint → local is viable; (b) local PHP ABSENT or version-mismatched while Docker + Compose are present → RECOMMEND docker (a containerized runtime avoids the missing-/wrong-local-PHP failure that otherwise only surfaces mid-build at Gate 0 / scaffold); (c) neither PHP nor Docker present → flag both missing and recommend installing Docker. STEP 3, present the detection summary and recommendation and ask the user to confirm or override: "Detected: &lt;php/composer/docker findings&gt;. Recommended RUN_TARGET = &lt;docker|local&gt; because &lt;reason&gt;. Use this, or override?" Capture the discrete value RUN_TARGET = docker | local from their confirmation — detection drives the DEFAULT, the user still decides. This drives Gate 0 (goal-001) prerequisite checks and the generation runtime model (task-plan-generate Step 0c CMD_PREFIX). If docker, also ask whether the database/services run as compose services (default) or are external. If docker AND the DB/services run as compose services, ALSO ask the published host:container port mapping for ONLY the host-required (host-facing) port — the app web port the user/tests reach from the host. db/mailer/redis are NOT host-published: they are compose-internal (reached intra-compose by service name, e.g. db:5432, mailer:1025, redis:6379, with NO host binding), so do NOT capture host ports for them. Assign the web host port from a per-project offset (e.g. 18080→80) rather than the universal 8080, so two projects on one host do not collide. Capture a discrete PUBLISHED_PORTS list of the host-required service(s) only — service, host port, container port, purpose — distinct from the DB connection host/port used only for Gate-0 connectivity. Persist into test-environment.md (Published Ports block, host-required ports only; note db/mailer/redis as compose-internal) and the Goal-0 AGENTS.md; record it ONLY there, never as an ADR.</decision>
         </decisions>
         <action>For each decision, capture: context (why this decision matters), alternatives considered with pros/cons, and the chosen rationale.</action>
@@ -367,7 +368,7 @@ Does this project have a frontend? If so, what kind?
         </template>
         <action>Wait for user response. Set frontend_type from their answer.</action>
 
-        <action>Derive the discrete FRONTEND_MODE (exactly one of `vue` | `twig` | `none`) from frontend_type — this drives the `**Frontend:**` line written in substep 7.3 and later P2-monorepo generator phases: SPA / Single-page / Vue / client-rendered ⇒ `vue`; Server-rendered / SSR / Twig / templates ⇒ `twig`; API-only / no frontend ⇒ `none`. (Mobile-only or "something else" with no web frontend ⇒ `none`.) Record FRONTEND_MODE for substep 7.3.</action>
+        <action>Derive the discrete FRONTEND_MODE (exactly one of `vue` | `twig` | `none`) from frontend_type — this drives the `**Frontend:**` line written in substep 7.3 and later DDD-monorepo generator phases: SPA / Single-page / Vue / client-rendered ⇒ `vue`; Server-rendered / SSR / Twig / templates ⇒ `twig`; API-only / no frontend ⇒ `none`. (Mobile-only or "something else" with no web frontend ⇒ `none`.) Record FRONTEND_MODE for substep 7.3.</action>
 
         <branch condition="frontend_type is API-only">
           <action>Record frontend_type = "API-only" and skip remaining frontend questions (framework, protocol, shared contracts).</action>
@@ -596,6 +597,7 @@ Here's the test environment configuration I've captured:
 
 **Base URL:** {{test_base_url}}
 **Stack:** {{LANG}}-{{FRAMEWORK}}
+**Architecture:** {{ARCHITECTURE}}
 **Frontend:** {{FRONTEND_MODE}}
 **Run Target:** {{run_target}}
 {{#if is_docker}}**DB/services location:** {{services_location}}

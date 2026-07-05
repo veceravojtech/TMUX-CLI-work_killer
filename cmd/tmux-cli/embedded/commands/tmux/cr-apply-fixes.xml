@@ -14,7 +14,7 @@
     <term name="STAGE 1">Violation detection — resolve the scope, run `tmux-cli rules check --json`, judge the agent_review rules, run the Stage-0 quality gates on the footprint, and group every violation by category. Autonomous.</term>
     <term name="STAGE 2">Confirm + per-category remediation DAG — present the violations dossier + the planned per-category fix-goals, gate on the user's approval (the SOLE interactive point; honors auto_approve), then emit one goal per affected category and hand off to taskvisor. Interactive at the confirm gate.</term>
     <term name="STAGE 3">Validation — delegate verification of each emitted goal to /tmux:investigate and surface the aggregated pass/fail verdict. Autonomous.</term>
-    <term name="CAPABILITY SIGNALS">The `tmux-cli rules resolve --signals --json` fields carried forward from Stage 0: lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows.</term>
+    <term name="CAPABILITY SIGNALS">The `tmux-cli rules resolve --signals --json` fields carried forward from Stage 0: lang, framework, architecture, run_target, has_database, has_frontend, frontend_mode, n_auth_flows.</term>
     <term name="TOPOLOGY">The resolved source roots, layer names, root namespace, and quality-gate commands read from the convention/code-rule packs `tmux-cli rules resolve` loads for THIS project's stack. Greenfield defaults only when the packs are empty.</term>
     <term name="VIOLATION">A matched code-rule whose automated signal FIRES on the diff (the `tmux-cli rules check` VIOLATED state), an agent_review rule a convention-audit investigator judges non-compliant, a Stage-0 quality gate that FAILS on the changed footprint, OR a written project GUIDELINE DOC (discovered markdown — AGENTS.md / CLAUDE.md / README / docs, never a hardcoded path) the convention-audit investigator judges the changed footprint to BREACH.</term>
     <term name="CATEGORY">The code-rule schema's `category` field (plus synthetic categories for the failing quality gates: lint/style, static-analysis, tests, architecture, manifest/schema, db-schema; and for guideline-doc breaches: guidelines). The unit of goal emission — ONE remediation goal per affected category.</term>
@@ -28,7 +28,7 @@
     <vs name="/tmux:feature">BUILDS new functionality through an existing system (architecture ADR, feature spec, TDD
       implementation DAG); /tmux:cr-apply-fixes FIXES existing code to satisfy the rules — scope is the diff,
       there is no new design, no ADR, and no feature spec.</vs>
-    <vs name="/previo:code-rules:goals">the project-specific Previo enforcement command; /tmux:cr-apply-fixes is the
+    <vs name="a project-local code-rules:goals enforcement command">a project-specific catalogue enforcement command; /tmux:cr-apply-fixes is the
       portable, stack-RESOLVED, staged generalization built on `tmux-cli rules check` / `tmux-cli rules match` with
       no project literals.</vs>
     <vs name="/tmux:investigate">a READ-ONLY verdict-only orchestrator; /tmux:cr-apply-fixes DELEGATES verdicts to it

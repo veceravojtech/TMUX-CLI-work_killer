@@ -3,7 +3,7 @@ package rules
 // check.go is the brownfield sibling of Match (coderules.go): given a set of
 // changed files, it reports which resolved code-rules APPLY and — for the
 // automated half — which are VIOLATED (the rule's anti-pattern is present in
-// the diff). This is the previo:code-rules:goals analog (design §2.9): a diff
+// the diff). This is the house-catalogue enforcement-command analog (design §2.9): a diff
 // gate, not a fail-closed plan injection. It reuses Match's routing primitives
 // (compileGlob, runnable) verbatim — Go still owns ALL glob/severity/signal
 // routing (§6.4 determinism boundary). The core is git-free: the CLI derives
@@ -137,7 +137,7 @@ func Check(codeRules []CodeRule, files []string, phase, dir string) CheckResult 
 // RenderValidateCmd's form: harmless on file paths, recurses if a path is a
 // directory.
 func signalMatches(signal string, files []string, dir string) (bool, error) {
-	args := append([]string{"-rE", signal}, files...)
+	args := append([]string{"-rE", "-e", signal}, files...)
 	cmd := exec.Command("grep", args...)
 	cmd.Dir = dir
 	err := cmd.Run()

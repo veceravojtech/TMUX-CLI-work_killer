@@ -34,8 +34,8 @@ func TestScaffoldEmitsMonorepoSkeleton(t *testing.T) {
 		"scaffold skeleton must target the deployable projects/ topology")
 	assert.Contains(t, scaffold, "packages/",
 		"scaffold skeleton must target shared packages/")
-	assert.Contains(t, scaffold, "contexts/previo/src/",
-		"scaffold must lay down the contexts/previo shared-kernel context")
+	assert.Contains(t, scaffold, "contexts/shared/src/",
+		"scaffold must lay down the contexts/shared shared-kernel context")
 
 	// The retired flat skeleton must be gone from the scaffold step.
 	assert.NotContains(t, scaffold, "src/{BC}/",

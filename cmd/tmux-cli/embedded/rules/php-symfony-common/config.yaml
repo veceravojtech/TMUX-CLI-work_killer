@@ -44,6 +44,6 @@
     - "GIVEN a monorepo aggregating per-component .env into a root .env THEN a per-component change is propagated to the root .env (no stale merge) and both are committed together"
   validate:
     - "! awk -F= '/^[A-Z_][A-Z0-9_]*=/{c[$1]++} END{for(k in c) if(c[k]>1){print k; e=1} exit e}' <changed .env>"
-    - "review: new env vars declared ONCE in the owning .env with dev defaults and no committed secrets; AND when the project aggregates per-component .env files into a root/aggregated .env, the aggregation is fresh — run the project's resolved NON-MUTATING config-sync check (e.g. in a P2 monorepo `composer p2:env-merge --check`) to confirm no drift, then commit the source .env and the regenerated aggregate together"
+    - "review: new env vars declared ONCE in the owning .env with dev defaults and no committed secrets; AND when the project aggregates per-component .env files into a root/aggregated .env, the aggregation is fresh — run the project's resolved NON-MUTATING config-sync check (e.g. in an aggregating monorepo `composer mono:env-merge --check`) to confirm no drift, then commit the source .env and the regenerated aggregate together"
   validate_kind: mixed
   phase: deployment

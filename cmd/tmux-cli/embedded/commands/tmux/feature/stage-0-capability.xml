@@ -37,8 +37,8 @@
   </substep>
 
   <substep n="0.3" title="Topology + quality-gate resolution">
-    <action>Run via Bash: `tmux-cli rules resolve --kind=convention` (append `--lang=&lt;LANG&gt; --framework=&lt;FRAMEWORK&gt;` when those signals are known, to override filesystem detection). It prints one convention rule-file path per line for THIS project's stack. Read EVERY printed file.</action>
-    <action>Run via Bash: `tmux-cli rules resolve --kind=code-rules` (same `--lang`/`--framework` flags when known). It prints the project's code-rule file paths. Read EVERY printed file — these define implementation/review conventions the later stages honor.</action>
+    <action>Run via Bash: `tmux-cli rules resolve --kind=convention` (append `--lang=&lt;LANG&gt; --framework=&lt;FRAMEWORK&gt; --architecture=&lt;ARCHITECTURE&gt;` when those signals are known, to override filesystem detection). It prints one convention rule-file path per line for THIS project's stack. Read EVERY printed file.</action>
+    <action>Run via Bash: `tmux-cli rules resolve --kind=code-rules` (same `--lang`/`--framework`/`--architecture` flags when known). It prints the project's code-rule file paths. Read EVERY printed file — these define implementation/review conventions the later stages honor.</action>
     <action>From the loaded convention packs, resolve the TOPOLOGY: SOURCE ROOTS (where production code lives), LAYER NAMES (the architectural layering the packs declare), ROOT NAMESPACE (the project's top-level namespace/module prefix), and the QUALITY-GATE COMMANDS (the static-analysis / lint / test commands the packs prescribe — emitted bare, host-style; the daemon wraps them at dispatch).</action>
     <check condition="`tmux-cli rules resolve` prints no convention files (empty catalogue / greenfield)">
       <action>Apply greenfield DEFAULTS and mark each as a default (not a detected value): SOURCE ROOTS = ["src"]; LAYER NAMES = none declared; ROOT NAMESPACE = empty; QUALITY-GATE COMMANDS = none. Record that these are skeleton defaults to be confirmed at Stage 2, NOT detected project facts.</action>
@@ -60,7 +60,7 @@
     <action>Compose ONE structured context block carrying everything the later stages consume:</action>
     <emit>
       • FEATURE: the parsed $ARGUMENTS description.
-      • SIGNALS: lang, framework, run_target, has_database, has_frontend, frontend_mode, n_auth_flows — each with its source (detected / ASKed / greenfield-default) and rationale for any filled-in unknown.
+      • SIGNALS: lang, framework, architecture, run_target, has_database, has_frontend, frontend_mode, n_auth_flows — each with its source (detected / ASKed / greenfield-default) and rationale for any filled-in unknown.
       • E2E_RUNNER_AVAILABLE: true/false + source (config path / ASKed / default).
       • TOPOLOGY: source roots, layer names, root namespace, quality-gate commands — each tagged detected-from-packs vs greenfield-default.
       • EXEC ENVIRONMENT: RUN_TARGET (docker | local) + the app / node container services + the published host ports, resolved (0.3a) from docs/architecture/test-environment.md and verified against containerization detection — the env the daemon threads into EVERY goal so its validate runs where the toolchain lives. (Validates stay bare per CMD-CONV; the daemon wraps toolchain commands into their container in docker mode.)

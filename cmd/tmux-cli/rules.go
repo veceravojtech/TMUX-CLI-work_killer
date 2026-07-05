@@ -12,12 +12,13 @@ import (
 )
 
 var (
-	rulesResolveKind      string
-	rulesResolveLang      string
-	rulesResolveFramework string
-	rulesResolveJSON      bool
-	rulesResolveProject   string
-	rulesResolveSignals   bool
+	rulesResolveKind         string
+	rulesResolveLang         string
+	rulesResolveFramework    string
+	rulesResolveArchitecture string
+	rulesResolveJSON         bool
+	rulesResolveProject      string
+	rulesResolveSignals      bool
 
 	rulesMatchFiles   []string
 	rulesMatchPhase   string
@@ -75,6 +76,9 @@ conservatively (warning on stderr); unknown stack loads no stack pack.`,
 			if rulesResolveFramework != "" {
 				sig.Framework = rulesResolveFramework
 			}
+			if rulesResolveArchitecture != "" {
+				sig.Architecture = rulesResolveArchitecture
+			}
 			enc := json.NewEncoder(cmd.OutOrStdout())
 			enc.SetIndent("", "  ")
 			return enc.Encode(sig)
@@ -91,6 +95,9 @@ conservatively (warning on stderr); unknown stack loads no stack pack.`,
 		}
 		if rulesResolveFramework != "" {
 			sig.Framework = rulesResolveFramework
+		}
+		if rulesResolveArchitecture != "" {
+			sig.Architecture = rulesResolveArchitecture
 		}
 
 		files, warnings, err := rules.Resolve(projectRoot, manifest, sig)
@@ -183,7 +190,7 @@ runnable signal. A rule whose signal cannot run is dropped with a warning.`,
 var rulesCheckCmd = &cobra.Command{
 	Use:   "check",
 	Short: "Gate a diff: report which resolved code-rules apply and which are violated",
-	Long: `The brownfield diff gate (the previo:code-rules:goals analog). Derives the
+	Long: `The brownfield diff gate (the house-catalogue enforcement-command analog). Derives the
 changed files (working tree vs HEAD by default; --diff <range> or an explicit
 --files list override), resolves the applicable code-rules catalogue, and runs
 each rule's automated signal against the changed footprint.
@@ -446,6 +453,8 @@ func init() {
 		"language slug from discovery state (overrides detection)")
 	rulesResolveCmd.Flags().StringVar(&rulesResolveFramework, "framework", "",
 		"framework slug from discovery state (overrides detection)")
+	rulesResolveCmd.Flags().StringVar(&rulesResolveArchitecture, "architecture", "",
+		"architecture slug from discovery state: ddd | basic (overrides detection)")
 	rulesResolveCmd.Flags().BoolVar(&rulesResolveJSON, "json", false,
 		"emit JSON objects with pack/kind/path instead of bare paths")
 	rulesResolveCmd.Flags().StringVar(&rulesResolveProject, "project", "",

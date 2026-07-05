@@ -22,8 +22,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// loadShippedPhpSymfonyRules reads the committed embedded persistence.yaml +
-// architecture.yaml as bare []CodeRule, concatenates them, and expands the
+// loadShippedPhpSymfonyRules reads the committed embedded persistence-ddd.yaml +
+// architecture-ddd.yaml as bare []CodeRule, concatenates them, and expands the
 // {src}/{infra} tokens for a single-root Symfony layout (SourceRoots: ["src"],
 // InfraLayer: "Bundle"). Loading the SHIPPED files is deliberate: an inline copy
 // could silently diverge from what the catalogue actually ships.
@@ -31,7 +31,7 @@ func loadShippedPhpSymfonyRules(t *testing.T) []CodeRule {
 	t.Helper()
 	base := filepath.Join("..", "..", "cmd", "tmux-cli", "embedded", "rules", "php-symfony")
 	var all []CodeRule
-	for _, name := range []string{"persistence.yaml", "architecture.yaml"} {
+	for _, name := range []string{"persistence-ddd.yaml", "architecture-ddd.yaml"} {
 		data, err := os.ReadFile(filepath.Join(base, name))
 		require.NoError(t, err, "shipped %s must be readable", name)
 		var set []CodeRule

@@ -59,7 +59,7 @@ final class LockOrderController extends AbstractController
 - The app layer calls **only** its own context's Application layer
   (`contexts/<bc>/src/Application`) — never another context's `src` directly.
 - Cross-context needs go through a shared-kernel contract from
-  `contexts/previo/src` (see shared-kernel.md), the same as any other layer.
+  `contexts/shared/src` (see shared-kernel.md), the same as any other layer.
 - A project module root (`projects/<app>/src/<Module>/`) holds only
   `*Controller.php`; each REST resource gets its own thin controller, and that
   resource's Request/Response/Command DTOs live in a matching subfolder (this is

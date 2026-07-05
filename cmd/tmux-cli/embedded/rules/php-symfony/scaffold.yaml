@@ -12,8 +12,8 @@
   rule: >
     In a multi-component monorepo, every component (a bounded context, the
     shared kernel, a deployable, a shared package) carries a component manifest
-    that passes the monorepo's resolved manifest-schema validator (e.g. P2's
-    `monorepo-component.json` validated by `composer p2:mono-schema`). Whenever a
+    that passes the monorepo's resolved manifest-schema validator (e.g. a
+    `monorepo-component.json` validated by `composer mono:component-schema`). Whenever a
     component dir or its manifest is created or changed, the schema check runs and
     must exit 0.
   why: >
@@ -29,13 +29,13 @@
     - "a new or changed component manifest (e.g. monorepo-component.json)"
     - "a new component dir whose manifest has not been schema-checked"
   fix: >
-    Run the monorepo's resolved manifest-schema validator (e.g. P2
-    `composer p2:mono-schema`) and fix the manifest until it exits 0.
+    Run the monorepo's resolved manifest-schema validator (e.g.
+    `composer mono:component-schema`) and fix the manifest until it exits 0.
   autofix: none
   acceptance:
     - "GIVEN a new or changed component manifest THEN the monorepo's resolved manifest-schema validator exits 0"
     - "GIVEN a new component dir THEN it carries a component manifest that passes the resolved manifest-schema validator"
   validate:
-    - "review: every new/changed component dir carries a component manifest that passes the monorepo's resolved manifest-schema validator (e.g. P2 `composer p2:mono-schema`) — exits 0"
+    - "review: every new/changed component dir carries a component manifest that passes the monorepo's resolved manifest-schema validator (e.g. the monorepo entrypoint `composer mono:component-schema`) — exits 0"
   validate_kind: review
   phase: scaffold

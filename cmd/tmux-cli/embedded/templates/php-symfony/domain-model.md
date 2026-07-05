@@ -11,12 +11,12 @@
 - One aggregate per transaction — prefer small aggregates referencing by ID
 - Location: `src/{BC}/Domain/`
 
-## Aggregate Implementation Triad — previo2 (PD-20, PD-21)
-- DEFAULT for monorepo (previo2) projects: describe EACH aggregate as a triad, not as a classic root holding value objects directly — so generation emits triad specs.
+## Aggregate Implementation Triad (PD-20, PD-21)
+- DEFAULT for monorepo projects: describe EACH aggregate as a triad, not as a classic root holding value objects directly — so generation emits triad specs.
 - Triad = aggregate root (`<X>`) + mutable `<X>Data` DAO (`#[AggregateDAO]`, holds the persisted state) + readonly `<X>DTO` (projection returned to callers/read models).
 - Domain events carry `<X>EventRecord` snapshots (not flat scalars), each implementing a per-aggregate `<Aggregate>EventInterface` so events are typed and replayable.
-- Shared aggregate Id value objects live under `previo/src/Domain/<Module>` (i.e. `contexts/previo/src/Domain/<Module>`), NOT a flat per-BC `DataType/` — the `<X>Id` is shared-kernel, referenced cross-module.
-- Pattern decision recorded in discovery (`{{aggregate_pattern_decision}}`, default `previo2 triad`); the user confirms or overrides.
+- Shared aggregate Id value objects live under `shared/src/Domain/<Module>` (i.e. `contexts/shared/src/Domain/<Module>`), NOT a flat per-BC `DataType/` — the `<X>Id` is shared-kernel, referenced cross-module.
+- Pattern decision recorded in discovery (`{{aggregate_pattern_decision}}`, default `aggregate triad`); the user confirms or overrides.
 
 ## Value Object (PD-03, PD-04, PD-05)
 - `final class` — immutable, no setters
@@ -62,7 +62,7 @@
 - Custom DBAL types for value objects in `src/{BC}/Infrastructure/Persistence/Doctrine/Type/`
 - One XML file per entity/embeddable: `{{AggregateRoot}}.orm.xml`
 
-## Share Namespace — previo2 Pattern (PD-18, PD-19)
+## Share Namespace Pattern (PD-18, PD-19)
 - `src/Share/DataType/` — Money, PhoneNumber, DateTime wrappers, common VOs
 - `src/Share/Event/` — Published Language event DTOs for cross-BC communication
 - `src/Share/Exception/` — shared domain exceptions
