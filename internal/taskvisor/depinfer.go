@@ -182,7 +182,7 @@ func InferMissingDeps(goals *GoalsFile) []DepFinding {
 					if prodID == g.ID {
 						continue
 					}
-					if !hasTransitivePath(goals, g.ID, prodID) {
+					if !hasTransitivePath(goals, g.ID, prodID) && !hasTransitivePath(goals, prodID, g.ID) {
 						findings = append(findings, DepFinding{
 							Consumer: g.ID,
 							Producer: prodID,
