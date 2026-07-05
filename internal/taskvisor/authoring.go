@@ -126,6 +126,16 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 		}
 	}
 
+	// task 436: normalize single-FILE targets expressed as `<stem>/**` directory
+	// globs to the file (or sibling glob) they were meant to cover, then flag any
+	// entry that STILL matches zero tracked files, so a no-match pathspec can
+	// never silently drop its edit at autoCommitGoal (goal-001's investigate/**).
+	// Runs before lane derivation so AutoDeriveLane consumes the resolved scope.
+	scope = resolveScopeEntries(workDir, scope)
+	if err := validateScopeEntries(workDir, scope); err != nil {
+		return "", false, err
+	}
+
 	// Lane auto-derivation (task 70): a caller that passed NO explicit lane gets
 	// the lane classified here, in the shared core, so the MCP goal-create tool
 	// and the `taskvisor goal add` CLI both inherit it. An explicit spec.Lane is

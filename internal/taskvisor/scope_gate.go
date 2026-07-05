@@ -1,6 +1,11 @@
 package taskvisor
 
 import (
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"unicode"
 )
@@ -270,4 +275,112 @@ func DeriveScopeWithCompleteness(deliverables []string) (scope []string, incompl
 		}
 	}
 	return out, incomplete, uncovered
+}
+
+// --- goal-create scope resolution + zero-match guard (task 436) --------------
+//
+// A `<stem>/**` directory glob authored for a target that is actually a FILE
+// (goal-001's `.../tmux/investigate/**` — there is NO investigate/ directory,
+// only investigate.xml) matches ZERO tracked files. autoCommitGoal stages only
+// git `:(glob)<pathspec>`-matched paths (scopePathspecs), so a zero-match entry
+// silently DROPS the worker's edit at commit while build/test stay green — a
+// done-without-integration false-green. resolveScopeEntries normalizes such a
+// glob to the file (or a `<stem>*` sibling glob) it was meant to cover;
+// validateScopeEntries is the backstop that flags anything STILL matching
+// nothing. Both run in CreateGoal, mirror autoCommitGoal's exact match
+// mechanism (`git ls-files ':(glob)<entry>'`, tracked files only), and no-op
+// when workDir is not a git repo so git-free authoring tests stay green. This
+// is a PER-ENTRY zero-match defect, distinct from task 434's empty-overall-diff
+// gate: the overall diff can be non-empty while one entry contributes zero.
+
+// isGitRepo reports whether workDir is inside a git work tree. Used to skip the
+// tree-resolution steps in git-free authoring tests (t.TempDir() with no init).
+func isGitRepo(workDir string) bool {
+	cmd := exec.Command("git", "-C", workDir, "rev-parse", "--is-inside-work-tree")
+	return cmd.Run() == nil
+}
+
+// gitLsFiles returns the tracked files matching `:(glob)<pathspec>` in workDir,
+// mirroring scopePathspecs / autoCommitGoal exactly so the guard sees what the
+// stager sees. Any git error (not a repo, bad pathspec) yields nil — callers
+// treat that as "no tracked match".
+func gitLsFiles(workDir, pathspec string) []string {
+	out, err := exec.Command("git", "-C", workDir, "ls-files", ":(glob)"+pathspec).Output()
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
+// resolveScopeEntries normalizes each `<stem>/**` scope entry whose stem is NOT
+// a real directory but whose siblings ARE tracked, so a single-FILE target
+// expressed as a directory glob resolves to the exact file (one sibling) or a
+// `<stem>*` sibling glob (several) instead of matching zero files. Directory
+// globs over real dirs, non-glob entries, and the pathological file-stem `/**`
+// case are passed through unchanged (the last is REJECTed by
+// validateScopeEntries). No-ops when workDir is not a git repo. Applies to
+// explicit spec.Scope and Acceptance-derived scope alike (goal-001's bad glob
+// was explicit).
+func resolveScopeEntries(workDir string, scope []string) []string {
+	if len(scope) == 0 || !isGitRepo(workDir) {
+		return scope
+	}
+	out := make([]string, len(scope))
+	for i, entry := range scope {
+		out[i] = entry
+		stem := strings.TrimSuffix(entry, "/**")
+		if stem == entry { // not a `<stem>/**` directory glob — leave alone
+			continue
+		}
+		info, err := os.Stat(filepath.Join(workDir, stem))
+		switch {
+		case err == nil && info.IsDir():
+			// real directory — a legitimate dir glob, keep verbatim.
+		case len(gitLsFiles(workDir, stem+"/**")) > 0:
+			// stem is a tracked directory even if os.Stat missed it — keep.
+		case err == nil && !info.IsDir():
+			// stem is a FILE — a file has no children; leave verbatim so
+			// validateScopeEntries REJECTs it (unambiguously wrong).
+		default:
+			// stem is neither dir nor file: try sibling files (goal-001 case).
+			if siblings := gitLsFiles(workDir, stem+"*"); len(siblings) == 1 {
+				out[i] = siblings[0] // exact single file — tightest scope
+			} else if len(siblings) > 1 {
+				out[i] = stem + "*" // several siblings — sibling glob
+			}
+			// else: no siblings — keep verbatim; validateScopeEntries warns.
+		}
+	}
+	return out
+}
+
+// validateScopeEntries is the zero-match backstop: after resolveScopeEntries,
+// any scope entry that STILL matches zero tracked files can silently drop its
+// edit at autoCommitGoal. It REJECTs (returns an error) the unambiguous
+// file-stem `<file>/**` case (a file cannot have children) and loud WARN-LOGs
+// every other residual zero-tracked-match entry, so a no-match pathspec can
+// never silently reach autoCommitGoal — while greenfield / new-file goals whose
+// paths are not yet tracked keep working (warn, not fatal). No-ops when workDir
+// is not a git repo.
+func validateScopeEntries(workDir string, scope []string) error {
+	if !isGitRepo(workDir) {
+		return nil
+	}
+	for _, entry := range scope {
+		if stem := strings.TrimSuffix(entry, "/**"); stem != entry {
+			if info, err := os.Stat(filepath.Join(workDir, stem)); err == nil && !info.IsDir() {
+				return fmt.Errorf("scope entry %q globs a file: %q is a tracked file, not a directory — it has no children; use the exact file pathspec instead", entry, stem)
+			}
+		}
+		if len(gitLsFiles(workDir, entry)) == 0 {
+			log.Printf("warning: goal-create scope entry %q matches zero tracked files — its edits would be silently dropped at auto-commit unless this path is created", entry)
+		}
+	}
+	return nil
 }

@@ -1,6 +1,11 @@
 package taskvisor
 
 import (
+	"bytes"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -151,4 +156,111 @@ func TestDeriveScopeWithCompleteness_NoAcceptanceIsComplete(t *testing.T) {
 	assert.Nil(t, scope)
 	assert.False(t, incomplete)
 	assert.Nil(t, uncovered)
+}
+
+// --- goal-create scope resolution + zero-match guard (task 436) --------------
+
+// initScopeGitRepo builds a real git repo in a temp dir with the given tracked
+// files (relpath->content), committed clean. Reuses runGitCmd (autocommit_test.go).
+// Skips when git is unavailable. The guard needs a real repo (git ls-files).
+func initScopeGitRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	dir := t.TempDir()
+	runGitCmd(t, dir, "init")
+	runGitCmd(t, dir, "config", "user.email", "taskvisor@test.local")
+	runGitCmd(t, dir, "config", "user.name", "Taskvisor Test")
+	runGitCmd(t, dir, "config", "commit.gpgsign", "false")
+	for rel, content := range files {
+		abs := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
+		require.NoError(t, os.WriteFile(abs, []byte(content), 0o644))
+	}
+	runGitCmd(t, dir, "add", ".")
+	runGitCmd(t, dir, "commit", "-m", "initial")
+	return dir
+}
+
+// TestResolveScope_SingleFileTargetYieldsFilePathspec: a `<stem>/**` glob for a
+// target that is actually a FILE (no such directory) must resolve to the exact
+// file pathspec (or a `<stem>*` sibling glob), NEVER `<stem>/**` — so its edit
+// is not silently dropped at auto-commit.
+func TestResolveScope_SingleFileTargetYieldsFilePathspec(t *testing.T) {
+	dir := initScopeGitRepo(t, map[string]string{"a/b/c.xml": "<x/>\n"})
+	got := resolveScopeEntries(dir, []string{"a/b/c/**"})
+	require.Len(t, got, 1)
+	assert.NotEqual(t, "a/b/c/**", got[0], "a single-file target must never persist as a <stem>/** dir glob")
+	assert.Contains(t, []string{"a/b/c.xml", "a/b/c*"}, got[0], "exact file or sibling glob")
+	assert.Equal(t, []string{"a/b/c.xml"}, gitLsFiles(dir, got[0]), "resolved pathspec must match the tracked file")
+}
+
+// TestResolveScope_DirGlobPreserved: a `<stem>/**` glob over a REAL tracked
+// directory is kept verbatim (no normalization).
+func TestResolveScope_DirGlobPreserved(t *testing.T) {
+	dir := initScopeGitRepo(t, map[string]string{"a/b/file.go": "package b\n"})
+	got := resolveScopeEntries(dir, []string{"a/b/**"})
+	assert.Equal(t, []string{"a/b/**"}, got, "a real directory glob is kept verbatim")
+}
+
+// TestValidateScope_ZeroMatchGlobFlagged: the goal-001 fixture — investigate.xml
+// tracked, NO investigate/ dir. An un-normalized `.../investigate/**` matches
+// zero tracked files and must be loudly WARN-flagged (non-fatal; not a file-stem).
+func TestValidateScope_ZeroMatchGlobFlagged(t *testing.T) {
+	dir := initScopeGitRepo(t, map[string]string{
+		"cmd/tmux-cli/embedded/commands/tmux/investigate.xml":        "<x/>\n",
+		"cmd/tmux-cli/embedded/commands/tmux/investigate-worker.xml": "<x/>\n",
+	})
+	require.Empty(t, gitLsFiles(dir, "cmd/tmux-cli/embedded/commands/tmux/investigate/**"),
+		"fixture precondition: the bad glob matches zero tracked files")
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	err := validateScopeEntries(dir, []string{"cmd/tmux-cli/embedded/commands/tmux/investigate/**"})
+	require.NoError(t, err, "a non-file-stem zero-match is a loud WARN, not a reject")
+	assert.Contains(t, buf.String(), "zero tracked files", "zero-match entry must be flagged loudly")
+}
+
+// TestValidateScope_FileStemGlobRejected: `<file>/**` where the stem is a tracked
+// regular file is unambiguously wrong (a file has no children) — REJECT.
+func TestValidateScope_FileStemGlobRejected(t *testing.T) {
+	dir := initScopeGitRepo(t, map[string]string{"a/b/c.xml": "<x/>\n"})
+	err := validateScopeEntries(dir, []string{"a/b/c.xml/**"})
+	require.Error(t, err, "globbing children of a tracked FILE must be rejected")
+}
+
+// TestCreateGoal_SingleFileScopeNotDroppedAtAutoCommit: end-to-end goal-001 case.
+// CreateGoal with an explicit `<stem>/**` scope for a tracked single file must
+// persist a pathspec that MATCHES the file (via the same git :(glob) mechanism
+// autoCommitGoal uses), proving the edit would not be silently dropped.
+func TestCreateGoal_SingleFileScopeNotDroppedAtAutoCommit(t *testing.T) {
+	dir := initScopeGitRepo(t, map[string]string{
+		"cmd/tmux-cli/embedded/commands/tmux/investigate.xml": "<x/>\n",
+	})
+	_, _, err := CreateGoal(dir, GoalSpec{
+		Description: "Fix investigate orchestrator",
+		Validate:    []string{"make build"},
+		Scope:       []string{"cmd/tmux-cli/embedded/commands/tmux/investigate/**"},
+	})
+	require.NoError(t, err)
+
+	gf, err := LoadGoals(dir)
+	require.NoError(t, err)
+	require.Len(t, gf.Goals, 1)
+	persisted := gf.Goals[0].Scope
+	require.Len(t, persisted, 1)
+	assert.NotContains(t, persisted[0], "/**", "single-file target must not persist as a dir glob")
+	assert.NotEmpty(t, gitLsFiles(dir, persisted[0]),
+		"persisted scope must match the tracked file — the edit would not be dropped at auto-commit")
+}
+
+// TestValidateScope_NoGitRepoIsNoop: outside a git repo both helpers no-op
+// (return input / nil error) so git-free authoring tests stay green.
+func TestValidateScope_NoGitRepoIsNoop(t *testing.T) {
+	dir := t.TempDir() // NOT a git repo
+	require.NoError(t, validateScopeEntries(dir, []string{"anything/**", "a/b/c.xml/**"}),
+		"validate must no-op outside a git repo")
+	got := resolveScopeEntries(dir, []string{"a/b/c/**"})
+	assert.Equal(t, []string{"a/b/c/**"}, got, "resolve must no-op outside a git repo")
 }
