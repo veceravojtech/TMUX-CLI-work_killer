@@ -32,6 +32,7 @@ func TestTaskvisorStart_HappyPath(t *testing.T) {
 
 func TestTaskvisorStart_NoPendingGoals(t *testing.T) {
 	tmpDir := t.TempDir()
+	writeTestSettingYaml(t, tmpDir, "roadmap") // roadmap mode still refuses an empty ledger
 	writeTestGoalsYaml(t, tmpDir, `goals:
 - id: goal-001
   description: Done
@@ -51,6 +52,7 @@ func TestTaskvisorStart_NoPendingGoals(t *testing.T) {
 
 func TestTaskvisorStart_NoGoalsFile(t *testing.T) {
 	tmpDir := t.TempDir()
+	writeTestSettingYaml(t, tmpDir, "roadmap") // roadmap mode still refuses a missing ledger
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 	_, err := server.TaskvisorStart()
@@ -141,6 +143,7 @@ func TestTaskvisorStart_AdmitsBootstrapPendingPlan(t *testing.T) {
 // goals` — the negative side of the admit contract.
 func TestTaskvisorStart_ErrorsOnNoNonTerminalGoals(t *testing.T) {
 	tmpDir := t.TempDir()
+	writeTestSettingYaml(t, tmpDir, "roadmap") // roadmap mode still refuses a zero-startable ledger
 	writeTestGoalsYaml(t, tmpDir, `goals:
 - id: goal-001
   description: Done

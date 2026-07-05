@@ -162,12 +162,12 @@ type TaskvisorSettings struct {
 	// built-in matrix default; an unknown phase or value is logged and ignored. A
 	// generation bounce always forces planning regardless of an override.
 	DispatchOverrides map[string]string `yaml:"dispatch_overrides"`
-	// PlanningMode selects how the daemon plans goal work: "roadmap" (the
-	// default) keeps the existing full-roadmap planning, "incremental" enables
-	// one-goal-at-a-time incremental planning. Any other value (including
-	// empty/absent in a legacy setting.yaml) is coerced to "roadmap" by
-	// LoadSettings — an unknown value never fails the load. The daemon reads
-	// this via the exact path Settings.Taskvisor.PlanningMode.
+	// PlanningMode selects how the daemon plans goal work: "incremental" (the
+	// default) enables one-goal-at-a-time incremental planning, "roadmap" keeps
+	// the full-roadmap planning. Any other value (including empty/absent in a
+	// legacy setting.yaml) is coerced to "incremental" by LoadSettings — an
+	// unknown value never fails the load. The daemon reads this via the exact
+	// path Settings.Taskvisor.PlanningMode.
 	PlanningMode string `yaml:"planning_mode"`
 	// Validation gates the post-execution goal validation step: when ON (the
 	// default), a goal that finishes execution is handed to the reasoning
@@ -195,7 +195,7 @@ func (t TaskvisorSettings) GitFreshnessEnabled() bool {
 	return t.GitFreshness == nil || *t.GitFreshness
 }
 
-// Allowed PlanningMode values. Anything else coerces to PlanningModeRoadmap
+// Allowed PlanningMode values. Anything else coerces to PlanningModeIncremental
 // at load time.
 const (
 	PlanningModeRoadmap     = "roadmap"
@@ -331,7 +331,7 @@ func DefaultSettings() *Settings {
 			TransientRetryMaxAttempts: 3,
 			TransientRetryBackoffMs:   500,
 			MaxWallClockSec:           14400,
-			PlanningMode:              PlanningModeRoadmap,
+			PlanningMode:              PlanningModeIncremental,
 			AutoCommit:                &autoCommit,
 			GitFreshness:              &gitFreshness,
 			Validation:                &validation,
@@ -392,10 +392,10 @@ func LoadSettings(projectRoot string) (*Settings, error) {
 		s.Taskvisor.Validation = &validation
 	}
 	// Coerce planning_mode: empty (legacy setting.yaml predating the key) or
-	// unknown values fall back to roadmap so the load never fails and existing
-	// behavior stays the default.
+	// unknown values fall back to incremental so the load never fails and new
+	// installs get incremental planning by default.
 	if s.Taskvisor.PlanningMode != PlanningModeRoadmap && s.Taskvisor.PlanningMode != PlanningModeIncremental {
-		s.Taskvisor.PlanningMode = PlanningModeRoadmap
+		s.Taskvisor.PlanningMode = PlanningModeIncremental
 	}
 	// Backfill plan.audit for a legacy setting.yaml predating the key: nil
 	// means pre-feature (default ON), while an explicit false survives untouched.

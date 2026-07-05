@@ -197,11 +197,12 @@ type Daemon struct {
 	// from taskvisor.auto_resume_interval_sec (default 30s) at construction/Run.
 	autoResumeInterval time.Duration
 
-	// planningMode selects roadmap (default) vs incremental planning. Seeded in
-	// Run() from Settings.Taskvisor.PlanningMode, which setup.LoadSettings has
-	// already coerced to roadmap|incremental — never re-validated here. The zero
+	// planningMode selects incremental (the config default) vs roadmap planning.
+	// Seeded in Run() from Settings.Taskvisor.PlanningMode, which setup.LoadSettings
+	// has already coerced to roadmap|incremental — never re-validated here. The zero
 	// value ("") reads as roadmap via incrementalPlanning(), so a literal-
-	// constructed Daemon keeps roadmap behavior byte-identically. See plannext.go.
+	// constructed Daemon (one not seeded from Settings) keeps roadmap behavior
+	// byte-identically. See plannext.go.
 	planningMode string
 	// planNext is the daemon-global incremental generator episode (plannext.go).
 	// Zero-valued = no episode open; reset on activate/deactivate.

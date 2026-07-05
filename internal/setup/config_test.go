@@ -1059,12 +1059,12 @@ func TestSaveSettings_ValidationRoundTrip(t *testing.T) {
 	assert.False(t, s2.Taskvisor.ValidationEnabled(), "opt-out must survive the save-back round-trip")
 }
 
-func TestDefaultSettings_PlanningModeRoadmap(t *testing.T) {
+func TestDefaultSettings_PlanningModeIncremental(t *testing.T) {
 	s := DefaultSettings()
-	assert.Equal(t, "roadmap", s.Taskvisor.PlanningMode)
+	assert.Equal(t, "incremental", s.Taskvisor.PlanningMode)
 }
 
-func TestLoadSettings_PlanningModeCoercesUnknownToRoadmap(t *testing.T) {
+func TestLoadSettings_PlanningModeCoercesUnknownToIncremental(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".tmux-cli")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
@@ -1077,17 +1077,17 @@ func TestLoadSettings_PlanningModeCoercesUnknownToRoadmap(t *testing.T) {
 
 	s, err := LoadSettings(root)
 	require.NoError(t, err)
-	assert.Equal(t, "roadmap", s.Taskvisor.PlanningMode, "unknown value must coerce to roadmap, never fail the load")
+	assert.Equal(t, "incremental", s.Taskvisor.PlanningMode, "unknown value must coerce to incremental, never fail the load")
 
 	// The save-back must persist the coerced value so the file self-heals.
 	data, err := os.ReadFile(settingFile)
 	require.NoError(t, err)
 	var reloaded Settings
 	require.NoError(t, yamlpkg.Unmarshal(data, &reloaded))
-	assert.Equal(t, "roadmap", reloaded.Taskvisor.PlanningMode)
+	assert.Equal(t, "incremental", reloaded.Taskvisor.PlanningMode)
 }
 
-func TestLoadSettings_PlanningModeEmptyCoercesToRoadmap(t *testing.T) {
+func TestLoadSettings_PlanningModeEmptyCoercesToIncremental(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".tmux-cli")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
@@ -1100,7 +1100,7 @@ func TestLoadSettings_PlanningModeEmptyCoercesToRoadmap(t *testing.T) {
 
 	s, err := LoadSettings(root)
 	require.NoError(t, err)
-	assert.Equal(t, "roadmap", s.Taskvisor.PlanningMode, "absent/empty value must coerce to roadmap")
+	assert.Equal(t, "incremental", s.Taskvisor.PlanningMode, "absent/empty value must coerce to incremental")
 }
 
 func TestLoadSettings_PlanningModeIncrementalRoundTrips(t *testing.T) {

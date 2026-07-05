@@ -139,7 +139,7 @@ internal/
 
 - `.tmux-cli/setting.yaml` — the single config file (hooks toggle, custom hooks, commands enable, supervisor.max_cycles,
   taskvisor.require_plan_approval (default false), taskvisor.halt_on_stale_binary (default false),
-  taskvisor.restart_on_stale_binary (default false), taskvisor.planning_mode (roadmap|incremental, default roadmap —
+  taskvisor.restart_on_stale_binary (default false), taskvisor.planning_mode (roadmap|incremental, default incremental —
   incremental plans one goal at a time instead of a full roadmap upfront))
 - `.tmux-cli/tasks.yaml` — can be pre-created to queue planned work for the supervisor
 - TUI settings editor exposes 32 items — must mirror all `Settings` struct fields EXCEPT the deliberately-unsurfaced `api:` reporting block (internal-only telemetry, force-corrected at load — see the TUI-invariant exception below)

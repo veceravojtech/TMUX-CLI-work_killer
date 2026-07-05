@@ -43,9 +43,10 @@ func EvaluateStartGuard(projectRoot string, ledgerMissing, hasStartable bool) St
 
 // startPlanningModeIncremental reports whether the project runs the daemon's
 // incremental planning loop (taskvisor.planning_mode == "incremental").
-// LoadSettings already coerces empty/unknown values to roadmap, so no
-// re-validation happens here; a settings load error conservatively reads as
-// roadmap, preserving the empty-ledger refusals.
+// LoadSettings already coerces empty/unknown values to incremental (the new
+// install default), so no re-validation happens here; a settings load error
+// conservatively reads as NOT incremental (roadmap), preserving the empty-ledger
+// refusals in that error case.
 func startPlanningModeIncremental(projectRoot string) bool {
 	settings, err := setup.LoadSettings(projectRoot)
 	return err == nil && settings != nil &&

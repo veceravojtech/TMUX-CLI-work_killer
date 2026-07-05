@@ -22,7 +22,9 @@ func seedPlanningMode(t *testing.T, root, mode string) {
 // by BOTH the MCP taskvisor-start tool and the `tmux-cli taskvisor start` CLI:
 // startable work always admits; incremental planning mode bypasses BOTH
 // empty-ledger refusals (the daemon authors goal-001 itself); roadmap mode (and
-// any unreadable/absent settings) keeps both refusals.
+// any unreadable settings, which conservatively read as roadmap) keeps both
+// refusals; absent settings default to incremental (the new install default)
+// and admit.
 func TestEvaluateStartGuard(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -36,7 +38,7 @@ func TestEvaluateStartGuard(t *testing.T) {
 		{"incremental admits zero startable goals", "incremental", false, false, StartAllowed},
 		{"roadmap refuses missing ledger", "roadmap", true, false, StartRefusedNoLedger},
 		{"roadmap refuses zero startable goals", "roadmap", false, false, StartRefusedNoStartable},
-		{"absent settings default to roadmap refusals", "", true, false, StartRefusedNoLedger},
+		{"absent settings default to incremental admit", "", true, false, StartAllowed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1681,7 +1681,7 @@ func TestNewModel_IncludesPlanningModeItem(t *testing.T) {
 		if item.key == "taskvisor.planning_mode" {
 			found = true
 			assert.Equal(t, "enum", item.kind)
-			assert.Equal(t, "roadmap", item.strVal, "item must seed the default roadmap")
+			assert.Equal(t, "incremental", item.strVal, "item must seed the default incremental")
 			assert.Equal(t, []string{"roadmap", "incremental"}, item.options)
 		}
 	}
@@ -1704,11 +1704,11 @@ func TestUpdate_PlanningModeCyclesOnSpaceEnter(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	m = updated.(Model)
-	assert.Equal(t, "incremental", m.items[m.cursor].strVal, "space must cycle roadmap → incremental")
+	assert.Equal(t, "roadmap", m.items[m.cursor].strVal, "space must cycle incremental → roadmap")
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
-	assert.Equal(t, "roadmap", m.items[m.cursor].strVal, "enter must cycle incremental → roadmap")
+	assert.Equal(t, "incremental", m.items[m.cursor].strVal, "enter must cycle roadmap → incremental")
 }
 
 // TestToSettings_PlanningModeRoundTrips proves an edited planning_mode overlays
@@ -1730,13 +1730,13 @@ taskvisor:
 
 	for i, item := range m.items {
 		if item.key == "taskvisor.planning_mode" {
-			assert.Equal(t, "roadmap", item.strVal, "coerced load must seed roadmap")
-			m.items[i].strVal = "incremental"
+			assert.Equal(t, "incremental", item.strVal, "coerced load must seed incremental")
+			m.items[i].strVal = "roadmap"
 		}
 	}
 
 	result := m.ToSettings()
-	assert.Equal(t, "incremental", result.Taskvisor.PlanningMode, "edited value must overlay into ToSettings")
+	assert.Equal(t, "roadmap", result.Taskvisor.PlanningMode, "edited value must overlay into ToSettings")
 	assert.Equal(t, 10, result.Supervisor.MaxCycles, "sibling fields must be preserved")
 	assert.Equal(t, 15, result.Supervisor.CycleDelay, "sibling fields must be preserved")
 	assert.Equal(t, 7, result.Taskvisor.PollInterval, "sibling taskvisor fields must be preserved")
