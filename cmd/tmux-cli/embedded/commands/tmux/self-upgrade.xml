@@ -61,5 +61,6 @@
     <rule>The helper is `setsid`-detached and `start-attach` runs in a native terminal (real TTY); a headless run is refused, not attempted.</rule>
     <rule>Always surface the recovery command before launching.</rule>
     <note>HARDENING (recommended future work): promote this orchestration into a `tmux-cli self-upgrade` CLI command that reuses internal/setup + cmd/tmux-cli/self_update.go (dispatchSessionRestart already does build→stop-daemon→kill-session→self-exec start-attach; extend it to resolve CONV_ID + prewrite the version config + pass `--resume &lt;id&gt;`), so the flow is deterministic Go rather than an LLM-composed helper.</note>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
   </execution-rules>
 </task>
