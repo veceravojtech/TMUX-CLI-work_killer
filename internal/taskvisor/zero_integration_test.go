@@ -245,6 +245,112 @@ func TestZeroIntegration_EmptyIntegrationSurfacesInlineEmptyScope(t *testing.T) 
 	assert.Equal(t, GoalRunning, gf.Goals[1].Status, "no cascade on a no-op empty-scope goal — the sibling stays running")
 }
 
+// --- restart rehydration (backend task 399) --------------------------------
+//
+// After an exec-replace restart, crash recovery restores only rt.phase — never
+// rt.WorktreeDir/rt.Branch. The done-path used to read the now-empty rt.WorktreeDir
+// raw, so goalUsesWorktree returned false, a validated worktree goal took the
+// INLINE branch and fired failZeroIntegration ("no integrated changes"), skipping
+// mergeWorktreeBack and stranding the worker's commit. Routing the three worktree
+// consumers through rehydrateWorktreeDir re-derives the worktree from disk so the
+// commit merges back and the goal reaches Done.
+
+// TestZeroIntegration_RestartRehydratesWorktreeReachesDone: a worktree goal whose
+// in-memory runtime was wiped (d.runtimes=nil) with a registered, dirty, 1-ahead
+// worktree still on disk merges its commit back and ends GoalDone — the ff-merge
+// runs (proving rehydration; without it mergeWorktreeBack early-returns and the
+// commit is stranded), the dependent stays pending, and no "no integrated changes"
+// fail signal is written.
+func TestZeroIntegration_RestartRehydratesWorktreeReachesDone(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	mkGitRepo(t, dir)
+	wtPath := mkWorktreeDir(t, d, "goal-001") // on-disk worktree a crashed run left behind
+
+	// Exec-replace restart wiped the runtime: rt.WorktreeDir/rt.Branch are gone,
+	// exactly the bug's precondition.
+	d.runtimes = nil
+
+	// One git runner that BOTH registers the on-disk worktree (so rehydrate adopts
+	// it) AND drives the real-merge path (dirty, 1 ahead ⇒ a true ff-merge).
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		switch {
+		case argsContain(args, "worktree", "list", "--porcelain"):
+			return "worktree " + dir + "\n\nworktree " + wtPath + "\n", 0
+		case argsContain(args, "status", "--porcelain"):
+			return "M internal/taskvisor/a.go\n", 0
+		case argsContain(args, "rev-list", "--count"):
+			return "1\n", 0
+		case argsContain(args, "rev-parse", "--abbrev-ref", "HEAD"):
+			return "main\n", 0
+		}
+		return "", 0
+	}}
+	d.SetGitRunnerFunc(fake.run)
+
+	// A supervisor window so any notify has a receiver (none should fire on success).
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil).Maybe()
+	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil).Maybe()
+
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Description: "restart survivor", Status: GoalDone,
+			Scope: []string{"internal/taskvisor/**"}},
+		{ID: "goal-002", Description: "dependent", Status: GoalPending, DependsOn: []string{"goal-001"}},
+	}}
+	writeGoals(t, dir, gf)
+
+	failed, err := d.finalizeWorktreeOnDone(gf, &gf.Goals[0])
+	require.NoError(t, err)
+	assert.False(t, failed, "a rehydrated worktree goal that integrated real work must NOT surface failed")
+
+	assert.Equal(t, GoalDone, gf.Goals[0].Status, "goal ends done")
+	assert.Equal(t, GoalPending, gf.Goals[1].Status, "dependent stays pending (not cascade-blocked)")
+	assert.Empty(t, gf.Goals[1].BlockedBy, "dependent carries no block")
+	assert.Equal(t, 1, fake.count("merge", "--ff-only"),
+		"the rehydrated branch fast-forwarded into base exactly once (commit not stranded)")
+
+	// No VerdictFail "no integrated changes" signal was written.
+	sig, err := LoadSignal(dir, "goal-001")
+	require.NoError(t, err)
+	if valSig, ok := sig.(*ValidatorSignal); ok {
+		assert.NotEqual(t, VerdictFail, valSig.Verdict, "no VerdictFail on a rehydrated real merge")
+	}
+}
+
+// TestGoalUsesWorktree_EmptyRuntimeRehydratesFromDisk: with the runtime wiped and a
+// registered on-disk worktree, goalUsesWorktree rehydrates from disk (returns true)
+// and caches the adopted path + branch back into the runtime.
+func TestGoalUsesWorktree_EmptyRuntimeRehydratesFromDisk(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	wtPath := mkWorktreeDir(t, d, "goal-001")
+	d.SetGitRunnerFunc(registeredWorktreeGit(dir, wtPath).run)
+	d.runtimes = nil // empty runtime as after an exec-replace restart
+
+	assert.True(t, d.goalUsesWorktree(&Goal{ID: "goal-001"}),
+		"empty runtime + registered on-disk worktree ⇒ worktree mode via disk rehydration")
+	assert.Equal(t, wtPath, d.runtime("goal-001").WorktreeDir, "adopted path cached back into the runtime")
+	assert.Equal(t, worktreeBranch("goal-001"), d.runtime("goal-001").Branch, "branch cached back alongside")
+}
+
+// TestGoalUsesWorktree_EmptyRuntimeNoWorktreeStaysInline: with the runtime wiped and
+// NO worktree on disk (the common MaxGoals=1 path), goalUsesWorktree returns false
+// with ZERO git probes — pinning the byte-identical inline behavior.
+func TestGoalUsesWorktree_EmptyRuntimeNoWorktreeStaysInline(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	mkGitRepo(t, dir)
+	fake := &fakeGitRunner{}
+	d.SetGitRunnerFunc(fake.run)
+	d.runtimes = nil
+
+	assert.False(t, d.goalUsesWorktree(&Goal{ID: "goal-001"}),
+		"empty runtime + no worktree on disk ⇒ inline mode (byte-identical MaxGoals=1)")
+	assert.Equal(t, 0, len(fake.calls), "no worktree on disk ⇒ zero git probes")
+	assert.Empty(t, d.runtime("goal-001").WorktreeDir, "nothing cached on the no-dir path")
+}
+
 // --- the mode predicate ----------------------------------------------------
 
 // TestZeroIntegration_NonEmptyScopeZeroIntegrationModePredicate pins the

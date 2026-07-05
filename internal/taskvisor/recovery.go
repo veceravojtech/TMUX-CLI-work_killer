@@ -113,6 +113,12 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 				rt.phase = phaseValidating
 			}
 			rt.phaseStartedAt = d.now()
+			// Defense-in-depth (task 399): an exec-replace restart restored only
+			// rt.phase — re-derive WorktreeDir/Branch from disk so heartbeat/
+			// validator-cwd/merge-back consumers see a consistent runtime the moment
+			// this goal resumes, not only the two done-path sites. Zero-git no-op at
+			// MaxGoals=1 (no worktree on disk ⇒ WorktreeDir stays "").
+			d.rehydrateWorktreeDir(g.ID)
 			continue
 		}
 		if sig != nil {
@@ -157,6 +163,10 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 			}
 		}
 		if resumed {
+			// Same restart-rehydration as pass 1: restore WorktreeDir/Branch on each
+			// resume branch (validator/investigator or supervisor) so a resumed
+			// worktree goal merges back on done. Zero-git no-op at MaxGoals=1.
+			d.rehydrateWorktreeDir(g.ID)
 			continue
 		}
 

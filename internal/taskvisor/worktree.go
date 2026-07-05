@@ -288,6 +288,35 @@ func (d *Daemon) resolveWorktreeFromDisk(goalID string) (string, bool) {
 	return wtPath, true
 }
 
+// rehydrateWorktreeDir is the SINGLE chokepoint that resolves a goal's worktree
+// path when the in-memory runtime may have lost it (daemon exec-replace restart,
+// crash recovery, lanes that never re-ran ensureWorktree). It returns the worktree
+// path, or "" when the goal runs inline in the base tree (MaxGoals=1 / non-git, or
+// no registered worktree on disk). On a disk hit it caches the adopted path back
+// into rt.WorktreeDir and rt.Branch so goalWorkDir, goalUsesWorktree, and
+// mergeWorktreeBack all decide "is this a worktree goal?" the SAME way and cannot
+// diverge — the raw-read drift that stranded a validated worktree goal's commit
+// after a restart (task 399).
+//
+// It probes disk ONLY when rt.WorktreeDir is empty, and adopts ONLY a still-git-
+// registered dir (resolveWorktreeFromDisk's guard), so a torn-down/discarded
+// worktree (WorktreeDir cleared to "") is never re-adopted on the halt/discard
+// path. A set WorktreeDir is returned as-is with no probe. Cache-back is lock-free:
+// the poll loop is single-threaded — same discipline as goalWorkDir/ensureWorktree,
+// no new mutex.
+func (d *Daemon) rehydrateWorktreeDir(goalID string) string {
+	rt := d.runtime(goalID)
+	if rt.WorktreeDir != "" {
+		return rt.WorktreeDir
+	}
+	if path, ok := d.resolveWorktreeFromDisk(goalID); ok {
+		rt.WorktreeDir = path
+		rt.Branch = worktreeBranch(goalID)
+		return path
+	}
+	return ""
+}
+
 // teardownStrayWorktree removes a directory at wtPath that is NOT a usable
 // registered worktree (stray dir, or registered-but-base-less stub) so the
 // caller can re-provision it cleanly with `git worktree add`. Every removal is
@@ -622,12 +651,15 @@ func (d *Daemon) runIntegrationGate(goal *Goal) error {
 // non-empty-scope worktree goal that integrated zero commits is failed, not left
 // silently done.
 func (d *Daemon) mergeWorktreeBack(goal *Goal) (integrated bool, err error) {
-	rt := d.runtime(goal.ID)
-	if rt.WorktreeDir == "" || rt.WorktreeDir == d.workDir {
+	// Route through the shared rehydration chokepoint so a restart survivor whose
+	// runtime lost WorktreeDir still merges back (task 399): rehydrate re-derives +
+	// caches the worktree from disk, so the guard and the branch below are read from
+	// the now-consistent runtime, never a raw empty WorktreeDir.
+	wt := d.rehydrateWorktreeDir(goal.ID)
+	if wt == "" || wt == d.workDir {
 		return false, nil
 	}
-	wt := rt.WorktreeDir
-	branch := rt.Branch
+	branch := d.runtime(goal.ID).Branch
 
 	var didIntegrate bool
 	mergeErr := WithMergeLock(d.workDir, func() error {
@@ -1164,8 +1196,8 @@ func (d *Daemon) finalizeWorktreeOnDone(goals *GoalsFile, goal *Goal) (failed bo
 // worktree-mode goals key on the merge result (integrated), inline-mode goals
 // key on whether autoCommitGoal committed. The two are mutually exclusive.
 func (d *Daemon) goalUsesWorktree(goal *Goal) bool {
-	rt := d.runtime(goal.ID)
-	return rt.WorktreeDir != "" && rt.WorktreeDir != d.workDir
+	wt := d.rehydrateWorktreeDir(goal.ID)
+	return wt != "" && wt != d.workDir
 }
 
 // failZeroIntegration flips a GoalDone goal whose non-empty declared Scope

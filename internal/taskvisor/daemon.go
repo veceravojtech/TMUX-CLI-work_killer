@@ -627,21 +627,17 @@ func (d *Daemon) clearRuntime(goalID string) {
 // The script path and every .tmux-cli/ control-plane read/write stay rooted at base
 // d.workDir; only the cwd of the executed validation commands moves here.
 func (d *Daemon) goalWorkDir(goalID string) string {
-	rt := d.runtime(goalID)
-	wt := rt.WorktreeDir
+	// Resolve through the shared rehydration chokepoint: an empty WorktreeDir is
+	// re-derived from disk (registered worktree ⇒ adopted + cached back, keeping
+	// marker/window/investigator cwd consistent within a cycle and avoiding repeated
+	// git probes); no worktree on disk ⇒ "" ⇒ base d.workDir with zero new git probes.
+	wt := d.rehydrateWorktreeDir(goalID)
 	if wt == "" {
-		if path, ok := d.resolveWorktreeFromDisk(goalID); ok {
-			// Cache-back: goalWorkDir is the third WorktreeDir writer (after
-			// ensureWorktree's two sites); the poll loop is single-threaded, so no
-			// lock is taken — same discipline as runtime()/ensureWorktree
-			// (execute-31: add sync when >1 goal runs concurrently). Branch is
-			// restored alongside so merge-back/discard see a consistent runtime.
-			rt.WorktreeDir = path
-			rt.Branch = worktreeBranch(goalID)
-			return path
-		}
 		return d.workDir
 	}
+	// WorktreeDir set (freshly rehydrated or primed) but the directory is missing
+	// (stale/raced cleanup) ⇒ degrade to base and warn. NEVER run validation against
+	// a tree that is gone.
 	if _, err := os.Stat(wt); err != nil {
 		log.Printf("warning: stale worktree %s for goal %s, using base", wt, goalID)
 		return d.workDir
