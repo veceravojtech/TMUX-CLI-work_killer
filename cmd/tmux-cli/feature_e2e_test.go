@@ -64,6 +64,23 @@ func TestFeatureEndToEnd(t *testing.T) {
 			"stage-3b must carry the hardcode prohibition for FE values")
 	})
 
+	// 3b. Solo-lane emission: a SINGLE-goal branch evaluates the canonical
+	//     solo-lane gate (task-list.xml <lane-gate name="solo-lane">, G1-G5, by
+	//     reference) at emission and passes lane=solo on a full pass, so a
+	//     single-unit single-file /tmux:feature goal routes through supervisor
+	//     step 3c inline execution with zero spawns. Mirrors the
+	//     zero_hardcoded_literals token-assertion idiom.
+	t.Run("solo_lane_single_unit", func(t *testing.T) {
+		for _, tok := range []string{"solo-lane gate", "lane: solo", "by reference"} {
+			assert.Contains(t, stage4, tok,
+				"stage-4 must encode the solo-lane emission gate token %q", tok)
+		}
+		// The gate is referenced BY NAME, not restated: stage-4 must name the
+		// canonical task-list.xml lane-gate block rather than copy G1-G5.
+		assert.Contains(t, stage4, `lane-gate name="solo-lane"`,
+			"stage-4 must reference the canonical task-list.xml lane-gate block by name")
+	})
+
 	// 4. feature.xml documents the command's BOUNDARY vs its neighbours. RED
 	//    before the boundary edit (0 mentions) -> GREEN after. Lowercased to match
 	//    the grep -qi semantics of the goal's validate rules.
