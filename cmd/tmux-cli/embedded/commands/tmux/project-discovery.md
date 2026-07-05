@@ -70,9 +70,13 @@ After collecting enough information for a document, show a summary and wait for 
 
 All interaction happens through text output and waiting for user messages. Interactive question-answer tools (option buttons, multi-select prompts) must not be used — they are incompatible with tmux window execution. Present choices as conversational text and wait for the user to reply.
 
-## Single bounded context behavior
+## Bounded context decomposition — split is the default
 
-When the user identifies exactly one bounded context, discovery adapts: the context mapping phase is skipped entirely, anti-corruption layer questions are omitted, and `context-map.md` is not generated. The handoff checklist adjusts accordingly — a missing context map for a single-BC project is expected, not an error.
+Domain discovery **defaults to splitting the domain into as many bounded contexts as the seams justify** — never collapse distinct concerns into one context for convenience. Lead with a proposed maximal split (apply the seam heuristic: distinct actors/roles, linguistic seams where one word means different things, different lifecycles, different consistency boundaries, CRUD-vs-workflow, separable-in-isolation) and let the user merge back if they object. A finer split is cheap to merge; a coarse blob is expensive to tease apart, and the downstream DDD rules assume separate contexts. Do not ask "does a single context fit, or do you want to split?" — propose the split and treat collapse-to-fewer as the deviation the user must request. Example: an "Identity / IAM" area is not one context — split it into Authentication and User Management (and Roles/Authorization when RBAC is non-trivial).
+
+## Single bounded context behavior (the exception)
+
+A single-BC project is the **exception, not a shortcut** — record it only after re-applying the split heuristic aloud and having the user explicitly confirm no seam applies. When exactly one bounded context is confirmed, discovery adapts: the context mapping phase is skipped entirely, anti-corruption layer questions are omitted, and `context-map.md` is not generated. The handoff checklist adjusts accordingly — a missing context map for a single-BC project is expected, not an error.
 
 ## Handoff contract
 

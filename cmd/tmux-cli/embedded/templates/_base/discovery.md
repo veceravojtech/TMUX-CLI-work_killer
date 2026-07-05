@@ -57,11 +57,28 @@
 <!-- PURPOSE: Identify the domain boundaries that will shape code organisation,
      module structure, and inter-module contracts. -->
 
+<!-- DEFAULT = SPLIT MAXIMALLY. Do NOT ask "does a single context fit, or do
+     you want to split it?" — that anchors on the wrong default. PROPOSE the
+     maximal sensible decomposition up front and let the user MERGE back if
+     they object. A finer split is cheap to merge; a coarse blob is expensive
+     to tease apart, and the downstream DDD rules assume separate contexts.
+     Split wherever ANY seam appears (each is a signal TO split):
+       - distinct actors/roles (end-user auth vs admin management)
+       - the same word means different things across flows (linguistic seam)
+       - different lifecycles / rates of change
+       - different consistency / transactional boundaries
+       - CRUD/administration vs behavioral workflow over the same nouns
+       - separable in isolation (a slice you could ship/deploy alone)
+     Worked example: an "Identity / IAM" area is NOT one context — split it
+     into at least Authentication (login/logout/sessions/tokens/password reset)
+     and User Management (account CRUD, roles, authorization). When in doubt,
+     split. -->
+
 <!-- GUARD: If the user identifies zero bounded contexts, stop discovery and
      display an error: "At least one bounded context is required to proceed.
      Please describe the main domain area of your project." (D-28) -->
 
-1. What are the major domain areas (bounded contexts) in this project? List each with a short description.
+1. Apply the split heuristic above to the product brief and PROPOSE the major domain areas (bounded contexts) as a maximal split. List each with a short description, then invite the user to merge/rename/add.
 
 | # | Bounded Context | Description |
 |---|-----------------|-------------|
@@ -69,9 +86,11 @@
 | 2 | {{bc_name_2}} | {{bc_description_2}} |
 | N | {{bc_name_N}} | {{bc_description_N}} |
 
-<!-- SHORTCUT: If only one BC is identified, note it as a single-BC project.
-     Sections that require multiple BCs (Context Map, some Share questions)
-     will be skipped automatically. (D-27) -->
+<!-- EXCEPTION (not a shortcut): A single-BC project is the DEVIATION, not the
+     default. Only record is_single_bc=yes after re-applying the split
+     heuristic aloud and having the user EXPLICITLY confirm no seam applies.
+     When single-BC, sections that require multiple BCs (Context Map, some
+     Share questions) are skipped automatically. (D-27) -->
 
 - Total bounded contexts: {{bc_count}}
 - Single-BC project: {{is_single_bc}} (yes/no)

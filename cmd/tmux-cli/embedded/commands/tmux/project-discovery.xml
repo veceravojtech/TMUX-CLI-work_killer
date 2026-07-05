@@ -167,15 +167,32 @@ Should I save this to `docs/architecture/product-brief.md`, or would you like to
       <action>Read _base/discovery.md sections 3-5 and 7-8 to inform conversational question flow. Do NOT dump template content to the user — use it as reference for natural follow-up questions.</action>
 
       <substep n="3.1" title="Bounded Context Identification" interactive="true" acceptance="D-05, D-07, D-27, D-28">
-        <action>Ask _base/discovery.md section 3 questions conversationally. Help the user identify the major domain areas (bounded contexts) in their project. For each BC, collect a short name and description.</action>
-        <action>Present collected BCs as a summary table and ask the user to confirm or adjust.</action>
+        <decomposition-bias critical="true">
+          The DEFAULT is to SPLIT the domain into as many bounded contexts as the seams justify — never collapse distinct concerns into one context for convenience. DO NOT ask the user "does a single X context fit, or do you want to split it?" — that framing anchors on the wrong default and biases toward a blob. Instead PROACTIVELY PROPOSE the maximal sensible decomposition and let the user MERGE back if they object. A finer split is cheap to merge; a coarse blob is expensive to tease apart later, and every downstream rule (php-symfony/architecture-ddd) already assumes clean, separate context boundaries. When in doubt, split.
+        </decomposition-bias>
+        <decomposition-heuristic>
+          Split into separate bounded contexts wherever ANY of these seams appears — treat each as a positive signal TO split, not a close judgment call to agonize over:
+          - Distinct actors / roles driving the behavior (e.g. an end-user authenticating vs an admin managing accounts ⇒ Authentication vs User Management).
+          - The same word means different things in different flows (linguistic seam — the classic sign of two contexts sharing one name).
+          - Different lifecycles or rates of change (a stable core vs a fast-moving workflow).
+          - Different consistency / transactional boundaries.
+          - CRUD/administration vs behavioral workflow over the same nouns.
+          - Separable in isolation — a slice you could ship, deploy, or reason about on its own.
+          Worked example — an "Identity / IAM" area is NOT one context: split it into at least Authentication (login, logout, sessions, tokens, password reset) and User Management (account CRUD, roles, authorization), and split Roles/Authorization out further when RBAC is non-trivial.
+        </decomposition-heuristic>
+        <action>Ask _base/discovery.md section 3 questions conversationally, but LEAD with a proposed decomposition: apply the decomposition-heuristic to the product brief and PRESENT a maximal split as a summary table (name + description per BC), then invite the user to merge/rename/add — NOT to "confirm a single context." For each proposed BC collect a short name and description.</action>
+        <action>Frame the split as the default and any collapse-to-fewer as the deviation the user must ask for.</action>
 
         <check condition="zero bounded contexts identified">
           <action>Display error: "At least one bounded context is required to proceed. Please describe the main domain area of your project."</action>
           <action>Loop back to the BC identification question. Do NOT proceed to substep 3.2 or any downstream step with zero BCs. (D-28)</action>
         </check>
 
-        <action>Count confirmed BCs. If exactly one, set is_single_bc=true. Note this for later steps — context map and ACL questions will be skipped. (D-27)</action>
+        <check condition="the decomposition would collapse to exactly one bounded context">
+          <action critical="true">Single-BC is the EXCEPTION, never the easy path. Before accepting one context, re-apply the decomposition-heuristic aloud and require the user to explicitly confirm that NO seam applies: "Collapsing to a single context is unusual for this domain — I'd normally split it into {{proposed_split}}. Are you sure you want just one?" Only set is_single_bc=true after the user explicitly confirms against that check. Never volunteer single-BC as a one-keystroke default.</action>
+        </check>
+
+        <action>Count confirmed BCs. If exactly one (only after the explicit-confirmation check above), set is_single_bc=true — context map and ACL questions will be skipped. (D-27) For two or more BCs (the expected outcome), is_single_bc=false and the context-mapping substep 3.4 runs.</action>
 
         <action>For each BC, confirm no entity is shared across BC boundaries (D-07). Ask: "Are there any entities that live in more than one bounded context? If so, which ones, and how should they be separated?" Cross-BC references must use foreign ID value objects only.</action>
 
