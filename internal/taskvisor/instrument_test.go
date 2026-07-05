@@ -239,3 +239,52 @@ func TestInstrumentation_DispatchLineHasZeroInvCounts(t *testing.T) {
 		assert.Equal(t, "0", m["inv_inlined"])
 	}
 }
+
+// TestLogReuseDecision_EmitsOnSpawnOnly asserts that a spawn-only cycle
+// (investigators spawned, none reused) emits the by-design reuse-decision line
+// carrying the greppable `reuse scope=revalidation-only` token and the goal id.
+func TestLogReuseDecision_EmitsOnSpawnOnly(t *testing.T) {
+	d := &Daemon{}
+	g := &Goal{ID: "goal-018"}
+
+	out := captureLog(t, func() { d.logReuseDecision(g, 3, 0) })
+
+	assert.Contains(t, out, "reuse scope=revalidation-only", "the by-design reason token must be present")
+	assert.Contains(t, out, "goal-018", "the goal id must be named so the line is attributable")
+	assert.NotContains(t, out, "COUNTERS ", "must not collide with the reserved COUNTERS grep prefix")
+}
+
+// TestLogReuseDecision_SilentWhenReused asserts that when at least one finding
+// was reused the interesting non-zero case needs no by-design note: no line.
+func TestLogReuseDecision_SilentWhenReused(t *testing.T) {
+	d := &Daemon{}
+	g := &Goal{ID: "goal-018"}
+
+	out := captureLog(t, func() { d.logReuseDecision(g, 2, 1) })
+
+	assert.Empty(t, out, "reuse engaged — no reuse-decision line expected")
+}
+
+// TestLogReuseDecision_SilentWhenNoFindings asserts that when nothing was
+// spawned there is no reuse decision to explain: no line.
+func TestLogReuseDecision_SilentWhenNoFindings(t *testing.T) {
+	d := &Daemon{}
+	g := &Goal{ID: "goal-018"}
+
+	out := captureLog(t, func() { d.logReuseDecision(g, 0, 0) })
+
+	assert.Empty(t, out, "nothing spawned — no reuse-decision line expected")
+}
+
+// TestLogReuseDecision_NoSchedulingBehaviorChange mirrors
+// TestInstrumentation_NoSchedulingBehaviorChange: the reuse-decision line is
+// side-effect-only and must not mutate goal state.
+func TestLogReuseDecision_NoSchedulingBehaviorChange(t *testing.T) {
+	d := &Daemon{}
+	g := &Goal{ID: "goal-018", MaxCodeRetries: 3, CodeRetries: 3, StartedAt: "2026-06-03T13:00:00Z"}
+	before := *g
+
+	captureLog(t, func() { d.logReuseDecision(g, 3, 0) })
+
+	assert.Equal(t, before, *g, "goal must be unchanged by logReuseDecision")
+}

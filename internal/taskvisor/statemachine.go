@@ -581,6 +581,10 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 	// or the switch below.
 	sp, ru, inl := countInvFindings(valSig.Findings)
 	d.logCounters(goal, verdict, sp, ru, inl)
+	// Also side-effect-only: when investigators spawned but none reused, make the
+	// by-design inv_reused=0 legible (reuse is revalidation-only — a prior cycle
+	// of THIS goal, never a sibling/cross-goal candidate). Reuses sp/ru above.
+	d.logReuseDecision(goal, sp, ru)
 
 	// Each non-pass branch moves exactly one per-class budget counter (or none):
 	//   fail            -> implementer re-dispatch, dec CodeRetries

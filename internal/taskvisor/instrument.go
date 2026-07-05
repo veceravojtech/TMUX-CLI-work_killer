@@ -44,6 +44,16 @@ func formatCounterLine(goalID string, cycle int, phase, event string,
 // Everything else (untagged) is counted as a fresh spawn. This reflects ACTUAL
 // spawns rather than the investigator-config count — a reused or inlined
 // investigator is never launched, so it must never be counted under inv_spawned.
+//
+// Scope of the reuse counter is REVALIDATION-ONLY: C10 reuse (PlanRevalidation,
+// signal.go) serves a PRIOR CYCLE of the SAME goal — a REUSE entry carries that
+// goal's earlier ReusedFromCycle, and a fresh goal / first cycle (prev == nil)
+// yields all RERUN. Reuse is NEVER drawn from a sibling or cross-goal candidate
+// set. Consequently a first-cycle inv_reused=0, or an inv_reused=0 that persists
+// across consecutive same-shaped sibling goals, is BY-DESIGN — not a broken
+// reuse gate. See goalmd.go C10 ("incremental re-validation reuses a PRIOR
+// CYCLE's pass") and logReuseDecision below, which makes this zero legible in
+// the daemon log.
 func countInvFindings(fs []ValidationFinding) (spawned, reused, inlined int) {
 	for _, f := range fs {
 		switch {
@@ -97,4 +107,25 @@ func (d *Daemon) logCounters(g *Goal, event string, spawned, reused, inlined int
 		g.MaxSpecRetries-g.SpecRetries,
 		g.MaxValidationRetries-g.ValidationRetries,
 		spawned, reused, inlined, cycleWall, goalWallSeconds(g)))
+}
+
+// logReuseDecision makes a by-design inv_reused=0 legible. Like logCounters it is
+// side-effect-only (reads g.ID + the already-counted spawned/reused, mutates
+// nothing). It emits ONE line only for the spawn-only case (spawned > 0 &&
+// reused == 0): investigators ran but none reused, which an operator could
+// mistake for a broken reuse gate. The line names the reuse counter's
+// revalidation-only scope — C10 reuse serves a PRIOR CYCLE of the SAME goal
+// (ReusedFromCycle), never a sibling/cross-goal candidate — so the zero reads as
+// by-design. It is intentionally NOT prefixed with "COUNTERS ": that token is
+// reserved for the single counter line and greps key on it, so this reason line
+// must never collide with it. Silent when reuse engaged (reused > 0 — the
+// interesting non-zero case needs no note) or when nothing spawned.
+func (d *Daemon) logReuseDecision(g *Goal, spawned, reused int) {
+	if spawned == 0 || reused > 0 {
+		return // reuse engaged, or nothing spawned — no reason to explain
+	}
+	log.Printf("%s: inv reuse scope=revalidation-only — %d spawned, 0 reused; "+
+		"C10 reuse serves a PRIOR CYCLE of the SAME goal (ReusedFromCycle), never a "+
+		"sibling/cross-goal candidate (no-live-candidate), so inv_reused=0 here is by-design",
+		g.ID, spawned)
 }
