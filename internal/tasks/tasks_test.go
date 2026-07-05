@@ -469,6 +469,48 @@ tasks:
 	}
 }
 
+func TestValidateTasksFile_AcceptsNamespacedWid(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "namespaced wid"
+    wid: "execute-3-1"
+    status: pending
+    context: "ctx.md"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	for _, e := range errs {
+		assert.NotContains(t, e, "invalid wid format", "namespaced wid execute-3-1 must be accepted")
+	}
+}
+
+func TestValidateTasksFile_RejectsMalformedWid(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yamlData := `status: ready
+cycle: 1
+tasks:
+  - name: "malformed wid"
+    wid: "execute-foo"
+    status: pending
+    context: "ctx.md"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tasks.yaml"), []byte(yamlData), 0o644))
+
+	errs := ValidateTasksFile(filepath.Join(dir, "tasks.yaml"))
+	require.NotEmpty(t, errs)
+	assert.Contains(t, errs[0], "invalid wid format")
+	assert.Contains(t, errs[0], "execute-foo")
+}
+
 func TestValidateTasksFile_InvalidFileStatus(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".tmux-cli")

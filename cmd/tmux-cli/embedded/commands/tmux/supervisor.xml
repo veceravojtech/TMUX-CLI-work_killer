@@ -263,7 +263,7 @@ escalation_count: &lt;N&gt;
         - workingDirectory: WORKTREE_DIR if set (resolved above), else OMIT the field. E1: this starts the execute-N worker's shell in the goal's git worktree (tmux -c) so its file edits land in the isolated checkout and merge back. When WORKTREE_DIR is unset, omitting the field keeps the session-default base cwd — byte-identical to before.</action>
       <action>The tool atomically: picks the next execute-N name, creates the window, sends /tmux:execute, assembles and sends the task message with DELIVERABLE + RESPONSE PROTOCOL.</action>
       <action>Record from the response: workerName, window.tmuxWindowId, taskMessage (for your tracking table).</action>
-      <action>WID RECONCILE: windows-spawn-worker picks the next free execute-N ITSELF, so under concurrent goals the returned workerName can differ from the wid pre-recorded in tasks-path. If workerName differs from the task's recorded wid, UPDATE the task's wid in tasks-path to workerName AND rewrite any depends_on entries in OTHER tasks that reference the old wid, then log "wid reconciled: &lt;old wid&gt; &#8594; &lt;workerName&gt;". Step-5 routing and liveness checks key on wid == actual window name — a stale wid breaks both.</action>
+      <action>WID RECONCILE: windows-spawn-worker picks the next free execute-N ITSELF, so under concurrent goals the returned workerName can differ from the wid pre-recorded in tasks-path. If workerName differs from the task's recorded wid, UPDATE the task's wid in tasks-path to workerName AND rewrite any depends_on entries in OTHER tasks that reference the old wid, then log "wid reconciled: &lt;old wid&gt; &#8594; &lt;workerName&gt;". Step-5 routing and liveness checks key on wid == actual window name — a stale wid breaks both. In GOAL_MODE the returned workerName is the goal-namespaced `execute-{ns}-N` form (e.g. `execute-003-1`); write it VERBATIM into tasks-path — `tasks-validate` now accepts the namespaced form, so NEVER normalize it back to bare `execute-N`. Step-0c/step-5 liveness and orphan heuristics match on this exact window name.</action>
       <action>WINDOW-ID LEDGER: after each spawn, append a row to {research-root}/worker-windows.yaml (create the file if absent):
 - wid: &lt;workerName&gt;
   window_id: "&lt;window.tmuxWindowId&gt;"
@@ -278,7 +278,7 @@ This is a SIDECAR ledger — NEVER add fields to tasks.yaml task entries (tasks-
         - scope: derived from the context .md file (read it, summarize key scope points)
         - context: derived from the context .md file (dependencies, constraints, prior findings)
         - workingDirectory: WORKTREE_DIR if set (resolved above), else OMIT — same rule as the non-pre-planned spawn.
-        After each pre-planned spawn, apply the same WID RECONCILE: if the returned workerName differs from task.wid, update the task's wid (and any depends_on references to the old wid) in tasks-path and log the reconciliation.</rule>
+        After each pre-planned spawn, apply the same WID RECONCILE: if the returned workerName differs from task.wid, update the task's wid (and any depends_on references to the old wid) in tasks-path and log the reconciliation. In GOAL_MODE the returned workerName is the goal-namespaced `execute-{ns}-N` form (e.g. `execute-003-1`); write it VERBATIM into tasks-path — `tasks-validate` now accepts the namespaced form, so NEVER normalize it back to bare `execute-N`. Step-0c/step-5 liveness and orphan heuristics match on this exact window name.</rule>
     </step>
 
     <step n="5" title="Idle and route">

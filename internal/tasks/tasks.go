@@ -81,7 +81,7 @@ var allowedTaskKeys = map[string]bool{
 	"depends_on": true,
 }
 
-var widPattern = regexp.MustCompile(`^execute-\d+$`)
+var widPattern = regexp.MustCompile(`^execute-\d+(?:-\d+)?$`)
 
 var validTaskStatuses = map[string]bool{
 	StatusPending:    true,
@@ -167,7 +167,7 @@ func ValidateTasksFile(path string) []string {
 			errs = append(errs, fmt.Sprintf("task %q: invalid status %q (must be pending, in_progress, or done)", id, status))
 		}
 		if !widPattern.MatchString(wid) {
-			errs = append(errs, fmt.Sprintf("task %q: invalid wid format %q (must be execute-N)", id, wid))
+			errs = append(errs, fmt.Sprintf("task %q: invalid wid format %q (must be execute-N or execute-<ns>-N)", id, wid))
 		}
 		for _, dep := range dependsOn {
 			if !wids[dep] {

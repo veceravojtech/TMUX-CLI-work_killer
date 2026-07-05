@@ -487,6 +487,34 @@ func TestNextExecuteN_NonNumericSuffix(t *testing.T) {
 	assert.Equal(t, "execute-1", result)
 }
 
+// --- allocateWorkerName tests ---
+
+func TestAllocateWorkerName_NoRecycleWithinGoal(t *testing.T) {
+	s := NewServer(t.TempDir())
+	prefix := "execute-3-"
+
+	// First spawn: empty live set, no seq file -> execute-3-1.
+	first := s.allocateWorkerName(nil, prefix)
+	assert.Equal(t, "execute-3-1", first)
+
+	// Simulate spawn-then-kill: live set empty again. The persisted high-water
+	// mark must prevent recycling execute-3-1 -> next is execute-3-2.
+	second := s.allocateWorkerName(nil, prefix)
+	assert.Equal(t, "execute-3-2", second)
+}
+
+func TestAllocateWorkerName_RespectsLiveWindows(t *testing.T) {
+	s := NewServer(t.TempDir())
+	prefix := "execute-3-"
+
+	// Seed seq file at 1 via one allocation.
+	assert.Equal(t, "execute-3-1", s.allocateWorkerName(nil, prefix))
+
+	// A live window execute-3-2 (N=2) outranks hwm=1 -> next is execute-3-3.
+	windows := []WindowListItem{{Name: "execute-3-2"}}
+	assert.Equal(t, "execute-3-3", s.allocateWorkerName(windows, prefix))
+}
+
 // --- buildTaskMessage tests ---
 
 func TestBuildTaskMessage_AllFields(t *testing.T) {

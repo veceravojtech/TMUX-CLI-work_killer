@@ -457,7 +457,9 @@ func (s *Server) WindowsRecoverWorkers(message, callerWid string) (*WindowsRecov
 	}, nil
 }
 
-func nextExecuteN(windows []WindowListItem, prefix string) string {
+// maxWorkerN returns the highest N among live windows whose name is exactly
+// prefix + a base-10 integer (0 if none). Pure: no filesystem, never panics.
+func maxWorkerN(windows []WindowListItem, prefix string) int {
 	maxN := 0
 	for _, w := range windows {
 		if strings.HasPrefix(w.Name, prefix) {
@@ -467,7 +469,41 @@ func nextExecuteN(windows []WindowListItem, prefix string) string {
 			}
 		}
 	}
-	return fmt.Sprintf("%s%d", prefix, maxN+1)
+	return maxN
+}
+
+func nextExecuteN(windows []WindowListItem, prefix string) string {
+	return fmt.Sprintf("%s%d", prefix, maxWorkerN(windows, prefix)+1)
+}
+
+// workerSeqPath is the per-prefix high-water-mark file the allocator persists so
+// a freed worker name is never recycled within a live goal. The prefix is
+// per-goal (e.g. "execute-003-"), so its trailing "-" is stripped to name the
+// file: prefix "execute-003-" -> ".tmux-cli/worker-seq/execute-003".
+func (s *Server) workerSeqPath(prefix string) string {
+	return filepath.Join(s.workingDir, ".tmux-cli", "worker-seq", strings.TrimSuffix(prefix, "-"))
+}
+
+// allocateWorkerName returns the next monotonic worker name for prefix. It takes
+// the max of (a) the highest live-window N and (b) the persisted high-water mark,
+// adds 1, and best-effort persists the new value so a killed worker's name is
+// never recycled within the same goal. All seq-file I/O is best-effort: on any
+// read/parse/write error the returned name is still collision-free against live
+// windows (monotonicity degrades gracefully to nextExecuteN's behavior rather
+// than blocking a spawn).
+func (s *Server) allocateWorkerName(windows []WindowListItem, prefix string) string {
+	hwm := maxWorkerN(windows, prefix)
+	seqPath := s.workerSeqPath(prefix)
+	if data, err := os.ReadFile(seqPath); err == nil {
+		if n, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && n > hwm {
+			hwm = n
+		}
+	}
+	next := hwm + 1
+	if err := os.MkdirAll(filepath.Dir(seqPath), 0o755); err == nil {
+		_ = os.WriteFile(seqPath, []byte(strconv.Itoa(next)), 0o644)
+	}
+	return fmt.Sprintf("%s%d", prefix, next)
 }
 
 // goalBindingRe matches the first goal-<N> token anywhere in a caller window name
@@ -738,7 +774,7 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 		}
 	}
 
-	workerName := nextExecuteN(windows, prefix)
+	workerName := s.allocateWorkerName(windows, prefix)
 
 	// workingDirectory (E1-1c) starts the worker's shell in the goal's worktree so
 	// validate-isolation investigators inherit the isolated tree; "" (the default
