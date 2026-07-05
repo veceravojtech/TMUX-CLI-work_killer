@@ -439,6 +439,27 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 		return d.deferValidationToSeparateGoal(goal, goals)
 	}
 
+	// goal-006 empty-diff gate: fail-fast a cycle whose in-scope changeset is
+	// empty BEFORE spawning a validator. The implementer reported DONE but
+	// produced nothing to validate — spawning a validator would burn a full
+	// (~3.5-min) cycle and could record a `pass` for a cycle that integrates
+	// nothing, the contradictory pass-then-fail the post-validation
+	// failZeroIntegration backstop only surfaces AFTER the wasted validation.
+	// Route straight to the code-retry path so the implementer commits its work.
+	// Gated on len(Scope)>0 (the same guard every failZeroIntegration call site
+	// uses) and inScopeDiffEmpty fails OPEN (returns false on any git-probe error
+	// / unresolvable worktree), so a transient failure never blocks a real
+	// validation. Placed AFTER the deferred-validation fork (that path owns its
+	// own failZeroIntegration down the done path) and BEFORE the validator spawn,
+	// the only site where the gate guards the validator-spawning path. The
+	// post-validation failZeroIntegration backstop is retained unchanged.
+	if len(goal.Scope) > 0 && d.inScopeDiffEmpty(goal) {
+		log.Printf("%s: empty in-scope diff — failing cycle before validation", goal.ID)
+		return d.handleFailedCycle(goal, goals,
+			"no committed in-scope changes: the implementation produced no in-scope diff to validate — make and commit your in-scope edits before reporting DONE.",
+			"code-defect")
+	}
+
 	// Validation is fully non-deterministic: there is no prebuilt deterministic
 	// anchor. The goal advances straight to the validating phase where the LLM
 	// validator grades it against the acceptance criteria.
@@ -453,6 +474,57 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	// OLD_STATUS==NEW_STATUS=="running" so the phase change still reaches the hook.
 	d.fireGoalTransitionHook(goal.ID, "running", "running", "validating", CurrentCycle(goal))
 	return nil
+}
+
+// inScopeDiffEmpty reports whether the goal's in-scope changeset is empty at the
+// supervising→validating boundary, using the SAME per-mode emptiness predicate
+// the goal's completion path uses — so a diff that clears this gate can never
+// later trip failZeroIntegration for emptiness (the load-bearing invariant). It
+// is the read-only, side-effect-free counterpart to autoCommitGoal /
+// mergeWorktreeBack: it NEVER commits.
+//
+// Mode is discriminated by goalUsesWorktree (mirroring every failZeroIntegration
+// call site so both modes route to exactly one check):
+//   - Worktree mode: commitsAhead(base..HEAD)==0 IS the "committed in-scope diff"
+//     the acceptance names. commitsAhead already fails open (returns 1 on exec
+//     error), so a transient git failure never gates.
+//   - Inline mode: inline auto-commit happens at done, so at gate time the work
+//     is uncommitted-but-pending — measure the working tree, not HEAD, mirroring
+//     autoCommitGoal's two skip conditions (scope-matched porcelain empty, OR the
+//     goal's own changeset since its start snapshot empty).
+//
+// Fails OPEN everywhere: an empty scope-pathspec set or any non-zero/errored git
+// probe returns false (do NOT gate; let validation proceed — the post-validation
+// backstop still guards the done path).
+func (d *Daemon) inScopeDiffEmpty(goal *Goal) bool {
+	if d.goalUsesWorktree(goal) {
+		wt := d.rehydrateWorktreeDir(goal.ID)
+		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+		defer cancel()
+		run := d.gitRunner()
+		return commitsAhead(ctx, run, wt, d.baseBranch(ctx, run)) == 0
+	}
+
+	// Inline: mirror autoCommitGoal's scope-matched emptiness read-only (no commit).
+	pathspecs := scopePathspecs(goal.Scope)
+	if len(pathspecs) == 0 {
+		return false // no scope pathspecs to probe ⇒ fail open
+	}
+	out, _, code, err := d.autoCommitGit(append([]string{"-C", d.workDir, "status", "--porcelain", "--"}, pathspecs...)...)
+	if code != 0 || err != nil {
+		return false // git-probe error ⇒ fail open
+	}
+	if strings.TrimSpace(out) == "" {
+		return true // no scope-matched changes at all (autoCommitGoal skip #1)
+	}
+	// Scope is dirty, but the goal may own none of it — the start-snapshot
+	// refinement mirrors autoCommitGoal skip #2 (a sibling's uncommitted in-scope
+	// edit is not this goal's diff). A missing/errored marker (ok=false) degrades
+	// to "not empty", matching the legacy scope-matched staging fallback.
+	if own, ok := d.goalOwnInScopePaths(goal, pathspecs); ok && len(own) == 0 {
+		return true
+	}
+	return false
 }
 
 // deferValidationToSeparateGoal transitions an impl goal straight from
