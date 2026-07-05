@@ -373,6 +373,12 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	log.Printf("%s: pending -> running", goal.ID)
 	if goal.StartedAt == "" {
 		goal.StartedAt = time.Now().UTC().Format(time.RFC3339)
+		// goal-005: freeze the pre-goal tree state so completion-time auto-commit
+		// stages only this goal's own changeset. Inline mode only — worktree-mode
+		// goals integrate via the merge path, not the inline auto-commit.
+		if !d.goalUsesWorktree(goal) {
+			d.captureGoalStartSnapshot(goal)
+		}
 	}
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
@@ -543,6 +549,11 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	log.Printf("%s: pending -> running (retry %d/%d, reusing tasks.yaml)", goal.ID, goal.Retries, goal.MaxRetries)
 	if goal.StartedAt == "" {
 		goal.StartedAt = time.Now().UTC().Format(time.RFC3339)
+		// goal-005: mirror dispatch()'s start-snapshot capture on the retry path
+		// so a goal first dispatched via retry still isolates its own changeset.
+		if !d.goalUsesWorktree(goal) {
+			d.captureGoalStartSnapshot(goal)
+		}
 	}
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err

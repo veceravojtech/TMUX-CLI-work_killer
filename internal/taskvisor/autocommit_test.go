@@ -373,6 +373,222 @@ func TestGoalCommitMessage_OmitsSuffixWithoutBackendTask(t *testing.T) {
 	assert.Equal(t, "goal-009: Auto-commit resolved goals to the current branch", goalCommitMessage(g))
 }
 
+// --- goal-005: own-changeset staging (scope ∩ goal-start diff) --------------
+
+// TestAutoCommit_ExcludesPreexistingSiblingInScopeEdit is the demonstrated-bug
+// guard (real git via a fresh repo): a sibling's uncommitted in-scope edit sits
+// in the tree when goal B starts; after goal B captures its start snapshot and
+// makes its OWN in-scope edit, auto-commit must commit ONLY goal B's file and
+// leave the sibling's edit dirty/unstaged.
+func TestAutoCommit_ExcludesPreexistingSiblingInScopeEdit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	dir := t.TempDir()
+	runGitCmd(t, dir, "init")
+	runGitCmd(t, dir, "config", "user.email", "taskvisor@test.local")
+	runGitCmd(t, dir, "config", "user.name", "Taskvisor Test")
+	runGitCmd(t, dir, "config", "commit.gpgsign", "false")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "taskvisor"), 0o755))
+	xPath := filepath.Join(dir, "internal", "taskvisor", "x.go")         // goal B's file
+	sibPath := filepath.Join(dir, "internal", "taskvisor", "sibling.go") // sibling's file
+	require.NoError(t, os.WriteFile(xPath, []byte("package taskvisor\n"), 0o644))
+	require.NoError(t, os.WriteFile(sibPath, []byte("package taskvisor\n"), 0o644))
+	runGitCmd(t, dir, "add", ".")
+	runGitCmd(t, dir, "commit", "-m", "initial")
+
+	// Sibling leaves an uncommitted in-scope edit BEFORE goal B starts.
+	require.NoError(t, os.WriteFile(sibPath, []byte("package taskvisor\n\n// sibling edit\n"), 0o644))
+
+	d := New(dir, new(testutil.MockTmuxExecutor))
+	require.True(t, d.autoCommit, "New() must seed auto-commit ON")
+	goalB := scopedGoal()
+
+	// Capture goal B's start snapshot — freezes the sibling's dirty edit.
+	d.captureGoalStartSnapshot(goalB)
+
+	// Now goal B makes its OWN in-scope edit.
+	require.NoError(t, os.WriteFile(xPath, []byte("package taskvisor\n\n// goal B edit\n"), 0o644))
+
+	require.True(t, d.autoCommitGoal(goalB), "goal B's own changeset must commit")
+
+	files := runGitCmd(t, dir, "show", "--name-only", "--pretty=format:", "HEAD")
+	assert.Contains(t, files, "internal/taskvisor/x.go", "goal's own file must be committed")
+	assert.NotContains(t, files, "sibling.go", "sibling's pre-existing edit must NOT be captured")
+
+	status := runGitCmd(t, dir, "status", "--porcelain")
+	assert.Contains(t, status, "sibling.go", "sibling's edit must remain dirty/unstaged")
+}
+
+// TestAutoCommit_ExcludesPreexistingUntrackedSibling extends the isolation to
+// untracked files: a sibling's untracked in-scope file present at goal start is
+// recorded in the marker and must NOT be swept into goal B's commit, while a NEW
+// untracked in-scope file the goal itself creates IS committed.
+func TestAutoCommit_ExcludesPreexistingUntrackedSibling(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	dir := t.TempDir()
+	runGitCmd(t, dir, "init")
+	runGitCmd(t, dir, "config", "user.email", "taskvisor@test.local")
+	runGitCmd(t, dir, "config", "user.name", "Taskvisor Test")
+	runGitCmd(t, dir, "config", "commit.gpgsign", "false")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "taskvisor"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "taskvisor", "keep.go"), []byte("package taskvisor\n"), 0o644))
+	runGitCmd(t, dir, "add", ".")
+	runGitCmd(t, dir, "commit", "-m", "initial")
+
+	// A sibling's untracked in-scope file exists BEFORE goal B starts.
+	sibUntracked := filepath.Join(dir, "internal", "taskvisor", "sibling_new.go")
+	require.NoError(t, os.WriteFile(sibUntracked, []byte("package taskvisor\n"), 0o644))
+
+	d := New(dir, new(testutil.MockTmuxExecutor))
+	goalB := scopedGoal()
+	d.captureGoalStartSnapshot(goalB)
+
+	// Goal B creates its OWN new untracked in-scope file.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "taskvisor", "goalb_new.go"), []byte("package taskvisor\n"), 0o644))
+
+	require.True(t, d.autoCommitGoal(goalB), "goal B's new file must commit")
+
+	files := runGitCmd(t, dir, "show", "--name-only", "--pretty=format:", "HEAD")
+	assert.Contains(t, files, "internal/taskvisor/goalb_new.go", "goal's own new file must be committed")
+	assert.NotContains(t, files, "sibling_new.go", "sibling's pre-existing untracked file must NOT be captured")
+
+	status := runGitCmd(t, dir, "status", "--porcelain")
+	assert.Contains(t, status, "sibling_new.go", "sibling's untracked file must remain untracked")
+}
+
+// TestAutoCommit_NoSnapshotMarkerPreservesLegacyStaging pins the fallback: with
+// no marker present, the scope-matched tier stages today's scope pathspecs
+// unchanged and never attempts a snapshot diff.
+func TestAutoCommit_NoSnapshotMarkerPreservesLegacyStaging(t *testing.T) {
+	fake := &fakeGitRunner{respond: dirtyScopeResponse}
+	dir := t.TempDir()
+	d := autoCommitDaemon(t, dir, fake)
+
+	d.autoCommitGoal(scopedGoal())
+
+	assert.Equal(t, 1, fake.count("-C", dir, "add", "--", ":(glob)internal/taskvisor/**"), "no marker ⇒ legacy scope pathspecs staged")
+	assert.Equal(t, 0, fake.count("diff", "--name-only"), "no marker ⇒ no snapshot diff attempted")
+	assert.Equal(t, 1, fake.count("commit"))
+}
+
+// TestAutoCommit_SnapshotEmptyDiffSkipsCommit: a marker is present but the goal
+// changed nothing in scope since its snapshot ⇒ empty own-changeset ⇒ clean skip
+// (no add, no commit, committed=false).
+func TestAutoCommit_SnapshotEmptyDiffSkipsCommit(t *testing.T) {
+	dir := t.TempDir()
+	markerDir := filepath.Join(dir, ".tmux-cli", "goals", "goal-009")
+	require.NoError(t, os.MkdirAll(markerDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(markerDir, "start-snapshot"), []byte("deadbeef\n"), 0o644))
+
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		if argsContain(args, "status", "--porcelain") {
+			return " M internal/taskvisor/x.go\n", 0 // legacy probe still sees dirt
+		}
+		return "", 0 // diff --name-only vs snapshot returns empty
+	}}
+	d := autoCommitDaemon(t, dir, fake)
+
+	committed := d.autoCommitGoal(scopedGoal())
+
+	assert.False(t, committed, "empty own-changeset ⇒ no commit")
+	assert.Equal(t, 1, fake.count("diff", "--name-only"), "the snapshot diff was consulted")
+	assert.Equal(t, 0, fake.count("add"), "nothing staged")
+	assert.Equal(t, 0, fake.count("commit"), "no commit issued")
+}
+
+// TestAutoCommit_SnapshotDiffRetargetsStaging: a marker is present and the
+// snapshot diff names the goal's own file, so add/commit re-target onto that
+// path (NOT the scope glob pathspec).
+func TestAutoCommit_SnapshotDiffRetargetsStaging(t *testing.T) {
+	dir := t.TempDir()
+	markerDir := filepath.Join(dir, ".tmux-cli", "goals", "goal-009")
+	require.NoError(t, os.MkdirAll(markerDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(markerDir, "start-snapshot"), []byte("deadbeef\n"), 0o644))
+
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		switch {
+		case argsContain(args, "diff", "--name-only"):
+			return "internal/taskvisor/x.go\n", 0
+		case argsContain(args, "status", "--porcelain"):
+			return " M internal/taskvisor/x.go\n M internal/taskvisor/sibling.go\n", 0
+		}
+		return "", 0
+	}}
+	d := autoCommitDaemon(t, dir, fake)
+
+	require.True(t, d.autoCommitGoal(scopedGoal()))
+
+	assert.Equal(t, 1, fake.count("add", "--", "internal/taskvisor/x.go"), "staging re-targets onto the own-changeset path")
+	assert.Equal(t, 0, fake.count("add", "--", ":(glob)internal/taskvisor/**"), "the scope glob is NOT used once a snapshot diff exists")
+	assert.Equal(t, 1, fake.count("commit"))
+}
+
+// TestCaptureGoalStartSnapshot_WritesMarker: a non-empty `git stash create`
+// output is recorded as the marker's first line.
+func TestCaptureGoalStartSnapshot_WritesMarker(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		if argsContain(args, "stash", "create") {
+			return "cafebabe\n", 0
+		}
+		return "", 0 // status: no untracked
+	}}
+	d := autoCommitDaemon(t, dir, fake)
+
+	d.captureGoalStartSnapshot(scopedGoal())
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-009", "start-snapshot"))
+	require.NoError(t, err)
+	first := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)[0]
+	assert.Equal(t, "cafebabe", first, "marker's first line is the stash-create SHA")
+}
+
+// TestCaptureGoalStartSnapshot_EmptyStashWritesEmptyMarker: a clean tree yields
+// empty `git stash create` output ⇒ an empty marker ⇒ goalOwnInScopePaths falls
+// back to legacy staging (ok=false).
+func TestCaptureGoalStartSnapshot_EmptyStashWritesEmptyMarker(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitRunner{} // stash create returns "" (clean tree)
+	d := autoCommitDaemon(t, dir, fake)
+
+	d.captureGoalStartSnapshot(scopedGoal())
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-009", "start-snapshot"))
+	require.NoError(t, err)
+	assert.Empty(t, strings.TrimSpace(string(data)), "clean tree ⇒ empty marker")
+
+	_, ok := d.goalOwnInScopePaths(scopedGoal(), scopePathspecs(scopedGoal().Scope))
+	assert.False(t, ok, "empty marker ⇒ legacy staging fallback")
+}
+
+// TestCaptureGoalStartSnapshot_RecordsStartUntracked: the start-time untracked
+// in-scope set is recorded on the marker's trailing lines so a pre-existing
+// sibling untracked file can later be excluded.
+func TestCaptureGoalStartSnapshot_RecordsStartUntracked(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		if argsContain(args, "stash", "create") {
+			return "cafebabe\n", 0
+		}
+		if argsContain(args, "status", "--porcelain") {
+			return "?? internal/taskvisor/sibling_new.go\n", 0
+		}
+		return "", 0
+	}}
+	d := autoCommitDaemon(t, dir, fake)
+
+	d.captureGoalStartSnapshot(scopedGoal())
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-009", "start-snapshot"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "internal/taskvisor/sibling_new.go", "start-time untracked in-scope path is recorded")
+}
+
 func TestAutoCommit_GitFailureIsWarnOnly(t *testing.T) {
 	g := scopedGoal()
 	g.Status = GoalDone

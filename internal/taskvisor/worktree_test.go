@@ -131,7 +131,14 @@ func TestDispatch_MaxGoals1_NoWorktree(t *testing.T) {
 
 	require.NoError(t, d.dispatch(&gf.Goals[0], gf))
 
-	assert.Equal(t, 0, len(fake.calls), "MaxGoals=1 must run zero git commands")
+	// MaxGoals=1 creates NO worktree. The only git command inline dispatch runs
+	// is the goal-005 start-snapshot capture (`git stash create`); it must never
+	// touch the worktree/branch machinery.
+	assert.Equal(t, 1, len(fake.calls), "inline dispatch runs only the start-snapshot capture")
+	assert.Equal(t, 1, fake.count("stash", "create"), "the single git call is the start-snapshot capture")
+	for _, forbidden := range []string{"worktree", "checkout", "branch", "switch"} {
+		assert.Zerof(t, fake.count(forbidden), "MaxGoals=1 must run no worktree git op %q", forbidden)
+	}
 	assert.Equal(t, dir, gotCwd, "supervisor window cwd must be the base workDir")
 	assert.Empty(t, d.runtime("goal-001").WorktreeDir, "no worktree at MaxGoals=1")
 }

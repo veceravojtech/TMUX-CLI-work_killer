@@ -98,7 +98,22 @@ func (d *Daemon) autoCommitGoal(g *Goal) (committed bool) {
 		return false
 	}
 
-	_, stderr, code, err = d.autoCommitGit(append([]string{"-C", d.workDir, "add", "--"}, pathspecs...)...)
+	// goal-005: when a per-goal start-snapshot marker exists, stage only the
+	// goal's OWN changeset — the intersection of scope and the files changed
+	// since the snapshot — instead of every currently-dirty in-scope path. This
+	// keeps a co-scheduled or previously-failed sibling's uncommitted in-scope
+	// edit out of this goal's commit. Warn-only: a missing/empty marker or any
+	// git error degrades to today's scope-matched pathspecs (ok=false).
+	stagePaths := pathspecs
+	if own, ok := d.goalOwnInScopePaths(g, pathspecs); ok {
+		if len(own) == 0 {
+			log.Printf("%s: auto-commit skipped — no in-scope changes since goal start", g.ID)
+			return false
+		}
+		stagePaths = own
+	}
+
+	_, stderr, code, err = d.autoCommitGit(append([]string{"-C", d.workDir, "add", "--"}, stagePaths...)...)
 	if code != 0 || err != nil {
 		log.Printf("warning: auto-commit %s: git add failed (exit %d, err %v): %s", g.ID, code, err, strings.TrimSpace(stderr))
 		return false
@@ -122,6 +137,135 @@ func (d *Daemon) autoCommitGit(args ...string) (string, string, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 	return d.gitRunner()(ctx, args...)
+}
+
+// goalStartSnapshotPath is the per-goal marker recording the goal's start-time
+// tree state: line 1 is a `git stash create` object SHA, and any trailing lines
+// are the start-time untracked in-scope paths. It lives under git-excluded
+// .tmux-cli/, so it is never committed and needs no cleanup after completion.
+func (d *Daemon) goalStartSnapshotPath(goalID string) string {
+	return filepath.Join(d.workDir, ".tmux-cli", "goals", goalID, "start-snapshot")
+}
+
+// captureGoalStartSnapshot records the goal's start-time tree state so the
+// completion-time auto-commit can later stage only the goal's OWN changeset. It
+// runs `git stash create` (which builds a commit object for the current tracked
+// state WITHOUT touching the index/working tree, and prints nothing on a clean
+// tree) and writes the SHA plus the start-time untracked in-scope listing to the
+// marker. Best-effort and warn-only: on any error — or an empty stash (clean
+// tree) — it writes an EMPTY marker so goalOwnInScopePaths falls back to today's
+// scope-matched staging. Callers gate this on !goalUsesWorktree (worktree-mode
+// goals never reach the inline auto-commit path).
+func (d *Daemon) captureGoalStartSnapshot(g *Goal) {
+	markerPath := d.goalStartSnapshotPath(g.ID)
+	if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
+		log.Printf("warning: capture start snapshot %s: mkdir failed: %v", g.ID, err)
+		return
+	}
+	out, stderr, code, err := d.autoCommitGit("-C", d.workDir, "stash", "create")
+	if code != 0 || err != nil {
+		log.Printf("warning: capture start snapshot %s: git stash create failed (exit %d, err %v): %s — auto-commit will fall back to scope-matched staging", g.ID, code, err, strings.TrimSpace(stderr))
+		writeMarker(markerPath, g.ID, nil)
+		return
+	}
+	sha := strings.TrimSpace(out)
+	var startUntracked []string
+	if pathspecs := scopePathspecs(g.Scope); len(pathspecs) > 0 {
+		startUntracked = d.untrackedInScopePaths(pathspecs)
+	}
+	// `git stash create` prints nothing when there are no TRACKED modifications
+	// at start — even if untracked in-scope files exist. In that case the tracked
+	// tree equals HEAD, so HEAD is an equivalent snapshot base and lets us still
+	// exclude a pre-existing untracked sibling. A genuinely clean tree (no tracked
+	// mods AND no untracked in scope) writes an EMPTY marker so auto-commit stays
+	// byte-identical to today's scope-matched staging.
+	base := sha
+	if base == "" && len(startUntracked) > 0 {
+		base = "HEAD"
+	}
+	if base == "" {
+		writeMarker(markerPath, g.ID, nil)
+		return
+	}
+	writeMarker(markerPath, g.ID, append([]string{base}, startUntracked...))
+}
+
+// writeMarker persists the snapshot marker lines (empty slice ⇒ empty marker,
+// which routes goalOwnInScopePaths to the fallback path). Warn-only.
+func writeMarker(path, goalID string, lines []string) {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		log.Printf("warning: capture start snapshot %s: write marker failed: %v", goalID, err)
+	}
+}
+
+// untrackedInScopePaths returns the currently-untracked (`??`) paths inside the
+// goal's scope pathspecs, parsed from `git status --porcelain`. Warn-tolerant:
+// any git error yields nil (no untracked contribution).
+func (d *Daemon) untrackedInScopePaths(pathspecs []string) []string {
+	out, _, code, err := d.autoCommitGit(append([]string{"-C", d.workDir, "status", "--porcelain", "--"}, pathspecs...)...)
+	if code != 0 || err != nil {
+		return nil
+	}
+	var paths []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "?? ") {
+			if p := strings.TrimSpace(line[3:]); p != "" {
+				paths = append(paths, p)
+			}
+		}
+	}
+	return paths
+}
+
+// goalOwnInScopePaths returns the goal's OWN in-scope changeset — the files
+// changed since its start snapshot (tracked modifications via
+// `git diff --name-only <snap> -- <pathspecs>`, plus new untracked in-scope
+// files the goal created, i.e. currently-untracked minus the start-time
+// untracked set). ok=false signals the caller to keep today's scope-matched
+// pathspecs: the marker is absent, empty (clean tree at start / capture failed),
+// or a git error occurred. An empty paths slice with ok=true means "the goal
+// changed nothing in scope since start" — a clean skip.
+func (d *Daemon) goalOwnInScopePaths(g *Goal, pathspecs []string) (paths []string, ok bool) {
+	data, err := os.ReadFile(d.goalStartSnapshotPath(g.ID))
+	if err != nil {
+		return nil, false // marker absent ⇒ legacy staging
+	}
+	markerLines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	sha := ""
+	if len(markerLines) > 0 {
+		sha = strings.TrimSpace(markerLines[0])
+	}
+	if sha == "" {
+		return nil, false // empty marker ⇒ legacy staging
+	}
+	startUntracked := map[string]bool{}
+	for _, l := range markerLines[1:] {
+		if p := strings.TrimSpace(l); p != "" {
+			startUntracked[p] = true
+		}
+	}
+
+	out, stderr, code, err := d.autoCommitGit(append([]string{"-C", d.workDir, "diff", "--name-only", sha, "--"}, pathspecs...)...)
+	if code != 0 || err != nil {
+		log.Printf("warning: auto-commit %s: git diff vs start snapshot failed (exit %d, err %v): %s — falling back to scope-matched staging", g.ID, code, err, strings.TrimSpace(stderr))
+		return nil, false
+	}
+	seen := map[string]bool{}
+	for _, l := range strings.Split(out, "\n") {
+		if p := strings.TrimSpace(l); p != "" && !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	// New untracked in-scope files the goal itself created (git diff never lists
+	// untracked paths, so union them explicitly, excluding start-time siblings).
+	for _, p := range d.untrackedInScopePaths(pathspecs) {
+		if !startUntracked[p] && !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	return paths, true
 }
 
 // scopePathspecs converts the goal's scope globs into git pathspecs with the
