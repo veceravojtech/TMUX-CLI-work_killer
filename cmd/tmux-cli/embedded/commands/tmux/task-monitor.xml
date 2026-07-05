@@ -1,0 +1,89 @@
+<task id="task-monitor" name="Passive pane watchdog — cli-lane tooling telemetry">
+  <objective>Passively watch every pane of the LIVE tmux session on a ~300s cadence and auto-file every tmux-cli-TOOLING failure — including small friction and pushback — to the cli lane via the task-report flow. This is dogfooding telemetry: the command OWNS no live channel, GATES no sends, and NEVER intervenes. Its only writes are its own `.tmux-cli/task-monitor/state.json` and the task-report submissions it delegates.</objective>
+
+  <requirements critical="true">
+    <mcp>tmux-cli MCP server REQUIRED</mcp>
+  </requirements>
+
+  <autonomy-policy critical="true">
+    <llm critical="true">
+      <mandate>FULLY AUTONOMOUS — never AskUserQuestion, never a confirm gate, never a plain-text "how should I proceed?" prompt. Every classify/dedup/report/defer decision is made and executed by this command itself. An unavailable or erroring interactive tool is NEVER license to fall back to an operator question — proceed on the deterministic path.</mandate>
+      <mandate>PASSIVE CONTRACT — NEVER send keys to any pane (no windows-send, no `tmux send-keys`/`paste-buffer`/`load-buffer`, no Enter), NEVER windows-kill, NEVER edit/fix/restart anything you observe. The ONLY writes allowed are (a) `.tmux-cli/task-monitor/state.json` (create `.tmux-cli/task-monitor/` if absent) and (b) task-report submissions/outbox drafts via the delegated flow. Reading is via `tmux capture-pane -p`, `tmux list-panes`, and log-tail only — observe, classify, report; never act on a pane.</mandate>
+      <mandate>NEVER write Go code, edit `session.go`, or touch any registry — embedding is automatic via the glob `//go:embed embedded/commands/tmux` (compile-time; a rebuild picks new files up). NEVER add or exempt an entry in `exemptFromErrorReporting` — carry the by-name `error-reporting` reference instead. NEVER add a field to `Settings`/TUI or touch the `api:` block.</mandate>
+      <mandate>NEVER use bare `go test ./...` for any check — it spawns live tmux/claude sessions and crash-loops the daemon; use `make test` if a build/test check is ever needed. This command does not build or test at runtime; it only observes.</mandate>
+      <mandate>One tagged finding per report — never batch two distinct tooling failures into one task-report; file each separately.</mandate>
+    </llm>
+  </autonomy-policy>
+
+  <doctrine-deviations critical="true">
+    <intent>This command deliberately departs from three doctrines that govern its sibling commands. Each deviation is stated here verbatim so a reader never mistakes the departure for a bug.</intent>
+    <deviation n="1" from="e2e-evaluator never-capture-poll mandate">e2e-evaluator's never-capture-poll mandate does NOT apply — polling IS this command's purpose; it owns no live channel and gates no sends, so `capture-pane`/log-tail on a cadence is the intended mechanism, not the operator-corrected time-waste.</deviation>
+    <deviation n="2" from="task-report error-reporting TRIGGER">task-report's error-reporting TRIGGER is deliberately WIDENED to include pushback/small friction — this is telemetry, not error-handling; friction that task-report.xml's TRIGGER would skip is in-scope here.</deviation>
+    <deviation n="3" from="daemon goal-level auto-reporting">Daemon dedup / deferral — the taskvisor daemon already auto-reports goal-level failure edges (`reporting.go` `reportBreakerTrip`/`reportPollWedge`, `recovery.go` `reportWorkerCrash`); the monitor DEFERS those and reports only what the daemon cannot observe (interactive-pane friction, slash-command misbehavior, MCP errors in Claude panes), keyed by a pane-class+error-signature ledger so a persistent on-screen error is filed once.</deviation>
+  </doctrine-deviations>
+
+  <flow>
+    <step n="0" title="Preflight — reporting enabled + live-session/project-root discovery">
+      <action>Read `.tmux-cli/setting.yaml` and resolve API enablement: the flat `apiEnabled` key wins when present, else the nested `api.enabled`.</action>
+      <check condition="reporting disabled (apiEnabled:false, or nested api.enabled:false)">
+        <action>Print exactly one line: "Task reporting is disabled — /tmux:task-monitor has no output but reports; set api.enabled: true in .tmux-cli/setting.yaml (or run tmux-cli setting) and retry." Make NO writes at all and STOP.</action>
+      </check>
+      <action>Resolve the LIVE session name via `tmux display-message -p '#{session_name}'`.</action>
+      <action>Enumerate panes via `tmux list-panes -s -F '#{pane_id} #{pane_current_path} #{pane_current_command} #{window_name}'`. The project root is the pane cwd that CONTAINS a `.tmux-cli/` directory — NOT the invocation cwd (a worker pane may be cwd'd into a worktree). All subsequent paths (`.tmux-cli/setting.yaml`, logs, state.json) resolve against THAT project root.</action>
+      <check condition="no pane cwd contains .tmux-cli/">
+        <action>Print one diagnostic line naming the session and STOP — there is no project to watch.</action>
+      </check>
+    </step>
+
+    <step n="1" title="Baseline — inventory + log offsets + state.json">
+      <action>Record the pane inventory (pane_id, window_name, last command) and the current tail BYTE-OFFSET of `.tmux-cli/logs/taskvisor.log` and each `.tmux-cli/logs/panes/*.log` (offset = file size now, so the first scan reads only lines appended AFTER baseline).</action>
+      <action>Persist `.tmux-cli/task-monitor/state.json` (create `.tmux-cli/task-monitor/` if absent). Schema: `{version, session, panes:[{pane_id,window_name,last_command}], log_offsets:{path:byteOffset}, reported:[signature]}` where signature = `sha1(pane_class + ":" + normalized_error_line)`. Rationale (auto-resolved): these are the minimal fields that satisfy both "restarts do not re-file" and "filed once per pane-class+signature".</action>
+      <rule>File NOTHING for pre-existing pane content or pre-baseline log lines — the baseline is the zero point. A restart with an existing state.json reloads the ledger + offsets and does NOT re-file previously-reported signatures; a corrupt state.json rebuilds the baseline and logs a one-line warning.</rule>
+    </step>
+
+    <step n="2" title="Scan tick (~300s) — background-sleep watchdog">
+      <rule critical="true">The tick cadence is ~300s (five minutes). 30–60s is REJECTED as too fast: it below the daemon's ~300s progress_timeout so a tick would observe unsettled transitional state and churn the ledger. Mirror e2e-evaluator's background-sleep watchdog / re-invoke pattern — sleep ~300s between ticks, then re-observe; never busy-loop.</rule>
+      <action>Pane-lifecycle diff against the last inventory: a NEW pane joins the watch set; a tmux-cli-managed window (supervisor-*, execute-*, taskvisor, inv-*) present last tick and now GONE outside normal lifecycle is a candidate report (worker/daemon died abnormally) — subject to the step-3 classifier and the step-5 daemon-deferral.</action>
+      <action>For each watched pane, read content via `tmux capture-pane -p -t &lt;pane&gt;` (tail ~100 lines) and read the new log lines appended since the recorded offset for `taskvisor.log` and each `panes/*.log`. A malformed/unreadable capture → skip that pane and note it in the tick heartbeat; never block the whole tick on one pane.</action>
+    </step>
+
+    <step n="3" title="Classifier — reportable IFF the failure SUBJECT is tmux-cli tooling">
+      <rule critical="true">A finding is REPORTABLE if and only if its failure SUBJECT is tmux-cli tooling: tmux-cli binary non-zero exits, `mcp__tmux-cli__*` tool errors, `/tmux:*` slash-command misbehavior or stall, daemon/taskvisor log errors, worker handshake/spawn failures, goal-machinery wedges — PLUS small friction / pushback (per doctrine-deviation 2, this widened trigger is intentional telemetry).</rule>
+      <rule critical="true">EXPLICIT NEGATIVE LIST — NOT reportable: app-code failures, red tests during normal implementation, expected validate-cycle failures. These become reportable ONLY when the tooling MISHANDLED them (e.g. a validator misclassified a red test as a code defect, or a daemon wedged on an expected failure).</rule>
+      <substep n="3.1" title="category — closed set (from task-report.xml step 3.1)">
+        <table>
+          <row when="planner/spec defect: contradictory or under-specified goal, bad plan, wrong acceptance/validate rules">plan</row>
+          <row when="daemon/dispatch/scheduling: taskvisor tick, dispatch, window lifecycle, budgets, cascade, worktrees, worker spawn/crash">supervisor</row>
+          <row when="validation infrastructure: validator/investigator behavior, verdict handling, verdict classification">validator</row>
+          <row when="implementer/code: worker behavior, execute.xml protocol misbehavior, /tmux:* slash-command stall">execute</row>
+          <row when="anything else: install, setup, MCP tool errors, friction, ideas, backend itself">general</row>
+        </table>
+      </substep>
+    </step>
+
+    <step n="4" title="Report — delegate to task-report flow, project=cli FORCED">
+      <action>For EACH new reportable finding, delegate composition + submission to the task-report flow (task-report.xml Step 3 six-field derivation tables + Step 5 submit). Do NOT re-spec the field rules here — the Step 3 tables are the one definition.</action>
+      <rule critical="true">FORCE `project=cli`: pass `project: "cli"` directly to the task-report MCP tool (equivalently, the finding names a tmux-cli internal component which keyword-auto-resolves to cli). This deliberately BYPASSES task-report step-4b lane resolution so its ambiguous-lane ask NEVER fires — this command is autonomous and must never prompt.</rule>
+      <action>Category comes from the step-3.1 table. Evidence is the VERBATIM `capture-pane`/log excerpt (quoted, never paraphrased; bounded ~15 lines), each introduced by its source pane_id or log path.</action>
+      <action>Severity honestly scaled (task-report.xml step 3.2): small friction / pushback → info or warning; a wedge, lost work, or a cascaded DAG → critical. Never inflate friction to critical, never deflate a wedge to info.</action>
+    </step>
+
+    <step n="5" title="Dedup — signature ledger + daemon deferral">
+      <action>Before filing, compute the finding's signature = `sha1(pane_class + ":" + normalized_error_line)` (pane_class = the window role: supervisor / execute / taskvisor / inv / other; normalized_error_line strips volatile ids/timestamps). If the signature is already in `reported[]`, SKIP — a persistent on-screen error is filed ONCE, not every tick. On a successful file, append the signature to `reported[]` and persist state.json.</action>
+      <rule critical="true">DEFER daemon-owned goal-level edges: the taskvisor daemon already auto-files goal-level failures via `internal/taskvisor/reporting.go` (`reportBreakerTrip`, `reportPollWedge`) and `recovery.go` (`reportWorkerCrash`). The monitor NEVER duplicates those — it reports only what the daemon cannot observe (interactive-pane friction, slash-command misbehavior, `mcp__tmux-cli__*` errors surfaced in Claude panes). When unsure whether an edge is daemon-owned, DEFER (do not file).</rule>
+    </step>
+
+    <step n="6" title="Passive loop — forever until the user stops">
+      <action>After each tick, emit ONE line of heartbeat: e.g. "scanned N panes, 0 new findings" (or "scanned N panes, filed 1 cli-lane finding: &lt;title&gt;"). Then re-enter step 2 after the ~300s sleep.</action>
+      <rule critical="true">The loop runs forever until the user stops it. Every tick: observe (capture-pane + log-tail), classify (step 3), dedup + defer (step 5), report (step 4), persist state.json, heartbeat. It NEVER sends keys, NEVER kills, NEVER fixes — its only side effects are state.json writes and task-report submissions.</rule>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>Passive: the ONLY writes are `.tmux-cli/task-monitor/state.json` and delegated task-report submissions/outbox — never a pane send, never a kill, never an edit/fix.</rule>
+    <rule>Fully autonomous: no AskUserQuestion, no confirm gate, no operator question anywhere; forcing project=cli bypasses task-report step-4b's ambiguous-lane ask.</rule>
+    <rule>Report only tooling-subject failures (step 3); defer every daemon-owned goal-level edge (step 5); dedup by pane-class+error-signature so a persistent error is filed once.</rule>
+    <rule>No Go code, no session.go/registry edit, no `Settings`/`api:` change, no `exemptFromErrorReporting` entry; never bare `go test ./...` (use `make test`).</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+</task>
