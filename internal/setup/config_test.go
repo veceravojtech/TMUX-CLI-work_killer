@@ -236,6 +236,32 @@ commands:
 	assert.Equal(t, 10, s.Hooks.Custom[1].Timeout)
 }
 
+func TestLoadSettings_GoalTransitionHook(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `hooks:
+  session_notify: false
+  block_interactive: true
+  goal_transition: "tmux-cli notify-orchestrator \"goal-$GOAL_ID $NEW_STATUS\""
+commands:
+  enabled: true
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"), []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+
+	// Survives the mandatory LoadSettings re-save round-trip.
+	assert.Equal(t, `tmux-cli notify-orchestrator "goal-$GOAL_ID $NEW_STATUS"`, s.Hooks.GoalTransition)
+}
+
+func TestDefaultSettings_GoalTransitionEmpty(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, "", s.Hooks.GoalTransition, "goal_transition must be disabled (empty) by default")
+}
+
 func TestDefaultSettings_MaxWorkers(t *testing.T) {
 	s := DefaultSettings()
 	assert.Equal(t, 4, s.Supervisor.MaxWorkers, "default max_workers should be 4")

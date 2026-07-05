@@ -149,6 +149,13 @@ type Daemon struct {
 	signalCh       chan os.Signal
 	scriptRunnerFn ScriptRunnerFunc
 	scriptTimeout  time.Duration
+	// goalTransitionHook is the configured hooks.goal_transition command; empty
+	// disables it (zero value = no-op, byte-identical to no hook). Copied from
+	// settings.Hooks.GoalTransition in Run(). hookRunnerFn is the injectable seam
+	// (mirrors scriptRunnerFn): defaultGoalHookRunner in production, a synchronous
+	// fake in tests.
+	goalTransitionHook string
+	hookRunnerFn       goalHookRunner
 	// gitRunnerFn is the injectable seam for every git invocation behind the
 	// per-goal worktree lifecycle (E1-1a). Nil ⇒ defaultGitRunner (real git). With
 	// MaxGoals=1 no git path is ever reached, so this is never invoked.
@@ -337,6 +344,7 @@ func New(workDir string, executor tmux.TmuxExecutor) *Daemon {
 		promptSettleDelay:  3 * time.Second,
 		promptPollInterval: 2 * time.Second,
 		scriptRunnerFn:     defaultScriptRunner,
+		hookRunnerFn:       defaultGoalHookRunner,
 		composeRunnerFn:    defaultComposeRunner,
 		scriptTimeout:      validateScriptTimeout,
 		autoResumeInterval: 30 * time.Second,
@@ -355,6 +363,12 @@ func (d *Daemon) SetWindowCreateFunc(fn WindowCreateFunc) {
 
 func (d *Daemon) SetScriptRunnerFunc(fn ScriptRunnerFunc) {
 	d.scriptRunnerFn = fn
+}
+
+// SetGoalHookRunnerFunc overrides the goal-transition hook runner (tests inject a
+// synchronous fake to assert the env deterministically). Mirrors SetScriptRunnerFunc.
+func (d *Daemon) SetGoalHookRunnerFunc(fn goalHookRunner) {
+	d.hookRunnerFn = fn
 }
 
 // SetComposeRunnerFunc overrides the per-worktree compose runner (tests inject a
@@ -449,6 +463,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		// Load-coerced to roadmap|incremental by setup.LoadSettings — the single
 		// validation point; taken verbatim here (plannext.go gates on it).
 		d.planningMode = settings.Taskvisor.PlanningMode
+		// Goal-transition push hook (fire-and-forget in-daemon command). Empty
+		// disables it; the fireGoalTransitionHook call sites are then no-ops.
+		d.goalTransitionHook = settings.Hooks.GoalTransition
 	}
 
 	// Backend failure reporting (goal-008/009). Config is read independently of

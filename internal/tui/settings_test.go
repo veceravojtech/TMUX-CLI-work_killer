@@ -260,6 +260,29 @@ supervisor:
 	assert.Equal(t, 3, result.Supervisor.CycleDelay)
 }
 
+func TestModel_ToSettings_PreservesGoalTransition(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsYAML(t, dir, `hooks:
+  session_notify: true
+  block_interactive: true
+  goal_transition: "tmux-cli notify-orchestrator \"goal-$GOAL_ID $NEW_STATUS\""
+commands:
+  enabled: true
+supervisor:
+  max_cycles: 5
+  cycle_delay: 3
+`)
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+
+	m := NewModel(dir, settings)
+	result := m.ToSettings()
+
+	// goal_transition is an unsurfaced (no items entry) hook string; the ToSettings
+	// overlay onto baseSettings must carry it through the round-trip unchanged.
+	assert.Equal(t, `tmux-cli notify-orchestrator "goal-$GOAL_ID $NEW_STATUS"`, result.Hooks.GoalTransition)
+}
+
 func TestModel_ToSettings_DefaultSettingsStillWork(t *testing.T) {
 	dir := t.TempDir()
 	settings := setup.DefaultSettings()

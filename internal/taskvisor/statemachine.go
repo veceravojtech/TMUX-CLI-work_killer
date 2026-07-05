@@ -449,6 +449,9 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	log.Printf("%s: phase supervising -> validating", goal.ID)
 	rt.phase = phaseValidating
 	rt.validateTime = d.now()
+	// Runtime-only phase flip (no goals.yaml status change) — fire with
+	// OLD_STATUS==NEW_STATUS=="running" so the phase change still reaches the hook.
+	d.fireGoalTransitionHook(goal.ID, "running", "running", "validating", CurrentCycle(goal))
 	return nil
 }
 
@@ -578,6 +581,10 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 	// or the switch below.
 	sp, ru, inl := countInvFindings(valSig.Findings)
 	d.logCounters(goal, verdict, sp, ru, inl)
+	// Also side-effect-only: when investigators spawned but none reused, make the
+	// by-design inv_reused=0 legible (reuse is revalidation-only — a prior cycle
+	// of THIS goal, never a sibling/cross-goal candidate). Reuses sp/ru above.
+	d.logReuseDecision(goal, sp, ru)
 
 	// Each non-pass branch moves exactly one per-class budget counter (or none):
 	//   fail            -> implementer re-dispatch, dec CodeRetries
@@ -592,6 +599,8 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		// After the durable SaveGoals so the notification never precedes state.
+		d.fireGoalTransitionHook(goal.ID, "running", "done", "validating", CurrentCycle(goal))
 		// After the successful SaveGoals so a commit only happens for a durably
 		// recorded done; warn-only — never alters the verdict flow.
 		committed := d.autoCommitGoal(goal)
@@ -783,6 +792,7 @@ func (d *Daemon) handleStuckSupervisor(goal *Goal, goals *GoalsFile) error {
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		d.fireGoalTransitionHook(goal.ID, "running", "failed", "supervising", CurrentCycle(goal))
 		return d.advanceToNextGoal(goals, goal.ID, false)
 	}
 	log.Printf("%s: stuck supervisor — re-dispatching (stuck budget left %d)", goal.ID, goal.StuckRetries)
@@ -816,6 +826,7 @@ func (d *Daemon) handleStuckValidator(goal *Goal, goals *GoalsFile) error {
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		d.fireGoalTransitionHook(goal.ID, "running", "failed", "validating", CurrentCycle(goal))
 		return d.advanceToNextGoal(goals, goal.ID, false)
 	}
 	log.Printf("%s: stuck validator — re-creating (stuck budget left %d)", goal.ID, goal.StuckRetries)
@@ -967,6 +978,7 @@ func (d *Daemon) rerunValidationOnly(goal *Goal, goals *GoalsFile, valSig *Valid
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		d.fireGoalTransitionHook(goal.ID, "running", "failed", "validating", CurrentCycle(goal))
 		return d.advanceToNextGoal(goals, goal.ID, false)
 	}
 	log.Printf("%s: validator error (error/ops) — re-running validation only (validation budget left %d)", goal.ID, goal.ValidationRetries)
@@ -1226,6 +1238,7 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdict
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		d.fireGoalTransitionHook(goal.ID, "running", "failed", "validating", CurrentCycle(goal))
 		// goal-032: push the mapped backend task to failed after the durable
 		// SaveGoals. Warn-only, never propagates — the cascade/save ordering above
 		// is preserved and the return stays last.
@@ -1359,6 +1372,7 @@ func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *Valida
 		if err := SaveGoals(d.workDir, goals); err != nil {
 			return err
 		}
+		d.fireGoalTransitionHook(goal.ID, "running", "failed", "validating", CurrentCycle(goal))
 		return d.advanceToNextGoal(goals, goal.ID, false)
 	}
 
@@ -1457,6 +1471,7 @@ func (d *Daemon) haltRetryCeiling(goal *Goal, goals *GoalsFile) error {
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
 	}
+	d.fireGoalTransitionHook(goal.ID, "running", "failed", "validating", CurrentCycle(goal))
 	return d.advanceToNextGoal(goals, goal.ID, false)
 }
 
@@ -1592,6 +1607,11 @@ func (d *Daemon) haltGoalWallClock(goals *GoalsFile, goalID string, elapsed time
 	}
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
+	}
+	// Re-fetch after the durable SaveGoals so the fire (goal is scoped to the if
+	// above) still carries the goal's CurrentCycle. No-op if the goal is absent.
+	if g, ok := goals.GoalByID(goalID); ok {
+		d.fireGoalTransitionHook(goalID, "running", "failed", "validating", CurrentCycle(g))
 	}
 	return d.advanceToNextGoal(goals, goalID, false)
 }

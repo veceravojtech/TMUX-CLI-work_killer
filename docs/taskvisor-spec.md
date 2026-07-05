@@ -406,6 +406,24 @@ type ValidationFinding struct {
 }
 ```
 
+## COUNTERS instrumentation
+
+The daemon emits one greppable `COUNTERS ` line per cycle-start and per
+goal-transition (`internal/taskvisor/instrument.go`, `formatCounterLine`). Among
+its tokens is `inv_reused`, the count of validator findings served from C10's
+reuse gate instead of a fresh investigator spawn.
+
+**`inv_reused` scope is revalidation-only.** C10 reuse (`PlanRevalidation`,
+`signal.go`) serves a finding from a PRIOR CYCLE of the *same* goal
+(`ReusedFromCycle`); it is never drawn from a sibling or cross-goal candidate
+set. So `inv_reused=0` on a first cycle — or an `inv_reused=0` that persists
+across consecutive same-shaped sibling goals — is **by-design**, not a broken
+reuse gate. To make this legible, when a validating cycle spawns investigators
+but reuses none, the daemon also logs a side-effect-only reuse-decision line
+carrying the token `reuse scope=revalidation-only` (see `logReuseDecision`). That
+line is intentionally NOT prefixed with `COUNTERS `, so it never collides with
+the single reserved counter line.
+
 ## Validator Skill (/tmux:validate — superseded by /tmux:investigate; historical)
 
 New Claude Code skill that:

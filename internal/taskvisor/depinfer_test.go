@@ -59,6 +59,54 @@ func TestInferMissingDeps_TransitiveEdgePresent(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+func TestInferMissingDeps_EdgeConnectedPair(t *testing.T) {
+	// TDD tests-first→impl pair: goal-001 (RED/tests) references the shared file
+	// and goal-002 (GREEN/impl) produces it and depends_on goal-001. The explicit
+	// reverse edge (goal-002→goal-001) already resolves the overlap, so the
+	// read-only detector must emit ZERO findings. The mis-inferred direction is
+	// goal-001 (consumer) → goal-002 (producer): the forward path is absent, but
+	// the reverse goal-002→goal-001 path suppresses the finding once guarded.
+	connected := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:         "goal-001",
+				Scope:      []string{"internal/foo/store.go"},
+				Acceptance: []string{"internal/foo/store.go is covered by the new test"},
+			},
+			{
+				ID:        "goal-002",
+				Scope:     []string{"internal/foo/store.go"},
+				DependsOn: []string{"goal-001"},
+			},
+		},
+	}
+
+	assert.Empty(t, InferMissingDeps(connected),
+		"a reverse-edge-connected TDD pair yields no dep finding")
+
+	// Sibling: the SAME overlap with NO depends_on edge in either direction still
+	// warns — the fix narrows the detector, it does not silence it.
+	unconnected := &GoalsFile{
+		Goals: []Goal{
+			{
+				ID:         "goal-001",
+				Scope:      []string{"internal/foo/store.go"},
+				Acceptance: []string{"internal/foo/store.go is covered by the new test"},
+			},
+			{
+				ID:    "goal-002",
+				Scope: []string{"internal/foo/store.go"},
+			},
+		},
+	}
+
+	findings := InferMissingDeps(unconnected)
+	require.Len(t, findings, 1, "an unconnected overlapping pair still yields a finding")
+	assert.Equal(t, "goal-001", findings[0].Consumer)
+	assert.Equal(t, "goal-002", findings[0].Producer)
+	assert.Equal(t, "internal/foo/store.go", findings[0].Stem)
+}
+
 func TestInferMissingDeps_BareWordIgnored_DotSlashUnifies(t *testing.T) {
 	gf := &GoalsFile{
 		Goals: []Goal{
