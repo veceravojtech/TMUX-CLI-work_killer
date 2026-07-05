@@ -17,9 +17,17 @@ type CustomHook struct {
 }
 
 type HooksSettings struct {
-	SessionNotify    bool         `yaml:"session_notify"`
-	BlockInteractive bool         `yaml:"block_interactive"`
-	Custom           []CustomHook `yaml:"custom,omitempty"`
+	SessionNotify    bool `yaml:"session_notify"`
+	BlockInteractive bool `yaml:"block_interactive"`
+	// GoalTransition is a command the taskvisor daemon fires fire-and-forget after
+	// every committed goal status/phase transition (env GOAL_ID/OLD_STATUS/
+	// NEW_STATUS/PHASE/CYCLE). Unlike session_notify this is NOT a Claude-harness
+	// hook — it runs IN the Go daemon, so it is never translated into
+	// .claude/settings.json. Empty (the zero value) disables it, keeping behavior
+	// byte-identical to a build without the hook. Canonical body:
+	// `tmux-cli notify-orchestrator "goal-$GOAL_ID $NEW_STATUS"`.
+	GoalTransition string       `yaml:"goal_transition,omitempty"`
+	Custom         []CustomHook `yaml:"custom,omitempty"`
 }
 
 type CommandsSettings struct {

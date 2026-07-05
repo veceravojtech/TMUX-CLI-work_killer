@@ -377,6 +377,8 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
 	}
+	// Fire AFTER the durable SaveGoals so the notification never precedes state.
+	d.fireGoalTransitionHook(goal.ID, "pending", "running", "supervising", CurrentCycle(goal))
 
 	// B7: per-cycle cost record at the dispatch seam. Investigators are unknown
 	// pre-validation, so inv counts are zero here (the verdict-resolution line
@@ -545,6 +547,8 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	if err := SaveGoals(d.workDir, goals); err != nil {
 		return err
 	}
+	// Fire AFTER the durable SaveGoals so the notification never precedes state.
+	d.fireGoalTransitionHook(goal.ID, "pending", "running", "supervising", CurrentCycle(goal))
 
 	// B7: per-cycle cost record at the re-dispatch seam (zero inv counts, see dispatch).
 	d.logCounters(goal, "redispatch", 0, 0, 0)
