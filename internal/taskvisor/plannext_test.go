@@ -24,6 +24,16 @@ func writeProductCompleteMarker(t *testing.T, dir string) {
 	require.NoError(t, os.WriteFile(p, []byte("all deliverables verified"), 0o644))
 }
 
+// writeDiscoveryEvidence writes a docs/architecture/product-brief.md discovery
+// artifact — the product-discovery evidence Option A (task 412) gates incremental
+// generation on. Its presence makes hasDiscoveryEvidence() true.
+func writeDiscoveryEvidence(t *testing.T, dir string) {
+	t.Helper()
+	p := filepath.Join(dir, "docs", "architecture", "product-brief.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	require.NoError(t, os.WriteFile(p, []byte("# Product Brief\n"), 0o644))
+}
+
 // setupPlanNextDispatchMocks programs the ListWindows sequence one
 // dispatchPlanNext makes: 2 empty (killWindowByName plan-next + waitWindowsGone),
 // then the booted plan-next window (waitClaudeBoot + waitForPrompt + the trailing
@@ -86,16 +96,28 @@ func TestTrailingConsecutiveFailures(t *testing.T) {
 }
 
 // TestIncrementalShouldGenerate covers the whole next-goal decision: generate
-// only when the marker is absent, the cap and failure guards hold, and every
-// authored goal is terminal (done|failed). An empty ledger generates goal-001.
+// only when the marker is absent, the cap and failure guards hold, every authored
+// goal is terminal (done|failed), AND discovery evidence exists (Option A, task
+// 412 — a terminal ledger with no product spec idles). Ordering matters: the
+// no-evidence cases are asserted BEFORE writeDiscoveryEvidence, which then
+// persists for the remainder of this single-dir test (matching greenfield state).
 func TestIncrementalShouldGenerate(t *testing.T) {
 	d, _, dir := setupDaemon(t)
 	d.planningMode = setup.PlanningModeIncremental
 
-	assert.True(t, d.incrementalShouldGenerate(&GoalsFile{}), "empty ledger → author goal-001")
+	// Option A: with NO discovery artifact, even a terminal/empty ledger idles.
+	assert.False(t, d.incrementalShouldGenerate(&GoalsFile{}), "empty ledger, no discovery evidence → idle (Option A)")
+	terminalNoEvidence := &GoalsFile{Goals: []Goal{{ID: "goal-001", Status: GoalDone}}}
+	assert.False(t, d.incrementalShouldGenerate(terminalNoEvidence), "terminal ledger, no discovery evidence → idle (Option A)")
+
+	// Introduce discovery evidence — the generator now has a product spec to
+	// ground on; the fixture persists for every assertion below.
+	writeDiscoveryEvidence(t, dir)
+
+	assert.True(t, d.incrementalShouldGenerate(&GoalsFile{}), "empty ledger + discovery evidence → author goal-001")
 
 	done := &GoalsFile{Goals: []Goal{{ID: "goal-001", Status: GoalDone}}}
-	assert.True(t, d.incrementalShouldGenerate(done), "terminal ledger → author the next goal")
+	assert.True(t, d.incrementalShouldGenerate(done), "terminal ledger + discovery evidence → author the next goal")
 
 	pending := &GoalsFile{Goals: []Goal{{ID: "goal-001", Status: GoalPending}}}
 	assert.False(t, d.incrementalShouldGenerate(pending), "non-terminal goal → never dispatch the generator")
@@ -122,10 +144,11 @@ func TestIncrementalShouldGenerate(t *testing.T) {
 // pending/running/roadmap goal and no product-complete marker dispatches the
 // generator (/tmux:task-plan-generate incremental) instead of tearing down.
 func TestTick_Incremental_EmptyLedgerDispatchesGenerator(t *testing.T) {
-	d, exec, _ := setupDaemon(t)
+	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
 	d.planningMode = setup.PlanningModeIncremental
+	writeDiscoveryEvidence(t, dir)
 
 	sent := setupPlanNextDispatchMocks(exec, testSession, "@7")
 	var createdName string
@@ -152,6 +175,7 @@ func TestTick_Incremental_TerminalGoalTriggersNextGeneration(t *testing.T) {
 	d.mode = modeActive
 	d.planningMode = setup.PlanningModeIncremental
 
+	writeDiscoveryEvidence(t, dir)
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{{ID: "goal-001", Status: GoalDone}}}
 	writeGoals(t, dir, gf)
 
@@ -340,6 +364,34 @@ func TestPlanNextOrComplete_ConsecutiveFailuresDeactivate(t *testing.T) {
 	assert.Contains(t, d.haltReason, "consecutive")
 }
 
+// TestTick_Incremental_NoDiscoveryEvidenceIdles proves Option A (task 412): an
+// all-terminal ledger under cap/failure guards, with no product-complete marker
+// AND no docs/architecture discovery artifact, idles via deactivateOnCompletion
+// instead of dispatching the generator — no plan-next window is created and the
+// daemon goes to modeIdle (not a repeating failPlanNextEpisode).
+func TestTick_Incremental_NoDiscoveryEvidenceIdles(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.planningMode = setup.PlanningModeIncremental
+	writeSettings(t, dir, true, true)
+	writeGuardFile(t, dir)
+	// Deliberately NO writeDiscoveryEvidence and NO product-complete marker.
+
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{{ID: "goal-001", Status: GoalDone}}}
+	writeGoals(t, dir, gf)
+	setupDeactivateOnCompletionMocks(exec, testSession)
+
+	var created int
+	d.SetWindowCreateFunc(countingCreateWindowFn(&created, "@9"))
+
+	require.NoError(t, d.tick(context.Background(), gf))
+
+	assert.Equal(t, modeIdle, d.mode, "terminal ledger + no discovery evidence → idle (Option A)")
+	assert.False(t, d.planNext.inFlight, "no generator episode is opened")
+	assert.Zero(t, created, "no plan-next window is created")
+}
+
 // TestAdvanceToNextGoal_IncrementalStaysActive proves the terminal-goal seam:
 // with no pending goal left, roadmap mode deactivates but incremental mode stays
 // active so the next tick dispatches the generator (review + next goal).
@@ -348,6 +400,7 @@ func TestAdvanceToNextGoal_IncrementalStaysActive(t *testing.T) {
 	d.session = testSession
 	d.mode = modeActive
 	d.planningMode = setup.PlanningModeIncremental
+	writeDiscoveryEvidence(t, dir)
 
 	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{{ID: "goal-001", Status: GoalDone}}}
 	writeGoals(t, dir, gf)

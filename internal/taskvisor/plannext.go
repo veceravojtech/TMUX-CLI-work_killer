@@ -85,6 +85,23 @@ func (d *Daemon) productComplete() bool {
 	return err == nil
 }
 
+// hasDiscoveryEvidence reports whether a prior product-discovery plan exists —
+// any of docs/architecture/{product-brief.md,bounded-contexts.md,api-endpoints.md}
+// under d.workDir. Option A (task 412) gates incremental generation on this
+// discovery evidence so an all-terminal ledger with NO product-brief / product
+// spec idles instead of dispatching a generator with nothing to ground on.
+// Mirrors productComplete()'s os.Stat/err==nil idiom (resolved via d.workDir the
+// same way productCompletePath does): an absent or unreadable artifact is simply
+// "not present" — the stat error is swallowed, never surfaced.
+func (d *Daemon) hasDiscoveryEvidence() bool {
+	for _, name := range []string{"product-brief.md", "bounded-contexts.md", "api-endpoints.md"} {
+		if _, err := os.Stat(filepath.Join(d.workDir, "docs", "architecture", name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // trailingConsecutiveFailures counts the UNBROKEN GoalFailed tail of the ledger
 // (goals.yaml is append-only under incremental authoring, so file order is
 // authoring order). Any non-failed goal breaks the streak.
@@ -115,15 +132,17 @@ func goalsAllTerminal(gf *GoalsFile) bool {
 }
 
 // incrementalShouldGenerate is the pure next-goal decision: generate only when
-// the product-complete marker is absent, the runaway guards hold, and every
-// authored goal is terminal. Shared by the tick's no-work arm
-// (planNextOrComplete) and advanceToNextGoal's stay-active gate so the two can
-// never disagree.
+// the product-complete marker is absent, the runaway guards hold, every authored
+// goal is terminal, AND discovery evidence exists (Option A, task 412 — a
+// terminal ledger with no product spec has nothing to generate against and must
+// idle). Shared by the tick's no-work arm (planNextOrComplete) and
+// advanceToNextGoal's stay-active gate so the two can never disagree.
 func (d *Daemon) incrementalShouldGenerate(gf *GoalsFile) bool {
 	return !d.productComplete() &&
 		len(gf.Goals) < incrementalMaxGoals &&
 		trailingConsecutiveFailures(gf) < incrementalFailureLimit &&
-		goalsAllTerminal(gf)
+		goalsAllTerminal(gf) &&
+		d.hasDiscoveryEvidence()
 }
 
 // planNextOrComplete is the incremental replacement for the tick's teardown arm
@@ -152,6 +171,14 @@ func (d *Daemon) planNextOrComplete(gf *GoalsFile) error {
 		// the same terminal path roadmap mode takes; deactivateOnCompletion's own
 		// guards (resumable park / recoverable block) keep the daemon active when
 		// the block is recoverable.
+		return d.deactivateOnCompletion(gf)
+	case !d.hasDiscoveryEvidence():
+		// Option A (task 412): the ledger is genuinely terminal, under cap, not
+		// failure-halted, and no product-complete marker (all earlier cases
+		// excluded) — but there is NO product-discovery spec (docs/architecture)
+		// to ground the generator on. Dispatching it would author nothing and
+		// re-fail every idle tick, so idle via the same terminal path instead.
+		log.Printf("incremental: all goals terminal but no discovery evidence (docs/architecture product spec) — idling instead of dispatching the generator")
 		return d.deactivateOnCompletion(gf)
 	default:
 		return d.dispatchPlanNext(gf)
