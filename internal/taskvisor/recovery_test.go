@@ -1,11 +1,13 @@
 package taskvisor
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/console/tmux-cli/internal/testutil"
 	"github.com/console/tmux-cli/internal/tmux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -319,4 +321,165 @@ func TestReadLogTail_BoundsBytes(t *testing.T) {
 	lines := strings.Split(tail, "\n")
 	assert.LessOrEqual(t, len(lines), 50, "then line-bounded to 50")
 	assert.Equal(t, "x", lines[len(lines)-1])
+}
+
+// --- Route B: crash-recovery re-commit of validated-but-uncommitted terminal
+//     goals (task 445 bootstrap deadlock) ---
+//
+// A restart/crash injected between the durable GoalDone save
+// (statemachine.go:599) and the completion auto-commit (statemachine.go:606)
+// strands a validated daemon-core goal's changeset uncommitted. crashRecovery's
+// GoalRunning-only passes never re-process a GoalDone goal, so these tests pin the
+// new independent re-integration scan: dirty in-scope ⇒ re-commit + finalize;
+// clean in-scope ⇒ untouched (no double-commit, no re-fail); empty in-scope diff
+// ⇒ committed=false, never a spurious success.
+
+// idleSupervisorWindow is the ListWindows recipe for the recovery teardown paths:
+// a live bare "supervisor" (window-0) so ensureWindow0Supervisor short-circuits
+// (no createWindow) and notifyCompletion has a receiver, while the namespaced
+// per-goal teardown sweep finds nothing to kill.
+func idleSupervisorWindow(exec *testutil.MockTmuxExecutor) {
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor"},
+	}, nil)
+	exec.On("SendMessageWithDelay", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+	exec.On("SendMessage", testSession, mock.Anything, mock.Anything).Return(nil).Maybe()
+}
+
+func terminalScopedGoal(id string) Goal {
+	return Goal{
+		ID:          id,
+		Description: "daemon-core fix",
+		Status:      GoalDone,
+		Scope:       []string{"internal/taskvisor/**"},
+	}
+}
+
+// TestCrashRecovery_ReCommitsValidatedTerminalGoal: a GoalDone goal scoped to
+// internal/taskvisor/** with an uncommitted in-scope edit (the restart-mid-
+// completion state) is re-committed by crashRecovery and stays done — the fix is
+// no longer stranded, and the out-of-scope change is left untouched.
+func TestCrashRecovery_ReCommitsValidatedTerminalGoal(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	mkRealGitRepoAt(t, dir) // in-scope x.go + out-of-scope README both dirtied on top of one commit
+	require.Equal(t, "1", runGitCmd(t, dir, "rev-list", "--count", "HEAD"),
+		"sanity: only the initial commit exists before recovery")
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-445",
+		Goals:       []Goal{terminalScopedGoal("goal-445")},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	idleSupervisorWindow(exec)
+
+	require.NoError(t, d.crashRecovery(true))
+
+	assert.Equal(t, "2", runGitCmd(t, dir, "rev-list", "--count", "HEAD"),
+		"exactly one re-commit landed — the stranded in-scope changeset is now integrated")
+	assert.Empty(t, runGitCmd(t, dir, "status", "--porcelain", "--", "internal/taskvisor"),
+		"in-scope tree clean after the recovery re-commit")
+	assert.NotEmpty(t, runGitCmd(t, dir, "status", "--porcelain", "--", "README.md"),
+		"out-of-scope change left untouched (scope-confined)")
+
+	files := runGitCmd(t, dir, "show", "--name-only", "--pretty=format:", "HEAD")
+	assert.Contains(t, files, "internal/taskvisor/x.go", "the in-scope fix is what got committed")
+	assert.NotContains(t, files, "README.md", "out-of-scope file not committed")
+
+	goals, err := LoadGoals(dir)
+	require.NoError(t, err)
+	g, ok := goals.GoalByID("goal-445")
+	require.True(t, ok)
+	assert.Equal(t, GoalDone, g.Status, "recovered terminal goal stays done — never re-failed as no-integrated-changes")
+}
+
+// TestCrashRecovery_TerminalGoalCleanTreeUntouched: a GoalDone goal whose in-scope
+// tree is already clean (the normal done-path committed it before the crash) is
+// left completely untouched by crashRecovery — no double-commit, no re-processing,
+// no failure.
+func TestCrashRecovery_TerminalGoalCleanTreeUntouched(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	mkRealGitRepoAt(t, dir)
+	// The done-path ALREADY committed the in-scope changeset: commit x.go so the
+	// in-scope tree is clean. README (out-of-scope) stays dirty, proving the guard
+	// keys on the in-scope tree only.
+	runGitCmd(t, dir, "add", "internal/taskvisor/x.go")
+	runGitCmd(t, dir, "commit", "-m", "done-path already committed the fix")
+	require.Equal(t, "2", runGitCmd(t, dir, "rev-list", "--count", "HEAD"))
+
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-445",
+		Goals:       []Goal{terminalScopedGoal("goal-445")},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	idleSupervisorWindow(exec)
+
+	require.NoError(t, d.crashRecovery(true))
+
+	assert.Equal(t, "2", runGitCmd(t, dir, "rev-list", "--count", "HEAD"),
+		"clean in-scope tree ⇒ no re-commit (guard prevents the double-commit)")
+
+	goals, err := LoadGoals(dir)
+	require.NoError(t, err)
+	g, ok := goals.GoalByID("goal-445")
+	require.True(t, ok)
+	assert.Equal(t, GoalDone, g.Status, "clean-tree terminal goal left untouched — not re-processed or failed")
+}
+
+// TestCrashRecovery_TerminalGoalEmptyScopeStillZeroIntegration: a GoalDone goal
+// whose in-scope diff is genuinely empty yields committed=false from autoCommitGoal
+// and is NOT spuriously finalized by the recovery pass — no re-commit and no
+// backend-task resolve fire, so the done-without-integration invariant is never
+// short-circuited into a fake success.
+func TestCrashRecovery_TerminalGoalEmptyScopeStillZeroIntegration(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.ctx = context.Background()
+	mkRealGitRepoAt(t, dir)
+	// In-scope committed clean (genuinely-empty in-scope diff); only README dirty.
+	runGitCmd(t, dir, "add", "internal/taskvisor/x.go")
+	runGitCmd(t, dir, "commit", "-m", "in-scope already integrated")
+
+	goal := terminalScopedGoal("goal-445")
+	assert.False(t, d.autoCommitGoal(&goal),
+		"a genuinely-empty in-scope diff ⇒ autoCommitGoal returns committed=false (no commit)")
+
+	// A backend-task mapping so a spurious resolve would be observable.
+	require.NoError(t, SaveTaskGoals(dir, &TaskGoalsFile{Mappings: []TaskGoalMapping{
+		{TaskID: "445", GoalID: "goal-445", Title: "t", ClaimedAt: "2026-07-05T00:00:00Z"},
+	}}))
+	resolveCalls := 0
+	orig := updateTaskStatusFn
+	defer func() { updateTaskStatusFn = orig }()
+	updateTaskStatusFn = func(_ *Daemon, _ context.Context, _, _ string, _ map[string]any) error {
+		resolveCalls++
+		return nil
+	}
+
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, &GoalsFile{
+		CurrentGoal: "goal-445",
+		Goals:       []Goal{terminalScopedGoal("goal-445")},
+	})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	idleSupervisorWindow(exec)
+
+	countBefore := runGitCmd(t, dir, "rev-list", "--count", "HEAD")
+	require.NoError(t, d.crashRecovery(true))
+
+	assert.Equal(t, countBefore, runGitCmd(t, dir, "rev-list", "--count", "HEAD"),
+		"empty in-scope diff ⇒ recovery makes no re-commit")
+	assert.Equal(t, 0, resolveCalls, "no spurious backend-task resolve — the goal was not falsely finalized")
+
+	tgf, err := LoadTaskGoals(dir)
+	require.NoError(t, err)
+	assert.NotEqual(t, -1, tgf.indexOf("goal-445"), "task mapping left in place (no spurious resolve)")
+
+	goals, err := LoadGoals(dir)
+	require.NoError(t, err)
+	g, ok := goals.GoalByID("goal-445")
+	require.True(t, ok)
+	assert.Equal(t, GoalDone, g.Status, "goal left as-is; zero-integration invariant untouched by recovery")
 }

@@ -40,6 +40,16 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 		return d.deactivate()
 	}
 
+	// Route B (task 445): BEFORE the GoalRunning-only passes, re-integrate any
+	// validated-but-uncommitted terminal goal a restart/crash stranded between the
+	// GoalDone save (statemachine.go:599) and the completion auto-commit
+	// (statemachine.go:606). GoalDone goals are EXCLUDED from the running filter
+	// below, so this is an independent scan; it never touches GoalRunning goals.
+	finalized, err := d.reintegrateValidatedTerminalGoals(goals)
+	if err != nil {
+		return err
+	}
+
 	// Collect ALL in-flight goals. After a crash NO supervisor survives, and at
 	// MaxGoals>1 several goals may have been running concurrently — recovering only
 	// the first (the old behavior) strands the rest as zombie GoalRunning entries
@@ -52,6 +62,13 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 		}
 	}
 	if len(running) == 0 {
+		if finalized > 0 {
+			// The re-commit pass above already drove advanceToNextGoal, which OWNS the
+			// terminal decision (teardown-on-completion, incremental plan-next, or
+			// stay-active with a pending successor). A second deactivate here would
+			// double-tear-down, so defer to what the pass already decided.
+			return nil
+		}
 		return d.deactivate()
 	}
 
@@ -224,6 +241,82 @@ func (d *Daemon) crashRecovery(plannedRestart bool) error {
 		return SaveGoals(d.workDir, goals)
 	}
 	return nil
+}
+
+// reintegrateValidatedTerminalGoals is the route-B safety net (task 445). A
+// restart or crash injected between the durable GoalDone save
+// (statemachine.go:599) and the completion auto-commit (statemachine.go:606)
+// leaves a validated goal recorded GoalDone but with its in-scope changeset
+// UNCOMMITTED — crashRecovery's GoalRunning-only passes never re-process it, so
+// the fix is stranded and the goal is later mis-surfaced as
+// reason=no-integrated-changes (goal-001 hit exactly this, operator-committed as
+// 62feb0a). This pass scans the GoalDone goals independently (they are excluded
+// from the running filter) and, for an INLINE (!goalUsesWorktree) non-empty-scope
+// goal whose in-scope tree is DIRTY, re-runs autoCommitGoal and completes the
+// SAME durable terminal bookkeeping the normal done-path produces
+// (resolveTaskOnTerminal + advanceToNextGoal(true) — mirroring
+// statemachine.go:606-624). A clean in-scope tree means the done-path already
+// committed: it is left completely untouched (no double-commit, no re-fail — the
+// double-commit guard). A dirty tree that nonetheless produces no commit
+// (autoCommitGoal's warn-only git failure) is left for reconcile rather than
+// finalized — recovery never fabricates a committed terminal state, so the
+// done-without-integration invariant is preserved. Returns the count of goals
+// finalized so the caller can skip the redundant empty-running deactivate when
+// this pass already drove the terminal decision.
+func (d *Daemon) reintegrateValidatedTerminalGoals(goals *GoalsFile) (int, error) {
+	finalized := 0
+	for i := range goals.Goals {
+		g := &goals.Goals[i]
+		if g.Status != GoalDone || len(g.Scope) == 0 || d.goalUsesWorktree(g) {
+			continue
+		}
+		// Double-commit guard: only re-commit a DIRTY in-scope tree. A clean tree
+		// means the normal done-path already committed this goal's changeset, so
+		// leave it entirely alone (no new commit, no status change).
+		if !d.scopeDirty(g) {
+			continue
+		}
+		committed := d.autoCommitGoal(g)
+		if !committed {
+			// autoCommitGoal is warn-only: a git failure — or an in-scope diff that
+			// emptied out between the guard probe and the commit — returns false. Do
+			// NOT fabricate a committed terminal state or re-fail the durably-done
+			// goal; leave it for reconcile / the next run. The done-without-integration
+			// invariant stays intact because recovery only finalizes on a real commit.
+			log.Printf("crash recovery: %s validated terminal goal had a dirty in-scope tree but auto-commit produced no commit — leaving for reconcile", g.ID)
+			continue
+		}
+		log.Printf("crash recovery: %s validated-but-uncommitted terminal goal re-committed on restart (task 445)", g.ID)
+		// Mirror the done-path's terminal bookkeeping (statemachine.go:623-624): push
+		// the mapped backend task to resolved, then advance/resume with resume=true.
+		d.resolveTaskOnTerminal(g, "resolved", doneResolution(g, nil))
+		if err := d.advanceToNextGoal(goals, g.ID, true); err != nil {
+			return finalized, err
+		}
+		finalized++
+	}
+	return finalized, nil
+}
+
+// scopeDirty reports whether the goal's in-scope tree carries uncommitted work:
+// a non-empty `git status --porcelain -- <scope pathspecs>` under workDir. It is
+// the route-B double-commit guard — a clean result means the done-path already
+// committed. It reuses autoCommitGit + scopePathspecs so the pathspec semantics
+// are byte-identical to autoCommitGoal's own in-scope probe. Any git error is
+// warn-logged and treated as NOT dirty (fail-safe: never re-commit against an
+// uncertain tree). An empty scope yields false — the caller already requires a
+// non-empty scope, but this keeps the helper total.
+func (d *Daemon) scopeDirty(g *Goal) bool {
+	pathspecs := scopePathspecs(g.Scope)
+	if len(pathspecs) == 0 {
+		return false
+	}
+	out, stderr, code, err := d.autoCommitGit(append([]string{"-C", d.workDir, "status", "--porcelain", "--"}, pathspecs...)...)
+	if code != 0 || err != nil {
+		log.Printf("crash recovery: %s: in-scope dirty probe failed (exit %d, err %v): %s — treating as clean", g.ID, code, err, strings.TrimSpace(stderr))
+		return false
+	}
+	return strings.TrimSpace(out) != ""
 }
 
 // windowBelongsToGoal reports whether a tmux window name belongs to goalID's

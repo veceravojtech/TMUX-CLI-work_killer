@@ -177,6 +177,10 @@ func TestMaybeSelfReinstall_NudgeOnBinaryChanged(t *testing.T) {
 	t.Run("binary_changed true zeroes lastStaleCheck", func(t *testing.T) {
 		d, _, dir := setupDaemon(t)
 		writeCliCheckout(t, dir)
+		// The throttle-nudge is now gated behind a stale-binary adoption flag (task
+		// 445): with a restart flag ON the original unconditional-nudge behavior is
+		// preserved, so this test keeps asserting the zero — it is NOT weakened.
+		d.restartOnStaleBinary = true
 		gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{reinstallGoal("goal-001")}}
 		writeGoals(t, dir, gf)
 		d.lastStaleCheck = time.Now()
@@ -205,6 +209,76 @@ func TestMaybeSelfReinstall_NudgeOnBinaryChanged(t *testing.T) {
 
 		assert.Equal(t, stamp, d.lastStaleCheck, "a no-op rebuild must not nudge adoption")
 	})
+}
+
+// TestMaybeSelfReinstall_NoRestartWhenFlagsOff pins route A (task 445): with both
+// stale-binary adoption flags OFF and binary_changed:true, the rebuild still runs
+// (cycle stamped) but the lastStaleCheck throttle-nudge is SUPPRESSED — so the
+// next-tick checkStaleBinary stays gated and no mid-goal exec-replace is armed
+// between VerdictPass and the done→auto-commit step.
+func TestMaybeSelfReinstall_NoRestartWhenFlagsOff(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	writeCliCheckout(t, dir)
+	require.False(t, d.restartOnStaleBinary, "default: restart_on_stale_binary off")
+	require.False(t, d.haltOnStaleBinary, "default: halt_on_stale_binary off")
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{reinstallGoal("goal-001")}}
+	writeGoals(t, dir, gf)
+	stamp := time.Now()
+	d.lastStaleCheck = stamp
+
+	built := false
+	d.selfUpdateFn = func(sourceDir, projectDir string) (selfUpdateResult, error) {
+		built = true
+		return selfUpdateResult{BinaryChanged: true, Restart: "daemon"}, nil
+	}
+	d.maybeSelfReinstall(&gf.Goals[0], gf)
+
+	assert.True(t, built, "the rebuild still runs so validators see the fresh binary")
+	assert.Equal(t, stamp, d.lastStaleCheck,
+		"both flags off ⇒ throttle-nudge suppressed; no mid-goal exec-replace armed")
+	assert.Equal(t, CurrentCycle(&gf.Goals[0]), gf.Goals[0].LastSelfReinstallCycle,
+		"rebuild guard stamp still set (the stamp guards the rebuild, not the restart)")
+}
+
+// TestMaybeSelfReinstall_RestartWhenFlagOn guards against over-gating: with
+// restart_on_stale_binary ON and binary_changed:true, the throttle-nudge STILL
+// fires (existing behavior preserved) so the operator's opted-in stale-binary
+// restart adopts the freshly installed binary next tick.
+func TestMaybeSelfReinstall_RestartWhenFlagOn(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	writeCliCheckout(t, dir)
+	d.restartOnStaleBinary = true
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{reinstallGoal("goal-001")}}
+	writeGoals(t, dir, gf)
+	d.lastStaleCheck = time.Now()
+
+	d.selfUpdateFn = func(sourceDir, projectDir string) (selfUpdateResult, error) {
+		return selfUpdateResult{BinaryChanged: true, Restart: "daemon"}, nil
+	}
+	d.maybeSelfReinstall(&gf.Goals[0], gf)
+
+	assert.True(t, d.lastStaleCheck.IsZero(),
+		"restart_on_stale_binary ON ⇒ nudge fires; adoption exec-replaces next tick")
+}
+
+// TestMaybeSelfReinstall_HaltFlagAlsoNudges: the halt_on_stale_binary flag is the
+// second opt-in that arms adoption — with it ON (restart still off) the nudge
+// fires, since either flag means the operator wants stale-binary handling.
+func TestMaybeSelfReinstall_HaltFlagAlsoNudges(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+	writeCliCheckout(t, dir)
+	d.haltOnStaleBinary = true
+	gf := &GoalsFile{CurrentGoal: "goal-001", Goals: []Goal{reinstallGoal("goal-001")}}
+	writeGoals(t, dir, gf)
+	d.lastStaleCheck = time.Now()
+
+	d.selfUpdateFn = func(sourceDir, projectDir string) (selfUpdateResult, error) {
+		return selfUpdateResult{BinaryChanged: true, Restart: "daemon"}, nil
+	}
+	d.maybeSelfReinstall(&gf.Goals[0], gf)
+
+	assert.True(t, d.lastStaleCheck.IsZero(),
+		"halt_on_stale_binary ON is also an opt-in ⇒ nudge fires")
 }
 
 func TestMaybeSelfReinstall_SkipsNonCliCheckout(t *testing.T) {

@@ -63,10 +63,21 @@ func runGitCmd(t *testing.T, dir string, args ...string) string {
 // committed clean, then dirties both. Returns the repo dir.
 func mkRealGitRepo(t *testing.T) string {
 	t.Helper()
+	dir := t.TempDir()
+	mkRealGitRepoAt(t, dir)
+	return dir
+}
+
+// mkRealGitRepoAt is mkRealGitRepo's in-place variant: it stamps an EXISTING dir
+// (e.g. a daemon's workDir) as a real repo with one in-scope
+// (internal/taskvisor/x.go) and one out-of-scope (README.md) file committed
+// clean, then dirties both. Extracted so crash-recovery tests can drive
+// autoCommitGoal against the daemon's own workDir instead of a detached temp dir.
+func mkRealGitRepoAt(t *testing.T, dir string) {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")
 	}
-	dir := t.TempDir()
 	runGitCmd(t, dir, "init")
 	runGitCmd(t, dir, "config", "user.email", "taskvisor@test.local")
 	runGitCmd(t, dir, "config", "user.name", "Taskvisor Test")
@@ -81,7 +92,6 @@ func mkRealGitRepo(t *testing.T) string {
 	// Dirty one in-scope and one out-of-scope file.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "taskvisor", "x.go"), []byte("package taskvisor\n\n// changed\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("readme changed\n"), 0o644))
-	return dir
 }
 
 func scopedGoal() *Goal {

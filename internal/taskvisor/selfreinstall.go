@@ -209,8 +209,11 @@ func goalScopeTouchesCliSource(goal *Goal) bool {
 // retry counters untouched — a distinct log+notify is emitted and the caller
 // still spawns the validator, whose own checks fail the broken code with
 // actionable output. On binary_changed:true the stale-check throttle is zeroed
-// so checkStaleBinary/restartStaleBinary adopt the new binary next tick.
-// Never returns an error to the tick.
+// so checkStaleBinary/restartStaleBinary adopt the new binary next tick — but
+// ONLY when a stale-binary adoption flag (restart_on_stale_binary or
+// halt_on_stale_binary) is set. With both flags off the nudge is suppressed so a
+// self-modifying goal never arms a mid-goal exec-replace that would strand its
+// validated fix uncommitted (task 445). Never returns an error to the tick.
 func (d *Daemon) maybeSelfReinstall(goal *Goal, goals *GoalsFile) {
 	buildDir := d.goalWorkDir(goal.ID)
 	if !setup.IsCliSourceCheckout(buildDir) {
@@ -239,13 +242,22 @@ func (d *Daemon) maybeSelfReinstall(goal *Goal, goals *GoalsFile) {
 		return
 	}
 	if res.BinaryChanged {
-		// Un-throttle stale-binary adoption: the next tick's checkStaleBinary
-		// bypasses the 60s gate and restartStaleBinary exec-replaces into the
-		// binary self-update just installed. The restart marker was written by
-		// self-update under the BASE project's .tmux-cli/, making the restart a
-		// planned one (daemon.go startup consumption).
-		d.lastStaleCheck = time.Time{}
-		log.Printf("%s: self-reinstall: binary changed (restart=%s) — stale-binary adoption nudged", goal.ID, res.Restart)
+		// Un-throttle stale-binary adoption ONLY when the operator opted into a
+		// stale-binary restart/halt. The nudge is what ARMS the next tick's tick-top
+		// checkStaleBinary exec-replace (it bypasses the 60s gate so restartStaleBinary
+		// adopts the binary just installed). Firing it unconditionally lands a mid-goal
+		// exec-replace BETWEEN this goal's VerdictPass and its done→auto-commit step,
+		// stranding a daemon-core goal's validated fix uncommitted — the bootstrap
+		// deadlock of task 445. With both flags false the rebuild still ran (validators
+		// see the fresh binary), but no exec-replace is armed, so completion commits
+		// the changeset normally. The --restart daemon marker self-update wrote is inert
+		// without this nudge (it is only consumed at the NEXT daemon startup).
+		if d.restartOnStaleBinary || d.haltOnStaleBinary {
+			d.lastStaleCheck = time.Time{}
+			log.Printf("%s: self-reinstall: binary changed (restart=%s) — stale-binary adoption nudged", goal.ID, res.Restart)
+			return
+		}
+		log.Printf("%s: self-reinstall: binary changed (restart=%s) but stale-binary restart/halt disabled — adoption NOT nudged (no mid-goal exec-replace; completion commits the changeset)", goal.ID, res.Restart)
 		return
 	}
 	log.Printf("%s: self-reinstall: build succeeded, binary unchanged — no restart", goal.ID)
