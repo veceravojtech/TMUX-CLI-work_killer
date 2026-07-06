@@ -566,6 +566,15 @@ func TestIncrementalActivationWatermark(t *testing.T) {
 		{ID: "goal-001", Status: GoalDone},
 		{ID: "goal-002", Status: GoalDone},
 	}})
+	// Keep both terminal goals UNSETTLED (still mapped in task-goals.yaml) so
+	// activation-time compaction (goal-006/task 482) does NOT archive them — this
+	// test exercises task 481's watermark, which counts leftover terminal goals
+	// that legitimately remain in the compacted ledger (unsettled terminals held
+	// for the reconcile fallback), keeping them inert to the incremental guards.
+	require.NoError(t, SaveTaskGoals(dir, &TaskGoalsFile{Mappings: []TaskGoalMapping{
+		{TaskID: "1", GoalID: "goal-001"},
+		{TaskID: "2", GoalID: "goal-002"},
+	}}))
 
 	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
 	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)

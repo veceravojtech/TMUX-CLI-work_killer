@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestNew_Defaults(t *testing.T) {
@@ -666,4 +667,190 @@ func TestRun_HonorsStopSignalDuringPollError(t *testing.T) {
 
 	_, statErr := os.Stat(stopPath)
 	assert.True(t, os.IsNotExist(statErr), "the stop signal must be consumed on the error path")
+}
+
+// --- Activation-time goals.yaml compaction (goal-006 / task 482) ---
+
+// findArchiveYAML returns the single backups/goals-archive-<ts>.yaml path, or ""
+// when none exists. Fails the test if more than one is present.
+func findArchiveYAML(t *testing.T, dir string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, ".tmux-cli", "backups", "goals-archive-*.yaml"))
+	require.NoError(t, err)
+	if len(matches) == 0 {
+		return ""
+	}
+	require.Len(t, matches, 1, "expected exactly one archive .yaml")
+	return matches[0]
+}
+
+// findArchiveDir returns the single backups/goals-archive-<ts>/ dir (no .yaml
+// suffix), or "" when none exists.
+func findArchiveDir(t *testing.T, dir string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, ".tmux-cli", "backups", "goals-archive-*"))
+	require.NoError(t, err)
+	for _, m := range matches {
+		if strings.HasSuffix(m, ".yaml") {
+			continue
+		}
+		info, statErr := os.Stat(m)
+		if statErr == nil && info.IsDir() {
+			return m
+		}
+	}
+	return ""
+}
+
+func mkGoalDir(t *testing.T, dir, goalID string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli", "goals", goalID), 0o755))
+}
+
+func goalIDs(gf *GoalsFile) []string {
+	ids := make([]string, 0, len(gf.Goals))
+	for _, g := range gf.Goals {
+		ids = append(ids, g.ID)
+	}
+	return ids
+}
+
+func TestActivationCompaction(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-010", Status: GoalPending},
+		{ID: "goal-011", Status: GoalDone},   // settled terminal (unmapped) → archive
+		{ID: "goal-012", Status: GoalFailed}, // unsettled terminal (mapped) → keep
+		{ID: "goal-013", Status: GoalRunning},
+	}}
+	writeGoals(t, dir, gf)
+	mkGoalDir(t, dir, "goal-011")
+	mkGoalDir(t, dir, "goal-012")
+	require.NoError(t, SaveTaskGoals(dir, &TaskGoalsFile{Mappings: []TaskGoalMapping{
+		{TaskID: "482", GoalID: "goal-012"},
+	}}))
+
+	d.compactSettledTerminalGoals(gf)
+
+	assert.ElementsMatch(t, []string{"goal-010", "goal-012", "goal-013"}, goalIDs(gf),
+		"only the settled terminal goal-011 is removed")
+
+	// Reload from disk — SaveGoals must have persisted the compacted ledger.
+	reloaded, err := LoadGoals(dir)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"goal-010", "goal-012", "goal-013"}, goalIDs(reloaded))
+
+	archive := findArchiveYAML(t, dir)
+	require.NotEmpty(t, archive, "an archive .yaml must be written")
+	data, err := os.ReadFile(archive)
+	require.NoError(t, err)
+	var archived GoalsFile
+	require.NoError(t, yaml.Unmarshal(data, &archived))
+	assert.Equal(t, []string{"goal-011"}, goalIDs(&archived))
+
+	assert.Contains(t, buf.String(), "compaction: archived 1 settled terminal goals")
+}
+
+func TestActivationCompaction_KeepsUnsettledTerminal(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	gf := &GoalsFile{Goals: []Goal{{ID: "goal-012", Status: GoalFailed}}}
+	writeGoals(t, dir, gf)
+	mkGoalDir(t, dir, "goal-012")
+	require.NoError(t, SaveTaskGoals(dir, &TaskGoalsFile{Mappings: []TaskGoalMapping{
+		{TaskID: "482", GoalID: "goal-012"},
+	}}))
+
+	d.compactSettledTerminalGoals(gf)
+
+	assert.Equal(t, []string{"goal-012"}, goalIDs(gf), "still-mapped terminal goal is kept")
+	_, statErr := os.Stat(filepath.Join(dir, ".tmux-cli", "goals", "goal-012"))
+	assert.NoError(t, statErr, "its dir must be untouched")
+	assert.Empty(t, findArchiveYAML(t, dir), "nothing archived")
+}
+
+func TestActivationCompaction_NeverTouchesNonTerminal(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-010", Status: GoalPending},
+		{ID: "goal-013", Status: GoalRunning},
+		{ID: "goal-014", Status: GoalBlocked},
+		{ID: "goal-015", Status: GoalRoadmap},
+	}}
+	writeGoals(t, dir, gf)
+
+	d.compactSettledTerminalGoals(gf)
+
+	assert.ElementsMatch(t, []string{"goal-010", "goal-013", "goal-014", "goal-015"}, goalIDs(gf))
+	assert.Empty(t, findArchiveYAML(t, dir), "no non-terminal goal is ever archived")
+}
+
+func TestActivationCompaction_MovesGoalDirNotDelete(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	gf := &GoalsFile{Goals: []Goal{{ID: "goal-011", Status: GoalDone}}}
+	writeGoals(t, dir, gf)
+	mkGoalDir(t, dir, "goal-011")
+	marker := filepath.Join(dir, ".tmux-cli", "goals", "goal-011", "evidence.txt")
+	require.NoError(t, os.WriteFile(marker, []byte("keep me"), 0o644))
+
+	d.compactSettledTerminalGoals(gf)
+
+	// Source dir gone.
+	_, statErr := os.Stat(filepath.Join(dir, ".tmux-cli", "goals", "goal-011"))
+	assert.True(t, os.IsNotExist(statErr), "source goal dir must be moved away")
+
+	// Marker present under the archive dir.
+	archiveDir := findArchiveDir(t, dir)
+	require.NotEmpty(t, archiveDir, "an archive dir must exist")
+	moved := filepath.Join(archiveDir, "goal-011", "evidence.txt")
+	content, err := os.ReadFile(moved)
+	require.NoError(t, err, "marker file must survive the move")
+	assert.Equal(t, "keep me", string(content))
+}
+
+func TestActivationCompaction_ZeroSettled_LogsZero(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	gf := &GoalsFile{Goals: []Goal{
+		{ID: "goal-010", Status: GoalPending},
+		{ID: "goal-013", Status: GoalRunning},
+	}}
+	writeGoals(t, dir, gf)
+	before, err := os.ReadFile(GoalsFilePath(dir))
+	require.NoError(t, err)
+
+	d.compactSettledTerminalGoals(gf)
+
+	after, err := os.ReadFile(GoalsFilePath(dir))
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "goals.yaml is byte-unchanged when nothing is archived")
+	assert.Empty(t, findArchiveYAML(t, dir), "no archive .yaml created")
+	assert.Empty(t, findArchiveDir(t, dir), "no archive dir created")
+	assert.Contains(t, buf.String(), "compaction: archived 0 settled terminal goals")
+}
+
+func TestActivationCompaction_ClearsCurrentGoalIfArchived(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	gf := &GoalsFile{
+		CurrentGoal: "goal-011",
+		Goals:       []Goal{{ID: "goal-011", Status: GoalDone}},
+	}
+	writeGoals(t, dir, gf)
+	mkGoalDir(t, dir, "goal-011")
+
+	d.compactSettledTerminalGoals(gf)
+
+	assert.Empty(t, gf.CurrentGoal, "CurrentGoal is cleared when it points at an archived goal")
 }

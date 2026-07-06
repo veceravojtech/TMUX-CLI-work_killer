@@ -15,6 +15,7 @@ import (
 	"github.com/console/tmux-cli/internal/producer"
 	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/tmux"
+	"gopkg.in/yaml.v3"
 )
 
 type mode int
@@ -848,6 +849,113 @@ func (d *Daemon) handlePollError(ctx context.Context, err error) (deactivated bo
 	return didDeactivate
 }
 
+// compactSettledTerminalGoals archives every SETTLED terminal goal out of the
+// live ledger at activation, keeping goals.yaml from growing unboundedly across
+// runs. A goal is a compaction candidate iff it is terminal (done/failed) AND no
+// longer referenced by any .tmux-cli/task-goals.yaml mapping entry. The mapping
+// gate deliberately KEEPS an unsettled terminal goal (backend not yet reconciled)
+// readable so the /tmux:task-list reconcile offline fallback can still resolve its
+// task; those are archived on a later activation once the mapping clears. Running
+// under the activation-held goals flock also serializes this against
+// crash-recovery's re-commit of validated terminals (task 445).
+//
+// Archive is a MOVE, never a delete: candidate entries + their goals/<id>/ dirs
+// are relocated under .tmux-cli/backups/goals-archive-<ts>/, and the entries are
+// written to .tmux-cli/backups/goals-archive-<ts>.yaml (load-and-append on a
+// same-second collision). A dir-move failure is NON-LOSSY — that goal is kept in
+// goals.yaml and retried next activation. LoadTaskGoals/SaveGoals are lock-free by
+// design (the flock is already held), so this never re-acquires it. Mirrors
+// pruneOrphanWorktrees: takes the in-memory ledger, mutates in place, no error.
+func (d *Daemon) compactSettledTerminalGoals(goals *GoalsFile) {
+	tgf, _ := LoadTaskGoals(d.workDir)
+	mapped := map[string]bool{}
+	if tgf != nil {
+		for _, m := range tgf.Mappings {
+			mapped[m.GoalID] = true
+		}
+	}
+
+	keep := make([]Goal, 0, len(goals.Goals))
+	archived := make([]Goal, 0)
+	for _, g := range goals.Goals {
+		terminal := g.Status == GoalDone || g.Status == GoalFailed
+		if terminal && !mapped[g.ID] {
+			archived = append(archived, g)
+		} else {
+			keep = append(keep, g)
+		}
+	}
+
+	// Log exactly one line every activation, with the real N (including N=0).
+	log.Printf("compaction: archived %d settled terminal goals", len(archived))
+	if len(archived) == 0 {
+		return
+	}
+
+	ts := time.Now().UTC().Format("20060102-150405")
+	backupsDir := filepath.Join(d.workDir, ".tmux-cli", "backups")
+	archiveDir := filepath.Join(backupsDir, "goals-archive-"+ts)
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		// Cannot stage the archive — leave the ledger untouched and retry next run.
+		log.Printf("compaction: mkdir archive dir failed: %v — skipping compaction this activation", err)
+		return
+	}
+
+	moved := make([]Goal, 0, len(archived))
+	for _, g := range archived {
+		src := filepath.Join(d.workDir, ".tmux-cli", "goals", g.ID)
+		if _, statErr := os.Stat(src); statErr == nil {
+			if err := os.Rename(src, filepath.Join(archiveDir, g.ID)); err != nil {
+				// Non-lossy: keep the goal in goals.yaml, retry next activation.
+				log.Printf("compaction: move %s dir failed: %v — keeping goal in ledger", g.ID, err)
+				keep = append(keep, g)
+				continue
+			}
+		}
+		moved = append(moved, g)
+	}
+
+	if len(moved) > 0 {
+		if err := appendArchiveGoals(filepath.Join(backupsDir, "goals-archive-"+ts+".yaml"), moved); err != nil {
+			log.Printf("compaction: write archive yaml failed: %v", err)
+		}
+	}
+
+	goals.Goals = keep
+	// Clear CurrentGoal if it named an archived goal (precedent: DeleteGoal).
+	stillPresent := false
+	for _, g := range keep {
+		if g.ID == goals.CurrentGoal {
+			stillPresent = true
+			break
+		}
+	}
+	if !stillPresent {
+		goals.CurrentGoal = ""
+	}
+	if err := SaveGoals(d.workDir, goals); err != nil {
+		log.Printf("compaction: save goals.yaml failed: %v", err)
+	}
+}
+
+// appendArchiveGoals writes archived goals to path as a GoalsFile YAML, merging
+// with any goals already present so a same-second re-activation collision stays
+// non-lossy (load-and-append rather than overwrite).
+func appendArchiveGoals(path string, archived []Goal) error {
+	var existing GoalsFile
+	if data, err := os.ReadFile(path); err == nil {
+		if unmarshalErr := yaml.Unmarshal(data, &existing); unmarshalErr != nil {
+			return unmarshalErr
+		}
+	}
+	existing.Goals = append(existing.Goals, archived...)
+	data, err := yaml.Marshal(&existing)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
 func (d *Daemon) activate(goals *GoalsFile) error {
 	guardPath := filepath.Join(d.workDir, ".tmux-cli", "taskvisor-active")
 	if err := os.MkdirAll(filepath.Dir(guardPath), 0o755); err != nil {
@@ -890,6 +998,14 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	// RunTarget==docker, so a local-runtime / MaxGoals=1 project makes zero compose
 	// calls and activation stays byte-identical.
 	d.reapOrphanStacks(goals)
+
+	// Compact the ledger: MOVE (archive, not delete) every SETTLED terminal goal
+	// out of goals.yaml so it never grows unboundedly across runs. Runs here —
+	// after the orphan reapers, BEFORE dep-inference and the task-481 watermark
+	// (d.activationBaselineGoals = len(goals.Goals) below) — so the watermark
+	// counts the compacted ledger and leftover settled terminals are simply gone
+	// rather than sitting inert below the watermark.
+	d.compactSettledTerminalGoals(goals)
 
 	// Heal stale block-state on (re)activation too, so a daemon that comes up
 	// against an already-stuck goals.yaml re-pends a recovered subtree before it
