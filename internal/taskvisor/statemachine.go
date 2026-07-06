@@ -1822,6 +1822,17 @@ func parseEscalationMd(path string) (count int, needs int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	// Per-block boundary flush: a "- need:" block's fate cannot be decided until
+	// its boundary (the next "- need:" or EOF) because the supervisor writes any
+	// `resolved:` continuation line AFTER the "- need:" line. inConcreteBlock
+	// tracks whether the CURRENT block is a countable concrete need; resolvedSeen
+	// tracks whether that block later carried a `resolved:` line. On each new
+	// "- need:" we flush the PREVIOUS block, and once more after the loop for the
+	// final block. A resolved block counts toward escalation_count but NOT needs,
+	// letting pendingPrereqEscalation's needs>0 signal self-clear once every
+	// prerequisite is landed in-run (goal-004).
+	inConcreteBlock := false
+	resolvedSeen := false
 	for _, line := range strings.Split(string(raw), "\n") {
 		trimmed := strings.TrimSpace(line)
 		switch {
@@ -1831,13 +1842,26 @@ func parseEscalationMd(path string) (count int, needs int, err error) {
 				count = n
 			}
 		case strings.HasPrefix(trimmed, "- need:"):
+			// Flush the previous block before starting a new one.
+			if inConcreteBlock && !resolvedSeen {
+				needs++
+			}
 			v := strings.TrimSpace(strings.TrimPrefix(trimmed, "- need:"))
 			v = strings.Trim(v, `"'`)
 			v = strings.TrimSpace(v)
-			if isConcreteNeed(v) {
-				needs++
-			}
+			inConcreteBlock = isConcreteNeed(v)
+			resolvedSeen = false
+		case strings.HasPrefix(trimmed, "resolved:"):
+			// Any trimmed line beginning `resolved:` marks the current block
+			// resolved — do NOT hard-match the `in-run (cycle …, commit …)`
+			// parenthetical the supervisor happens to write.
+			resolvedSeen = true
 		}
+	}
+	// Final EOF flush of the last block (a resolved final block with no trailing
+	// "- need:" would otherwise be miscounted).
+	if inConcreteBlock && !resolvedSeen {
+		needs++
 	}
 	return count, needs, nil
 }

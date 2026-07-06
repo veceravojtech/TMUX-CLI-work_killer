@@ -49,6 +49,7 @@
     <tag name="[SUPERVISOR:AMEND-PROTOCOL &lt;new rule&gt;]" from="supervisor">Supervisor amends the response protocol mid-run (e.g. new save-path rule).</tag>
     <tag name="[SUPERVISOR:KILL]" from="supervisor">Supervisor instructs worker to exit cleanly because its scope is now pointless (per step 5a). Worker ACKs then exits.</tag>
     <tag name="[SUPERVISOR:NARROW-SCOPE &lt;reduced problem&gt;]" from="supervisor">Supervisor narrows a NEED_INPUT-blocked worker's scope instead of escalating to user.</tag>
+    <tag name="[SUPERVISOR:PREREQ-DONE need=... commit=&lt;sha&gt;]" from="supervisor">Supervisor resolved a SMALL out-of-scope prerequisite IN-RUN (a narrow prereq-* worker built and committed it) and RESUMES the ESCALATE-blocked worker instead of bouncing the whole goal to generation. Carries the resolving commit &lt;sha&gt;. UNCHARGED — no code-retry decrement, no SpecRetry. The worker re-checks the blocker and continues; if it is still blocked it replies [EXECUTE:FAILED reason=prereq-ineffective]. This is the SOLE accepted continuation of an [EXECUTE:ESCALATE]; goal-sized needs and in-run failures fall back to the generation relay verbatim.</tag>
   </message-tags>
 
   <escalation-routing>
@@ -60,7 +61,11 @@
 escalation_count: &lt;N&gt;
 - need: "&lt;one-line buildable prerequisite&gt;"
   from: execute-&lt;N&gt;  cycle: &lt;C&gt;
+  status: in-run-attempt
+  resolved: in-run (cycle &lt;C&gt;, commit &lt;sha&gt;)
     </schema>
+    <schema-note>The `status:` and `resolved:` lines are OPTIONAL same-block continuations of their `- need:` entry — written AFTER the `- need:`/`from:` lines and BEFORE the next `- need:` entry or EOF, byte-for-byte what the daemon's parseEscalationMd reads. They are mutually exclusive and transient: `status: in-run-attempt` is present only WHILE a prereq-* worker attempts the need in-run; on success it is REWRITTEN to `resolved: in-run (cycle &lt;C&gt;, commit &lt;sha&gt;)`; on prereq failure it is STRIPPED, leaving a bare `- need:` entry. A goal-sized need that relays straight to generation carries NEITHER continuation line.</schema-note>
+    <resolved-note>An entry carrying a `resolved:` line was handled IN-RUN and is NOT relayed to generation — validate.xml / investigate.xml skip it; only entries lacking a `resolved:` line become blocked+planner spec-defect findings. Every entry (in-run OR relayed) still counts toward the &lt;cap&gt; below.</resolved-note>
     <cap>Cap escalations at 2 per goal (≤ MaxSpecRetries). This is a supervisor-side guard against many escalations within one implementation cycle; the daemon's bounceToGeneration hard-halt at SpecRetries=0 is the authoritative ceiling. Beyond the cap the supervisor stops relaying and the goal takes its normal terminal path (no infinite re-plan loop).</cap>
     <relayed-finding>The validator MUST emit the relayed finding as status=blocked, owner=planner, failure_class=spec-defect with a NON-CONTENTLESS detail+correction (e.g. correction="Create prerequisite goal: &lt;need&gt;"). HasSubstantiveSpecDefect rejects a finding whose detail AND correction are both contentless — that would mis-route to ValidationRetries instead of generation. That is why step 5 rejects a contentless need= up front.</relayed-finding>
   </escalation-routing>
@@ -311,11 +316,28 @@ This is a SIDECAR ledger — NEVER add fields to tasks.yaml task entries (tasks-
             <action>Do NOT relay a 3rd escalation (loop guard against endless re-planning). Log: "escalation cap (2) reached for &lt;GOAL_ID&gt; — not relaying; routing to normal terminal path." Handle this worker per the [EXECUTE:FAILED ...] branch instead (narrowed respawn / user escalation). The daemon's SpecRetries backstop (bounceToGeneration hard-halts at 0) remains the authoritative ceiling.</action>
           </check>
           <check condition="N &lt; 2">
-            <action>Write/append to .tmux-cli/goals/&lt;GOAL_ID&gt;/escalation.md using the schema in &lt;escalation-routing&gt;: set escalation_count = N+1 and append one entry block carrying need=, the worker wid, and the current cycle. Create the file (with the "## Escalations" header) if absent; otherwise update escalation_count in place and append the entry — never clobber prior entries.</action>
+            <action>Write/append to .tmux-cli/goals/&lt;GOAL_ID&gt;/escalation.md using the schema in &lt;escalation-routing&gt;: set escalation_count = N+1 and append one entry block carrying need=, the worker wid, and the current cycle. Create the file (with the "## Escalations" header) if absent; otherwise update escalation_count in place and append the entry — never clobber prior entries. This append ALWAYS happens and the entry counts toward the cap 2 whether the prerequisite is later resolved in-run or relayed to generation.</action>
+            <action>TRIAGE need= by goal.md's size threshold (reuse the SAME size vocabulary as goal.md / the cap language — do not invent a new heuristic): SMALL = an implied change of &lt; ~10 files with no new subsystem/bounded-context and no own planning/research; anything above (≥ ~10 files, a new subsystem/bounded-context, or its own planning/research) is GOAL-SIZED. In-run resolution is the DEFAULT for a SMALL need; a GOAL-SIZED need takes today's generation relay directly.</action>
+            <check condition="need= is SMALL — in-run resolution (the new default)">
+              <action>Add the continuation line `status: in-run-attempt` to the just-appended block (immediately after its `- need:`/`from:` lines, before the next `- need:` entry or EOF — a same-block continuation the daemon's parseEscalationMd and investigate.xml's step-2e filter read byte-for-byte).</action>
+              <action>Spawn ONE narrow prerequisite worker via windows-spawn-worker (the ONLY spawn primitive — never windows-create + windows-send) with: supervisorWid=SUPERVISOR_WID; prefix="prereq-" (the returned wid takes the form prereq-&lt;GID&gt;-&lt;n&gt;); subtask=a one-line label of the need; contextFile=a short context .md you first write under research-root capturing the need + its verification command; scope = the need= text PLUS its verification command PLUS "commit your own change" PLUS the hard rule "you may NEVER [EXECUTE:ESCALATE] — one level only; for ANY blocker emit [EXECUTE:FAILED] instead"; and run it in the SAME goal checkout as this goal's other workers by mirroring step 4's spawn-cwd convention verbatim, so the prereq commit lands in the isolated goal tree and merges back. Do NOT kill the blocked ESCALATE-ing worker yet — it idles for [SUPERVISOR:PREREQ-DONE].</action>
+              <action>Idle for the prereq worker's reply (event-triggered per the step-5 idle rules — never a sleep/poll).</action>
+              <check condition="prereq worker replies [EXECUTE:DONE] AND committed a real commit &lt;sha&gt;">
+                <action>Rewrite that block's `status: in-run-attempt` line to `resolved: in-run (cycle &lt;C&gt;, commit &lt;sha&gt;)` (same-block continuation) — this marks the entry HANDLED so investigate.xml step 2e does NOT relay it and the verdict is not forced to blocked.</action>
+                <action>windows-kill the prereq worker by NAME.</action>
+                <action>Send [SUPERVISOR:PREREQ-DONE need=&lt;need&gt; commit=&lt;sha&gt;] via windows-message to the blocked worker. This resume is UNCHARGED — do NOT decrement a code-retry and do NOT charge a SpecRetry. The worker re-checks the blocker and resumes; step 5 keeps idling for its eventual [EXECUTE:DONE]/[EXECUTE:FAILED].</action>
+                <action>Do NOT fall through to the relay fallback below — the prerequisite was resolved in-run.</action>
+              </check>
+              <check condition="prereq worker replies [EXECUTE:FAILED], dies, or reports DONE with NO commit sha">
+                <action>STRIP the `status: in-run-attempt` line from that block, leaving a bare `- need:` entry (the entry still counts toward the cap 2). windows-kill the prereq worker if still alive. Then FALL THROUGH to the relay fallback below — today's behaviour VERBATIM.</action>
+              </check>
+            </check>
+            <check condition="need= is GOAL-SIZED (relay directly, no in-run attempt) OR the in-run attempt above failed/was stripped — the relay fallback (today's behaviour verbatim)">
             <action>SUPPRESS the code-retry: do NOT respawn this worker's scope (re-dispatching the implementer against an unwinnable spec is exactly what ESCALATE avoids). Mark the task done/escalated in tasks-path.</action>
             <action>windows-kill the worker by NAME (e.g. "execute-7").</action>
             <action critical="true">Do NOT write any signal.json here, and NEVER write a source="validator" signal during the supervising phase — checkSupervisingPhase type-asserts *SupervisorSignal and treats any other type as a code-defect failed cycle (the opposite of intent). The supervisor only writes its ordinary SupervisorSignal at cycle completion (step 9b). The escalation reaches generation via the validator relay, not via any supervisor-written signal.</action>
             <action>Finish the cycle normally (continue to step 7 / step 9b). Next validation cycle, validate.xml / investigate.xml reads escalation.md and emits the blocked+planner spec-defect finding that the daemon routes to bounceToGeneration (SpecRetries−1).</action>
+            </check>
           </check>
         </check>
       </branch>

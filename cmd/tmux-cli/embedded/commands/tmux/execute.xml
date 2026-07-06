@@ -73,7 +73,12 @@ WHY: &lt;one line&gt;
       </template>
       <rule>need= MUST read as a concrete, buildable correction naming the missing prerequisite goal — e.g. need="JWT auth middleware goal: validate Bearer token, reject with 401" — NOT a vague gripe ("auth is broken", "need more info") and NEVER empty. A contentless need= will be REMINDed by the supervisor and relayed nowhere.</rule>
       <rule>One prerequisite per message.</rule>
-      <action>Idle until the supervisor responds (it writes the escalation marker and kills your window, or REMINDs you for a concrete prerequisite).</action>
+      <action>Idle until the supervisor responds. It will do ONE of: (a) write the escalation marker and kill your window (the need is relayed to generation as a prerequisite goal); (b) REMIND you for a concrete prerequisite (re-send ESCALATE with a buildable need=); or (c) reply [SUPERVISOR:PREREQ-DONE need=... commit=&lt;sha&gt;] — an ACCEPTED CONTINUATION (see below), not a terminal kill.</action>
+      <check condition="receive [SUPERVISOR:PREREQ-DONE need=... commit=&lt;sha&gt;]">
+        <rule critical="true">This is the SOLE accepted continuation of an ESCALATE: the supervisor resolved your small out-of-scope prerequisite IN-RUN (a narrow prereq-* worker built and committed it at &lt;sha&gt;). It is UNCHARGED — no code-retry or SpecRetry is charged against you. Re-check the EXACT blocker you escalated (re-read the now-committed prerequisite / re-run the step that was blocked) and resume the task from where you stopped.</rule>
+        <action>If the blocker is now cleared, continue work normally toward the step-4c validation gate and [EXECUTE:DONE].</action>
+        <action>If the blocker STILL persists after the committed prerequisite, reply [EXECUTE:FAILED wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt; reason=prereq-ineffective] — do NOT re-ESCALATE the same need (the in-run resolution already ran).</action>
+      </check>
     </step>
 
     <step n="4c" title="Mandatory pre-DONE validation gate" critical="true">
@@ -143,7 +148,7 @@ PARTIAL: &lt;what you have, or "none"&gt;
     <rule>windows-kill: NEVER</rule>
     <rule>goal-create: NEVER — you do not create goals; ESCALATE routes the prerequisite to generation, which owns goal-create</rule>
     <rule>Every reply MUST begin with exactly one [EXECUTE:NEED_INPUT|DONE|FAILED|ESCALATE] header</rule>
-    <rule>ESCALATE is a terminal tag (like DONE/FAILED): emit it once with a concrete need=, then idle for the supervisor — do not also emit FAILED for the same blocker</rule>
+    <rule>ESCALATE is a terminal tag (like DONE/FAILED) EXCEPT for one accepted continuation: emit it once with a concrete need=, then idle for the supervisor — do not also emit FAILED for the same blocker. The SOLE accepted continuation is [SUPERVISOR:PREREQ-DONE need=... commit=&lt;sha&gt;], which resumes you after the supervisor resolved the prerequisite in-run (step 4b); if you then remain blocked, reply [EXECUTE:FAILED reason=prereq-ineffective]</rule>
     <rule>Every header MUST carry wid=&lt;SELF_WID&gt; sup=&lt;SUPERVISOR_WID&gt;</rule>
     <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
   </execution-rules>
@@ -154,7 +159,7 @@ PARTIAL: &lt;what you have, or "none"&gt;
       • Supervisor owns lifecycle — never kill your own window
       • Stay within SCOPE — surface adjacent findings as RISKS, not expanded work
       • Decidable forks are auto-resolved per the quality-in-scope policy (highest-quality option that keeps SCOPE; record rationale) — reserve NEED_INPUT for user-only facts (credentials/business-intent/out-of-band)
-      • ESCALATE only when blocked by an out-of-SCOPE, separately-buildable prerequisite (routes to re-planning); for an in-scope blocker use FAILED; for a missing fact use NEED_INPUT. NEVER call goal-create — generation owns prerequisite-goal creation
+      • ESCALATE only when blocked by an out-of-SCOPE, separately-buildable prerequisite (routes to re-planning); for an in-scope blocker use FAILED; for a missing fact use NEED_INPUT. NEVER call goal-create — generation owns prerequisite-goal creation. The supervisor MAY instead resolve a small prerequisite in-run and resume you via [SUPERVISOR:PREREQ-DONE need=... commit=&lt;sha&gt;] (uncharged); if it does and you are still blocked, reply [EXECUTE:FAILED reason=prereq-ineffective]
       • ALWAYS read AGENTS.md or CLAUDE.md before starting work — project conventions are mandatory context
       • Before emitting [EXECUTE:DONE], run the goal's `## Validation Rules` deterministic commands and confirm each exits 0 (step 4c) — this gate is mandatory, not the optional step-5 self-check
       • One tagged message per reply; untagged output gets REMIND from the supervisor

@@ -391,6 +391,174 @@ func TestPrereqEscalationRoutesThroughPlan(t *testing.T) {
 	})
 }
 
+// escEntry is one escalation.md "- need:" block, optionally carrying the
+// supervisor-written `resolved:` continuation line (goal-004): a resolved block
+// must NOT count toward pendingPrereqEscalation's `needs` so the gate can go
+// dormant once every prerequisite was landed inside the supervising cycle.
+type escEntry struct {
+	need     string
+	resolved bool
+}
+
+// writeEscalationMdResolved writes a goal-scoped escalation.md like
+// writeEscalationMd but lets each need block optionally carry a
+// `resolved: in-run (cycle N, commit deadbeef)` continuation line — the
+// byte-exact marker the supervisor writes when it lands a prerequisite in-run.
+// Kept as a separate helper (not a change to writeEscalationMd's signature) so
+// the existing callers — TestPrereqEscalationRoutesThroughPlan at :351 — stay
+// green.
+func writeEscalationMdResolved(t *testing.T, dir, goalID string, count int, entries []escEntry) {
+	t.Helper()
+	goalDir, err := EnsureGoalDir(dir, goalID)
+	require.NoError(t, err)
+	var b strings.Builder
+	b.WriteString("## Escalations\n")
+	b.WriteString(fmt.Sprintf("escalation_count: %d\n", count))
+	for i, e := range entries {
+		b.WriteString(fmt.Sprintf("- need: %q\n  from: execute-1  cycle: %d\n", e.need, i+2))
+		if e.resolved {
+			b.WriteString(fmt.Sprintf("  resolved: in-run (cycle %d, commit deadbeef)\n", i+2))
+		}
+	}
+	p := filepath.Join(goalDir, "escalation.md")
+	require.NoError(t, os.WriteFile(p, []byte(b.String()), 0o644))
+}
+
+// escalationMdPath mirrors pendingPrereqEscalation's path construction so parse
+// tests read the exact file the daemon gate reads.
+func escalationMdPath(dir, goalID string) string {
+	return filepath.Join(dir, ".tmux-cli", "goals", goalID, "escalation.md")
+}
+
+// TestParseEscalationMd_SkipsResolvedEntry: a single concrete "- need:" block
+// carrying a `resolved:` line must count toward escalation_count but NOT toward
+// needs — so pendingPrereqEscalation's needs>0 signal self-clears.
+func TestParseEscalationMd_SkipsResolvedEntry(t *testing.T) {
+	dir := t.TempDir()
+	writeEscalationMdResolved(t, dir, "goal-100", 1, []escEntry{
+		{need: "JWT auth middleware goal: validate Bearer token", resolved: true},
+	})
+	count, needs, err := parseEscalationMd(escalationMdPath(dir, "goal-100"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "escalation_count is still the supervisor-written monotonic value")
+	assert.Equal(t, 0, needs, "a resolved block must not count toward needs")
+}
+
+// TestParseEscalationMd_MixedResolvedAndUnresolved: two concrete blocks where
+// only the first carries `resolved:` — the resolved one is excluded, the
+// unresolved one still counts.
+func TestParseEscalationMd_MixedResolvedAndUnresolved(t *testing.T) {
+	dir := t.TempDir()
+	writeEscalationMdResolved(t, dir, "goal-101", 2, []escEntry{
+		{need: "JWT auth middleware goal", resolved: true},
+		{need: "rate-limit middleware goal", resolved: false},
+	})
+	count, needs, err := parseEscalationMd(escalationMdPath(dir, "goal-101"))
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+	assert.Equal(t, 1, needs, "only the unresolved concrete block counts")
+}
+
+// TestParseEscalationMd_UnresolvedEntryStillCounts: a concrete "- need:" with no
+// `resolved:` line counts exactly as today (backward-compat).
+func TestParseEscalationMd_UnresolvedEntryStillCounts(t *testing.T) {
+	dir := t.TempDir()
+	writeEscalationMdResolved(t, dir, "goal-102", 1, []escEntry{
+		{need: "JWT auth middleware goal", resolved: false},
+	})
+	count, needs, err := parseEscalationMd(escalationMdPath(dir, "goal-102"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	assert.Equal(t, 1, needs, "an unresolved concrete block counts, byte-identical to today")
+}
+
+// TestParseEscalationMd_ResolvedAtEOF: the final block carries `resolved:` before
+// EOF with no trailing "- need:" — the post-loop flush must exclude it. First
+// block is unresolved to prove the EOF flush excludes ONLY the resolved final
+// block (not a blanket drop).
+func TestParseEscalationMd_ResolvedAtEOF(t *testing.T) {
+	dir := t.TempDir()
+	writeEscalationMdResolved(t, dir, "goal-103", 2, []escEntry{
+		{need: "rate-limit middleware goal", resolved: false},
+		{need: "JWT auth middleware goal", resolved: true},
+	})
+	count, needs, err := parseEscalationMd(escalationMdPath(dir, "goal-103"))
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+	assert.Equal(t, 1, needs, "the resolved final block must be excluded by the EOF flush")
+}
+
+// TestParseEscalationMd_ResolvedMarkerIgnoresParenthetical: ANY trimmed line
+// beginning `resolved:` is the marker — the daemon must NOT hard-match the exact
+// `in-run (cycle …, commit …)` parenthetical the supervisor happens to write.
+func TestParseEscalationMd_ResolvedMarkerIgnoresParenthetical(t *testing.T) {
+	dir := t.TempDir()
+	goalDir, err := EnsureGoalDir(dir, "goal-104")
+	require.NoError(t, err)
+	// Hand-written escalation.md with a bare `resolved:` line (no parenthetical)
+	// and tolerated leading indentation on the continuation line.
+	raw := "## Escalations\n" +
+		"escalation_count: 1\n" +
+		"- need: \"JWT auth middleware goal\"\n" +
+		"  from: execute-1  cycle: 2\n" +
+		"    resolved: done\n"
+	require.NoError(t, os.WriteFile(filepath.Join(goalDir, "escalation.md"), []byte(raw), 0o644))
+
+	count, needs, err := parseEscalationMd(escalationMdPath(dir, "goal-104"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	assert.Equal(t, 0, needs, "a bare `resolved:` line (no parenthetical, indented) still marks the block resolved")
+}
+
+// TestParseEscalationMd_MissingFileFailSafe: an absent path returns zero counts
+// and a non-nil err so the caller (pendingPrereqEscalation) treats the gate as
+// not-pending and never panics.
+func TestParseEscalationMd_MissingFileFailSafe(t *testing.T) {
+	dir := t.TempDir()
+	count, needs, err := parseEscalationMd(escalationMdPath(dir, "goal-does-not-exist"))
+	require.Error(t, err, "a missing file must return a non-nil err (fail-safe)")
+	assert.Equal(t, 0, count)
+	assert.Equal(t, 0, needs)
+}
+
+// TestPrereqEscalation_ResolvedEntryKeepsRetryRoute: the routing-level proof —
+// an escalation.md whose every concrete entry is resolved makes needs==0, so
+// pendingPrereqEscalation returns false and dispatchCandidate keeps today's
+// implementer skip-plan route (/tmux:supervisor), NOT the full-plan bounce. This
+// is what lets the gate go dormant once all escalations are resolved in-run.
+func TestPrereqEscalation_ResolvedEntryKeepsRetryRoute(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	// Same fixture as TestPrereqEscalationRoutesThroughPlan's routing case: a
+	// code-defect implementer re-pend that WOULD skip-plan, with the file count
+	// strictly greater than EscalationCount — but every entry is resolved.
+	gf := markerGoalsFile(Goal{
+		ID: "goal-064", Description: "green deliverable, escalation resolved in-run", Status: GoalPending,
+		CodeRetries: 2, MaxCodeRetries: 3,
+		NextDispatch:    dispatchImplementer,
+		EscalationCount: 0,
+	})
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-064")
+	require.NoError(t, err)
+	writeGoalTasksYaml(t, dir, "goal-064", markerTasksYaml)
+	writeTaskContext(t, dir, ".tmux-cli/research/ctx-marker.md", "# Task ctx")
+	writeEscalationMdResolved(t, dir, "goal-064", 1, []escEntry{
+		{need: "remediate pre-existing baseline debt", resolved: true},
+	})
+
+	sent := markerCaptureMocks(exec, "@99", "supervisor-064")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
+
+	require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
+
+	require.Len(t, *sent, 1)
+	assert.Equal(t, "/tmux:supervisor goal-064", (*sent)[0],
+		"a fully-resolved escalation.md leaves needs==0 → gate dormant → today's retry route survives")
+}
+
 // TestBounceToGeneration_SetsGenerationMarker covers the marker's WRITE side
 // at the spec-defect seam: a re-pending bounce must stamp
 // NextDispatch=generation and persist it (it survives a daemon restart via
