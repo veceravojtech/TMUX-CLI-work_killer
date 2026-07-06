@@ -497,3 +497,67 @@ func TestDisjointReadySet_DefaultPriority_ByteIdentical(t *testing.T) {
 	assert.Equal(t, "goal-001", got[0].ID)
 	assert.Equal(t, "goal-002", got[1].ID)
 }
+
+// --- isTestOnlyScope + detectTDDPairSplit (task 473) ------------------------
+
+func TestIsTestOnlyScope(t *testing.T) {
+	assert.True(t, isTestOnlyScope([]string{"internal/x/*_test.go"}), "single test glob → test-only")
+	assert.True(t, isTestOnlyScope([]string{"internal/x/foo_test.go", "internal/y/bar_test.go"}), "all test globs → test-only")
+	assert.False(t, isTestOnlyScope([]string{"internal/x/**"}), "impl dir glob → not test-only")
+	assert.False(t, isTestOnlyScope([]string{"internal/x/*_test.go", "internal/x/**"}), "mixed → not test-only")
+	assert.False(t, isTestOnlyScope(nil), "empty/unknown → not test-only")
+	assert.False(t, isTestOnlyScope([]string{}), "empty slice → not test-only")
+}
+
+func TestDetectTDDPairSplit_RejectsTestDependsOnImpl(t *testing.T) {
+	existing := []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/foo/**"}},
+	}
+	cand := &Goal{Scope: []string{"internal/foo/*_test.go"}, DependsOn: []string{"goal-001"}}
+	err := detectTDDPairSplit(cand, existing)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "goal-001")
+	assert.Contains(t, err.Error(), "allow_split_tdd")
+}
+
+func TestDetectTDDPairSplit_RejectsImplDependsOnTest(t *testing.T) {
+	existing := []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/foo/*_test.go"}},
+	}
+	cand := &Goal{Scope: []string{"internal/foo/**"}, DependsOn: []string{"goal-001"}}
+	err := detectTDDPairSplit(cand, existing)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "goal-001")
+}
+
+func TestDetectTDDPairSplit_AllowsDisjointScope(t *testing.T) {
+	existing := []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/bar/**"}},
+	}
+	cand := &Goal{Scope: []string{"internal/foo/*_test.go"}, DependsOn: []string{"goal-001"}}
+	assert.NoError(t, detectTDDPairSplit(cand, existing), "disjoint units are not a split")
+}
+
+func TestDetectTDDPairSplit_AllowsValidationGoalDep(t *testing.T) {
+	existing := []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/foo/**"}, Validates: "goal-000"},
+	}
+	cand := &Goal{Scope: []string{"internal/foo/*_test.go"}, DependsOn: []string{"goal-001"}}
+	assert.NoError(t, detectTDDPairSplit(cand, existing), "sanctioned validation-goal dep is exempt")
+}
+
+func TestDetectTDDPairSplit_AllowsNonPendingDep(t *testing.T) {
+	existing := []Goal{
+		{ID: "goal-001", Status: GoalDone, Scope: []string{"internal/foo/**"}},
+	}
+	cand := &Goal{Scope: []string{"internal/foo/*_test.go"}, DependsOn: []string{"goal-001"}}
+	assert.NoError(t, detectTDDPairSplit(cand, existing), "only a pending dep is a live split")
+}
+
+func TestDetectTDDPairSplit_FailsOpenOnUnknownCandidateScope(t *testing.T) {
+	existing := []Goal{
+		{ID: "goal-001", Status: GoalPending, Scope: []string{"internal/foo/*_test.go"}},
+	}
+	cand := &Goal{DependsOn: []string{"goal-001"}} // no scope → unknown → fail-open
+	assert.NoError(t, detectTDDPairSplit(cand, existing), "unknown candidate scope must not be rejected")
+}

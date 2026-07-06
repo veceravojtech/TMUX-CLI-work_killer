@@ -18,7 +18,7 @@ func TestGoalCreate_InvalidLaneRejected(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Bad lane", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "fast")
+	_, err := server.GoalCreate("Bad lane", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "fast", false)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
@@ -34,7 +34,7 @@ func TestGoalCreate_LaneSoloPersistsAndSurfaces(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	output, err := server.GoalCreate("Solo lane goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "solo")
+	output, err := server.GoalCreate("Solo lane goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "solo", false)
 	require.NoError(t, err)
 
 	gf, err := tvLoadGoals(tmpDir)
@@ -54,9 +54,9 @@ func TestGoalAddPrerequisite_PreservesLane(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Solo goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "solo")
+	_, err := server.GoalCreate("Solo goal", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "solo", false)
 	require.NoError(t, err)
-	_, err = server.GoalCreate("Prerequisite", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err = server.GoalCreate("Prerequisite", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	_, err = server.GoalAddPrerequisite("goal-001", "goal-002")
@@ -77,7 +77,7 @@ func TestGoalCreate_LaneSoloEmptyValidateRejected(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Solo without validate", nil, nil, "", "", "", 0, nil, nil, nil, nil, 0, "solo")
+	_, err := server.GoalCreate("Solo without validate", nil, nil, "", "", "", 0, nil, nil, nil, nil, 0, "solo", false)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
@@ -93,7 +93,7 @@ func TestGoalCreate_LaneSoloEmptyValidateSliceRejected(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Solo with empty validate slice", nil, []string{}, "", "", "", 0, nil, nil, nil, nil, 0, "solo")
+	_, err := server.GoalCreate("Solo with empty validate slice", nil, []string{}, "", "", "", 0, nil, nil, nil, nil, 0, "solo", false)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidInput)
@@ -113,7 +113,7 @@ func TestGoalCreate_LaneSoloMultiTopDirScope_WarnsButCreates(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Solo spanning two top dirs", nil, []string{"go build ./..."}, "", "", "", 0, nil, nil, nil, []string{"internal/mcp/", "cmd/tmux-cli/"}, 0, "solo")
+	_, err := server.GoalCreate("Solo spanning two top dirs", nil, []string{"go build ./..."}, "", "", "", 0, nil, nil, nil, []string{"internal/mcp/", "cmd/tmux-cli/"}, 0, "solo", false)
 	require.NoError(t, err)
 
 	gf, err := tvLoadGoals(tmpDir)
@@ -136,7 +136,7 @@ func TestGoalCreate_AutoDerivesSoloViaMCP(t *testing.T) {
 	// Localized, pure-command, no explicit lane ⇒ auto-solo.
 	soloDir := t.TempDir()
 	server := newTestServer(new(testutil.MockTmuxExecutor), soloDir)
-	out, err := server.GoalCreate("Localized goal", []string{"edits internal/foo/bar.go"}, []string{"grep -rq X internal/foo"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	out, err := server.GoalCreate("Localized goal", []string{"edits internal/foo/bar.go"}, []string{"grep -rq X internal/foo"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	canonical, err := taskvisor.LoadGoals(soloDir)
@@ -151,7 +151,7 @@ func TestGoalCreate_AutoDerivesSoloViaMCP(t *testing.T) {
 	// Multi-dir, no explicit lane ⇒ stays full (G3 fails closed), no lane: key.
 	fullDir := t.TempDir()
 	server2 := newTestServer(new(testutil.MockTmuxExecutor), fullDir)
-	out2, err := server2.GoalCreate("Multi-dir goal", []string{"edits internal/a/x.go", "edits cmd/b/y.go"}, []string{"go build ./..."}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	out2, err := server2.GoalCreate("Multi-dir goal", []string{"edits internal/a/x.go", "edits cmd/b/y.go"}, []string{"go build ./..."}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	canonical2, err := taskvisor.LoadGoals(fullDir)
@@ -174,7 +174,7 @@ func TestGoalCreate_LaneSoloSingleTopDirScope_NoWarn(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
-	_, err := server.GoalCreate("Solo within one top dir", nil, []string{"go build ./..."}, "", "", "", 0, nil, nil, nil, []string{"internal/mcp/", "internal/taskvisor/"}, 0, "solo")
+	_, err := server.GoalCreate("Solo within one top dir", nil, []string{"go build ./..."}, "", "", "", 0, nil, nil, nil, []string{"internal/mcp/", "internal/taskvisor/"}, 0, "solo", false)
 	require.NoError(t, err)
 
 	assert.NotContains(t, buf.String(), "solo-lane creation cross-check", "single-top-dir solo scope must not warn")

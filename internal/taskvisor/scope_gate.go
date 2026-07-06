@@ -277,6 +277,72 @@ func DeriveScopeWithCompleteness(deliverables []string) (scope []string, incompl
 	return out, incomplete, uncovered
 }
 
+// --- one-goal-per-TDD-unit gate (task 473) -----------------------------------
+//
+// A single-unit TDD change (red test + green impl) keeps getting emitted as two
+// chained full goals (an impl goal ← a test-only goal that depends_on it, on the
+// SAME unit). detectTDDPairSplit is a deterministic authoring-time REJECT for
+// that shape: for each of the candidate's depends_on edges, if the resolved dep
+// is a live (pending, non-validation) goal whose scope OVERLAPS the candidate's
+// and exactly ONE of the pair is test-only-scope while the other is impl-scope,
+// the candidate forms a red/green split and is refused (no goal persisted). It
+// mirrors the task-436 authoring gate: a pure error-returning helper invoked
+// from CreateGoal inside WithGoalsLock. The escape hatch (spec.AllowSplitTDD)
+// lives at the call site; the detector itself has no bypass. Fail-open on any
+// ambiguity (unknown candidate or dep scope) — a hard reject must never block a
+// legitimate goal whose footprint could not be classified.
+
+// isTestOnlyScope reports whether a scope is a CONFIDENT test-only footprint:
+// non-empty AND every entry targets a Go test file (ends in "_test.go", so a
+// glob like "internal/x/*_test.go" or a bare "internal/x/foo_test.go" both
+// qualify). An empty/unknown scope, or any impl entry mixed in, yields false —
+// the conservative case that keeps detectTDDPairSplit from firing on ambiguity.
+func isTestOnlyScope(scope []string) bool {
+	if len(scope) == 0 {
+		return false
+	}
+	for _, entry := range scope {
+		if !strings.HasSuffix(strings.TrimSpace(entry), "_test.go") {
+			return false
+		}
+	}
+	return true
+}
+
+// detectTDDPairSplit returns a non-nil error when cand forms a red/green TDD
+// split of an existing PENDING goal on the same unit, else nil. For each id in
+// cand.DependsOn it resolves the dep among existing and fires ONLY on a
+// confident classification: the dep is pending and NOT a sanctioned validation
+// goal (IsValidationGoal), BOTH goals have a known scope whose globs overlap
+// (!ScopesDisjoint over two known scopes = a real same-unit overlap), and
+// exactly one of {cand, dep} is test-only while the other is impl. It is PURE
+// (no I/O, no state mutation) and fails open: an unknown candidate scope, an
+// unknown dep scope, a missing/non-pending/validation dep, or disjoint scopes
+// all yield nil.
+func detectTDDPairSplit(cand *Goal, existing []Goal) error {
+	if !cand.HasKnownScope() { // fail-open: candidate footprint unclassifiable
+		return nil
+	}
+	gf := GoalsFile{Goals: existing}
+	candTestOnly := isTestOnlyScope(cand.Scope)
+	for _, depID := range cand.DependsOn {
+		g, ok := gf.GoalByID(depID)
+		if !ok || g.Status != GoalPending || g.IsValidationGoal() {
+			continue
+		}
+		if !g.HasKnownScope() { // fail-open: dep footprint unclassifiable
+			continue
+		}
+		if ScopesDisjoint(cand, g) { // disjoint units — not a split
+			continue
+		}
+		if candTestOnly != isTestOnlyScope(g.Scope) { // exactly one side is test-only
+			return fmt.Errorf("goal forms a red/green TDD split of pending goal %s (same unit); emit one goal per unit with red+green as a single changeset, or pass allow_split_tdd to bypass", g.ID)
+		}
+	}
+	return nil
+}
+
 // --- goal-create scope resolution + zero-match guard (task 436) --------------
 //
 // A `<stem>/**` directory glob authored for a target that is actually a FILE

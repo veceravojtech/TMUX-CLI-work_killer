@@ -415,6 +415,7 @@ type GoalCreateInput struct {
 	Scope           []string `json:"scope,omitempty" jsonschema:"Declared file/namespace footprint (globs like internal/x/** or namespace prefixes like App\\Billing). The disjoint-scope co-scheduling gate serializes goals with overlapping or unknown scope under MaxGoals>1; omit to derive from deliverables (treated as unknown = serialize)"`
 	Priority        int      `json:"priority,omitempty" jsonschema:"Dispatch priority (higher = dispatched first; default 0)"`
 	Lane            string   `json:"lane,omitempty" jsonschema:"Validation lane: solo (cheap single-investigator gate, demoted to full on any failure) or full; empty defaults to full"`
+	AllowSplitTDD   bool     `json:"allow_split_tdd,omitempty" jsonschema:"Escape hatch: bypass the one-goal-per-TDD-unit gate that otherwise rejects a red/green test⇄impl split of an existing pending goal's same unit via depends_on. Emit one goal per unit (red+green as a single changeset) instead of setting this"`
 
 	Preconditions []taskvisor.Precondition `json:"preconditions,omitempty" jsonschema:"Optional precondition gates ({kind:env|service, spec, remedy}); daemon parks the goal until each is met"`
 
@@ -470,7 +471,7 @@ func (s *Server) GoalCreateHandler(ctx context.Context, req *sdkmcp.CallToolRequ
 	var err error
 	switch input.Status {
 	case "":
-		output, err = s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.Phase, input.MaxRetries, input.DependsOn, input.Preconditions, investigators, input.Scope, input.Priority, input.Lane)
+		output, err = s.GoalCreate(input.Description, input.Acceptance, input.Validate, input.Context, input.NotInScope, input.Phase, input.MaxRetries, input.DependsOn, input.Preconditions, investigators, input.Scope, input.Priority, input.Lane, input.AllowSplitTDD)
 	case taskvisor.GoalRoadmap:
 		output, err = s.GoalCreateRoadmap(input.Description, input.Phase, input.DependsOn, input.DeliverableArea, input.Priority)
 	default:

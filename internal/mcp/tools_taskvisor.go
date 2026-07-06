@@ -315,7 +315,7 @@ func validateInvestigators(invs []taskvisor.Investigator) error {
 // land in goals.yaml — F5/RC-A, with the derive-from-acceptance scope
 // fallback), and goal.md — is delegated to the shared authoring core
 // taskvisor.CreateGoal, converged with the `taskvisor goal add` CLI command.
-func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope, phase string, maxRetries int, dependsOn []string, preconditions []taskvisor.Precondition, investigators []taskvisor.Investigator, scope []string, priority int, lane string) (*GoalCreateOutput, error) {
+func (s *Server) GoalCreate(description string, acceptance, validate []string, context, notInScope, phase string, maxRetries int, dependsOn []string, preconditions []taskvisor.Precondition, investigators []taskvisor.Investigator, scope []string, priority int, lane string, allowSplitTDD bool) (*GoalCreateOutput, error) {
 	if phase != "" && !allowedPhases[phase] {
 		names := make([]string, 0, len(allowedPhases))
 		for k := range allowedPhases {
@@ -367,6 +367,7 @@ func (s *Server) GoalCreate(description string, acceptance, validate []string, c
 		Scope:         scope,
 		Priority:      priority,
 		Lane:          lane,
+		AllowSplitTDD: allowSplitTDD,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err)

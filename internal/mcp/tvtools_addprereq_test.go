@@ -17,9 +17,9 @@ func TestGoalAddPrerequisite_WiresExistingGoalDependsOn(t *testing.T) {
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
 	// Goal A (the bounced dependent) and freshly-created prerequisite P.
-	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
-	_, err = server.GoalCreate("Prerequisite P", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err = server.GoalCreate("Prerequisite P", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	out, err := server.GoalAddPrerequisite("goal-001", "goal-002")
@@ -38,7 +38,7 @@ func TestGoalAddPrerequisite_RejectsNonExistentPrerequisite(t *testing.T) {
 	tmpDir := t.TempDir()
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
-	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	_, err = server.GoalAddPrerequisite("goal-001", "goal-999")
@@ -56,7 +56,7 @@ func TestGoalAddPrerequisite_RejectsNonExistentTargetGoal(t *testing.T) {
 	tmpDir := t.TempDir()
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
-	_, err := server.GoalCreate("Prerequisite P", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err := server.GoalCreate("Prerequisite P", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	_, err = server.GoalAddPrerequisite("goal-999", "goal-001")
@@ -69,7 +69,7 @@ func TestGoalAddPrerequisite_RejectsSelfDependency(t *testing.T) {
 	tmpDir := t.TempDir()
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
-	_, err := server.GoalCreate("Goal A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err := server.GoalCreate("Goal A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	_, err = server.GoalAddPrerequisite("goal-001", "goal-001")
@@ -88,9 +88,9 @@ func TestGoalAddPrerequisite_RejectsCycle(t *testing.T) {
 
 	// A exists; P is created depending on A. Wiring A -> P would close the cycle
 	// A -> P -> A.
-	_, err := server.GoalCreate("Goal A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err := server.GoalCreate("Goal A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
-	_, err = server.GoalCreate("Goal P", nil, []string{"check"}, "", "", "", 0, []string{"goal-001"}, nil, nil, nil, 0, "")
+	_, err = server.GoalCreate("Goal P", nil, []string{"check"}, "", "", "", 0, []string{"goal-001"}, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	_, err = server.GoalAddPrerequisite("goal-001", "goal-002")
@@ -107,9 +107,9 @@ func TestGoalAddPrerequisite_IdempotentWhenAlreadyPresent(t *testing.T) {
 	tmpDir := t.TempDir()
 	server := newTestServer(new(testutil.MockTmuxExecutor), tmpDir)
 
-	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
-	_, err = server.GoalCreate("Prerequisite P", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err = server.GoalCreate("Prerequisite P", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	out1, err := server.GoalAddPrerequisite("goal-001", "goal-002")
@@ -160,11 +160,11 @@ func TestGoalAddPrerequisite_ConcurrentCallsSerializeUnderLock(t *testing.T) {
 
 	// One dependent A and two prerequisites; two concurrent wires (within the
 	// cap of 2) must both land without corrupting goals.yaml.
-	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err := server.GoalCreate("Dependent A", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
-	_, err = server.GoalCreate("Prerequisite P1", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err = server.GoalCreate("Prerequisite P1", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
-	_, err = server.GoalCreate("Prerequisite P2", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "")
+	_, err = server.GoalCreate("Prerequisite P2", nil, []string{"check"}, "", "", "", 0, nil, nil, nil, nil, 0, "", false)
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup

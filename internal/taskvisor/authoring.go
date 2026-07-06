@@ -45,6 +45,12 @@ type GoalSpec struct {
 	// a skeleton goal (e.g. "projects/api/src/Http/ErrorHandling/"). Ignored for
 	// normal (non-roadmap) creation.
 	DeliverableArea string
+	// AllowSplitTDD is an authoring-only escape hatch (task 473): when true, the
+	// one-goal-per-TDD-unit gate (detectTDDPairSplit) is skipped, so a red/green
+	// test⇄impl split of an existing pending goal may be created deliberately. It
+	// is NOT persisted on Goal/tvGoal — an authoring-time bypass has no durable
+	// meaning on the goal and would trip TestGoalTvGoalYamlTagParity.
+	AllowSplitTDD bool
 }
 
 // validateGoalSpec enforces the core-owned authoring rules shared by every
@@ -175,6 +181,18 @@ func CreateGoal(workDir string, spec GoalSpec) (string, bool, error) {
 				if !existingIDs[dep] {
 					return fmt.Errorf("depends_on references non-existent goal: %s", dep)
 				}
+			}
+		}
+
+		// task 473: reject a red/green TDD pair split of an existing PENDING
+		// goal's same unit (one test-only + one impl scope linked by depends_on),
+		// unless the author opted in via AllowSplitTDD. Runs AFTER the depends_on
+		// existence check (every dep id resolves) and uses the RESOLVED scope
+		// (task-436 normalized), not raw spec.Scope. Fail-open on unknown scope.
+		if !spec.AllowSplitTDD {
+			cand := Goal{Scope: scope, DependsOn: spec.DependsOn}
+			if err := detectTDDPairSplit(&cand, gf.Goals); err != nil {
+				return err
 			}
 		}
 
