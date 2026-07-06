@@ -63,12 +63,17 @@ tasks:
     context: .tmux-cli/research/ctx-marker.md
 `
 
-// TestDispatchCandidate_SpecBounceForcesFullDispatch is the RC-D regression:
-// consumed code budget AND an existing per-goal tasks.yaml — the exact state
-// where the sticky heuristic always chose dispatchRetry — must still route to
-// a FULL dispatch (/tmux:plan, planner re-generation) when the spec-bounce
-// marker NextDispatch=generation is set.
-func TestDispatchCandidate_SpecBounceForcesFullDispatch(t *testing.T) {
+// TestDispatchCandidate_SpecBounceWithTasksYamlDowngradesToSpecRepair is the
+// plan-once inversion of the former RC-D regression (backend task 490): a
+// spec-bounce marker (NextDispatch=generation) with an existing per-goal
+// tasks.yaml must NO LONGER re-run the full /tmux:plan planner. The first plan
+// already produced tasks.yaml, so resolveDispatchKind downgrades DispatchPlan to
+// DispatchSpecRepair, which routes the spec repair to /tmux:supervisor (which
+// amends tasks.yaml in place, supervisor.xml step 1d) — never a second full plan.
+// The RC-D guarantee (a spec bounce never diverts into the skip-plan dispatchRetry)
+// survives: this still goes through dispatch()/DispatchSpecRepair, not
+// dispatchRetry's DispatchImplement.
+func TestDispatchCandidate_SpecBounceWithTasksYamlDowngradesToSpecRepair(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
@@ -90,10 +95,65 @@ func TestDispatchCandidate_SpecBounceForcesFullDispatch(t *testing.T) {
 	require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
 
 	require.Len(t, *sent, 1, "dispatch should send exactly one command")
+	assert.Contains(t, (*sent)[0], "/tmux:supervisor",
+		"plan-once: a spec bounce with an existing tasks.yaml must route spec repair to the supervisor")
+	assert.NotContains(t, (*sent)[0], "/tmux:plan",
+		"plan-once: the full planner must never run a second time once tasks.yaml exists")
+}
+
+// TestDispatchCandidate_SpecBounceNoTasksYamlStillPlans is the plan-once sibling:
+// a spec bounce (NextDispatch=generation) with NO per-goal tasks.yaml — a crashed
+// or never-run first plan — stays retryable and still routes to the full /tmux:plan
+// planner (the downgrade keys on artifact existence, not a dispatch counter).
+func TestDispatchCandidate_SpecBounceNoTasksYamlStillPlans(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+
+	gf := markerGoalsFile(Goal{
+		ID: "goal-064", Description: "spec-bounced goal, crashed first plan", Status: GoalPending,
+		CodeRetries: 2, MaxCodeRetries: 3,
+		SpecRetries: 1, MaxSpecRetries: 2,
+		NextDispatch: dispatchGeneration,
+	})
+	writeGoals(t, dir, gf)
+	_, err := EnsureGoalDir(dir, "goal-064")
+	require.NoError(t, err)
+	// Deliberately DO NOT writeGoalTasksYaml — no plan artifact exists yet.
+
+	sent := markerCaptureMocks(exec, "@99", "supervisor-064")
+	d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
+
+	require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
+
+	require.Len(t, *sent, 1, "dispatch should send exactly one command")
 	assert.Contains(t, (*sent)[0], "/tmux:plan",
-		"NextDispatch=generation must force the full-plan path regardless of consumed code budget")
+		"plan-once: with no tasks.yaml the first plan stays retryable — still a full /tmux:plan")
 	assert.NotContains(t, (*sent)[0], "/tmux:supervisor",
-		"a spec bounce must never skip planning via dispatchRetry")
+		"a never-run first plan must not be downgraded to spec-repair")
+}
+
+// TestRecordPlanRunCounter covers the audit-only plan-run counter marker: it
+// increments and persists .tmux-cli/goals/<id>/plan-runs across calls, returning
+// the running count (1 then 2). The counter is observability + a defensive
+// assertion; the plan-once guarantee itself is structural (resolveDispatchKind).
+func TestRecordPlanRunCounter(t *testing.T) {
+	d, _, dir := setupDaemon(t)
+
+	if got := d.recordPlanRun("goal-070"); got != 1 {
+		t.Fatalf("first recordPlanRun = %d, want 1", got)
+	}
+	markerPath := filepath.Join(dir, ".tmux-cli", "goals", "goal-070", "plan-runs")
+	raw, err := os.ReadFile(markerPath)
+	require.NoError(t, err, "the marker must persist after the first run")
+	assert.Equal(t, "1", strings.TrimSpace(string(raw)), "marker holds the running count")
+
+	if got := d.recordPlanRun("goal-070"); got != 2 {
+		t.Fatalf("second recordPlanRun = %d, want 2 (the >1 case WARN-logs)", got)
+	}
+	raw, err = os.ReadFile(markerPath)
+	require.NoError(t, err)
+	assert.Equal(t, "2", strings.TrimSpace(string(raw)), "marker persists the incremented count")
 }
 
 // TestDispatchCandidate_ImplementerMarkerUsesRetry: NextDispatch=implementer
@@ -202,8 +262,14 @@ func TestDispatchCandidate_EmptyMarkerLegacyHeuristic(t *testing.T) {
 		writeGoals(t, dir, gf)
 		_, err := EnsureGoalDir(dir, "goal-064")
 		require.NoError(t, err)
-		// tasks.yaml present, so ONLY the untouched budget keeps this on the full path.
-		writeGoalTasksYaml(t, dir, "goal-064", markerTasksYaml)
+		// A genuinely fresh goal has NO plan artifact yet: with untouched budget AND
+		// no tasks.yaml the empty-marker heuristic routes to the full plan path, and
+		// the plan-once guard leaves it a real DispatchPlan (no artifact to downgrade
+		// against). (Pre-plan-once this wrote a valid tasks.yaml to prove the budget
+		// tie-break; under plan-once a valid tasks.yaml would correctly downgrade to
+		// spec-repair, so the "fresh goal → full dispatch" intent is now expressed by
+		// the true no-artifact state — the budget-consumed+tasks.yaml→retry case is
+		// covered by the sibling subtest above.)
 
 		sent := markerCaptureMocks(exec, "@99", "supervisor-064")
 		d.SetWindowCreateFunc(mockCreateWindowFn("@99"))
@@ -212,7 +278,7 @@ func TestDispatchCandidate_EmptyMarkerLegacyHeuristic(t *testing.T) {
 
 		require.Len(t, *sent, 1)
 		assert.Contains(t, (*sent)[0], "/tmux:plan",
-			"empty marker + untouched budget must keep today's full-dispatch route")
+			"empty marker + untouched budget + no artifact must keep today's full-dispatch route")
 	})
 }
 
@@ -323,15 +389,21 @@ func writeEscalationMd(t *testing.T, dir, goalID string, count int, needs []stri
 	require.NoError(t, os.WriteFile(p, []byte(b.String()), 0o644))
 }
 
-// TestPrereqEscalationRoutesThroughPlan is the task-159 regression: when an
-// UNHANDLED prerequisite-goal escalation is pending (escalation.md count >
-// Goal.EscalationCount with a concrete need), dispatchCandidate must route the
-// next cycle through the full plan/generation path (/tmux:plan) instead of the
-// skip-plan dispatchRetry (/tmux:supervisor) — even with NextDispatch=implementer
-// and an existing tasks.yaml, the EXACT bug state that re-ran the doomed validate
-// until code-exhaustion. Mirrors TestDispatchCandidate_ImplementerMarkerUsesRetry.
+// TestPrereqEscalationRoutesThroughPlan is the task-159 regression, updated for
+// plan-once (backend task 490): when an UNHANDLED prerequisite-goal escalation is
+// pending (escalation.md count > Goal.EscalationCount with a concrete need),
+// dispatchCandidate must still route the next cycle through dispatch() (the
+// full-plan choke point), NEVER the doomed skip-plan dispatchRetry that re-ran the
+// identical validate until code-exhaustion. The routing through dispatch() is
+// preserved; what changed is dispatch()'s RESULT when a per-goal tasks.yaml already
+// exists: resolveDispatchKind's plan-once guard downgrades the DispatchPlan the
+// escalation route would have produced to DispatchSpecRepair, so the second full
+// /tmux:plan is suppressed and spec repair routes to /tmux:supervisor (which runs
+// the step-1d spec-repair intake / in-run micro-prerequisite resolution, goal-004).
+// The crashed-first-plan variant (no tasks.yaml) still full-plans — see the sibling
+// TestDispatchCandidate_SpecBounceNoTasksYamlStillPlans.
 func TestPrereqEscalationRoutesThroughPlan(t *testing.T) {
-	t.Run("unhandled escalation overrides implementer skip-plan route", func(t *testing.T) {
+	t.Run("unhandled escalation with tasks.yaml downgrades to spec-repair (plan-once), never doomed skip-plan re-run", func(t *testing.T) {
 		d, exec, dir := setupDaemon(t)
 		d.session = testSession
 		d.mode = modeActive
@@ -356,10 +428,10 @@ func TestPrereqEscalationRoutesThroughPlan(t *testing.T) {
 		require.NoError(t, d.dispatchCandidate(&gf.Goals[0], gf))
 
 		require.Len(t, *sent, 1, "dispatch should send exactly one command")
-		assert.Contains(t, (*sent)[0], "/tmux:plan",
-			"a pending prerequisite escalation must force the full-plan path, not skip-plan retry")
-		assert.NotContains(t, (*sent)[0], "/tmux:supervisor",
-			"the doomed code-retry/skip-plan route must be suppressed while an escalation is unhandled")
+		assert.NotContains(t, (*sent)[0], "/tmux:plan",
+			"plan-once: with an existing tasks.yaml the escalation route must NOT re-run the full planner a second time")
+		assert.Contains(t, (*sent)[0], "/tmux:supervisor",
+			"the escalation route now downgrades to spec-repair — dispatch() → /tmux:supervisor (step-1d intake), not a doomed skip-plan re-run")
 	})
 
 	t.Run("no escalation file keeps retry route", func(t *testing.T) {

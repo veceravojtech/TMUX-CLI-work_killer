@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -354,6 +355,19 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	// phases run the /tmux:plan pre-planner, but a skip-planning phase (gate)
 	// dispatches the supervisor directly, which self-specs its single-task fan-out.
 	kind := d.dispatchKindForGoal(goal)
+	// plan-once: resolveDispatchKind downgraded a DispatchPlan result to
+	// DispatchSpecRepair because a per-goal tasks.yaml already exists — the first
+	// /tmux:plan ran, so a spec-defect bounce/escalation routes spec repair to the
+	// supervisor instead of re-running the full planner (backend task 490).
+	if kind == DispatchSpecRepair {
+		log.Printf("plan-once: suppressing second /tmux:plan for %s — routing spec repair to supervisor (tasks.yaml exists)", goal.ID)
+	}
+	// Audit-only counter: a genuine DispatchPlan is the goal's plan run. The guard
+	// above makes a second plan structurally impossible (tasks.yaml → SpecRepair),
+	// so recordPlanRun WARN-logs if the count ever exceeds 1.
+	if kind == DispatchPlan {
+		d.recordPlanRun(goal.ID)
+	}
 	dispatchCmd := dispatchCommand(kind, DispatchArgs{DispatchPath: dispatchPath, GoalID: goal.ID})
 	log.Printf("dispatch: phase=%s kind=%s sending to session=%s window=%s cmd=%s", goal.Phase, kind, d.session, winInfo.TmuxWindowID, dispatchCmd)
 	if err := d.executor.SendMessage(d.session, winInfo.TmuxWindowID, dispatchCmd); err != nil {
@@ -414,6 +428,55 @@ func (d *Daemon) tasksYamlExists(goalID string) bool {
 	return err == nil
 }
 
+// clearUnusableTasksForReplan removes the per-goal tasks.yaml when dispatchRetry
+// falls back to a full re-plan because that file is unreadable/malformed (reset
+// or inject-corrections failed on it). Under the plan-once guard, a mere-existing
+// tasks.yaml downgrades DispatchPlan to DispatchSpecRepair — but a CORRUPT artifact
+// is not a plan that ever succeeded, so leaving it would route the fallback to the
+// supervisor to consume garbage instead of re-planning. Removing it makes
+// tasksYamlExists false so dispatch() resolves a genuine DispatchPlan (/tmux:plan),
+// preserving the pre-plan-once "corrupt retry state ⇒ full re-plan" guarantee (this
+// mirrors plan-once's own "a crashed first plan stays retryable" rationale).
+// Best-effort and warn-only: /tmux:plan regenerates the file regardless.
+func (d *Daemon) clearUnusableTasksForReplan(goalID string) {
+	p := tasks.GoalTasksFilePath(d.workDir, goalID)
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		log.Printf("clearUnusableTasksForReplan: remove %s: %v (falling back to full dispatch anyway)", p, err)
+	}
+}
+
+// recordPlanRun increments and persists the per-goal plan-run counter marker
+// (.tmux-cli/goals/<id>/plan-runs), returning the new count. It is AUDIT-ONLY:
+// the plan-once guarantee is structural (resolveDispatchKind downgrades a second
+// DispatchPlan to DispatchSpecRepair once a tasks.yaml exists), so this counter
+// exists purely as observability and a defensive assertion — it WARN-logs if the
+// count ever exceeds 1, which would signal the structural guard was bypassed. The
+// marker lives under git-excluded .tmux-cli/ (mirrors goalStartSnapshotPath), so
+// it never commits and needs no cleanup. Best-effort and warn-only: on any read
+// or write error it logs and returns the count it could compute (never blocks the
+// dispatch it annotates).
+func (d *Daemon) recordPlanRun(goalID string) int {
+	markerPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goalID, "plan-runs")
+	count := 0
+	if raw, err := os.ReadFile(markerPath); err == nil {
+		if n, perr := strconv.Atoi(strings.TrimSpace(string(raw))); perr == nil {
+			count = n
+		}
+	}
+	count++
+	if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
+		log.Printf("recordPlanRun: mkdir for %s: %v (audit-only, ignoring)", goalID, err)
+		return count
+	}
+	if err := os.WriteFile(markerPath, []byte(strconv.Itoa(count)+"\n"), 0o644); err != nil {
+		log.Printf("recordPlanRun: write %s: %v (audit-only, ignoring)", markerPath, err)
+	}
+	if count > 1 {
+		log.Printf("plan-once WARNING: %s has now run /tmux:plan %d times — the plan-once guard should have downgraded to spec-repair; investigate", goalID, count)
+	}
+	return count
+}
+
 func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	// G5 defensive funnel: demote FIRST, before resetTaskStatuses/
 	// injectCorrections, so even the fallback-to-dispatch() paths below run
@@ -424,11 +487,13 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	}
 	if err := d.resetTaskStatuses(goal.ID); err != nil {
 		log.Printf("dispatchRetry: resetTaskStatuses failed, falling back to full dispatch: %v", err)
+		d.clearUnusableTasksForReplan(goal.ID)
 		return d.dispatch(goal, goals)
 	}
 
 	if err := d.injectCorrections(goal); err != nil {
 		log.Printf("dispatchRetry: injectCorrections failed, falling back to full dispatch: %v", err)
+		d.clearUnusableTasksForReplan(goal.ID)
 		return d.dispatch(goal, goals)
 	}
 

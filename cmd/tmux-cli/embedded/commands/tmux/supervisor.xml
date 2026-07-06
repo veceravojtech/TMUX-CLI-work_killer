@@ -173,6 +173,18 @@ escalation_count: &lt;N&gt;
       </check>
     </step>
 
+    <step n="1d" title="Spec-repair intake" condition="GOAL_MODE is true">
+      <note>plan-once (backend task 490): once a goal has run its first /tmux:plan, the daemon downgrades any later DispatchPlan (spec-defect bounce or escalation route) to DispatchSpecRepair, which dispatches THIS supervisor (/tmux:supervisor {GOAL_ID}) instead of re-running the full planner. When that happens, the SPEC DEFECT correction the planner would have consumed is already on disk under the goal dir — this step amends the EXISTING tasks-path in place rather than re-planning from scratch. A pure escalation route (no SPEC DEFECT correction) falls through unchanged to the normal supervisor flow, which already resolves micro-prerequisites in-run.</note>
+      <action>Locate the highest-numbered .tmux-cli/goals/{GOAL_ID}/corrections/cycle-N.md (largest N). If the corrections directory is absent or empty, set SPEC_REPAIR=false and proceed to step 2 unchanged.</action>
+      <action>Read that cycle-N.md. If its content LEADS WITH the SPEC DEFECT framing header (it begins with the literal text "Validation reports a SPEC DEFECT (owner: PLANNER)"), set SPEC_REPAIR=true. Otherwise set SPEC_REPAIR=false and proceed to step 2 unchanged.</action>
+      <check condition="SPEC_REPAIR is true">
+        <action>Amend tasks-path (the per-goal .tmux-cli/goals/{GOAL_ID}/tasks.yaml resolved in step 0b) IN PLACE — do NOT re-plan or regenerate the whole fan-out. From the correction detail (the framing header plus the rendered per-finding blocks below it): fix ONLY the defective task's scope / acceptance / validate fields, and add a single micro prerequisite task entry ONLY if the correction explicitly demands one (with its own context .md file per step 3 task-tracking).</action>
+        <action>Set status to "pending" for ONLY the affected task(s); leave every already-done task at status: done. Keep the top-level status at "planning" until step 3b re-validates, then continue to step 2 → 3b → 4 to dispatch ONLY the amended task(s).</action>
+        <rule>MaxSpecRetries and the spec-convergence circuit-breaker (daemon-owned) remain the unchanged bounds — this step never edits goals.yaml, retry counters, or the correction file; it only amends tasks-path and re-runs the affected task(s).</rule>
+      </check>
+      <action>If SPEC_REPAIR is false, proceed to step 2 with no change (PRE_PLANNED implement / in-run prerequisite resolution paths are untouched).</action>
+    </step>
+
     <step n="2" title="Identify SUPERVISOR_WID — verify the step-0b binding">
       <rule critical="true">SUPERVISOR_WID is ALREADY BOUND: step 0b resolved it authoritatively in ALL branches (per-goal supervisor-window marker read verbatim in GOAL_MODE; bare `supervisor` in standalone). Do NOT re-derive it here and do NOT overwrite it — step 0b documents that the active-window probe is unreliable at MaxGoals&gt;1 (it names the session's ACTIVE window, not this agent's pane).</rule>
       <action>VERIFY only: confirm a window whose name equals the step-0b SUPERVISOR_WID appears in the step-1 windows-list output. If it is ABSENT, log the discrepancy ("SUPERVISOR_WID={name} not found in windows-list — keeping the step-0b binding") but KEEP the step-0b value: the daemon-written marker is authoritative, and the window may simply not be the active one.</action>

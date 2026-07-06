@@ -48,6 +48,11 @@ func TestDispatchCommand(t *testing.T) {
 			kind: DispatchGate,
 			want: "/tmux:gate goal-001",
 		},
+		{
+			name: "spec-repair carries id only (routes to supervisor, no dispatch path)",
+			kind: DispatchSpecRepair,
+			want: "/tmux:supervisor goal-001",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,6 +88,8 @@ func TestDispatchKindString(t *testing.T) {
 		{DispatchInvestigate, "investigate"},
 		{DispatchRecurringSupervisor, "recurring-supervisor"},
 		{DispatchGate, "gate"},
+		{DispatchPlanNext, "plan-next"},
+		{DispatchSpecRepair, "spec-repair"},
 	}
 	for _, tt := range tests {
 		if got := tt.kind.String(); got != tt.want {
@@ -164,10 +171,11 @@ func TestResolveDispatchKind(t *testing.T) {
 		PhaseAction: DispatchImplement, // make action skip planning
 	}
 	tests := []struct {
-		name     string
-		goal     *Goal
-		override map[string]DispatchKind
-		want     DispatchKind
+		name               string
+		goal               *Goal
+		override           map[string]DispatchKind
+		planArtifactExists bool
+		want               DispatchKind
 	}{
 		{
 			name: "gate goal uses the dedicated gate executor (matrix default, no override)",
@@ -213,11 +221,65 @@ func TestResolveDispatchKind(t *testing.T) {
 			goal: &Goal{ID: "goal-001", Phase: PhaseGate, NextDispatch: dispatchImplementer},
 			want: DispatchGate,
 		},
+		// plan-once downgrade matrix (backend task 490): the invariant guard runs on
+		// the FINAL DispatchPlan result — DispatchPlan is legal only while no per-goal
+		// tasks.yaml exists; otherwise it downgrades to DispatchSpecRepair.
+		{
+			name:               "first plan: generation + no artifact stays plan (crashed/never-run plan retryable)",
+			goal:               &Goal{ID: "goal-020", Phase: PhaseDomain, NextDispatch: dispatchGeneration},
+			planArtifactExists: false,
+			want:               DispatchPlan,
+		},
+		{
+			name:               "second-plan suppression: generation + artifact downgrades to spec-repair",
+			goal:               &Goal{ID: "goal-021", Phase: PhaseDomain, NextDispatch: dispatchGeneration},
+			planArtifactExists: true,
+			want:               DispatchSpecRepair,
+		},
+		{
+			name:               "escalation route: matrix→plan + artifact downgrades to spec-repair",
+			goal:               &Goal{ID: "goal-022", Phase: PhaseDomain},
+			planArtifactExists: true,
+			want:               DispatchSpecRepair,
+		},
+		{
+			name:               "fresh domain goal: matrix→plan + no artifact stays plan",
+			goal:               &Goal{ID: "goal-023", Phase: PhaseDomain},
+			planArtifactExists: false,
+			want:               DispatchPlan,
+		},
+		{
+			name:               "override→implement is never downgraded (non-Plan result untouched)",
+			goal:               &Goal{ID: "goal-024", Phase: PhaseAction},
+			override:           override, // action→implement
+			planArtifactExists: true,
+			want:               DispatchImplement,
+		},
+		{
+			name:               "override→plan + artifact is guarded too (downgrades to spec-repair)",
+			goal:               &Goal{ID: "goal-025", Phase: PhaseGate},
+			override:           override, // gate→plan
+			planArtifactExists: true,
+			want:               DispatchSpecRepair,
+		},
+		{
+			name:               "generation beats override, then no artifact keeps plan (precedence preserved)",
+			goal:               &Goal{ID: "goal-026", Phase: PhaseAction, NextDispatch: dispatchGeneration},
+			override:           override, // action→implement, but generation wins → plan
+			planArtifactExists: false,
+			want:               DispatchPlan,
+		},
+		{
+			name:               "gate goal is never plan so never downgraded (artifact present)",
+			goal:               &Goal{ID: "goal-027", Phase: PhaseGate},
+			planArtifactExists: true,
+			want:               DispatchGate,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := resolveDispatchKind(tt.goal, tt.override); got != tt.want {
-				t.Fatalf("resolveDispatchKind(%+v) = %s, want %s", tt.goal, got, tt.want)
+			if got := resolveDispatchKind(tt.goal, tt.override, tt.planArtifactExists); got != tt.want {
+				t.Fatalf("resolveDispatchKind(%+v, artifact=%v) = %s, want %s", tt.goal, tt.planArtifactExists, got, tt.want)
 			}
 		})
 	}

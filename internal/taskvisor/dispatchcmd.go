@@ -55,6 +55,17 @@ const (
 	// (plannext.go) when taskvisor.planning_mode == incremental and no goal is
 	// pending/running/roadmap.
 	DispatchPlanNext
+	// DispatchSpecRepair is the plan-once downgrade of DispatchPlan: once a goal
+	// has a per-goal tasks.yaml (its first /tmux:plan already ran), a spec-defect
+	// bounce or escalation route must NOT re-run the full planner (spec-worker
+	// fan-out + blind audit). Instead the supervisor amends the existing tasks.yaml
+	// in place from the SPEC DEFECT correction file (supervisor.xml step 1d). It
+	// renders the same command as DispatchImplement (/tmux:supervisor <id>) but is
+	// a distinct kind so dispatch() can log the plan-once suppression and the
+	// dispatch line shows kind=spec-repair. Sent by dispatch() when
+	// resolveDispatchKind downgrades a DispatchPlan result against an existing plan
+	// artifact. Appended at the END of the block so existing iota values are stable.
+	DispatchSpecRepair
 )
 
 // String returns a stable, human-readable kind name for logs and test output.
@@ -74,6 +85,8 @@ func (k DispatchKind) String() string {
 		return "gate"
 	case DispatchPlanNext:
 		return "plan-next"
+	case DispatchSpecRepair:
+		return "spec-repair"
 	default:
 		return fmt.Sprintf("DispatchKind(%d)", int(k))
 	}
@@ -121,6 +134,13 @@ func dispatchCommand(kind DispatchKind, a DispatchArgs) string {
 		// No args beyond the mode token: the generator reads goals.yaml, the live
 		// tree, and docs/architecture/* itself (task-plan-generate.xml step 0a).
 		return "/tmux:task-plan-generate incremental"
+	case DispatchSpecRepair:
+		// Identical rendering to DispatchImplement — only the authoritative goal id
+		// is shipped; the supervisor reloads context from the goal dir and reads the
+		// SPEC DEFECT correction file itself (supervisor.xml step 1d). A distinct
+		// kind (not a reuse of DispatchImplement) is what carries the plan-once
+		// suppression log and the kind=spec-repair routing decision.
+		return fmt.Sprintf("/tmux:supervisor %s", a.GoalID)
 	default:
 		panic(fmt.Sprintf("dispatchCommand: unknown DispatchKind %d", int(kind)))
 	}
@@ -206,21 +226,32 @@ func initialDispatchKind(phase string) DispatchKind {
 //
 // override may be nil — a nil-map read returns the zero value with ok=false, so
 // the lookup safely falls through.
-func resolveDispatchKind(goal *Goal, override map[string]DispatchKind) DispatchKind {
+//
+// planArtifactExists enforces the plan-once invariant: DispatchPlan is legal ONLY
+// while the goal has no per-goal tasks.yaml (its first plan never ran, or crashed
+// and stays retryable). The generation>override>matrix precedence computes `kind`
+// FIRST; then, if that kind is DispatchPlan and a plan artifact already exists, it
+// downgrades to DispatchSpecRepair — covering all three Plan sources (generation
+// bounce, override→plan, matrix→plan) with one final guard. This stays a PURE
+// function: no logging, no I/O — the plan-once log lives in the dispatch() layer.
+func resolveDispatchKind(goal *Goal, override map[string]DispatchKind, planArtifactExists bool) DispatchKind {
+	kind := initialDispatchKind(goal.Phase)
 	if goal.NextDispatch == dispatchGeneration {
-		return DispatchPlan
+		kind = DispatchPlan
+	} else if k, ok := override[goal.Phase]; ok {
+		kind = k
 	}
-	if k, ok := override[goal.Phase]; ok {
-		return k
+	if kind == DispatchPlan && planArtifactExists {
+		return DispatchSpecRepair
 	}
-	return initialDispatchKind(goal.Phase)
+	return kind
 }
 
 // dispatchKindForGoal is the daemon's first-dispatch decision: resolveDispatchKind
 // seeded with this daemon's parsed setting.yaml overrides (d.dispatchPhaseOverride,
-// may be nil). dispatch() calls it.
+// may be nil) and the per-goal plan-artifact probe. dispatch() calls it.
 func (d *Daemon) dispatchKindForGoal(goal *Goal) DispatchKind {
-	return resolveDispatchKind(goal, d.dispatchPhaseOverride)
+	return resolveDispatchKind(goal, d.dispatchPhaseOverride, d.tasksYamlExists(goal.ID))
 }
 
 // parseDispatchKindName maps a setting.yaml dispatch_overrides value to a kind.
