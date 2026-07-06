@@ -102,16 +102,42 @@ func (d *Daemon) hasDiscoveryEvidence() bool {
 	return false
 }
 
-// trailingConsecutiveFailures counts the UNBROKEN GoalFailed tail of the ledger
-// (goals.yaml is append-only under incremental authoring, so file order is
-// authoring order). Any non-failed goal breaks the streak.
-func trailingConsecutiveFailures(gf *GoalsFile) int {
+// trailingConsecutiveFailuresFrom counts the UNBROKEN GoalFailed tail of the
+// ledger, walking back no further than start (goals.yaml is append-only under
+// incremental authoring, so file order is authoring order). Any non-failed goal
+// breaks the streak. start is the activation watermark: failures below it belong
+// to a prior run and must not extend this run's streak. start is clamped to >=0
+// (defensive against a watermark that somehow exceeds the current ledger length).
+func trailingConsecutiveFailuresFrom(gf *GoalsFile, start int) int {
+	if start < 0 {
+		start = 0
+	}
 	n := 0
-	for i := len(gf.Goals) - 1; i >= 0; i-- {
+	for i := len(gf.Goals) - 1; i >= start; i-- {
 		if gf.Goals[i].Status != GoalFailed {
 			break
 		}
 		n++
+	}
+	return n
+}
+
+// trailingConsecutiveFailures counts the UNBROKEN GoalFailed tail of the whole
+// ledger — the zero-watermark case, kept as the existing signature callers rely
+// on (TestTrailingConsecutiveFailures).
+func trailingConsecutiveFailures(gf *GoalsFile) int {
+	return trailingConsecutiveFailuresFrom(gf, 0)
+}
+
+// authoredThisRun is the number of goals authored SINCE the activation watermark
+// (activationBaselineGoals). Leftover terminal goals from prior runs sit below
+// the watermark, so they do not count against this run's incremental cap. Clamped
+// to >=0: the ledger never shrinks in-run, but a watermark greater than the
+// current length (defensive) reads as zero this-run goals, never negative.
+func (d *Daemon) authoredThisRun(gf *GoalsFile) int {
+	n := len(gf.Goals) - d.activationBaselineGoals
+	if n < 0 {
+		n = 0
 	}
 	return n
 }
@@ -139,8 +165,8 @@ func goalsAllTerminal(gf *GoalsFile) bool {
 // advanceToNextGoal's stay-active gate so the two can never disagree.
 func (d *Daemon) incrementalShouldGenerate(gf *GoalsFile) bool {
 	return !d.productComplete() &&
-		len(gf.Goals) < incrementalMaxGoals &&
-		trailingConsecutiveFailures(gf) < incrementalFailureLimit &&
+		d.authoredThisRun(gf) < incrementalMaxGoals &&
+		trailingConsecutiveFailuresFrom(gf, d.activationBaselineGoals) < incrementalFailureLimit &&
 		goalsAllTerminal(gf) &&
 		d.hasDiscoveryEvidence()
 }
@@ -157,12 +183,13 @@ func (d *Daemon) planNextOrComplete(gf *GoalsFile) error {
 		log.Printf("incremental: product-complete marker present — deactivating as complete (marker kept)")
 		d.notifySupervisor(fmt.Sprintf("[TASKVISOR:PRODUCT-COMPLETE goals=%d]", len(gf.Goals)))
 		return d.deactivateOnCompletion(gf)
-	case len(gf.Goals) >= incrementalMaxGoals:
-		d.haltReason = fmt.Sprintf("HALTED: incremental cap reached (%d goals authored, cap %d) — review the run before restarting", len(gf.Goals), incrementalMaxGoals)
-		log.Printf("incremental cap reached (%d goals) — deactivating", len(gf.Goals))
+	case d.authoredThisRun(gf) >= incrementalMaxGoals:
+		authored := d.authoredThisRun(gf)
+		d.haltReason = fmt.Sprintf("HALTED: incremental cap reached (%d goals authored, cap %d) — review the run before restarting", authored, incrementalMaxGoals)
+		log.Printf("incremental cap reached (%d goals) — deactivating", authored)
 		return d.deactivateOnCompletion(gf)
-	case trailingConsecutiveFailures(gf) >= incrementalFailureLimit:
-		n := trailingConsecutiveFailures(gf)
+	case trailingConsecutiveFailuresFrom(gf, d.activationBaselineGoals) >= incrementalFailureLimit:
+		n := trailingConsecutiveFailuresFrom(gf, d.activationBaselineGoals)
 		d.haltReason = fmt.Sprintf("HALTED: %d consecutive incremental goals failed — no forward progress; operator review required", n)
 		log.Printf("incremental: %d consecutive authored goals failed — deactivating", n)
 		return d.deactivateOnCompletion(gf)

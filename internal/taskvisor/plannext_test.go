@@ -462,3 +462,117 @@ func TestPoll_Roadmap_NoGoalsFileStillErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no goals.yaml")
 }
+
+// TestIncrementalRunScopedCap proves the incremental cap counts goals authored
+// SINCE the activation watermark, not the whole ledger: a full run's worth of
+// leftover terminal goals below the watermark leaves the entire budget available
+// (old code halted here), and once THIS run reaches the cap the halt message
+// reports the this-run count (40), never the ledger total (80).
+func TestIncrementalRunScopedCap(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.planningMode = setup.PlanningModeIncremental
+	writeDiscoveryEvidence(t, dir)
+
+	// incrementalMaxGoals leftover done goals from a prior run, watermarked out.
+	leftover := &GoalsFile{}
+	for i := 0; i < incrementalMaxGoals; i++ {
+		leftover.Goals = append(leftover.Goals, Goal{ID: NextGoalID(leftover.Goals), Status: GoalDone})
+	}
+	d.activationBaselineGoals = len(leftover.Goals)
+
+	assert.True(t, d.incrementalShouldGenerate(leftover),
+		"leftovers sit below the watermark → authoredThisRun=0 < cap → generate (old code: false)")
+
+	// Append another full run's worth ABOVE the watermark → this run hits the cap.
+	capped := &GoalsFile{Goals: append([]Goal{}, leftover.Goals...)}
+	for i := 0; i < incrementalMaxGoals; i++ {
+		capped.Goals = append(capped.Goals, Goal{ID: NextGoalID(capped.Goals), Status: GoalDone})
+	}
+	assert.False(t, d.incrementalShouldGenerate(capped),
+		"authoredThisRun reached the cap → stop generating")
+
+	// Drive planNextOrComplete via tick (mode already active, so the watermark is
+	// not reset): it halts with the THIS-RUN count (40), not the ledger total (80).
+	capped.CurrentGoal = capped.Goals[0].ID
+	writeSettings(t, dir, true, true)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, capped)
+	setupDeactivateOnCompletionMocks(exec, testSession)
+
+	require.NoError(t, d.tick(context.Background(), capped))
+
+	assert.Equal(t, modeIdle, d.mode)
+	assert.Contains(t, d.haltReason, "40 goals authored, cap 40",
+		"the halt reports the this-run count, not the 80-goal ledger total")
+}
+
+// TestIncrementalRunScopedStreak proves the consecutive-failure guard measures
+// only this run's trailing failures: a prior run that ended in a failed tail
+// (below the watermark) does not halt a fresh run, and the halt fires only once
+// THIS run accumulates the streak — with the this-run count in the message.
+func TestIncrementalRunScopedStreak(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.session = testSession
+	d.mode = modeActive
+	d.planningMode = setup.PlanningModeIncremental
+	writeDiscoveryEvidence(t, dir)
+
+	// A prior run ended in 3 failed goals — watermarked out of this run's streak.
+	priorFailed := &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalFailed},
+		{ID: "goal-002", Status: GoalFailed},
+		{ID: "goal-003", Status: GoalFailed},
+	}}
+	d.activationBaselineGoals = len(priorFailed.Goals)
+
+	assert.True(t, d.incrementalShouldGenerate(priorFailed),
+		"the prior-run failed tail is below the watermark → this-run streak=0 → generate (old code: halt)")
+
+	// Append incrementalFailureLimit more failures ABOVE the watermark → this run
+	// hits the streak limit.
+	streak := &GoalsFile{Goals: append([]Goal{}, priorFailed.Goals...)}
+	for i := 0; i < incrementalFailureLimit; i++ {
+		streak.Goals = append(streak.Goals, Goal{ID: NextGoalID(streak.Goals), Status: GoalFailed})
+	}
+	assert.False(t, d.incrementalShouldGenerate(streak),
+		"this-run trailing failures reached the limit → stop")
+
+	streak.CurrentGoal = streak.Goals[len(streak.Goals)-1].ID
+	writeSettings(t, dir, true, true)
+	writeGuardFile(t, dir)
+	writeGoals(t, dir, streak)
+	setupDeactivateOnCompletionMocks(exec, testSession)
+
+	require.NoError(t, d.tick(context.Background(), streak))
+
+	assert.Equal(t, modeIdle, d.mode)
+	assert.Contains(t, d.haltReason, "3 consecutive",
+		"the halt reports the this-run streak (3), not the 6-failure ledger tail")
+}
+
+// TestIncrementalActivationWatermark proves activate() captures the ledger size
+// at the moment the daemon enters modeActive: a fresh activation over 2 terminal
+// leftover goals records activationBaselineGoals == 2, so those leftovers are
+// inert to this run's incremental counters. With no discovery evidence the poll's
+// idle→active branch activates and returns without dispatching the generator.
+func TestIncrementalActivationWatermark(t *testing.T) {
+	d, exec, dir := setupDaemon(t)
+	d.planningMode = setup.PlanningModeIncremental
+	writeSettings(t, dir, true, true)
+	writeStartSignal(t, dir)
+	writeGoals(t, dir, &GoalsFile{Goals: []Goal{
+		{ID: "goal-001", Status: GoalDone},
+		{ID: "goal-002", Status: GoalDone},
+	}})
+
+	exec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", dir).Return(testSession, nil)
+	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{}, nil)
+
+	require.NoError(t, d.poll(context.Background()))
+
+	assert.Equal(t, modeActive, d.mode)
+	assert.Equal(t, 2, d.activationBaselineGoals,
+		"the watermark equals the ledger size captured at activation")
+}

@@ -251,6 +251,14 @@ type Daemon struct {
 	// d.now().Sub(d.activatedAt)); the notification tests assert that contract. Still
 	// re-stamped on every activate() so the diagnostic measures the current run.
 	activatedAt time.Time
+	// activationBaselineGoals is the ledger's goal-count index captured in activate()
+	// at the moment the daemon enters modeActive — the incremental run's watermark.
+	// The incremental cap and the consecutive-failure streak measure goals authored
+	// SINCE this index (authoredThisRun = len(gf.Goals) - activationBaselineGoals), so
+	// leftover terminal goals from prior runs sit below the watermark and stay inert
+	// to incremental control flow. Zero value (literal-constructed daemons, every
+	// pre-incremental test) reduces every consumer to the old whole-ledger semantics.
+	activationBaselineGoals int
 	// maxWallClock is the daemon's wall-clock cost ceiling (P3). New() seeds it to
 	// 4h (the DefaultSettings() value) so the ceiling is active even when a legacy
 	// setting.yaml omits max_wall_clock_sec; a positive taskvisor.max_wall_clock_sec
@@ -948,6 +956,10 @@ func (d *Daemon) activate(goals *GoalsFile) error {
 	// A (re)activation starts with no generator episode open and a fresh failure
 	// streak — a prior run's incremental state never leaks into this one.
 	d.planNext = planNextState{}
+	// Watermark this run's incremental counters to the ledger size at activation, so
+	// leftover terminal goals from prior runs are inert to the cap / failure-streak
+	// guards (authoredThisRun & trailingConsecutiveFailuresFrom measure past this).
+	d.activationBaselineGoals = len(goals.Goals)
 	d.mode = modeActive
 	if d.execReplaceRestart {
 		d.execReplaceRestart = false
