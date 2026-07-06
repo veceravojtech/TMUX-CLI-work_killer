@@ -55,6 +55,38 @@
       <load file=".claude/commands/tmux/feature/stage-0-capability.xml">READ stage-0-capability.xml NOW and execute its content as this stage. If the shard file is NOT present, print 'ERROR: shard .claude/commands/tmux/feature/stage-0-capability.xml is missing — the tmux-cli install is incomplete or stale. Run "tmux-cli start" to regenerate .claude/commands, then re-run /tmux:feature.' and STOP; additionally treat it as a genuine harness/infra defect per the shared error-reporting procedure in &lt;execution-rules&gt; — a controlled stop, NEVER an improvised stage body.</load>
     </stage>
 
+    <!-- ================================================================
+         FAST-PATH TRIAGE — fires in the SPINE after Stage 0, before Stage 1.
+         A PRECISE brief that already names a file + symbol + concrete edit
+         does NOT need the full Stages 1-5 + goal-DAG pipeline; one worker can
+         land it in ~20-30 min WITHOUT dropping the three quality carriers
+         (rules enforcement, independent review, context isolation). This
+         triage reuses the already-shipped `tmux-cli research-mode` (JSON) Go
+         helper to DECIDE precision (determinism boundary, task 473; the model
+         extracts the brief facts, Go emits `.precise`; the XML NEVER re-judges
+         precision in prose) and, on precise + deterministic-gate-exists +
+         not-e2e-driven, jumps to the XML-only feature/stage-fast-path.xml
+         shard, SKIPPING Stages 1-4 + goal dispatch. Any research-mode error /
+         unparseable JSON / missing gate / orchestrator env FAIL-SAFES to the
+         FULL pipeline (Stage 1). This is NOT a numbered stage; the strict
+         0-to-5 order below is UNCHANGED for the full path.
+         ================================================================ -->
+    <triage n="0.5" title="Fast-path triage — precise-brief short-circuit" autonomous="true">
+      <action>EXTRACT the brief facts EXACTLY as stage-1-context.xml substep 1.2b does (the model extracts, the Go helper decides — determinism boundary, task 473): NAMED_FILES = the concrete file(s) $ARGUMENTS names; NAMED_SYMBOLS = the concrete symbol(s) (types/functions/methods) it names; CONCRETE_EDIT = whether the brief describes a specific edit to make. Do NOT estimate implied lines and do NOT judge precision here — precision is the Go helper's output, never this prose.</action>
+      <action>Run via Bash: `tmux-cli research-mode --json` passing the extracted facts as flags — one `--named-file &lt;f&gt;` per NAMED_FILE, one `--named-symbol &lt;s&gt;` per NAMED_SYMBOL, and `--concrete-edit` when CONCRETE_EDIT holds. Parse the printed JSON and read the `.precise` field (Go OWNS the decision; the XML consumes `.precise` and NEVER re-judges it in prose). Keep `.reason` for the LOG line.</action>
+      <action critical="true">FAIL-SAFE: if `tmux-cli research-mode` errors, is uninvocable, or emits unparseable JSON, force the verdict FALSE and take the FULL pipeline. Under-provisioning is always safe; a false fast-path is not.</action>
+      <action>Compute DETERMINISTIC_GATE_EXISTS: from the Stage-0 context block's TOPOLOGY, TRUE iff Stage 0 resolved AT LEAST ONE quality-gate / test command (a bare deterministic command the fast path can hand the worker as its `## Validation Rules` and re-run as its suite gate). Greenfield / empty quality-gate set &#8594; FALSE.</action>
+      <action>Compute E2E_DRIVEN via Bash: `test -n "$TMUX_CLI_ORCHESTRATOR_PANE"` — TRUE when the env var is set (an e2e-evaluator-driven run, e2e.go:230 setenv -g / :151 read). An e2e run MUST force the full pipeline so the self-healing loop keeps its exercise.</action>
+      <action>VERDICT = (`.precise` == true) AND DETERMINISTIC_GATE_EXISTS AND (NOT E2E_DRIVEN). Any research-mode error/unparseable JSON already forced VERDICT FALSE (fail-safe). LOG exactly one line naming the verdict AND the helper's reason, e.g. `Fast-path triage: FAST PATH (&lt;.reason&gt;) — loading stage-fast-path.xml` or `Fast-path triage: FULL pipeline (precise=&lt;b&gt; deterministic-gate=&lt;b&gt; e2e-driven=&lt;b&gt;: &lt;.reason&gt;)`.</action>
+      <check condition="VERDICT is FALSE">
+        <action>Announce exactly: "Fast-path triage: FULL pipeline — proceeding to Stage 1." Proceed to Stage 1 below (the full pipeline). Do NOT load the shard.</action>
+      </check>
+      <check condition="VERDICT is TRUE">
+        <action>Announce (mirroring stage-0-capability.xml's VALIDATION-RESUME announce&#8594;skip&#8594;jump idiom, lines 15-21): "FAST-PATH: precise brief + resolved deterministic gate + not e2e-driven — skipping Stages 1-4 + goal dispatch; loading feature/stage-fast-path.xml." Carry the extracted NAMED_FILES + NAMED_SYMBOLS + CONCRETE_EDIT + the resolved deterministic quality-gate command(s) + FEATURE + the Stage-0 context block forward as the shard's input.</action>
+        <load file=".claude/commands/tmux/feature/stage-fast-path.xml">READ feature/stage-fast-path.xml NOW and execute its content as the fast path, then STOP the run at its terminal outcome — do NOT fall through to Stage 1. If the shard file is NOT present, print 'ERROR: shard .claude/commands/tmux/feature/stage-fast-path.xml is missing — the tmux-cli install is incomplete or stale. Run "tmux-cli start" to regenerate .claude/commands, then re-run /tmux:feature.' and STOP; additionally treat it as a genuine harness/infra defect per the shared error-reporting procedure in &lt;execution-rules&gt; — a controlled stop, NEVER an improvised stage body. THE ONE EXCEPTION to "do not fall through": if the shard signals FAST-PATH-ABORT (its escalation valve — a diff escaping the named scope, suite fallout outside it, a twice-FAILED / ESCALATE-ing worker, or an unresolvable finding), RESUME the spine at Stage 1 and run the FULL Stages 1-5 pipeline in strict order, consuming the shard's feature-goals.md-compatible abort handoff.</load>
+      </check>
+    </triage>
+
     <stage n="1" title="Context mapping" autonomous="true">
       <load file=".claude/commands/tmux/feature/stage-1-context.xml">READ feature/stage-1-context.xml NOW and execute its content as this stage. If the shard file is NOT present, print 'ERROR: shard .claude/commands/tmux/feature/stage-1-context.xml is missing — the tmux-cli install is incomplete or stale. Run "tmux-cli start" to regenerate .claude/commands, then re-run /tmux:feature.' and STOP; additionally treat it as a genuine harness/infra defect per the shared error-reporting procedure in &lt;execution-rules&gt; — a controlled stop, NEVER an improvised stage body.</load>
     </stage>

@@ -1,0 +1,136 @@
+<stage n="fast-path" title="Fast path — single-worker precise-brief execution with the three quality carriers PRESERVED" autonomous="true">
+  <objective>The fast-path shard the feature.xml spine loads when triage judged the brief PRECISE (Go-computed `.precise` via `tmux-cli research-mode --json`), a deterministic quality-gate was resolved at Stage 0, and the run is NOT e2e-evaluator-driven. It lands the change with ONE /tmux:execute implementation worker instead of the full Stages 1-5 + goal-DAG pipeline, WITHOUT dropping the three quality carriers a naive single-agent shortcut would lose: (a) RULES ENFORCEMENT — the spawned worker runs the resolved deterministic gate as its mandatory pre-DONE `## Validation Rules` (execute.xml step 4c) AND the shard re-checks the confined diff with `tmux-cli rules check --json`; (b) INDEPENDENT REVIEW — a read-only investigator- reviewer reviews any prod-code diff BEFORE integration and never self-grades test changes; (c) CONTEXT ISOLATION — all implementation context lives in the spawned worker's window, never in this feature-sup. Three HARD GATES (rules-clean, diff-within-named-scope, full-suite-green) precede integration; ANY doubt (diff escaping the named scope, suite fallout outside it, worker FAILED/ESCALATE, an unmeasurable/ambiguous branch) FAIL-SAFES to the FULL Stages 1-5 pipeline — under-provisioning is always safe, a false fast-path is not. This shard is XML-ONLY: it COMPOSES the already-shipped /tmux:execute + investigate primitives and `tmux-cli` helpers by reference; it writes NO project source (the worker authors + commits the confined change) and adds ZERO new daemon mechanics.</objective>
+
+  <substep n="F.1" title="Preflight + consume the triage handoff">
+    <action>Confirm the tmux-cli MCP precondition by calling a read-only MCP tool (windows-list).</action>
+    <check condition="tmux-cli MCP not available">
+      <action>Print exactly: "ERROR: tmux-cli MCP required but not available — enable it and retry."</action>
+      <action>STOP (fail closed — do not spawn any worker).</action>
+    </check>
+    <action>Consume the triage handoff carried from feature.xml's fast-path triage VERBATIM — do NOT re-run `tmux-cli research-mode`, do NOT re-judge precision, and do NOT re-probe the filesystem: NAMED_FILES (the concrete file(s) the brief named — the fast path's SCOPE and the diff-confinement allow-list); NAMED_SYMBOLS + CONCRETE_EDIT (the extracted brief facts, for the worker's context); FEATURE (the $ARGUMENTS description); DETERMINISTIC_GATE (the Stage-0-resolved quality-gate / test command(s) — the worker's `## Validation Rules` and the shard's suite gate), all RESOLVED from the Stage-0 TOPOLOGY, never a literal; and the Stage-0 context block (SIGNALS / TOPOLOGY / CODE RULES / EXEC ENVIRONMENT).</action>
+    <action>Resolve the research-root EXACTLY as stage-0-capability.xml substep 0.4 / stage-1-context.xml substep 1.1 does — REUSE the directory that already holds feature-context.md (GOAL mode &#8594; .tmux-cli/goals/{GOAL_ID}/research/, NO timestamp; STANDALONE &#8594; .tmux-cli/research/{y-m-d-hh}/, the existing timestamp — glob the newest, never mint a new one). This is the ONLY directory this shard writes to — never project source.</action>
+    <action>Identify STAGE_WID: the name of THIS window (the window /tmux:feature runs in). Pass it as the supervisorWid argument to EVERY windows-spawn-worker call below so worker routing binds to this window (mirrors stage-1-context.xml substep 1.1).</action>
+    <check condition="NAMED_FILES is empty OR DETERMINISTIC_GATE is empty (the triage handoff is incomplete — should not happen, the verdict required both, but guard anyway)">
+      <action>FAIL-SAFE: announce "FAST-PATH-ABORT: triage handoff incomplete (no named files / no deterministic gate) — falling back to the FULL pipeline." and go to substep F.8's abort branch (write the handoff + RESUME at Stage 1). Do NOT spawn a worker on an empty scope.</action>
+    </check>
+  </substep>
+
+  <substep n="F.2" title="Capture the diff base, then spawn ONE /tmux:execute worker (context isolation)">
+    <action>Capture BASE via Bash: `git rev-parse HEAD` (trim). BASE is the pre-work commit — every gate below diffs the worker's committed change against it with the 3-dot merge-base form `&lt;BASE&gt;...HEAD` (feature.xml:50 TASK-CONFINED rule), NEVER a 2-dot tip-to-tip diff that would drag in unrelated divergence.</action>
+    <action>Write the worker's context file {research-root}/fast-path-exec.md capturing, for CONTEXT ISOLATION (carrier c — the implementation detail stays in the worker, never in feature-sup): FEATURE; the extracted brief facts (NAMED_FILES / NAMED_SYMBOLS / CONCRETE_EDIT); the relevant Stage-0 SIGNALS / TOPOLOGY / EXEC-ENVIRONMENT slice; a `## Validation Rules` section listing the DETERMINISTIC_GATE command(s) VERBATIM (bare, host-style per CMD-CONV — the daemon/exec-env wraps toolchain commands); and the TASK-CONFINED non-goal "edit ONLY the NAMED_FILES; a rule violation or failing gate in any file you did NOT change is REPORTED under RISKS, never edited (execute.xml step 3)". If the Stage-0 CODE RULES pointers are non-empty, add a `CODE_RULES:` block listing them so the worker reads each cited rule before writing code (execute.xml step 1b).</action>
+    <action>Spawn ONE implementation worker via windows-spawn-worker (the ONLY spawn primitive — never windows-create + windows-send) with:
+      - supervisorWid: STAGE_WID
+      - prefix: "execute-" (this spawns the /tmux:execute implementation worker; the returned workerName is the next free execute-N — record it for routing)
+      - subtask: "Fast-path impl: &lt;FEATURE, truncated&gt;"
+      - contextFile: {research-root}/fast-path-exec.md
+      - scope: NAMED_FILES (the concrete file(s) to edit — the confinement allow-list) PLUS "the DETERMINISTIC_GATE is your mandatory pre-DONE `## Validation Rules` (execute.xml step 4c) — run each and confirm exit 0 before reporting DONE" PLUS "COMMIT your own confined change as ONE commit on the current branch (message referencing the feature) BEFORE reporting [EXECUTE:DONE] — the fast path gates your committed diff `&lt;BASE&gt;...HEAD`"
+      - context: FEATURE + NAMED_SYMBOLS + CONCRETE_EDIT + the Stage-0 SIGNALS/TOPOLOGY slice + the TASK-CONFINED non-goals
+      - workingDirectory: OMIT (the fast path runs in the feature-sup's own checkout — no per-goal worktree here; the worker edits + commits the base tree, which IS the integration).</action>
+    <action>Record from the response: workerName, window.tmuxWindowId (tracking). WINDOW BUDGET: exactly ONE execute worker at a time + at most ONE reviewer (F.7) &#8594; feature-sup + worker + &#8804;1 reviewer = &#8804;3 windows.</action>
+    <critical>ALWAYS use windows-spawn-worker with prefix: "execute-" — never assemble the spawn manually via windows-create + windows-send, and never re-implement supervisor.xml's dispatch.</critical>
+  </substep>
+
+  <substep n="F.3" title="Idle, route, report-pushback (relay the [EXECUTE:*] tag protocol)">
+    <action>Do NOTHING but wait for windows-message from the worker. NEVER use sleep — idle is the trigger. Stop-hook idle lines ("Idling …") are expected /tmux:execute lifecycle output: do not REMIND, do not advance state, just keep waiting (mirrors supervisor.xml step 5).</action>
+    <branch tag="[EXECUTE:NEED_INPUT wid=execute-N sup=&lt;stage&gt; &lt;reason&gt;]">
+      <action>Answer the fact via windows-message to that worker from FEATURE / the Stage-0 block / NAMED_FILES / files on disk — autonomously resolve any decidable technical/architectural fork to the highest-quality in-scope option (Decision-resolution policy); NEVER use windows-send and NEVER bounce a decidable fork to the user. If genuinely unanswerable, reply [SUPERVISOR:NARROW-SCOPE &lt;reduced problem&gt;].</action>
+    </branch>
+    <branch tag="[EXECUTE:DONE wid=execute-N sup=&lt;stage&gt; file=&lt;abs-path&gt;]">
+      <action>Read the cited report file and verify it against the DELIVERABLE (FINDINGS / RISKS / RECOMMENDATION / FILES) — report-pushback catalogue, at most 3x per worker, each pushback citing exactly ONE gap (mirrors supervisor.xml step 6). If a gap is found, reply [EXECUTE:PUSHBACK n=&lt;k&gt; gap=&lt;one-line&gt;] via windows-message and keep idling. When the report is acceptable, proceed to the HARD GATES (F.4).</action>
+    </branch>
+    <branch tag="[EXECUTE:FAILED wid=execute-N ...]">
+      <action>Read REASON. FIRST failure: windows-kill the worker by NAME, then respawn ONCE (F.2) with a narrowed scope. If a SECOND respawn FAILs with the same reason, do NOT retry again — a confined single worker cannot land this change; go to F.8's abort branch (FAST-PATH-ABORT &#8594; full pipeline). NEVER silently retry the same prompt.</action>
+    </branch>
+    <branch tag="[EXECUTE:ESCALATE wid=execute-N ... need=&lt;prerequisite&gt;]">
+      <action>The worker is blocked by a prerequisite OUTSIDE this brief's scope — the brief was NOT as self-contained as triage judged, so the fast path's confinement assumption is void. windows-kill the worker by NAME and go to F.8's abort branch: FAST-PATH-ABORT &#8594; the FULL pipeline, whose re-planning/generation OWNS prerequisite goals (the fast path never creates goals). Carry need= into the abort handoff so the full run has the context.</action>
+    </branch>
+    <branch tag="worker emitted content with no [EXECUTE:...] header AND not a stop-hook idle line">
+      <action>Reply ONCE via windows-message: [SUPERVISOR:REMIND] respond only with [EXECUTE:DONE file=&lt;abs-path&gt;] / [EXECUTE:NEED_INPUT] / [EXECUTE:FAILED]. Do not advance state.</action>
+    </branch>
+  </substep>
+
+  <substep n="F.4" title="HARD GATE (a) — rules-clean over the confined diff (carrier a: rules enforcement)">
+    <action>Run via Bash: `tmux-cli rules check --json --diff &lt;BASE&gt;...HEAD` (3-dot merge-base). Parse the JSON `.rules[]` (each row carries id, severity, paths, validate_kind, `violated`, `agent_review`, signal — rules.go / internal/rules/check.go).</action>
+    <check condition="ANY rule row has `violated: true`">
+      <action>The confined diff triggers a machine-detected rule violation. Push it back to the worker: re-idle at F.3 and reply [EXECUTE:PUSHBACK n=&lt;k&gt; gap=&lt;the violated rule ids + paths&gt;] so the worker fixes it (still within NAMED_FILES) and re-commits, then RE-RUN this gate over the new `&lt;BASE&gt;...HEAD` diff. If the worker cannot clear the violation within the 3-pushback budget, go to F.8's abort branch.</action>
+    </check>
+    <action>Collect the `agent_review: true` rows (Go NEVER auto-fails these — determinism boundary §6.4; the agent judges them from the JSON). Carry them forward as the AGENT_REVIEW_ROWS input to the independent reviewer (F.7). An empty rules result (greenfield / no rules tree) contributes no violation and no review rows — proceed.</action>
+    <action>Gate (a) passes when NO row is `violated: true`. Proceed to F.5.</action>
+  </substep>
+
+  <substep n="F.5" title="HARD GATE (b) — diff within the named scope (3-dot, subset of NAMED_FILES)">
+    <action>Run via Bash: `git diff --name-only &lt;BASE&gt;...HEAD` (3-dot merge-base, NEVER 2-dot). CHANGED = the returned path list.</action>
+    <check condition="CHANGED is NOT a subset of NAMED_FILES (the worker touched a file the brief did NOT name — the confinement is broken)">
+      <action>ESCALATION VALVE: the diff escaped the named scope. Go to F.8's abort branch — FAST-PATH-ABORT &#8594; the FULL pipeline (a change spilling beyond the named files is exactly what the full Stages 1-5 pipeline exists to plan). Record the escaping path(s) in the abort handoff.</action>
+    </check>
+    <action>Classify each CHANGED path as TEST vs PROD using the Stage-0 TOPOLOGY (resolved test roots / test-path patterns — never a literal): a file under a resolved test root or matching the resolved test-file pattern is a TEST file; everything else is PROD. Record HAS_PROD_DIFF = (any CHANGED path is PROD). This decides whether F.7 spawns a reviewer. Gate (b) passes when CHANGED is a subset of NAMED_FILES. Proceed to F.6.</action>
+  </substep>
+
+  <substep n="F.6" title="HARD GATE (c) — full suite green (no fallout)">
+    <action>Run the resolved DETERMINISTIC_GATE / full suite command(s) from the Stage-0 TOPOLOGY (bare, host-style per CMD-CONV) and confirm each exits 0.</action>
+    <check condition="the suite is RED">
+      <action>Classify the failure: a failure IN the NAMED_FILES' own coverage (a regression the worker introduced within scope) &#8594; push it back to the worker (re-idle at F.3, [EXECUTE:PUSHBACK] citing the failing test) to fix within scope, then RE-RUN F.4-F.6. A failure OUTSIDE the named scope (SUITE FALLOUT in unrelated modules) &#8594; ESCALATION VALVE: go to F.8's abort branch — FAST-PATH-ABORT &#8594; the FULL pipeline; a confined single worker must not chase cross-module fallout. If the worker cannot clear an in-scope regression within the 3-pushback budget, also abort.</action>
+    </check>
+    <action>Gate (c) passes when the full suite is green. Proceed to F.7.</action>
+  </substep>
+
+  <substep n="F.7" title="Independent review — read-only investigator- reviewer, PROD-code diffs ONLY (carrier b)">
+    <check condition="HAS_PROD_DIFF is FALSE (the diff touched ONLY test files)">
+      <action>Do NOT spawn a reviewer — the reviewer is prod-code only and NEVER self-grades test changes. Skip directly to F.8's integrate branch. Log: "Fast-path: test-only diff — no independent reviewer (carrier b vacuous for a test-only change)."</action>
+    </check>
+    <check condition="HAS_PROD_DIFF is TRUE">
+      <action>Spawn EXACTLY ONE read-only reviewer via windows-spawn-worker — the SAME primitive/shape as stage-1-context.xml substep 1.3 and investigate.xml:369-388 (reuse the investigate-worker read-only agent BY REFERENCE; never re-implement it):
+        - supervisorWid: STAGE_WID
+        - prefix: "investigator-" (spawns the read-only investigate-worker, NOT an implement worker)
+        - subtask: "Functional acceptance review: &lt;FEATURE, truncated&gt;"
+        - contextFile: {research-root}/fast-path-exec.md
+        - scope: "READ-ONLY code-review of the confined diff `&lt;BASE&gt;...HEAD` (Read + non-mutating Bash only — edit NOTHING); judge functional correctness of the PROD-code change against FEATURE + the brief facts; ALSO judge the AGENT_REVIEW_ROWS from gate (a) (the `agent_review:true` rules Go left for the agent — pass/fail each by id); write your report to {research-root}/investigator-review-&lt;slug&gt;.md"
+        - context: FEATURE + NAMED_SYMBOLS + CONCRETE_EDIT + the AGENT_REVIEW_ROWS + "this review happens BEFORE integration — the confined commit is NOT yet accepted"
+        - deliverable: the read-only dossier (## VERDICT (pass|fail) / ## FINDINGS / ## EVIDENCE)
+        - workingDirectory: OMIT.</action>
+      <action>Idle for the reviewer's windows-message (same routing as F.3 — never sleep). On [EXECUTE:DONE file=...], read the report and extract its VERDICT.</action>
+      <check condition="reviewer VERDICT == fail">
+        <action>windows-kill the reviewer by NAME. Push the named findings back to the still-idling execute worker (re-idle at F.3, [EXECUTE:PUSHBACK n=&lt;k&gt; gap=&lt;the reviewer's unmet criterion&gt;]) to fix within NAMED_FILES + re-commit, then RE-RUN F.4-F.7. If it cannot be cleared within the 3-pushback budget, go to F.8's abort branch.</action>
+      </check>
+      <check condition="reviewer VERDICT == pass">
+        <action>windows-kill the reviewer by NAME. Proceed to F.8's integrate branch.</action>
+      </check>
+    </check>
+    <rule critical="true">NEVER spawn the reviewer for a test-only diff, and NEVER let the implementation worker grade its own change — the reviewer is an INDEPENDENT read-only window that reviews prod code BEFORE integration. This is carrier (b); it must not be dropped when the fast path integrates a prod-code change.</rule>
+  </substep>
+
+  <substep n="F.8" title="Integrate or escalate">
+    <branch tag="INTEGRATE — all three hard gates green AND (test-only OR reviewer passed)">
+      <action>The confined diff is already committed on HEAD (the worker's own single commit, gated `&lt;BASE&gt;...HEAD`) — the fast path KEEPS it as the integrated change (if for any reason the change is uncommitted/staged, make the ONE confined commit now). windows-kill the execute worker by NAME.</action>
+      <action>Announce exactly: "FAST-PATH DONE — precise brief landed via one worker: rules-clean, diff within named scope, suite green, independent review passed (or test-only). Committed the confined diff `&lt;BASE&gt;...HEAD`." This is the TERMINAL success of the /tmux:feature run — do NOT run Stages 1-5, do NOT emit goals.</action>
+    </branch>
+    <branch tag="ABORT — diff escaped named scope (F.5) OR suite fallout outside it (F.6) OR worker FAILED-twice / ESCALATE-d (F.3) OR unresolvable rule/review finding">
+      <action>DISCARD the aborted attempt so the full pipeline starts clean: if the worker committed, `git reset --hard &lt;BASE&gt;` in this checkout (discards ONLY the abandoned fast-path commit — a control action on the fast path's own attempt, not an edit of unrelated source). windows-kill the worker (and reviewer, if any) by NAME.</action>
+      <action>Write a feature-goals.md-COMPATIBLE handoff to {research-root}/fast-path-abort.md — the same durable-handoff SHAPE Stage 4 persists (FEATURE description; TESTS_MODE if known; the abandoned attempt: NAMED_FILES, the escaping path(s) / the out-of-scope suite fallout / the FAILED reason / the ESCALATE need=; and "status: fast-path-aborted — proceed via the full Stages 1-5 pipeline"). Name it fast-path-abort.md, NOT feature-goals.md: the authoritative feature-goals.md remains Stage 4's to write when the full pipeline emits goals, so a resumed session's Stage-0 VALIDATION-RESUME predicate (a matching feature-goals.md) is NOT falsely satisfied by this abort record.</action>
+      <action>Announce (mirroring stage-0-capability.xml's VALIDATION-RESUME announce&#8594;jump idiom): "FAST-PATH-ABORT: &lt;reason&gt; — resuming the FULL Stages 1-5 pipeline." Then RESUME the feature.xml spine at Stage 1 and run Stages 1 &#8594; 2 &#8594; 3 &#8594; 4 &#8594; 5 in strict order (Stage 0 already ran; Stage 1 consumes its persisted context block + this abort handoff). Do NOT re-enter the fast path.</action>
+    </branch>
+  </substep>
+
+  <execution-rules>
+    <rule>COMPOSER, NOT ENGINE: this shard COMPOSES /tmux:execute (implementation), the investigate primitive (read-only reviewer), and the `tmux-cli` helpers (research-mode was consumed upstream at triage; rules check here) BY REFERENCE — it writes NO project source (the worker authors + commits the confined change) and adds ZERO new daemon mechanics.</rule>
+    <rule>windows-message for every outbound reply; windows-send NEVER; windows-kill workers by NAME (never @id) once terminal. Spawn ONLY via windows-spawn-worker (execute- for the impl worker, investigator- for the reviewer).</rule>
+    <rule critical="true">THREE QUALITY CARRIERS ARE MANDATORY, never dropped: (a) rules enforcement (the worker's pre-DONE `## Validation Rules` gate + the shard's `tmux-cli rules check --json` gate); (b) independent review (a read-only investigator- reviewer for any PROD-code diff, BEFORE integration, never self-grading test changes); (c) context isolation (implementation context stays in the worker's window, never in feature-sup). Dropping any one is the exact failure the naive single-agent shortcut caused.</rule>
+    <rule critical="true">FAIL-SAFE TO THE FULL PIPELINE on ANY doubt — a diff escaping the named scope, suite fallout outside it, a twice-FAILED or ESCALATE-ing worker, an unresolvable rule/review finding, or an incomplete triage handoff — all abort to the full Stages 1-5 pipeline. Under-provisioning is always safe; a false fast-path is not.</rule>
+    <rule critical="true">3-DOT, TASK-CONFINED: every diff gate uses `&lt;BASE&gt;...HEAD` (merge-base), never 2-dot tip-to-tip (feature.xml:50). The worker edits ONLY NAMED_FILES; a rule violation or failing gate in an unchanged file is REPORTED, never fixed — the delivered diff stays minimal and confined.</rule>
+    <rule>WINDOW BUDGET: ONE execute worker + at most ONE reviewer at a time &#8594; feature-sup + worker + &#8804;1 reviewer = &#8804;3 windows. Kill each worker by NAME before the run ends.</rule>
+    <rule>AUTONOMOUS: resolve every decidable fork to the highest-quality in-scope option and record the rationale; never sleep, never poll while idle, never AskUserQuestion (feature.xml is interactive ONLY at Stage 2, which the fast path skips).</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified handoff, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (worker pushback, NEED_INPUT, a fast-path abort that correctly falls back).</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • COMPOSER, not engine — reuse /tmux:execute + the investigate reviewer + `tmux-cli rules check` by reference; write NO project source (the worker commits the confined change); NO new daemon mechanics.
+      • THREE CARRIERS PRESERVED — (a) rules enforcement (worker pre-DONE `## Validation Rules` + shard `tmux-cli rules check --json`); (b) independent read-only investigator- review for any PROD-code diff, BEFORE integration, never self-grading test changes; (c) context isolation (impl context in the worker, never in feature-sup). Never drop one.
+      • THREE HARD GATES before integration — (a) rules-clean (`tmux-cli rules check --json --diff &lt;BASE&gt;...HEAD`, any violated:true fails; agent_review rows routed to the reviewer); (b) `git diff --name-only &lt;BASE&gt;...HEAD` is a subset of NAMED_FILES (3-dot); (c) full suite green.
+      • FAIL-SAFE TO FULL PIPELINE on ANY doubt (diff escaping named scope, out-of-scope suite fallout, worker FAILED-twice/ESCALATE, unresolvable finding, incomplete handoff) — write the feature-goals.md-compatible abort handoff to {research-root}/fast-path-abort.md (NOT feature-goals.md, so a resumed Stage-0 VALIDATION-RESUME is not falsely tripped) and RESUME the spine at Stage 1 in strict 0&#8594;5 order.
+      • 3-DOT `&lt;BASE&gt;...HEAD` everywhere (never 2-dot); TASK-CONFINED to NAMED_FILES; report adjacent issues under RISKS, never edit them.
+      • WINDOW BUDGET &#8804;3 (feature-sup + one worker + &#8804;1 reviewer); windows-message only (never windows-send); kill workers by NAME once terminal; spawn only via windows-spawn-worker.
+      • AUTONOMOUS — resolve decidable forks to the highest-quality in-scope option; never sleep/poll/AskUserQuestion; idle is the routing trigger.
+    </critical-rules>
+  </llm>
+</stage>
