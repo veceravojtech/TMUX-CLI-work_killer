@@ -28,6 +28,7 @@
       <check condition="reporting disabled (apiEnabled:false, or nested api.enabled:false)">
         <action>Print exactly one line: "Task reporting is disabled — /tmux:task-monitor has no output but reports; set api.enabled: true in .tmux-cli/setting.yaml (or run tmux-cli setting) and retry." Make NO writes at all and STOP.</action>
       </check>
+      <action>Also resolve `taskvisor.auto_report` (setting.yaml, default false when absent). This monitor is an AUTONOMOUS/agentic auto-file surface, so it is gated on `taskvisor.auto_report` IN ADDITION to `api.enabled`. Record the resolved value for Step 4: when false, the monitor still WATCHES and heartbeats but its Step-4 file action no-ops (observe-only) — do NOT stop here, and keep watching so a later flip to true takes effect on restart.</action>
       <action>Resolve the LIVE session name via `tmux display-message -p '#{session_name}'`.</action>
       <action>Enumerate panes via `tmux list-panes -s -F '#{pane_id} #{pane_current_path} #{pane_current_command} #{window_name}'`. The project root is the pane cwd that CONTAINS a `.tmux-cli/` directory — NOT the invocation cwd (a worker pane may be cwd'd into a worktree). All subsequent paths (`.tmux-cli/setting.yaml`, logs, state.json) resolve against THAT project root.</action>
       <check condition="no pane cwd contains .tmux-cli/">
@@ -62,6 +63,9 @@
     </step>
 
     <step n="4" title="Report — delegate to task-report flow, project=cli FORCED">
+      <check condition="taskvisor.auto_report is false (Step 0)">
+        <action>OBSERVE-ONLY: file NOTHING. Do not compose, do not submit, do not delegate to the task-report flow. Still classify/dedup/persist offsets and emit the Step-6 heartbeat (e.g. "scanned N panes, auto_report off — observing only"). This is the autonomous-auto-file gate — a MANUAL task-report is unaffected. Skip the rest of Step 4.</action>
+      </check>
       <action>For EACH new reportable finding, delegate composition + submission to the task-report flow (task-report.xml Step 3 six-field derivation tables + Step 5 submit). Do NOT re-spec the field rules here — the Step 3 tables are the one definition.</action>
       <rule critical="true">FORCE `project=cli`: pass `project: "cli"` directly to the task-report MCP tool (equivalently, the finding names a tmux-cli internal component which keyword-auto-resolves to cli). This deliberately BYPASSES task-report step-4b lane resolution so its ambiguous-lane ask NEVER fires — this command is autonomous and must never prompt.</rule>
       <action>Category comes from the step-3.1 table. Evidence is the VERBATIM `capture-pane`/log excerpt (quoted, never paraphrased; bounded ~15 lines), each introduced by its source pane_id or log path.</action>

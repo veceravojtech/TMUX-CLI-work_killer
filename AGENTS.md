@@ -140,9 +140,15 @@ internal/
 - `.tmux-cli/setting.yaml` — the single config file (hooks toggle, custom hooks, commands enable, supervisor.max_cycles,
   taskvisor.require_plan_approval (default false), taskvisor.halt_on_stale_binary (default false),
   taskvisor.restart_on_stale_binary (default false), taskvisor.planning_mode (roadmap|incremental, default incremental —
-  incremental plans one goal at a time instead of a full roadmap upfront))
+  incremental plans one goal at a time instead of a full roadmap upfront),
+  taskvisor.auto_report (default false, recommended — gates ONLY the automatic/agentic
+  backend-reporting surfaces: the daemon's reportFailure/reportBreakerTrip/reportPollWedge/
+  reportWorkerCrash submit seam, the shared <error-reporting> procedure, and the task-monitor
+  cadence. INVERTED default polarity vs the auto_commit/git_freshness/validation peers because
+  the daemon's auto-filed tasks are predominantly noise. Manual task-report stays fully
+  functional, gated only on api.enabled — auto_report NEVER disables the manual channel))
 - `.tmux-cli/tasks.yaml` — can be pre-created to queue planned work for the supervisor
-- TUI settings editor exposes 32 items — must mirror all `Settings` struct fields EXCEPT the deliberately-unsurfaced `api:` reporting block (internal-only telemetry, force-corrected at load — see the TUI-invariant exception below)
+- TUI settings editor exposes 33 items — must mirror all `Settings` struct fields EXCEPT the deliberately-unsurfaced `api:` reporting block (internal-only telemetry, force-corrected at load — see the TUI-invariant exception below)
 
 ## Testing conventions
 

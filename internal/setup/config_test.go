@@ -1059,6 +1059,103 @@ func TestSaveSettings_ValidationRoundTrip(t *testing.T) {
 	assert.False(t, s2.Taskvisor.ValidationEnabled(), "opt-out must survive the save-back round-trip")
 }
 
+// TestDefaultSettings_AutoReport_False pins the new-project default: auto-report
+// OFF (a *bool false-pointer). INVERTED polarity vs the AutoCommit/GitFreshness/
+// Validation default-ON peers — the daemon's auto-filed tasks are mostly noise.
+func TestDefaultSettings_AutoReport_False(t *testing.T) {
+	s := DefaultSettings()
+	require.NotNil(t, s.Taskvisor.AutoReport, "DefaultSettings must seed a non-nil AutoReport pointer")
+	assert.False(t, *s.Taskvisor.AutoReport)
+	assert.False(t, s.Taskvisor.AutoReportEnabled(), "auto-report must default OFF")
+}
+
+// TestTaskvisorSettings_AutoReportEnabled_NilSafe pins the accessor's nil-safety
+// and inverted polarity: nil reads as DISABLED (opposite of the peer accessors),
+// only an explicit true opts in.
+func TestTaskvisorSettings_AutoReportEnabled_NilSafe(t *testing.T) {
+	var ts TaskvisorSettings
+	assert.False(t, ts.AutoReportEnabled(), "nil pointer must read as disabled (inverted)")
+
+	on := true
+	ts.AutoReport = &on
+	assert.True(t, ts.AutoReportEnabled(), "explicit true must read as enabled")
+}
+
+// TestLoadSettings_AutoReportDefaultsOffWhenAbsent proves a legacy setting.yaml
+// without the auto_report key loads with auto-reporting DISABLED (nil → false
+// backfill, inverted polarity) and that the save-back persists the key.
+func TestLoadSettings_AutoReportDefaultsOffWhenAbsent(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  dispatch_timeout: 3600
+  poll_interval: 5
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Taskvisor.AutoReport, "nil must be backfilled to a false-pointer")
+	assert.False(t, *s.Taskvisor.AutoReport)
+	assert.False(t, s.Taskvisor.AutoReportEnabled(), "legacy yaml must default auto-report OFF")
+
+	raw, err := os.ReadFile(settingFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "auto_report: false", "save-back must persist the backfilled key")
+}
+
+// TestLoadSettings_AutoReportExplicitTrueSurvives proves the opt-IN round-trips:
+// auto_report: true survives the backfill AND a second load→save→load cycle.
+func TestLoadSettings_AutoReportExplicitTrueSurvives(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  auto_report: true
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Taskvisor.AutoReport)
+	assert.True(t, *s.Taskvisor.AutoReport)
+	assert.True(t, s.Taskvisor.AutoReportEnabled(), "explicit true must opt in")
+
+	// Round-trip: load again after the save-back — true must survive.
+	s2, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.True(t, s2.Taskvisor.AutoReportEnabled(), "opt-in must survive the save-back round-trip")
+}
+
+// TestLoadSettings_AutoReportExplicitFalseSurvives proves an explicit
+// auto_report: false survives the backfill and the save-back round-trip.
+func TestLoadSettings_AutoReportExplicitFalseSurvives(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	yaml := `taskvisor:
+  auto_report: false
+`
+	settingFile := filepath.Join(dir, "setting.yaml")
+	require.NoError(t, os.WriteFile(settingFile, []byte(yaml), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Taskvisor.AutoReport)
+	assert.False(t, *s.Taskvisor.AutoReport)
+	assert.False(t, s.Taskvisor.AutoReportEnabled())
+
+	s2, err := LoadSettings(root)
+	require.NoError(t, err)
+	assert.False(t, s2.Taskvisor.AutoReportEnabled(), "explicit false must survive the round-trip")
+}
+
 func TestDefaultSettings_PlanningModeIncremental(t *testing.T) {
 	s := DefaultSettings()
 	assert.Equal(t, "incremental", s.Taskvisor.PlanningMode)

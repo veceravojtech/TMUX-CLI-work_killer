@@ -179,6 +179,19 @@ type TaskvisorSettings struct {
 	// nil is backfilled to true by LoadSettings. Read via ValidationEnabled(),
 	// never directly.
 	Validation *bool `yaml:"validation"`
+	// AutoReport gates ONLY the automatic/agentic backend-reporting surfaces
+	// (the daemon's submitReport seam behind reportFailure/reportBreakerTrip/
+	// reportPollWedge/reportWorkerCrash, plus the shared <error-reporting>
+	// procedure and the task-monitor cadence). It does NOT gate the manual
+	// task-report MCP tool, which stays gated only on api.enabled.
+	//
+	// INVERTED default polarity (deliberate — NOT a mistake to "fix" back):
+	// unlike the AutoCommit/GitFreshness/Validation peers (default ON via
+	// `==nil || *ptr`), auto_report defaults OFF because the daemon's auto-filed
+	// tasks are predominantly noise. So the accessor is `!=nil && *ptr` and
+	// DefaultSettings seeds false; a legacy setting.yaml predating the key (nil)
+	// is backfilled to false by LoadSettings. Read via AutoReportEnabled().
+	AutoReport *bool `yaml:"auto_report"`
 }
 
 // AutoCommitEnabled reports whether completion-time auto-commit is on. Nil
@@ -207,6 +220,15 @@ const (
 // only an explicit false opts out (goals are marked done directly).
 func (t TaskvisorSettings) ValidationEnabled() bool {
 	return t.Validation == nil || *t.Validation
+}
+
+// AutoReportEnabled reports whether the AUTOMATIC/agentic backend-reporting
+// surfaces are on. INVERTED polarity vs the AutoCommit/GitFreshness/Validation
+// peers: nil (a hand-constructed Settings{} or a pre-backfill legacy decode)
+// defaults OFF; only an explicit true opts IN. This does NOT affect the manual
+// task-report channel, which is gated only on api.enabled.
+func (t TaskvisorSettings) AutoReportEnabled() bool {
+	return t.AutoReport != nil && *t.AutoReport
 }
 
 // WorkerBudgetSec is the per-worker time budget in seconds, mirroring the
@@ -286,6 +308,8 @@ func DefaultSettings() *Settings {
 	gitFreshness := true
 	validation := true
 	planAudit := true
+	// INVERTED default: auto-reporting is OFF for new projects (see AutoReport doc).
+	autoReport := false
 	return &Settings{
 		Hooks: HooksSettings{
 			SessionNotify:    false,
@@ -335,6 +359,7 @@ func DefaultSettings() *Settings {
 			AutoCommit:                &autoCommit,
 			GitFreshness:              &gitFreshness,
 			Validation:                &validation,
+			AutoReport:                &autoReport,
 		},
 	}
 }
@@ -390,6 +415,13 @@ func LoadSettings(projectRoot string) (*Settings, error) {
 	if s.Taskvisor.Validation == nil {
 		validation := true
 		s.Taskvisor.Validation = &validation
+	}
+	// Backfill auto_report for a legacy setting.yaml predating the key: nil means
+	// pre-feature. INVERTED polarity — backfill to FALSE (auto-reporting OFF by
+	// default), while an explicit true survives untouched.
+	if s.Taskvisor.AutoReport == nil {
+		autoReport := false
+		s.Taskvisor.AutoReport = &autoReport
 	}
 	// Coerce planning_mode: empty (legacy setting.yaml predating the key) or
 	// unknown values fall back to incremental so the load never fails and new

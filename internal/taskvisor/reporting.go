@@ -90,14 +90,19 @@ func (d *Daemon) buildRequest(category, severity, title, description string, pay
 }
 
 // submitReport is the single submission path for daemon-built failure reports.
-// When reporting is disabled (d.producer == nil) it spawns NO goroutine and
-// invokes onResult(nil) synchronously — delivered-equivalent, so dedup marks
-// are kept. Otherwise it submits on a goroutine so the tick loop never blocks;
-// d.ctx is read at goroutine RUN time, so submitting before the context is
-// wired (e.g. during early Run setup) is safe. onResult (nil-safe) receives
-// SubmitTask's error so callers can mark delivery truthfully.
+// When AUTOMATIC reporting is disabled — either the producer is unwired
+// (d.producer == nil, api.enabled off) or the customer opted out of agentic
+// auto-filing (!d.autoReport, the default) — it spawns NO goroutine and invokes
+// onResult(nil) synchronously — delivered-equivalent, so dedup marks are kept.
+// This single guard covers every daemon report path (reportFailure,
+// reportBreakerTrip, reportPollWedge, reportWorkerCrash). The manual task-report
+// MCP tool does NOT route through here, so it stays gated only on api.enabled.
+// Otherwise it submits on a goroutine so the tick loop never blocks; d.ctx is
+// read at goroutine RUN time, so submitting before the context is wired (e.g.
+// during early Run setup) is safe. onResult (nil-safe) receives SubmitTask's
+// error so callers can mark delivery truthfully.
 func (d *Daemon) submitReport(req producer.TaskRequest, onResult func(error)) {
-	if d.producer == nil {
+	if d.producer == nil || !d.autoReport {
 		if onResult != nil {
 			onResult(nil)
 		}

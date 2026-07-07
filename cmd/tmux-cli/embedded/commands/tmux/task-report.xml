@@ -147,7 +147,7 @@
 
     <part name="RECURSION">Recursion guard: NEVER auto-report a failure of `task-report` itself (a submit error follows this file's Step 5 outbox branch, it does not re-enter this procedure), and NEVER report a transient `windows-*` error that was already retried and recovered.</part>
 
-    <part name="GATE">Respect `api.enabled` — inherited from this file's Step 0 (flat `apiEnabled` wins, else nested `api.enabled`). Reporting disabled ⇒ no-op: compose nothing, submit nothing.</part>
+    <part name="GATE">Respect `api.enabled` — inherited from this file's Step 0 (flat `apiEnabled` wins, else nested `api.enabled`). Reporting disabled ⇒ no-op: compose nothing, submit nothing. ADDITIONALLY, this AUTONOMOUS auto-file path (agentic error-reporting composed without a human asking) is gated on `taskvisor.auto_report` (setting.yaml, default false): when `taskvisor.auto_report` is false, this procedure no-ops exactly like a disabled api — compose nothing, submit nothing — EVEN when `api.enabled` is true. This does NOT affect a MANUAL, human-requested `task-report` (this file's Step 0–5 flow), which stays gated ONLY on `api.enabled`.</part>
   </error-reporting>
 
   <execution-rules>

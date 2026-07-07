@@ -186,6 +186,14 @@ type Daemon struct {
 	// direct-construct Daemon (dispatch unit tests) never touches the git runner;
 	// seeded from taskvisor.git_freshness (GitFreshnessEnabled) ONLY in Run().
 	gitFreshness bool
+	// autoReport gates the AUTOMATIC/agentic backend-reporting surfaces: when
+	// false (the default), the submitReport seam no-ops so reportFailure/
+	// reportBreakerTrip/reportPollWedge/reportWorkerCrash file nothing. Zero-value
+	// false so a direct-construct Daemon (report-composition unit tests) keeps the
+	// gate CLOSED, matching the default-off polarity; seeded from
+	// taskvisor.auto_report (AutoReportEnabled) ONLY in Run(). Orthogonal to the
+	// producer gate (api.enabled): manual reporting is unaffected by this field.
+	autoReport bool
 	// skipValidation disables the post-execution validation step: when true a goal
 	// is marked done DIRECTLY out of the supervising phase (no validator
 	// windows) instead of being handed to the validator. Zero-value
@@ -466,6 +474,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.autoCommit = settings.Taskvisor.AutoCommitEnabled()
 		d.autoPush = settings.Taskvisor.AutoPush
 		d.gitFreshness = settings.Taskvisor.GitFreshnessEnabled()
+		d.autoReport = settings.Taskvisor.AutoReportEnabled()
 		// validation OFF ⇒ goals are marked done directly out of supervising. The
 		// daemon field is the inverse so its zero value (false) means "validate".
 		d.skipValidation = !settings.Taskvisor.ValidationEnabled()

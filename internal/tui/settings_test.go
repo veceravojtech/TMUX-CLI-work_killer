@@ -31,7 +31,7 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 32)
+	assert.Len(t, m.items, 33)
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -179,24 +179,24 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 23, m.cursor)
 
-	// Step down through the remaining items to the last one (32 items → max index 31)
-	for want := 24; want <= 31; want++ {
+	// Step down through the remaining items to the last one (33 items → max index 32)
+	for want := 24; want <= 32; want++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 		assert.Equal(t, want, m.cursor)
 	}
 
-	// Can't go past last item (32 items → max index 31)
+	// Can't go past last item (33 items → max index 32)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 31, m.cursor)
+	assert.Equal(t, 32, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 30, m.cursor)
+	assert.Equal(t, 31, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 32; i++ {
+	for i := 0; i < 33; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
@@ -978,7 +978,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 32)
+	assert.Len(t, m.items, 33)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -1028,7 +1028,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 32)
+	assert.Len(t, m.items, 33)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -1641,6 +1641,33 @@ func TestNewModel_IncludesValidationItem(t *testing.T) {
 	require.NotNil(t, result.Taskvisor.Validation, "ToSettings must write the *bool pointer")
 	assert.False(t, *result.Taskvisor.Validation, "toggled-off value must overlay into ToSettings")
 	assert.False(t, result.Taskvisor.ValidationEnabled())
+}
+
+// TestNewModel_IncludesAutoReportItem proves the auto_report toggle is surfaced
+// as a bool item seeded from AutoReportEnabled() (INVERTED polarity — seeds
+// FALSE by default) and that ToSettings() round-trips a toggle-on via the *bool
+// pointer write-back idiom (AGENTS.md TUI mirror invariant).
+func TestNewModel_IncludesAutoReportItem(t *testing.T) {
+	dir := t.TempDir()
+	settings, err := setup.LoadSettings(dir)
+	require.NoError(t, err)
+	m := NewModel(dir, settings)
+
+	var found bool
+	for i, item := range m.items {
+		if item.key == "taskvisor.auto_report" {
+			found = true
+			assert.Equal(t, "bool", item.kind)
+			assert.False(t, item.value, "item must seed false (default OFF via AutoReportEnabled)")
+			m.items[i].value = true
+		}
+	}
+	require.True(t, found, "taskvisor.auto_report must be in TUI items")
+
+	result := m.ToSettings()
+	require.NotNil(t, result.Taskvisor.AutoReport, "ToSettings must write the *bool pointer")
+	assert.True(t, *result.Taskvisor.AutoReport, "toggled-on value must overlay into ToSettings")
+	assert.True(t, result.Taskvisor.AutoReportEnabled())
 }
 
 // TestSettingsTUI_AutoCommit_ExplicitFalsePreserved proves an opt-out base

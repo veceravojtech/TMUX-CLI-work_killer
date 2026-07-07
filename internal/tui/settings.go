@@ -79,6 +79,7 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.git_freshness", label: "Taskvisor Git-Freshness", kind: "bool", value: settings.Taskvisor.GitFreshnessEnabled()},
 			{key: "taskvisor.validation", label: "Taskvisor Validation", kind: "bool", value: settings.Taskvisor.ValidationEnabled()},
 			{key: "taskvisor.planning_mode", label: "Taskvisor Planning Mode", kind: "enum", strVal: settings.Taskvisor.PlanningMode, options: []string{setup.PlanningModeRoadmap, setup.PlanningModeIncremental}},
+			{key: "taskvisor.auto_report", label: "Taskvisor Auto-Report", kind: "bool", value: settings.Taskvisor.AutoReportEnabled()},
 		},
 	}
 }
@@ -281,6 +282,9 @@ func (m Model) ToSettings() *setup.Settings {
 			s.Plan.Audit = &v
 		case "taskvisor.auto_push":
 			s.Taskvisor.AutoPush = item.value
+		case "taskvisor.auto_report":
+			v := item.value
+			s.Taskvisor.AutoReport = &v
 		}
 	}
 	return &s
