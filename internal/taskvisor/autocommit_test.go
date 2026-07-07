@@ -589,6 +589,62 @@ func TestCaptureGoalStartSnapshot_RecordsStartUntracked(t *testing.T) {
 	assert.Contains(t, string(data), "internal/taskvisor/sibling_new.go", "start-time untracked in-scope path is recorded")
 }
 
+// TestCaptureGoalStartSnapshot_BenignNoOpDoesNotWarn: a non-zero `git stash
+// create` exit on a tree with NO tracked modifications is a benign no-op — it
+// must NOT emit a warning (task 528), must write an empty marker, and must route
+// goalOwnInScopePaths to the legacy-staging fallback (ok=false).
+func TestCaptureGoalStartSnapshot_BenignNoOpDoesNotWarn(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		if argsContain(args, "stash", "create") {
+			return "", 1 // non-zero exit
+		}
+		if argsContain(args, "status", "--porcelain") {
+			return "", 0 // no tracked modifications
+		}
+		return "", 0
+	}}
+	d := autoCommitDaemon(t, dir, fake)
+
+	out := captureLog(t, func() { d.captureGoalStartSnapshot(scopedGoal()) })
+
+	assert.NotContains(t, out, "warning: capture start snapshot", "benign no-op must not warn")
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-009", "start-snapshot"))
+	require.NoError(t, err)
+	assert.Empty(t, strings.TrimSpace(string(data)), "benign no-op ⇒ empty marker")
+
+	_, ok := d.goalOwnInScopePaths(scopedGoal(), scopePathspecs(scopedGoal().Scope))
+	assert.False(t, ok, "empty marker ⇒ legacy staging fallback")
+}
+
+// TestCaptureGoalStartSnapshot_GenuineFailureWarns: a non-zero `git stash create`
+// exit on a tree WITH tracked modifications is a genuine failure — it keeps the
+// diagnosable warning surfacing the exit code (and captured stderr), while the
+// empty-marker fallback still runs so no goal work is lost.
+func TestCaptureGoalStartSnapshot_GenuineFailureWarns(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeGitRunner{respond: func(args []string) (string, int) {
+		if argsContain(args, "stash", "create") {
+			return "", 1 // non-zero exit
+		}
+		if argsContain(args, "status", "--porcelain") {
+			return " M internal/taskvisor/autocommit.go\n", 0 // tracked mods present
+		}
+		return "", 0
+	}}
+	d := autoCommitDaemon(t, dir, fake)
+
+	out := captureLog(t, func() { d.captureGoalStartSnapshot(scopedGoal()) })
+
+	assert.Contains(t, out, "warning: capture start snapshot", "genuine failure must warn")
+	assert.Contains(t, out, "git stash create failed (exit 1", "warning surfaces the exit code")
+
+	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-009", "start-snapshot"))
+	require.NoError(t, err)
+	assert.Empty(t, strings.TrimSpace(string(data)), "genuine failure ⇒ empty-marker fallback still runs")
+}
+
 func TestAutoCommit_GitFailureIsWarnOnly(t *testing.T) {
 	g := scopedGoal()
 	g.Status = GoalDone

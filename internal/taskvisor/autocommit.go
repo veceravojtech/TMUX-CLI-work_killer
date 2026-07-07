@@ -164,7 +164,17 @@ func (d *Daemon) captureGoalStartSnapshot(g *Goal) {
 	}
 	out, stderr, code, err := d.autoCommitGit("-C", d.workDir, "stash", "create")
 	if code != 0 || err != nil {
-		log.Printf("warning: capture start snapshot %s: git stash create failed (exit %d, err %v): %s — auto-commit will fall back to scope-matched staging", g.ID, code, err, strings.TrimSpace(stderr))
+		// A non-zero `git stash create` exit is only genuinely a failure when the
+		// tracked tree actually has modifications to snapshot. On a tree with no
+		// tracked modifications the non-zero exit is a benign no-op — it routes to
+		// the same empty-marker fallback as the sha=="" clean path, so it must not
+		// emit a scary warning (task 528). A genuine failure keeps the diagnosable
+		// warning surfacing the exit code + captured stderr.
+		if d.hasTrackedModifications() {
+			log.Printf("warning: capture start snapshot %s: git stash create failed (exit %d, err %v): %s — auto-commit will fall back to scope-matched staging", g.ID, code, err, strings.TrimSpace(stderr))
+		} else {
+			log.Printf("debug: capture start snapshot %s: git stash create no-op on clean tracked tree (exit %d) — using empty-marker fallback", g.ID, code)
+		}
 		writeMarker(markerPath, g.ID, nil)
 		return
 	}
@@ -196,6 +206,19 @@ func writeMarker(path, goalID string, lines []string) {
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
 		log.Printf("warning: capture start snapshot %s: write marker failed: %v", goalID, err)
 	}
+}
+
+// hasTrackedModifications reports whether the working tree has any tracked
+// modification (staged or unstaged), via `git status --porcelain -uno`
+// (untracked files excluded, mirroring what `git stash create` snapshots). A git
+// error is treated conservatively as "yes" so a genuine `stash create` failure is
+// never silently downgraded to a debug breadcrumb.
+func (d *Daemon) hasTrackedModifications() bool {
+	out, _, code, err := d.autoCommitGit("-C", d.workDir, "status", "--porcelain", "-uno")
+	if code != 0 || err != nil {
+		return true
+	}
+	return strings.TrimSpace(out) != ""
 }
 
 // untrackedInScopePaths returns the currently-untracked (`??`) paths inside the
