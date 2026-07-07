@@ -377,7 +377,7 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 			return d.handleStuckSupervisor(goal, goals)
 		}
 		if !rt.dispatchTime.IsZero() && d.now().Sub(rt.dispatchTime) >= d.dispatchTimeout {
-			return d.handleFailedCycle(goal, goals, "Cycle timed out — no completion signal received.", "code-defect")
+			return d.handleFailedCycle(goal, goals, "Cycle timed out — no completion signal received.", "code-defect", strings.Join(goal.Validate, "; "))
 		}
 		if !rt.bootConfirmedAt.IsZero() && d.now().Sub(rt.bootConfirmedAt) > 5*time.Second {
 			windows, err := d.listWindows()
@@ -390,12 +390,24 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 				if w.Name == supName {
 					found = true
 					if w.CurrentCommand == "zsh" {
-						return d.handleFailedCycle(goal, goals, "Crash detected — supervisor returned to shell.", "code-defect")
+						// A supervisor that dropped back to the shell is a TRANSIENT infra
+						// crash, NOT a code defect (backend task 514): route it through the
+						// shared stuck-recovery path so it charges StuckRetries (not
+						// CodeRetries), writes NO fabricated acceptance-failure correction,
+						// and re-dispatches — instead of burning the code budget on
+						// process/ordering flakiness on a gate-green change.
+						log.Printf("%s: supervisor returned to shell — transient crash, recovering via stuck path", goal.ID)
+						return d.handleStuckSupervisor(goal, goals)
 					}
 				}
 			}
 			if !found {
-				return d.handleFailedCycle(goal, goals, "Crash detected — supervisor window vanished.", "code-defect")
+				// Supervisor window vanished mid-cycle — same transient infra crash as
+				// "returned to shell" (task 514). handleStuckSupervisor's teardown is
+				// idempotent (killWindowByName/killWindowsByPrefix), so it is safe even
+				// though the window is already gone.
+				log.Printf("%s: supervisor window vanished — transient crash, recovering via stuck path", goal.ID)
+				return d.handleStuckSupervisor(goal, goals)
 			}
 		}
 		return nil
@@ -404,7 +416,7 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	supSig, ok := sig.(*SupervisorSignal)
 	if !ok {
 		_ = DeleteSignal(d.workDir, goal.ID)
-		return d.handleFailedCycle(goal, goals, "Unexpected signal type during supervising phase.", "code-defect")
+		return d.handleFailedCycle(goal, goals, "Unexpected signal type during supervising phase.", "code-defect", "")
 	}
 
 	rt.lastSupervisorStatus = supSig.Status
@@ -455,9 +467,16 @@ func (d *Daemon) checkSupervisingPhase(goal *Goal, goals *GoalsFile) error {
 	// post-validation failZeroIntegration backstop is retained unchanged.
 	if len(goal.Scope) > 0 && d.inScopeDiffEmpty(goal) {
 		log.Printf("%s: empty in-scope diff — failing cycle before validation", goal.ID)
+		// Name the acceptance-diff probe command so the finding-less correction says
+		// what ran to conclude "no in-scope changes" (task 514). Both probes run in
+		// worktree mode; the inline mode uses only the porcelain probe.
+		probeCmd := "git status --porcelain -- " + strings.Join(goal.Scope, " ")
+		if d.goalUsesWorktree(goal) {
+			probeCmd = "git -C <worktree> rev-list --count <base>..HEAD; " + probeCmd
+		}
 		return d.handleFailedCycle(goal, goals,
 			"no committed in-scope changes: the implementation produced no in-scope diff to validate — make and commit your in-scope edits before reporting DONE.",
-			"code-defect")
+			"code-defect", probeCmd)
 	}
 
 	// Validation is fully non-deterministic: there is no prebuilt deterministic
@@ -502,7 +521,27 @@ func (d *Daemon) inScopeDiffEmpty(goal *Goal) bool {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
 		run := d.gitRunner()
-		return commitsAhead(ctx, run, wt, d.baseBranch(ctx, run)) == 0
+		if commitsAhead(ctx, run, wt, d.baseBranch(ctx, run)) != 0 {
+			return false // committed in-scope diff present (commitsAhead fails open ⇒ 1)
+		}
+		// commitsAhead==0, but the worker may have reported DONE with its in-scope
+		// edits still UNCOMMITTED in the worktree working tree (backend task 514).
+		// mergeWorktreeBack `git add -A` + commits those edits at done, so a diff
+		// that is present-but-uncommitted must NOT read as empty here — probe the
+		// worktree working tree scoped to the goal's footprint and treat the diff as
+		// empty ONLY when BOTH HEAD and the working tree are clean in scope. Fails
+		// OPEN on an empty pathspec set or any git-probe error, matching the inline
+		// branch and this function's load-bearing fail-open contract. The probe MUST
+		// run in the worktree dir (wt), NOT d.workDir — the edits live there.
+		pathspecs := scopePathspecs(goal.Scope)
+		if len(pathspecs) == 0 {
+			return false // no scope pathspecs to probe ⇒ fail open
+		}
+		out, _, code, err := run(ctx, append([]string{"-C", wt, "status", "--porcelain", "--"}, pathspecs...)...)
+		if code != 0 || err != nil {
+			return false // git-probe error ⇒ fail open
+		}
+		return strings.TrimSpace(out) == "" // empty ONLY when the working tree is also clean in scope
 	}
 
 	// Inline: mirror autoCommitGoal's scope-matched emptiness read-only (no commit).
@@ -596,7 +635,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 			}
 			for _, w := range windows {
 				if w.Name == validatorWindow(goal.ID, mg) && w.CurrentCommand == "zsh" {
-					return d.handleFailedCycle(goal, goals, "Crash detected — validator returned to shell.", "code-defect")
+					return d.handleFailedCycle(goal, goals, "Crash detected — validator returned to shell.", "code-defect", "")
 				}
 			}
 		}
@@ -606,7 +645,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 	valSig, ok := sig.(*ValidatorSignal)
 	if !ok {
 		_ = DeleteSignal(d.workDir, goal.ID)
-		return d.handleFailedCycle(goal, goals, "Unexpected signal type during validating phase.", "code-defect")
+		return d.handleFailedCycle(goal, goals, "Unexpected signal type during validating phase.", "code-defect", "")
 	}
 
 	if err := DeleteSignal(d.workDir, goal.ID); err != nil {
@@ -696,7 +735,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 		return d.advanceToNextGoal(goals, goal.ID, true)
 	case verdict == VerdictFail:
 		// Code defect — the implementer must fix it. Charges CodeRetries only.
-		return d.handleFailedCycle(goal, goals, valSig.NextAction, "code-defect")
+		return d.handleFailedCycle(goal, goals, valSig.NextAction, "code-defect", "")
 	case verdict == VerdictBlocked && owner == "planner":
 		// G5: demote BEFORE applyStructuredCorrections so the zero-budget
 		// correction path still counts as a consumed first cycle for the lane.
@@ -727,7 +766,7 @@ func (d *Daemon) checkValidatingPhase(goal *Goal, goals *GoalsFile) error {
 	default:
 		// Defensive: C1's enum is closed and its leaf-4 catch-all maps unknowns to
 		// (fail, implementer), so this should not occur. Treat as a code defect.
-		return d.handleFailedCycle(goal, goals, valSig.NextAction, "code-defect")
+		return d.handleFailedCycle(goal, goals, valSig.NextAction, "code-defect", "")
 	}
 }
 
@@ -1199,7 +1238,13 @@ func demoteTasksYamlLane(goalDir string) error {
 // reason is the correction text surfaced to the implementer on the next cycle;
 // it is retained as a distinct parameter (not collapsed into verdictClass) so
 // the correction file keeps the actionable remediation guidance.
-func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdictClass string) error {
+// failingCommand names the concrete command whose failure triggered this cycle
+// (the goal's validate line on a timeout, the in-scope-diff probe on the empty-diff
+// gate); it is threaded into writeCorrectionFile so a finding-less correction names
+// a real Command instead of the "(not reported)" placeholder (backend task 514).
+// Pass "" on routes where no single command applies (unexpected-signal / structured
+// -finding routes) to preserve the existing fallback text verbatim.
+func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdictClass, failingCommand string) error {
 	if err := d.demoteSoloLane(goal, goals, "failed cycle"); err != nil {
 		return err
 	}
@@ -1289,7 +1334,7 @@ func (d *Daemon) handleFailedCycle(goal *Goal, goals *GoalsFile, reason, verdict
 	// rawCaptured=true: the findingless branch above primed NextAction with the
 	// daemon framing + RAW validate output, which writeCorrectionFile classifies
 	// (env/infra noise → ops, never blamed on the implementer).
-	if err := d.writeCorrectionFile(goalDir, cycleNum, valSig, true); err != nil {
+	if err := d.writeCorrectionFile(goalDir, cycleNum, valSig, true, failingCommand); err != nil {
 		return err
 	}
 
@@ -1410,7 +1455,7 @@ func (d *Daemon) bounceToGeneration(goal *Goal, goals *GoalsFile, valSig *Valida
 	}
 	// rawCaptured=false: the spec-defect framing is already an actionable planner
 	// instruction, not raw captured output — write it verbatim (no synthetic finding).
-	if err := d.writeCorrectionFile(goalDir, cycleNum, sig, false); err != nil {
+	if err := d.writeCorrectionFile(goalDir, cycleNum, sig, false, ""); err != nil {
 		return err
 	}
 	// writeCorrectionFile's XOR suppresses the NextAction framing once structured

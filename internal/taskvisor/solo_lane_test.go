@@ -180,7 +180,7 @@ func TestSoloLane_DemoteOnFailedCycle(t *testing.T) {
 	require.NoError(t, WriteGoalMD(goalDir, "test", "", LaneSolo, []string{"AC"}, []string{"true"}, nil, "", "", nil))
 
 	goal := &gf.Goals[0]
-	require.NoError(t, d.handleFailedCycle(goal, gf, "fix it", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(goal, gf, "fix it", "code-defect", ""))
 
 	assert.Equal(t, LaneFull, goal.Lane)
 	assert.Equal(t, 4, goal.CodeRetries, "existing CodeRetries decrement must be preserved")
@@ -366,7 +366,7 @@ func TestSoloLane_NoOpForFullAndAbsent(t *testing.T) {
 	require.NoError(t, err)
 
 	goal := &gf.Goals[0]
-	require.NoError(t, d.handleFailedCycle(goal, gf, "fix it", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(goal, gf, "fix it", "code-defect", ""))
 	assert.Equal(t, "", goal.Lane, "lane-absent goal must stay lane-absent")
 	raw, err := os.ReadFile(GoalsFilePath(dir))
 	require.NoError(t, err)

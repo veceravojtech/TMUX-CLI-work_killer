@@ -339,7 +339,7 @@ func TestBounceToGeneration_AlternatingCodeSpecCycles_NoCrossContamination(t *te
 
 	// 2) Intervening code-defect cycle C — primes the code streak; spec state PRESERVED.
 	writeFixtureSignal(t, dir, "goal-025", codeSig) // handleFailedCycle re-loads from disk
-	require.NoError(t, d.handleFailedCycle(goal, gf, "code still failing", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(goal, gf, "code still failing", "code-defect", ""))
 	assert.Equal(t, 1, goal.ConvergenceStreak)
 	assert.True(t, equalSorted(codeSigs, goal.ConvergenceSignatures))
 	assert.Equal(t, 1, goal.SpecConvergenceStreak, "code cycle must NOT reset the spec streak")
@@ -423,7 +423,7 @@ func TestM05_DispatchMdFullCorrections(t *testing.T) {
 	}))
 
 	goal := &gf.Goals[0]
-	require.NoError(t, d.handleFailedCycle(goal, gf, "fix pricing", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(goal, gf, "fix pricing", "code-defect", ""))
 	require.NoError(t, d.writeDispatchMd(goal))
 
 	data, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "dispatch.md"))
@@ -486,7 +486,7 @@ tasks:
 	writeTaskContext(t, dir, ".tmux-cli/research/ctx1.md", "# Task 1 context")
 
 	goal := &gf.Goals[0]
-	require.NoError(t, d.handleFailedCycle(goal, gf, "fix the broken test", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(goal, gf, "fix the broken test", "code-defect", ""))
 	require.NoError(t, d.injectCorrections(goal))
 
 	ctxData, err := os.ReadFile(filepath.Join(dir, ".tmux-cli", "research", "ctx1.md"))

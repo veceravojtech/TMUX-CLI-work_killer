@@ -144,10 +144,15 @@ func TestCheckProgress_Supervising_TimeoutExceeded(t *testing.T) {
 	assert.NoError(t, statErr)
 }
 
+// TestCheckProgress_Supervising_CrashDetected — a supervisor dropped back to the
+// shell mid-cycle is a TRANSIENT infra crash (backend task 514): it is recovered
+// via handleStuckSupervisor (StuckRetries charged, CodeRetries untouched, no
+// correction, re-dispatched), NOT a code-defect re-pend.
 func TestCheckProgress_Supervising_CrashDetected(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
+	d.SetWindowCreateFunc(mockCreateWindowFn("@0"))
 	d.runtime("goal-001").phase = phaseSupervising
 	d.dispatchTimeout = time.Hour
 	d.runtime("goal-001").dispatchTime = time.Now().Add(-10 * time.Second)
@@ -156,23 +161,45 @@ func TestCheckProgress_Supervising_CrashDetected(t *testing.T) {
 	gf := &GoalsFile{
 		CurrentGoal: "goal-001",
 		Goals: []Goal{
-			{ID: "goal-001", Description: "test", Status: GoalRunning, Retries: 0, MaxRetries: 3, CodeRetries: 3, MaxCodeRetries: 3},
+			{ID: "goal-001", Description: "test", Status: GoalRunning, Retries: 0, MaxRetries: 3,
+				CodeRetries: 3, MaxCodeRetries: 3, StuckRetries: 3, MaxStuckRetries: 3},
 		},
 	}
 	writeGoals(t, dir, gf)
 	_, err := EnsureGoalDir(dir, "goal-001")
 	require.NoError(t, err)
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
+cycle: 1
+tasks:
+  - name: "task one"
+    wid: execute-1
+    status: done
+    context: .tmux-cli/research/ctx1.md
+`)
+	writeTaskContext(t, dir, ".tmux-cli/research/ctx1.md", "# Task 1")
 
-	exec.On("ListWindows", testSession).Return([]tmux.WindowInfo{
-		{TmuxWindowID: "@0", Name: "supervisor-001", CurrentCommand: "zsh"},
-	}, nil)
+	shell := []tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor-001", CurrentCommand: "zsh"}}
+	booted := []tmux.WindowInfo{{TmuxWindowID: "@0", Name: "supervisor-001", CurrentCommand: "claude"}}
+	empty := []tmux.WindowInfo{}
+	// crash-detect find + stuck-kill prefix + stuck-kill byname (present, killed)
+	exec.On("ListWindows", testSession).Return(shell, nil).Times(3)
+	// dispatchRetry's 5 kill lookups + collectManagedNames + waitWindowsGone (gone)
+	exec.On("ListWindows", testSession).Return(empty, nil).Times(7)
+	exec.On("ListWindows", testSession).Return(booted, nil)
+	exec.On("CaptureWindowOutput", testSession, "@0").Return("ready ❯", nil)
+	exec.On("KillWindow", testSession, "@0").Return(nil)
+	exec.On("SendMessage", testSession, "@0", mock.Anything).Return(nil)
 
 	goal := &gf.Goals[0]
 	err = d.checkProgress(goal, gf)
 	require.NoError(t, err)
 
-	assert.Equal(t, 2, goal.CodeRetries, "code budget 3->2")
-	assert.Equal(t, GoalPending, goal.Status)
+	assert.Equal(t, 3, goal.CodeRetries, "code budget untouched (transient crash is not a code defect)")
+	assert.Equal(t, 2, goal.StuckRetries, "stuck budget charged 3->2")
+	assert.Equal(t, GoalRunning, goal.Status, "transient crash is re-dispatched, not re-pended")
+
+	_, statErr := os.Stat(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "cycle-1.md"))
+	assert.True(t, os.IsNotExist(statErr), "no correction file written for a transient supervisor crash")
 }
 
 func TestCheckProgress_ValidatorPass_GoalDone(t *testing.T) {

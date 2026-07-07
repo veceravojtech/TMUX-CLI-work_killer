@@ -277,7 +277,7 @@ func TestFixtureRepeatSignatureTripsBreaker(t *testing.T) {
 
 	g, ok := gf.GoalByID("goal-025")
 	require.True(t, ok)
-	require.NoError(t, d.handleFailedCycle(g, gf, "still failing", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(g, gf, "still failing", "code-defect", ""))
 
 	assert.Equal(t, GoalBlocked, g.Status, "K-recurrence halts the goal")
 	assert.Equal(t, "convergence-circuit-breaker", g.BlockedBy)

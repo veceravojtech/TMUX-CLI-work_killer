@@ -113,7 +113,7 @@ func TestInvestigationLifecycle_RedispatchIncludesCorrectionsInDispatchMd(t *tes
 	require.NoError(t, err)
 
 	goal := &gf.Goals[0]
-	err = d.handleFailedCycle(goal, gf, "Fix pricing bug — API returns cents not dollars", "code-defect")
+	err = d.handleFailedCycle(goal, gf, "Fix pricing bug — API returns cents not dollars", "code-defect", "")
 	require.NoError(t, err)
 	assert.Equal(t, 2, goal.CodeRetries, "code budget 3->2")
 
@@ -161,7 +161,7 @@ tasks:
 	writeTaskContext(t, dir, ".tmux-cli/research/ctx2.md", "# Task 2 context")
 
 	goal := &gf.Goals[0]
-	err = d.handleFailedCycle(goal, gf, "Fix the broken test", "code-defect")
+	err = d.handleFailedCycle(goal, gf, "Fix the broken test", "code-defect", "")
 	require.NoError(t, err)
 	assert.Equal(t, 2, goal.CodeRetries, "code budget 3->2")
 
@@ -200,12 +200,12 @@ func TestInvestigationLifecycle_MultipleCycles_CorrectionsAccumulate(t *testing.
 
 	goal := &gf.Goals[0]
 
-	err = d.handleFailedCycle(goal, gf, "Fix pricing calculation", "code-defect")
+	err = d.handleFailedCycle(goal, gf, "Fix pricing calculation", "code-defect", "")
 	require.NoError(t, err)
 	assert.Equal(t, 4, goal.CodeRetries, "code budget 5->4")
 
 	goal.Status = GoalRunning
-	err = d.handleFailedCycle(goal, gf, "Also fix currency formatting", "code-defect")
+	err = d.handleFailedCycle(goal, gf, "Also fix currency formatting", "code-defect", "")
 	require.NoError(t, err)
 	assert.Equal(t, 3, goal.CodeRetries, "code budget 5->4->3")
 

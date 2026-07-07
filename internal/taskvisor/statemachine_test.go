@@ -2,6 +2,7 @@ package taskvisor
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -537,13 +538,17 @@ func TestValidatingHeartbeat_ResetsOnProgress(t *testing.T) {
 	exec.AssertNotCalled(t, "KillWindow", mock.Anything, mock.Anything)
 }
 
-// TestHeartbeat_BackToShell_NoFire — a window back at the shell (CurrentCommand
-// "zsh") is NOT a wedged agent: the heartbeat skips it WITHOUT capturing the pane,
-// and the existing crash-detect branch handles it (re-pend, code-defect).
-func TestHeartbeat_BackToShell_NoFire(t *testing.T) {
+// TestHeartbeat_BackToShell_RecoversViaStuck — a window back at the shell
+// (CurrentCommand "zsh") is NOT a wedged agent: the heartbeat skips it, and the
+// crash-detect branch now treats "supervisor returned to shell" as a TRANSIENT
+// infra crash (backend task 514) — recovered via handleStuckSupervisor
+// (StuckRetries charged, CodeRetries untouched, NO fabricated correction,
+// re-dispatched), NOT a code-defect re-pend.
+func TestHeartbeat_BackToShell_RecoversViaStuck(t *testing.T) {
 	d, exec, dir := setupDaemon(t)
 	d.session = testSession
 	d.mode = modeActive
+	d.SetWindowCreateFunc(mockCreateWindowFn(heartbeatWindowID))
 	clk := &fakeClock{t: time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)}
 	d.clock = clk.now
 	d.progressTimeout = 5 * time.Minute
@@ -553,6 +558,17 @@ func TestHeartbeat_BackToShell_NoFire(t *testing.T) {
 	writeGoals(t, dir, gf)
 	_, err := EnsureGoalDir(dir, "goal-001")
 	require.NoError(t, err)
+	// A per-goal tasks.yaml routes the recovery through dispatchRetry (reuse), so
+	// the re-dispatch ships "/tmux:supervisor <id>" rather than a full plan.
+	writeGoalTasksYaml(t, dir, "goal-001", `status: ready
+cycle: 1
+tasks:
+  - name: "task one"
+    wid: execute-1
+    status: done
+    context: .tmux-cli/research/ctx1.md
+`)
+	writeTaskContext(t, dir, ".tmux-cli/research/ctx1.md", "# Task 1")
 
 	rt := d.runtime("goal-001")
 	rt.phase = phaseSupervising
@@ -561,14 +577,36 @@ func TestHeartbeat_BackToShell_NoFire(t *testing.T) {
 	clk.advance(10 * time.Second)
 
 	shell := []tmux.WindowInfo{{TmuxWindowID: heartbeatWindowID, Name: "supervisor-001", CurrentCommand: "zsh"}}
-	exec.On("ListWindows", testSession).Return(shell, nil)
+	booted := []tmux.WindowInfo{{TmuxWindowID: heartbeatWindowID, Name: "supervisor-001", CurrentCommand: "claude"}}
+	empty := []tmux.WindowInfo{}
+	// heartbeat find (zsh → skip) + crash-detect find + stuck-kill prefix + stuck-kill byname (present, killed)
+	exec.On("ListWindows", testSession).Return(shell, nil).Times(4)
+	// dispatchRetry's 5 kill lookups (killGoalWindows incl. plan-audit) + collectManagedNames + waitWindowsGone (gone)
+	exec.On("ListWindows", testSession).Return(empty, nil).Times(7)
+	// waitClaudeBoot + waitForPrompt on the freshly re-created supervisor window
+	exec.On("ListWindows", testSession).Return(booted, nil)
+	exec.On("CaptureWindowOutput", testSession, heartbeatWindowID).Return("ready ❯", nil)
+	exec.On("KillWindow", testSession, heartbeatWindowID).Return(nil)
+	var sent []string
+	exec.On("SendMessage", testSession, heartbeatWindowID, mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		sent = append(sent, args.String(2))
+	})
 
-	require.NoError(t, d.checkSupervisingPhase(&gf.Goals[0], gf))
+	out := captureLog(t, func() {
+		require.NoError(t, d.checkSupervisingPhase(&gf.Goals[0], gf))
+	})
 
 	g := &gf.Goals[0]
-	assert.Equal(t, GoalPending, g.Status, "crash-detect re-pends the goal")
-	assert.Equal(t, 1, g.CodeRetries, "crash-detect charges a code-defect retry 2->1")
-	exec.AssertNotCalled(t, "CaptureWindowOutput", mock.Anything, mock.Anything)
+	assert.Equal(t, GoalRunning, g.Status, "transient supervisor crash is re-dispatched, not re-pended")
+	assert.Equal(t, 2, g.StuckRetries, "stuck budget charged 3->2")
+	assert.Equal(t, 2, g.CodeRetries, "code budget untouched (not a code defect)")
+	assert.Contains(t, out, "supervisor returned to shell — transient crash", "crash-detect routes to the stuck path")
+	require.Len(t, sent, 1)
+	assert.Equal(t, "/tmux:supervisor goal-001", sent[0], "re-dispatch via dispatchRetry reuse path")
+
+	// No fabricated acceptance-failure correction is written for a transient crash.
+	_, statErr := os.Stat(filepath.Join(dir, ".tmux-cli", "goals", "goal-001", "corrections", "cycle-1.md"))
+	assert.True(t, os.IsNotExist(statErr), "no correction file written for a transient supervisor crash")
 }
 
 // TestHeartbeat_DisabledWhenTimeoutZero — with progressTimeout<=0 the heartbeat
@@ -822,7 +860,7 @@ func TestHandleFailedCycle_BreakerTripReports(t *testing.T) {
 
 	goal := &gf.Goals[0]
 	require.NotPanics(t, func() {
-		require.NoError(t, d.handleFailedCycle(goal, gf, "fix build", "code-defect"))
+		require.NoError(t, d.handleFailedCycle(goal, gf, "fix build", "code-defect", ""))
 	})
 	assert.Equal(t, GoalBlocked, goal.Status, "K-recurrence trips the code-route breaker")
 	assert.Equal(t, "convergence-circuit-breaker", goal.BlockedBy, "report fires at the trip edge")
@@ -852,7 +890,7 @@ func TestHandleFailedCycle_NoTripNoBreakerReport(t *testing.T) {
 	}))
 
 	goal := &gf.Goals[0]
-	require.NoError(t, d.handleFailedCycle(goal, gf, "fix test", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(goal, gf, "fix test", "code-defect", ""))
 	assert.NotEqual(t, "convergence-circuit-breaker", goal.BlockedBy, "sub-K must not trip the breaker")
 }
 

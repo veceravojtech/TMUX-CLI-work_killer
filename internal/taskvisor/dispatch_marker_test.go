@@ -676,7 +676,7 @@ func TestHandleFailedCycle_SetsImplementerMarker(t *testing.T) {
 	_, err := EnsureGoalDir(dir, "goal-064")
 	require.NoError(t, err)
 
-	require.NoError(t, d.handleFailedCycle(&gf.Goals[0], gf, "tests failed", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(&gf.Goals[0], gf, "tests failed", "code-defect", ""))
 
 	assert.Equal(t, GoalPending, gf.Goals[0].Status)
 	assert.Equal(t, dispatchImplementer, gf.Goals[0].NextDispatch,

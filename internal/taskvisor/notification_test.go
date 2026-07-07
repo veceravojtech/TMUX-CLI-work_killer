@@ -361,7 +361,7 @@ func TestHandleFailedCycle_GoalFailedNotification(t *testing.T) {
 	exec.On("SendMessageWithDelay", testSession, "@0", mock.Anything).Return(nil)
 
 	goal := &gf.Goals[0]
-	require.NoError(t, d.handleFailedCycle(goal, gf, "test reason", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(goal, gf, "test reason", "code-defect", ""))
 
 	var foundNotif bool
 	for _, call := range exec.Calls {

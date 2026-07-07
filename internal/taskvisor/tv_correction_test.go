@@ -34,7 +34,7 @@ func TestWriteCorrectionFile_LogsEveryFail(t *testing.T) {
 			OutputExcerpt:  "Type error on line 12",
 		}},
 	}
-	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true))
+	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true, ""))
 
 	logged := buf.String()
 	assert.Contains(t, logged, "validator fail", "every fail must emit a log line")
@@ -51,7 +51,7 @@ func TestWriteCorrectionFile_DoneHeader(t *testing.T) {
 	// No structured findings → fallback writes NextAction verbatim (the call site
 	// primes it with the daemon framing header).
 	sig := &ValidatorSignal{NextAction: "Implementation completed but failed acceptance criteria.\n\nfix the pricing"}
-	err := d.writeCorrectionFile(goalDir, 1, sig, false)
+	err := d.writeCorrectionFile(goalDir, 1, sig, false, "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
@@ -68,7 +68,7 @@ func TestWriteCorrectionFile_StoppedHeader(t *testing.T) {
 
 	header := "Previous cycle hit the supervisor cycle limit — work is incomplete. Prioritize the unmet criteria below over polish or cleanup."
 	sig := &ValidatorSignal{NextAction: header + "\n\nfinish booking page"}
-	err := d.writeCorrectionFile(goalDir, 2, sig, false)
+	err := d.writeCorrectionFile(goalDir, 2, sig, false, "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-2.md"))
@@ -82,7 +82,7 @@ func TestWriteCorrectionFile_CreatesDirectory(t *testing.T) {
 	d, _, _ := setupDaemon(t)
 	goalDir := filepath.Join(t.TempDir(), "goal-001")
 
-	err := d.writeCorrectionFile(goalDir, 1, &ValidatorSignal{NextAction: "content"}, false)
+	err := d.writeCorrectionFile(goalDir, 1, &ValidatorSignal{NextAction: "content"}, false, "")
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
@@ -104,7 +104,7 @@ func TestWriteCorrectionFile_EnvNoiseFallback(t *testing.T) {
 time="2026-06-15T20:21:06+02:00" level=warning msg="The \"DATADOG_API_KEY\" variable is not set. Defaulting to a blank string."`
 	sig := &ValidatorSignal{NextAction: header + "\n\n" + noise}
 
-	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true))
+	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true, ""))
 
 	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
 	require.NoError(t, err)
@@ -149,7 +149,7 @@ func TestWriteCorrectionFile_StructuredPerFinding(t *testing.T) {
 		NextAction: "should not appear when structured findings exist",
 	}
 
-	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true))
+	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true, ""))
 
 	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
 	require.NoError(t, err)
@@ -204,7 +204,7 @@ func TestWriteCorrectionFile_FoldsOnDiskInvestigatorReports(t *testing.T) {
 
 	// signal has NO structured findings (the blind-retry condition).
 	sig := &ValidatorSignal{Verdict: "fail", NextAction: "Implementation completed but failed acceptance criteria.\n\nsome captured raw output"}
-	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true))
+	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true, ""))
 
 	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
 	require.NoError(t, err)
@@ -230,7 +230,7 @@ func TestWriteCorrectionFile_MultipleFailReportsFoldedInOrder(t *testing.T) {
 	writeInvestigatorReport(t, goalDir, 2, "3-gamma", "fail", "- gamma failing detail")
 
 	sig := &ValidatorSignal{Verdict: "fail", NextAction: "framing\n\nraw"}
-	require.NoError(t, d.writeCorrectionFile(goalDir, 2, sig, true))
+	require.NoError(t, d.writeCorrectionFile(goalDir, 2, sig, true, ""))
 
 	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-2.md"))
 	require.NoError(t, err)
@@ -256,7 +256,7 @@ func TestWriteCorrectionFile_NoReportsFallsThrough(t *testing.T) {
 	header := "Implementation completed but failed acceptance criteria."
 	noise := `time="2026-06-15T20:21:03+02:00" level=warning msg="The \"DATADOG_API_KEY\" variable is not set. Defaulting to a blank string."`
 	sig := &ValidatorSignal{NextAction: header + "\n\n" + noise}
-	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true))
+	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, true, ""))
 
 	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
 	require.NoError(t, err)
@@ -280,7 +280,7 @@ func TestWriteCorrectionFile_SkipsPassOnlyReports(t *testing.T) {
 	writeInvestigatorReport(t, goalDir, 1, "2-empty", "fail", "   ")
 
 	sig := &ValidatorSignal{NextAction: "Implementation completed but failed acceptance criteria.\n\nfix the pricing"}
-	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, false))
+	require.NoError(t, d.writeCorrectionFile(goalDir, 1, sig, false, ""))
 
 	data, err := os.ReadFile(filepath.Join(goalDir, "corrections", "cycle-1.md"))
 	require.NoError(t, err)

@@ -948,7 +948,13 @@ func foldInvestigatorReports(goalDir string, cycleNum int) (string, bool) {
 // blamed on the implementer — the goal-001 DATADOG cycle-1.md case). The
 // spec-defect bounce (rawCaptured=false) primes NextAction with an already
 // actionable planner instruction, which is written verbatim.
-func (d *Daemon) writeCorrectionFile(goalDir string, cycleNum int, signal *ValidatorSignal, rawCaptured bool) error {
+// failingCommand, when non-empty, names the concrete command whose failure drove
+// a finding-LESS cycle (timeout / empty-diff gate). It replaces the "(not reported)"
+// / "did not report the failing command" placeholder in the no-structured-findings
+// fallback so every failing cycle names a real Command (backend task 514). It is
+// ignored on the structured-findings path (each finding carries its own
+// FailingCommand) and on the verbatim spec-defect path.
+func (d *Daemon) writeCorrectionFile(goalDir string, cycleNum int, signal *ValidatorSignal, rawCaptured bool, failingCommand string) error {
 	correctionsDir := filepath.Join(goalDir, "corrections")
 	if err := os.MkdirAll(correctionsDir, 0o755); err != nil {
 		return err
@@ -1017,14 +1023,22 @@ func (d *Daemon) writeCorrectionFile(goalDir string, cycleNum int, signal *Valid
 				evidence, hasSignal := substantiveEvidence(body)
 				sb.WriteString("### Finding: validation failed (no structured validator findings)\n")
 				if hasSignal {
-					sb.WriteString("Command: (the validator did not report the failing command — fix the Investigation Config so the next cycle names it)\n")
+					if failingCommand != "" {
+						fmt.Fprintf(&sb, "Command: %s\n", failingCommand)
+					} else {
+						sb.WriteString("Command: (the validator did not report the failing command — fix the Investigation Config so the next cycle names it)\n")
+					}
 					fmt.Fprintf(&sb, "Output: %s\n", evidence)
 					sb.WriteString("Expected: the goal's acceptance criteria are met\n")
 					sb.WriteString("Correction: address the captured failure above; if it is not a code defect, repair the validation command so the next cycle reports a structured finding\n")
 					log.Printf("%s: validator fail [cycle %d]: no structured findings; captured failure=%q",
 						goalID, cycleNum, clipEvidence(evidence, 200))
 				} else {
-					fmt.Fprintf(&sb, "Command: (not reported)\nOutput: %s\n", strings.TrimSpace(body))
+					if failingCommand != "" {
+						fmt.Fprintf(&sb, "Command: %s\nOutput: %s\n", failingCommand, strings.TrimSpace(body))
+					} else {
+						fmt.Fprintf(&sb, "Command: (not reported)\nOutput: %s\n", strings.TrimSpace(body))
+					}
 					sb.WriteString("Expected: a code-level validation signal\n")
 					sb.WriteString("Correction: the validator produced NO actionable code finding — the captured output is environment/infrastructure noise only. Verify the validation command can execute (owner=ops); do NOT change code on this signal.\n")
 					log.Printf("%s: validator fail [cycle %d]: NO structured findings and captured output is env-noise only — owner=ops, NOT a code defect",

@@ -325,7 +325,7 @@ func TestHandleFailedCycle_RetriesExhausted_LogsGoalFailed(t *testing.T) {
 
 	goal := &gf.Goals[0]
 	output := captureLog(t, func() {
-		err = d.handleFailedCycle(goal, gf, "give up", "code-defect")
+		err = d.handleFailedCycle(goal, gf, "give up", "code-defect", "")
 	})
 	require.NoError(t, err)
 	assert.Contains(t, output, "goal-001: running -> failed")
@@ -350,7 +350,7 @@ func TestHandleFailedCycle_Retry_LogsPendingAndPhase(t *testing.T) {
 
 	goal := &gf.Goals[0]
 	output := captureLog(t, func() {
-		err = d.handleFailedCycle(goal, gf, "fix it", "code-defect")
+		err = d.handleFailedCycle(goal, gf, "fix it", "code-defect", "")
 	})
 	require.NoError(t, err)
 	assert.Contains(t, output, "goal-001: running -> pending (code budget left 2)")
@@ -394,7 +394,7 @@ func TestM03_CircuitBreakerHalt(t *testing.T) {
 	}))
 
 	goal := &gf.Goals[0]
-	require.NoError(t, d.handleFailedCycle(goal, gf, "fix build", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(goal, gf, "fix build", "code-defect", ""))
 
 	assert.Equal(t, GoalBlocked, goal.Status, "K-recurrence halts to blocked")
 	assert.Equal(t, "convergence-circuit-breaker", goal.BlockedBy)
@@ -446,7 +446,7 @@ func TestM03_NoHaltWhenSignaturesChange(t *testing.T) {
 	}))
 
 	goal := &gf.Goals[0]
-	require.NoError(t, d.handleFailedCycle(goal, gf, "fix test", "code-defect"))
+	require.NoError(t, d.handleFailedCycle(goal, gf, "fix test", "code-defect", ""))
 
 	assert.Equal(t, GoalPending, goal.Status, "changed signatures -> normal re-dispatch")
 	assert.Equal(t, 1, goal.ConvergenceStreak, "streak resets to 1 on a new signature set")
