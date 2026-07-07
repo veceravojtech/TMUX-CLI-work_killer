@@ -1,0 +1,103 @@
+<stage n="3c" title="Plan-parity audit" autonomous="true">
+  <objective>For an ATOMIC single-goal feature emission ONLY, run the SAME quality gates the daemon's per-goal /tmux:plan would — spec-validate (MCP tool, S0-S4/S7/S8/S9/S10), manual S5/S6/S9/S10 with bounded self-revision, a coverage re-map, and ONE independent read-only BLIND-AUDIT sub-agent — so Stage 4.3b can emit via mechanism B (a goal-ROOT `status: ready` tasks.yaml) and the daemon skips the redundant /tmux:plan window WITHOUT dropping any plan-quality gate. This shard COMPOSES plan.xml step 6 (spec-validate + manual S5/S6/S9/S10), step 8b (coverage re-map), and step 11a (blind-audit sub-agent) BY REFERENCE — it NEVER restates or re-implements their internals. It emits a single `PLAN_PARITY` verdict (`pass` | `fail` | `skip`) that Stage 4.3b consumes to choose mechanism B (skip plan) vs A (keep plan). It is gated: a multi-goal DAG or any gate failure degrades safely to mechanism A, so an un-audit-passable spec can NEVER reach the supervisor unaudited. Embedded-XML only; NO daemon/Go change — `resolveDispatchKind`'s plan-once downgrade already performs the skip once a goal-root `tasks.yaml` exists (this shard only earns it a properly-audited one).</objective>
+
+  <substep n="3c.1" title="Applicability gate — compute ATOMIC_EMISSION (single-GOAL, not single-file)">
+    <action>Consume the upstream context blocks VERBATIM — the Stage 3 feature spec, the Stage 3b Test Plan (the classified acceptance-unit rows), the Stage 2 approved-decision block (TESTS_MODE), and the Stage-1-resolved FEATURE RESEARCH-ROOT (GOAL mode &#8594; `.tmux-cli/goals/{GOAL_ID}/research/`; STANDALONE &#8594; `.tmux-cli/research/{y-m-d-hh}/` — REUSE Stage 1's already-resolved directory, never mint a new one). Do NOT re-probe the filesystem or re-run any resolver.</action>
+    <action>Compute `ATOMIC_EMISSION` by REPLAYING Stage 4's decomposition WITHOUT emitting: walk the Stage-3b Test Plan unit list (stage-4-implementation.xml substep 4.2) and, for each unit, apply the SAME per-unit emission form Stage 4.3 would (the single-file/single-unit BE recorded-red single-goal form, the non-BE single impl goal, or the TESTS_MODE=off single impl goal all emit ONE goal; the MULTI-FILE/MULTI-UNIT BE two-goal tests-first&#8594;impl pair emits TWO; a deferred-impl split emits &gt;1). `ATOMIC_EMISSION` is TRUE IFF the total emitted-goal count across all units is EXACTLY ONE — i.e. exactly one acceptance unit resolving to a single-goal form. The boundary is single-GOAL (one emitted goal), NOT single-file: a single goal may touch several files (the blind audit covers multi-file correctness risk).</action>
+    <check condition="ATOMIC_EMISSION is FALSE (zero units, &gt;1 unit, the BE MULTI-FILE two-goal form, or any deferred-impl split &#8594; a DAG of &gt;1 emitted goal)">
+      <action>Record `PLAN_PARITY=skip` and RETURN immediately — do NOT author a fragment, do NOT call spec-validate, do NOT run the blind audit. Stage 4 will emit every goal via mechanism A (today's `research/tasks.yaml` `status: planning`) and the daemon runs the full /tmux:plan per goal (its cross-goal coverage-pass + dependency-edge derivation is still needed). LOG one line: `Stage 3c: PLAN_PARITY=skip — multi-goal DAG (&lt;n&gt; emitted goals) keeps full /tmux:plan.`</action>
+    </check>
+    <check condition="ATOMIC_EMISSION is TRUE (exactly one emitted goal)">
+      <action>Proceed to 3c.2. LOG one line: `Stage 3c: ATOMIC_EMISSION=true — running inherited plan-parity gates for the single-goal emission.`</action>
+    </check>
+  </substep>
+
+  <substep n="3c.2" title="Author the candidate spec fragment (plan-format, in the feature research-root)">
+    <action>Compute `SLUG` deterministically = the SAME kebab-case slugify Stage 4.3b uses for the unit name that Stage 4.3 will pass as the goal's `goal-create` description: lowercase, replace every run of non-`[a-z0-9]` with a single `-`, trim leading/trailing `-`, truncate to &#8804;40 chars. Reuse this ONE `SLUG` so it matches Stage 4.3b's `execute-1-&lt;SLUG&gt;.md` verbatim (staging-then-audit ordering — the emitted goal id does not exist until Stage 4.3, so the fragment is authored in the FEATURE research-root now and Stage 4.3b writes the identical fragment under the emitted goal's dir).</action>
+    <action>Write the candidate fragment to `{feature-research-root}/execute-1-&lt;SLUG&gt;.md` in plan.xml's `&lt;spec-deliverable-template&gt;` shape (BY REFERENCE — mirror the template's mandatory sections, never restate its prose): `## Intent`, `## Boundaries &amp; Constraints`, an `## I/O &amp; Edge-Case Matrix` when the unit has meaningful I/O interfaces (else omit — never write "N/A"), `## Dependencies`, `## Code Map` (every MODIFIED entry carrying CURRENT/CHANGE/PRESERVE), `## Implementation Plan`, `## Test Plan`, `## Acceptance Criteria` (Given/When/Then checkboxes), `## Verification`, `## Spec Change Log` (initially empty), and — ONLY when the unit carries `must` code rules — `## Code Rules`. Assemble it from the Stage-3 feature spec (this unit's slice), the unit's Stage-3b Test Plan row, the Stage-3 APPROVED NAMING MANIFEST names + target paths VERBATIM, and the 4.3a composed GATE_SET (&#8594; `## Verification`, RESOLVED from Stage-0 TOPOLOGY, never a `src/` skeleton literal).</action>
+    <action critical="true">Each `## Test Plan` bullet MUST LEAD with a bare `TestXxx` / `test_xxx` / `testXxx` / `TC-N` token BEFORE any prose or `**bold**` label, so spec-validate's S3 detector COUNTS it (a bold-led or bare-prose bullet scores 0). e.g. `- TC-1 &#96;testSkipsPlanForAtomicGoal&#96; — given … when … then …`.</action>
+    <action>RESEARCH ARTIFACT, NOT PROJECT SOURCE: the fragment lives under the feature research-root (the daemon/planner control plane), NOT the project source tree. Authoring it does NOT violate feature.xml's NEVER-WRITE-PROJECT-SOURCE mandate. If you reach for a project-source path here you have escaped scope — STOP.</action>
+  </substep>
+
+  <substep n="3c.3" title="spec-validate gate (inherit plan step 6, tool half) — bounded self-revision">
+    <action>Call the `spec-validate` MCP tool with `file` = the absolute path to `{feature-research-root}/execute-1-&lt;SLUG&gt;.md` (plan.xml step 6, tool half, BY REFERENCE). The tool checks S0 (Intent), S1 (Code Map), S2 (Implementation Plan), S3 (Test Plan), S4 (Acceptance Criteria), S7 (Boundaries), S8 (RFD/placeholders), S9 (subjective-gate objectivity), S10 (Code-Rules coverage) — it emits S0,S1,S2,S3,S4,S7,S8,S9,S10 ONLY. There is NO S5 and NO S6 in the tool — never expect them here (they are the manual gates in 3c.4).</action>
+    <check condition="spec-validate returns valid=false (findings)">
+      <action>Revise the fragment to close EXACTLY the cited gaps, re-run spec-validate, and record each round in the fragment's `## Spec Change Log` (gap cited &#8594; what changed &#8594; what was preserved). Cap at 3 revision rounds (mirrors the SELF_SPEC self-revision cap). If still `valid=false` after 3 rounds, set `PLAN_PARITY=fail` and skip to 3c.7 (safe degradation to mechanism A).</action>
+    </check>
+    <check condition="spec-validate returns valid=true">
+      <action>Tool half passed — proceed to 3c.4.</action>
+    </check>
+  </substep>
+
+  <substep n="3c.4" title="Manual S5/S6/S9/S10 gate (inherit plan step 6, judgment half) — bounded self-revision">
+    <action>Perform the plan.xml step 6 MANUAL judgment checks the tool cannot (BY REFERENCE — same definitions, never restated): S5 = dependencies specified when the unit depends on others; S6 = I/O matrix present when the unit has meaningful interfaces (APIs, CLI commands, message protocols, file formats — if none, S6 does not apply); S9 = every MODIFIED Code Map entry carries CURRENT/CHANGE/PRESERVE annotations; S10 = cross-check the `must` rule ids from the Stage-1 `rules match` payload against the fragment's `## Code Rules` `- CR-&lt;id&gt;:` lines (if the unit carries `must` rules and the section is ABSENT, or any matched `must` rule has no line or an empty satisfaction line, S10 fails).</action>
+    <check condition="any of S5/S6/S9/S10 fails">
+      <action>Revise the fragment to close the cited manual gap, record the round in `## Spec Change Log`, and re-check — bounded to the SAME cumulative 3-round revision budget as 3c.3. If a manual gap remains after the budget is exhausted, set `PLAN_PARITY=fail` and skip to 3c.7 (mechanism A).</action>
+    </check>
+    <check condition="S5/S6/S9/S10 all pass">
+      <action>Judgment half passed — proceed to 3c.5.</action>
+    </check>
+  </substep>
+
+  <substep n="3c.5" title="Coverage re-map (inherit plan step 8b)">
+    <action>Re-map coverage as plan.xml step 8b does (BY REFERENCE — never restated): extract the feature's acceptance units from the Stage-3 spec + Stage-3b Test Plan and confirm each is addressed by a section of the candidate fragment (`## Intent` / `## Implementation Plan` / `## Acceptance Criteria`). For an atomic single-goal emission the mapping is the single fragment covering every unit of the one goal.</action>
+    <check condition="an acceptance unit is uncovered by the fragment">
+      <action>Extend the fragment to cover it (within the SAME 3-round revision budget), record the round in `## Spec Change Log`, and re-map. If a unit remains uncovered after the budget, set `PLAN_PARITY=fail` and skip to 3c.7 (mechanism A).</action>
+    </check>
+    <check condition="every acceptance unit is covered">
+      <action>Coverage passed — proceed to 3c.6.</action>
+    </check>
+  </substep>
+
+  <substep n="3c.6" title="Blind audit (inherit plan step 11a) — the key parity element">
+    <action>Evaluate the canonical solo-lane gate for the atomic unit BY REFERENCE (task-list.xml `&lt;lane-gate name="solo-lane"&gt;`, G1&#8211;G5 + veto V — NEVER restated here) to decide SLIM (solo) vs FULL audit — the SAME lane Stage 4.3 passes to goal-create for this unit: G1 holds by construction (exactly one emitted goal); judge G2 on the composed 4.3a GATE_SET validate commands (all bare/deterministic) NOT counting the mandatory RC-1 functional-review (code-review) investigator (a matched MUST review-kind convention-audit rule DOES miss G2); G3 = a single-file / tightly-single-area footprint; G4 = not critical; veto V never fires at emission (no prior `## Lane: full` record). ALL of G1&#8211;G4 hold and V does not fire &#8594; `LANE=solo`; any miss &#8594; `LANE=full`.</action>
+    <action>Run the blind audit as ONE serial Claude-native sub-agent via the Agent tool (plan.xml step 11a, BY REFERENCE — do NOT create a tmux window, do NOT use windows-send/windows-message; the sub-agent runs in-process and returns synchronously). It starts with a FRESH context containing none of this feature-authoring conversation — that isolation IS the blindness, and in /tmux:feature the orchestrator authored the spec, so this blind audit is the ONLY independent review and is MANDATORY for the skip path, never optional. Compose a fully self-contained prompt instructing it to:
+      - Read ONLY on-disk artifacts scoped to THIS candidate: the fragment `{feature-research-root}/execute-1-&lt;SLUG&gt;.md`, the other artifacts in `{feature-research-root}`, the live source tree, `AGENTS.md`/`CLAUDE.md`, `{feature-research-root}/code-rules.md` if present, and any prior `{feature-research-root}/plan-audit-*.md` on a re-audit. It must never see the authoring conversation state.
+      - Daemon's-eye validate evaluation: every validate command is concrete and runnable, a bare command (no shell wrappers or chains), and depends_on edges are valid — no cycles, no dangling references. A validate command that already passes at baseline (e.g. grepping a token that exists before the change) IS a finding.
+      - When `LANE=solo`: score against ONLY dimensions (1) validate-executability and (2) dependency-correctness (the slim daemon's-eye evaluation), dropping dimensions 3&#8211;9. When `LANE=full`: score against the full 9-dimension checklist (1) validate-executability, (2) dependency-correctness, (3) runtime-state-gating, (4) host-container-split, (5) objective-acceptance, (6) spec-discovery-consistency, (7) environment-prerequisites, (8) scope-sanity, (9) rule-coverage. The sub-agent stays blind to the lane either way — it only receives the composed instruction set.
+      - Severity-weighted scoring: start at 100; deduct SEV-1 &#8722;25, SEV-2 &#8722;15, SEV-3 &#8722;8, SEV-4 &#8722;3; floor 0. PASS requires score &#8805; 90 AND zero open SEV-1/SEV-2 findings. Guardrail: reach 90 by fixing the spec, NEVER by weakening validate/acceptance.
+      - Write EXACTLY ONE file and nothing else: on pass `{feature-research-root}/plan-approval.md` (score, timestamp, per-dimension summary); on fail `{feature-research-root}/plan-audit-&lt;n&gt;.md` (score, findings table with severity/dimension/file:line). Otherwise strictly read-only — never modify specs, tasks.yaml, or code.
+      - End its final message with EXACTLY one verdict line: `AUDIT:PASS score={score}` or `AUDIT:FAIL score={score} file={abs-path-to-findings-file}`.</action>
+    <action>Parse the verdict line from the sub-agent's returned final message.</action>
+    <check condition="the Agent call errors OR no parsable AUDIT verdict line OR AUDIT:FAIL cites a file= that does not exist on disk">
+      <action>Retry the sub-agent ONCE with the same prompt. If the retry fails the same way, FAIL CLOSED: set `PLAN_PARITY=fail` and skip to 3c.7 — never emit a goal-root `ready` file without a passing independent audit (in /tmux:feature the orchestrator authored the spec, so failing open would ship a spec nobody but its author ever checked).</action>
+    </check>
+    <check condition="verdict is AUDIT:FAIL with an existing file= path">
+      <action>Read the findings file. Revise the fragment to close the cited SEV-1/SEV-2 (and, on a score-fail, SEV-3/SEV-4) findings, record the round in `## Spec Change Log`, and re-run ONE fresh blind-audit sub-agent — bounded to the plan step 11b audit-replan budget (at most 3 audit passes total). On the 3rd failing pass, set `PLAN_PARITY=fail` and skip to 3c.7 (mechanism A). A re-audit sub-agent re-verifies prior RESOLVED findings before scoring.</action>
+    </check>
+    <check condition="verdict is AUDIT:PASS">
+      <action>Blind audit passed — proceed to 3c.7 with all gates green.</action>
+    </check>
+  </substep>
+
+  <substep n="3c.7" title="Emit the PLAN_PARITY verdict for Stage 4.3b">
+    <action>Set `PLAN_PARITY=pass` IFF EVERY gate above passed (ATOMIC_EMISSION true, spec-validate valid, S5/S6/S9/S10 all pass, coverage complete, and blind audit AUDIT:PASS); otherwise `PLAN_PARITY=fail`. (`PLAN_PARITY=skip` was already recorded and returned at 3c.1 for a non-atomic emission.)</action>
+    <action>Carry forward to Stage 4.3b, in-conversation AND (for compaction survival) implicitly via the on-disk artifacts already written in the feature research-root: `PLAN_PARITY` (pass|fail|skip), the `SLUG`, the audited fragment path `{feature-research-root}/execute-1-&lt;SLUG&gt;.md`, the resolved `LANE`, and the audit artifact paths (`plan-approval.md` on pass / `plan-audit-*.md` on fail). Stage 4.3b consumes `PLAN_PARITY`: `pass` &#8594; mechanism B (goal-ROOT `status: ready` tasks.yaml + `tasks-validate` + copy the audit artifacts into the emitted goal's research dir); `fail`/`skip` &#8594; mechanism A (today's `research/tasks.yaml` `status: planning`), unchanged.</action>
+    <action>LOG one line: `Stage 3c: PLAN_PARITY=&lt;verdict&gt; (lane=&lt;LANE&gt;) — Stage 4.3b will use mechanism &lt;B|A&gt;.`</action>
+  </substep>
+
+  <execution-rules>
+    <rule>COMPOSE, NEVER RE-IMPLEMENT: plan.xml steps 6 (spec-validate + manual S5/S6/S9/S10), 8b (coverage re-map), and 11a (blind-audit sub-agent) are inherited BY REFERENCE — this shard never restates or re-implements their internals; it calls the shipped `spec-validate` MCP tool and mirrors plan step 11a's sub-agent contract in prose only.</rule>
+    <rule>GATED, ATOMIC-ONLY: Stage 3c runs ONLY when ATOMIC_EMISSION is true (exactly one emitted goal — single-GOAL, not single-file). A multi-goal DAG records PLAN_PARITY=skip at 3c.1 and returns, keeping the full /tmux:plan per goal. NEVER let a multi-goal feature skip /tmux:plan.</rule>
+    <rule>NEVER SHIP AN UNAUDITED SPEC: the mechanism-B (skip-plan) path is reachable ONLY after spec-validate + S5/S6/S9/S10 + coverage + blind audit ALL pass. Any gate failure after bounded revision, or a blind-audit sub-agent that fails twice, sets PLAN_PARITY=fail and degrades to mechanism A (full /tmux:plan) — safe by construction.</rule>
+    <rule>NO daemon/Go change: `resolveDispatchKind`'s plan-once downgrade already performs the skip once a goal-root `tasks.yaml` exists — this shard only feeds it a properly-audited one. Any Go file/helper/CLI/test is OUT of scope (`cmd/tmux-cli/embedded/commands/tmux/**`) and would be silently dropped by `autoCommitGoal`.</rule>
+    <rule>spec-validate emits S0,S1,S2,S3,S4,S7,S8,S9,S10 ONLY — there is NO S5 and NO S6 in the tool. Call it for the tool-checked codes; perform S5 (dependencies) + S6 (I/O matrix) as MANUAL judgment checks (3c.4). NEVER expect the tool to return S5/S6.</rule>
+    <rule>BLIND AUDIT IS GENUINELY INDEPENDENT: a separate read-only Claude-native sub-agent (Agent tool, FRESH context — that isolation IS the blindness), NOT a tmux `investigator-` window. It reads only on-disk artifacts and writes EXACTLY ONE verdict file ending with `AUDIT:PASS score=` / `AUDIT:FAIL score= file=`. Retry once on a malformed/absent verdict; a second failure FAILS CLOSED to mechanism A.</rule>
+    <rule>RESEARCH ARTIFACT, NOT PROJECT SOURCE: every file this shard writes (the candidate fragment, the audit verdict files) lives under the FEATURE research-root — the daemon/planner control plane, never the project source tree. This does NOT violate feature.xml's NEVER-WRITE-PROJECT-SOURCE mandate.</rule>
+    <rule>AUTONOMOUS stage — resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user (mirrors feature.xml's autonomous-stage mandate).</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+
+  <llm critical="true">
+    <critical-rules>
+      • AUTONOMOUS stage — resolve every decidable fork to the highest-quality in-scope option and record the rationale; never block on the user.
+      • GATED ON ATOMIC_EMISSION — run ONLY for exactly-one-emitted-goal features (single-GOAL, not single-file); a multi-goal DAG records PLAN_PARITY=skip at 3c.1 and returns, keeping the full /tmux:plan.
+      • COMPOSE plan.xml steps 6 / 8b / 11a BY REFERENCE — never re-implement them; call the shipped spec-validate MCP tool and mirror plan step 11a's blind-audit sub-agent contract in prose.
+      • spec-validate returns S0-S4/S7/S8/S9/S10 ONLY — S5 (deps) + S6 (I/O matrix) are MANUAL judgment checks; never expect the tool to emit them.
+      • THE BLIND AUDIT IS MANDATORY AND INDEPENDENT — one fresh-context read-only Agent-tool sub-agent (NOT a tmux window), one verdict file, an `AUDIT:PASS/AUDIT:FAIL score=` line; solo-lane slims to 2 dimensions, else full 9; retry once, then FAIL CLOSED to mechanism A.
+      • NEVER SHIP AN UNAUDITED SPEC — PLAN_PARITY=pass ONLY when spec-validate + S5/S6/S9/S10 + coverage + blind audit ALL pass; any failure sets PLAN_PARITY=fail and Stage 4.3b degrades to mechanism A (full /tmux:plan).
+      • RESEARCH ARTIFACT ONLY — the fragment + verdict files live under the FEATURE research-root, never the project source tree; this does not escape the flow.
+      • NO daemon/Go change — the shipped plan-once downgrade does the skip once a goal-root `ready` tasks.yaml exists; this shard only earns it a properly-audited one.
+    </critical-rules>
+  </llm>
+</stage>
