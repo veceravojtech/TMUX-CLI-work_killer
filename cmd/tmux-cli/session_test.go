@@ -395,7 +395,7 @@ func TestStartOrReuseSession_NewSession_CreatedTrue(t *testing.T) {
 	m.On("ListWindows", mock.AnythingOfType("string")).Return([]tmux.WindowInfo{}, nil)
 
 	var out bytes.Buffer
-	sessionID, created, err := startOrReuseSession(m, dir, "", "", false, &out)
+	sessionID, created, err := startOrReuseSession(m, dir, "", nil, "", false, &out)
 
 	require.NoError(t, err)
 	assert.True(t, created, "a freshly created session must report created=true")
@@ -422,7 +422,7 @@ func TestStartOrReuseSession_ExistingRunning_CreatedFalse(t *testing.T) {
 	m.On("HasSession", "existing-sess").Return(true, nil)
 
 	var out bytes.Buffer
-	sessionID, created, err := startOrReuseSession(m, dir, "", "", false, &out)
+	sessionID, created, err := startOrReuseSession(m, dir, "", nil, "", false, &out)
 
 	require.NoError(t, err)
 	assert.False(t, created, "a kept existing session must report created=false")
@@ -451,7 +451,7 @@ func TestStartOrReuseSession_ForceRecreatesWithoutPrompt(t *testing.T) {
 	m.On("ListWindows", mock.AnythingOfType("string")).Return([]tmux.WindowInfo{}, nil)
 
 	var out bytes.Buffer
-	sessionID, created, err := startOrReuseSession(m, dir, "", "", true, &out)
+	sessionID, created, err := startOrReuseSession(m, dir, "", nil, "", true, &out)
 
 	require.NoError(t, err)
 	assert.True(t, created, "force recreate must create a new session")
@@ -481,7 +481,7 @@ func TestStartOrReuseSession_ForceFalseKeepsPrompt(t *testing.T) {
 	m.On("HasSession", "existing-sess").Return(true, nil)
 
 	var out bytes.Buffer
-	sessionID, created, err := startOrReuseSession(m, dir, "", "", false, &out)
+	sessionID, created, err := startOrReuseSession(m, dir, "", nil, "", false, &out)
 
 	require.NoError(t, err)
 	assert.False(t, created)
@@ -582,7 +582,7 @@ func TestStartAttachResume_RecreatesWithWindowUUID(t *testing.T) {
 	m.On("SendMessageWithFeedback", mock.AnythingOfType("string"), "@0", mock.Anything).Return("", nil)
 
 	var out bytes.Buffer
-	sessionID, created, err := startOrReuseSession(m, dir, "", supervisorUUID, true, &out)
+	sessionID, created, err := startOrReuseSession(m, dir, "", nil, supervisorUUID, true, &out)
 
 	require.NoError(t, err)
 	assert.True(t, created)

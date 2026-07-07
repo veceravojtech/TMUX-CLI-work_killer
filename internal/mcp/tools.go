@@ -265,7 +265,8 @@ func (s *Server) WindowsCreate(name, command, cwd string) (*WindowInfo, error) {
 	// --model (recorded as TMUX_CLI_MODEL at start-attach) so workers launch
 	// Claude with the same model as the supervisor window.
 	model, _ := s.executor.GetSessionEnvironment(sessionID, "TMUX_CLI_MODEL")
-	postCmdConfig := session.PostCommandConfigWithModel(model)
+	rawFlags, _ := s.executor.GetSessionEnvironment(sessionID, "TMUX_CLI_FLAGS")
+	postCmdConfig := session.PostCommandConfigWithModel(model, session.SplitFlags(rawFlags))
 	err = session.ExecutePostCommandWithFallback(s.executor, sessionID, windowID, postCmdConfig)
 	if err != nil {
 		_ = err // Post-command failure is not fatal

@@ -641,9 +641,11 @@ func runTaskvisorDaemon(cmd *cobra.Command, args []string) error {
 		exportCmd := fmt.Sprintf("export TMUX_WINDOW_UUID=\"%s\"", windowUUID)
 		_ = executor.SendMessage(sessionID, windowID, exportCmd)
 
-		// Inherit the session's --model (set at start-attach) when present.
+		// Inherit the session's --model and --flag tokens (set at start-attach)
+		// when present.
 		model, _ := executor.GetSessionEnvironment(sessionID, "TMUX_CLI_MODEL")
-		postCmdConfig := session.PostCommandConfigWithModel(model)
+		rawFlags, _ := executor.GetSessionEnvironment(sessionID, "TMUX_CLI_FLAGS")
+		postCmdConfig := session.PostCommandConfigWithModel(model, session.SplitFlags(rawFlags))
 		_ = session.ExecutePostCommandWithFallback(executor, sessionID, windowID, postCmdConfig)
 
 		return &taskvisor.CreatedWindow{TmuxWindowID: windowID, Name: name}, nil

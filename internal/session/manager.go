@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/console/tmux-cli/internal/tmux"
@@ -19,6 +20,12 @@ type SessionManager struct {
 	// back) so every window — the supervisor window, taskvisor, and all
 	// MCP-spawned workers — launches Claude with that model.
 	model string
+	// flags, when non-empty, are recorded in the new session's environment as
+	// TMUX_CLI_FLAGS (newline-joined) and injected verbatim into each window's
+	// claude launch (the supervisor window directly, later windows/workers by
+	// reading TMUX_CLI_FLAGS back via SplitFlags) so every window launches Claude
+	// with the same universal CLI flags.
+	flags []string
 	// source, when non-empty, is recorded in the new session's environment as
 	// TMUX_CLI_SRC so windows can resolve the tmux-cli source tree.
 	source string
@@ -45,6 +52,15 @@ func NewSessionManager(executor tmux.TmuxExecutor) *SessionManager {
 // default model). Returns the receiver for chaining.
 func (m *SessionManager) WithModel(model string) *SessionManager {
 	m.model = model
+	return m
+}
+
+// WithFlags returns the manager configured to record TMUX_CLI_FLAGS (the
+// newline-joined flags) in the session environment and inject each flag verbatim
+// into claude launches at CreateSession time. Empty flags are a no-op (the
+// session launches with no extra flag tokens). Returns the receiver for chaining.
+func (m *SessionManager) WithFlags(flags []string) *SessionManager {
+	m.flags = flags
 	return m
 }
 
@@ -125,6 +141,16 @@ func (m *SessionManager) CreateSession(id, path string) error {
 		_ = m.executor.SetSessionEnvironment(id, "TMUX_CLI_MODEL", m.model)
 	}
 
+	// 4.55. Record the requested Claude launch flags in the session environment
+	// as TMUX_CLI_FLAGS (newline-joined) so the SEPARATE processes that spawn later
+	// windows (the MCP server's windows-spawn-worker, `windows-create`, taskvisor)
+	// can retrieve them via SplitFlags and inject the same flags. Window 0 below
+	// gets the flags directly from m.flags. Best-effort like the model: optional
+	// flags must not tear down a good session.
+	if len(m.flags) > 0 {
+		_ = m.executor.SetSessionEnvironment(id, "TMUX_CLI_FLAGS", strings.Join(m.flags, "\n"))
+	}
+
 	// 4.6. Record the tmux-cli source tree in the session environment as
 	// TMUX_CLI_SRC so windows can resolve it later. Best-effort like the model:
 	// an optional pointer must not tear down a good session.
@@ -164,8 +190,9 @@ func (m *SessionManager) CreateSession(id, path string) error {
 			return fmt.Errorf("export TMUX_WINDOW_UUID in shell: %w", err)
 		}
 
-		// Execute post-command for supervisor window — inject --model when set.
-		postCmdConfig := PostCommandConfigWithModel(m.model)
+		// Execute post-command for supervisor window — inject --model and --flag
+		// tokens when set.
+		postCmdConfig := PostCommandConfigWithModel(m.model, m.flags)
 		err = ExecutePostCommandWithFallback(m.executor, id, windowList[0].TmuxWindowID, postCmdConfig)
 		if err != nil {
 			// Post-command failure is not fatal

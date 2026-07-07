@@ -336,6 +336,12 @@ func init() {
 	startCmd.Flags().String("model", "", "Claude model for this session (e.g. 'claude-opus-4-6[1m]'); applies to all windows and workers")
 	startAttachCmd.Flags().String("model", "", "Claude model for this session (e.g. 'claude-opus-4-6[1m]'); applies to all windows and workers")
 
+	// Add --flag (repeatable) to start and start-attach. Recorded in the session
+	// environment as TMUX_CLI_FLAGS and injected verbatim into every
+	// window/worker's claude launch, after the --model segment.
+	startCmd.Flags().StringArray("flag", nil, "Universal Claude CLI flag to inject into every window/worker launch (repeatable, e.g. --flag --chrome); applies to all windows and workers")
+	startAttachCmd.Flags().StringArray("flag", nil, "Universal Claude CLI flag to inject into every window/worker launch (repeatable, e.g. --flag --chrome); applies to all windows and workers")
+
 	// Add --timeout flag to sudo command
 	sudoCmd.Flags().Int("timeout", 0, "Timeout in seconds (0 = no timeout; omit for config default, which is 30s)")
 
@@ -508,7 +514,7 @@ func resolveSupervisorUUID(sessionUUID, resume string) (string, error) {
 // new one created non-interactively (the self-update --restart session path,
 // which must never block on stdin). force=false preserves the interactive prompt
 // (and EOF-as-cancel) unchanged.
-func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model, supervisorUUID string, force bool, out io.Writer) (string, bool, error) {
+func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model string, flags []string, supervisorUUID string, force bool, out io.Writer) (string, bool, error) {
 	// Check if session already exists for this path
 	existingSessionID, _ := executor.FindSessionByEnvironment("TMUX_CLI_PROJECT_PATH", projectPath)
 
@@ -533,6 +539,7 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model, supervi
 				// EOF or pipe input — treat as cancel
 				fmt.Fprintf(out, "Keeping existing session '%s'\n", existingSessionID)
 				applyModelToExistingSession(executor, existingSessionID, model)
+				applyFlagsToExistingSession(executor, existingSessionID, flags)
 				return existingSessionID, false, nil
 			}
 
@@ -544,6 +551,7 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model, supervi
 			} else {
 				fmt.Fprintf(out, "Keeping existing session '%s'\n", existingSessionID)
 				applyModelToExistingSession(executor, existingSessionID, model)
+				applyFlagsToExistingSession(executor, existingSessionID, flags)
 				return existingSessionID, false, nil
 			}
 		}
@@ -551,7 +559,7 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model, supervi
 
 	// Create new session
 	sessionID := session.GenerateSessionID(projectPath)
-	manager := session.NewSessionManager(executor).WithModel(model).WithSupervisorUUID(supervisorUUID)
+	manager := session.NewSessionManager(executor).WithModel(model).WithFlags(flags).WithSupervisorUUID(supervisorUUID)
 
 	if err := manager.CreateSession(sessionID, projectPath); err != nil {
 		return "", false, err
@@ -584,6 +592,18 @@ func applyModelToExistingSession(executor tmux.TmuxExecutor, sessionID, model st
 		return
 	}
 	_ = executor.SetSessionEnvironment(sessionID, "TMUX_CLI_MODEL", model)
+}
+
+// applyFlagsToExistingSession records TMUX_CLI_FLAGS (newline-joined) on a reused
+// session so windows/workers spawned AFTER this point inject the requested flags
+// into their claude launch command. The already-running supervisor window keeps
+// its current flags (its launch command already ran). Best-effort, no-op for
+// empty flags.
+func applyFlagsToExistingSession(executor tmux.TmuxExecutor, sessionID string, flags []string) {
+	if len(flags) == 0 {
+		return
+	}
+	_ = executor.SetSessionEnvironment(sessionID, "TMUX_CLI_FLAGS", strings.Join(flags, "\n"))
 }
 
 func cleanProjectDir(projectPath string) error {
@@ -619,8 +639,9 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 	}
 	executor := tmux.NewTmuxExecutor()
 	model, _ := cmd.Flags().GetString("model")
+	flags, _ := cmd.Flags().GetStringArray("flag")
 	// start (interactive) never force-recreates: keep the [r]/[c] prompt.
-	sessionID, created, err := startOrReuseSession(executor, projectPath, model, "", false, progressOut)
+	sessionID, created, err := startOrReuseSession(executor, projectPath, model, flags, "", false, progressOut)
 	if err != nil {
 		return err
 	}
@@ -655,6 +676,7 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 	}
 	executor := tmux.NewTmuxExecutor()
 	model, _ := cmd.Flags().GetString("model")
+	flags, _ := cmd.Flags().GetStringArray("flag")
 	sessionUUID, _ := cmd.Flags().GetString("session-uuid")
 	resume, _ := cmd.Flags().GetString("resume")
 	supervisorUUID, err := resolveSupervisorUUID(sessionUUID, resume)
@@ -662,7 +684,7 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	force, _ := cmd.Flags().GetBool("force")
-	sessionID, _, err := startOrReuseSession(executor, projectPath, model, supervisorUUID, force, os.Stdout)
+	sessionID, _, err := startOrReuseSession(executor, projectPath, model, flags, supervisorUUID, force, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -1095,9 +1117,11 @@ func runWindowsCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("export TMUX_WINDOW_UUID in shell: %w", err)
 	}
 
-	// Execute postcommand (non-fatal) — inherit the session's --model when set.
+	// Execute postcommand (non-fatal) — inherit the session's --model and --flag
+	// tokens when set.
 	model, _ := executor.GetSessionEnvironment(sessionID, "TMUX_CLI_MODEL")
-	postCmdConfig := session.PostCommandConfigWithModel(model)
+	rawFlags, _ := executor.GetSessionEnvironment(sessionID, "TMUX_CLI_FLAGS")
+	postCmdConfig := session.PostCommandConfigWithModel(model, session.SplitFlags(rawFlags))
 	err = session.ExecutePostCommandWithFallback(executor, sessionID, windowID, postCmdConfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: post-command execution failed for window %s: %v\n", windowID, err)

@@ -20,20 +20,22 @@ type PostCommandConfig struct {
 }
 
 // DefaultPostCommandConfig returns the default post-command configuration
-// with Claude CLI launch and fallback handling (no model override).
+// with Claude CLI launch and fallback handling (no model override, no flags).
 func DefaultPostCommandConfig() *PostCommandConfig {
-	return PostCommandConfigWithModel("")
+	return PostCommandConfigWithModel("", nil)
 }
 
 // PostCommandConfigWithModel returns the post-command configuration with the
 // Claude launch fallback chain, injecting `--model '<model>'` into every
-// invocation when model is non-empty. An empty model yields the exact default
-// chain (no --model flag). The model is single-quoted so a bracketed id such as
-// claude-opus-4-6[1m] is not glob-expanded by the shell that runs the command.
-func PostCommandConfigWithModel(model string) *PostCommandConfig {
+// invocation when model is non-empty and appending each of flags verbatim after
+// the model segment. An empty model AND empty flags yield the exact default
+// chain (no --model flag, no extra tokens). The model is single-quoted so a
+// bracketed id such as claude-opus-4-6[1m] is not glob-expanded by the shell
+// that runs the command; flags are flag tokens injected UNQUOTED.
+func PostCommandConfigWithModel(model string, flags []string) *PostCommandConfig {
 	return &PostCommandConfig{
 		Enabled:  true,
-		Commands: claudeLaunchCommands(model),
+		Commands: claudeLaunchCommands(model, flags),
 		ErrorPatterns: []string{
 			"already in use",
 			"No conversation found",
@@ -42,18 +44,38 @@ func PostCommandConfigWithModel(model string) *PostCommandConfig {
 }
 
 // claudeLaunchCommands builds the three-step Claude launch fallback chain. The
-// optional --model flag is placed right after --dangerously-skip-permissions so
-// the session-id/resume tail is unchanged.
-func claudeLaunchCommands(model string) []string {
+// optional --model flag and the optional --flag tokens are placed right after
+// --dangerously-skip-permissions (model first, then flags) so the
+// session-id/resume tail is unchanged. Empty model+flags reproduce today's exact
+// strings byte-for-byte.
+func claudeLaunchCommands(model string, flags []string) []string {
 	modelFlag := ""
 	if model != "" {
 		modelFlag = fmt.Sprintf(" --model '%s'", model)
 	}
-	return []string{
-		fmt.Sprintf(`claude --dangerously-skip-permissions%s --session-id="$TMUX_WINDOW_UUID"`, modelFlag),
-		fmt.Sprintf(`claude --dangerously-skip-permissions%s --resume "$TMUX_WINDOW_UUID"`, modelFlag),
-		fmt.Sprintf(`claude --dangerously-skip-permissions%s`, modelFlag),
+	flagArgs := ""
+	if len(flags) > 0 {
+		flagArgs = " " + strings.Join(flags, " ")
 	}
+	return []string{
+		fmt.Sprintf(`claude --dangerously-skip-permissions%s%s --session-id="$TMUX_WINDOW_UUID"`, modelFlag, flagArgs),
+		fmt.Sprintf(`claude --dangerously-skip-permissions%s%s --resume "$TMUX_WINDOW_UUID"`, modelFlag, flagArgs),
+		fmt.Sprintf(`claude --dangerously-skip-permissions%s%s`, modelFlag, flagArgs),
+	}
+}
+
+// SplitFlags reconstructs a []string of --flag tokens from the newline-joined
+// TMUX_CLI_FLAGS session-env value written by WithFlags/applyFlagsToExistingSession.
+// Empty or blank entries are dropped; an empty/blank raw value yields an empty
+// slice (which flows to the byte-identical no-flag launch chain).
+func SplitFlags(raw string) []string {
+	var flags []string
+	for _, f := range strings.Split(raw, "\n") {
+		if f != "" {
+			flags = append(flags, f)
+		}
+	}
+	return flags
 }
 
 // logMutex protects concurrent writes to postcommand.log

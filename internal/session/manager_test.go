@@ -298,6 +298,73 @@ func TestCreateSession_NoModel_NoModelFlagOrEnv(t *testing.T) {
 	mockExec.AssertNotCalled(t, "SetSessionEnvironment", "test-id", "TMUX_CLI_MODEL", mock.Anything)
 }
 
+// TestCreateSession_WithFlags_RecordsEnvAndInjects verifies WithFlags injects the
+// flag tokens verbatim into the supervisor window's claude launch AND records
+// TMUX_CLI_FLAGS (newline-joined) in the session environment so the separate
+// worker-spawning processes can retrieve and re-inject them. Mirrors WithModel.
+func TestCreateSession_WithFlags_RecordsEnvAndInjects(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_FLAGS", "--chrome").Return(nil)
+	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	mockExec.On("SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return len(s) > 0
+	})).Return(nil)
+	// The launch command (first fallback) MUST carry the flag token verbatim.
+	mockExec.On("SendMessageWithFeedback", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return strings.Contains(s, "claude --dangerously-skip-permissions --chrome")
+	})).Return("", nil)
+
+	manager := NewSessionManager(mockExec).WithFlags([]string{"--chrome"})
+	require.NoError(t, manager.CreateSession("test-id", "/tmp"))
+
+	mockExec.AssertCalled(t, "SetSessionEnvironment", "test-id", "TMUX_CLI_FLAGS", "--chrome")
+	mockExec.AssertCalled(t, "SendMessageWithFeedback", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return strings.Contains(s, "--chrome")
+	}))
+}
+
+// TestWithFlags_ReturnsReceiverForChaining pins the builder-chaining contract:
+// WithFlags returns the same manager pointer.
+func TestWithFlags_ReturnsReceiverForChaining(t *testing.T) {
+	mgr := NewSessionManager(new(MockTmuxExecutor))
+	assert.Same(t, mgr, mgr.WithFlags([]string{"--chrome"}), "WithFlags must return the receiver for chaining")
+}
+
+// TestCreateSession_NoFlags_NoEnv verifies the default manager (no flags) never
+// writes TMUX_CLI_FLAGS and launches claude with no injected flag tokens —
+// byte-identical to pre-flag behavior.
+func TestCreateSession_NoFlags_NoEnv(t *testing.T) {
+	mockExec := new(MockTmuxExecutor)
+
+	mockExec.On("HasSession", "test-id").Return(false, nil).Once()
+	mockExec.On("CreateSession", "test-id", "/tmp").Return(nil)
+	mockExec.On("HasSession", "test-id").Return(true, nil).Once()
+	mockExec.On("SetSessionEnvironment", "test-id", "TMUX_CLI_PROJECT_PATH", "/tmp").Return(nil)
+	mockExec.On("ListWindows", "test-id").Return([]tmux.WindowInfo{
+		{TmuxWindowID: "@0", Name: "supervisor", Running: true},
+	}, nil)
+	mockExec.On("SetWindowOption", "test-id", "@0", "window-uuid", mock.AnythingOfType("string")).Return(nil)
+	mockExec.On("SendMessage", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return len(s) > 0
+	})).Return(nil)
+	mockExec.On("SendMessageWithFeedback", "test-id", "@0", mock.MatchedBy(func(s string) bool {
+		return s == `claude --dangerously-skip-permissions --session-id="$TMUX_WINDOW_UUID"`
+	})).Return("", nil)
+
+	manager := NewSessionManager(mockExec)
+	require.NoError(t, manager.CreateSession("test-id", "/tmp"))
+
+	mockExec.AssertNotCalled(t, "SetSessionEnvironment", "test-id", "TMUX_CLI_FLAGS", mock.Anything)
+}
+
 // TestCreateSession_WithSupervisorUUID_ReusesInjectedUUID verifies that a
 // caller-supplied UUID (WithSupervisorUUID) is REUSED verbatim for the
 // supervisor window instead of a freshly generated one: the SetWindowOption

@@ -18,7 +18,7 @@ import (
 // glob-expand `[1m]`.
 func TestPostCommandConfigWithModel_InjectsModelFlag(t *testing.T) {
 	const model = "claude-opus-4-6[1m]"
-	cfg := PostCommandConfigWithModel(model)
+	cfg := PostCommandConfigWithModel(model, nil)
 
 	require.Len(t, cfg.Commands, 3)
 	assert.Equal(t,
@@ -42,7 +42,7 @@ func TestPostCommandConfigWithModel_InjectsModelFlag(t *testing.T) {
 // produces a config byte-identical to DefaultPostCommandConfig — no --model flag,
 // no behavior change for sessions started without --model.
 func TestPostCommandConfigWithModel_Empty_MatchesDefault(t *testing.T) {
-	cfg := PostCommandConfigWithModel("")
+	cfg := PostCommandConfigWithModel("", nil)
 	def := DefaultPostCommandConfig()
 
 	assert.Equal(t, def.Commands, cfg.Commands)
@@ -57,6 +57,69 @@ func TestDefaultPostCommandConfig_NoModelFlag(t *testing.T) {
 	for _, c := range DefaultPostCommandConfig().Commands {
 		assert.NotContains(t, c, "--model")
 	}
+}
+
+// TestPostCommandConfigWithModel_InjectsFlags verifies repeated --flag values are
+// injected VERBATIM/UNQUOTED into EVERY claude command in the fallback chain, in
+// original order, after --dangerously-skip-permissions and before the tail.
+func TestPostCommandConfigWithModel_InjectsFlags(t *testing.T) {
+	cfg := PostCommandConfigWithModel("", []string{"--chrome", "--verbose"})
+
+	require.Len(t, cfg.Commands, 3)
+	assert.Equal(t,
+		`claude --dangerously-skip-permissions --chrome --verbose --session-id="$TMUX_WINDOW_UUID"`,
+		cfg.Commands[0])
+	assert.Equal(t,
+		`claude --dangerously-skip-permissions --chrome --verbose --resume "$TMUX_WINDOW_UUID"`,
+		cfg.Commands[1])
+	assert.Equal(t,
+		`claude --dangerously-skip-permissions --chrome --verbose`,
+		cfg.Commands[2])
+}
+
+// TestPostCommandConfigWithModel_ModelAndFlags verifies that with both a model and
+// a flag, the model is single-quoted and the (unquoted) flag follows the model
+// segment — matching the golden ordering from ADR-5.
+func TestPostCommandConfigWithModel_ModelAndFlags(t *testing.T) {
+	cfg := PostCommandConfigWithModel("claude-opus-4-8[1m]", []string{"--chrome"})
+
+	require.Len(t, cfg.Commands, 3)
+	assert.Equal(t,
+		`claude --dangerously-skip-permissions --model 'claude-opus-4-8[1m]' --chrome --session-id="$TMUX_WINDOW_UUID"`,
+		cfg.Commands[0])
+	assert.Equal(t,
+		`claude --dangerously-skip-permissions --model 'claude-opus-4-8[1m]' --chrome --resume "$TMUX_WINDOW_UUID"`,
+		cfg.Commands[1])
+	assert.Equal(t,
+		`claude --dangerously-skip-permissions --model 'claude-opus-4-8[1m]' --chrome`,
+		cfg.Commands[2])
+}
+
+// TestPostCommandConfigWithModel_EmptyFlags_MatchesDefault verifies empty/nil
+// flags render a chain byte-identical to the model-only chain and to the default
+// chain — the empty-case byte-identity guarantee.
+func TestPostCommandConfigWithModel_EmptyFlags_MatchesDefault(t *testing.T) {
+	// nil and empty slices both match the model-only chain.
+	modelOnly := PostCommandConfigWithModel("claude-opus-4-8[1m]", nil)
+	assert.Equal(t,
+		PostCommandConfigWithModel("claude-opus-4-8[1m]", []string{}).Commands,
+		modelOnly.Commands)
+
+	// Empty model + empty flags is byte-identical to the default chain.
+	assert.Equal(t, DefaultPostCommandConfig().Commands,
+		PostCommandConfigWithModel("", nil).Commands)
+	for _, c := range PostCommandConfigWithModel("", nil).Commands {
+		assert.NotContains(t, c, "--chrome")
+	}
+}
+
+// TestSplitFlags_RoundTrip verifies SplitFlags splits newline-joined flags,
+// drops empty entries, and returns an empty slice for empty/blank input.
+func TestSplitFlags_RoundTrip(t *testing.T) {
+	assert.Equal(t, []string{"--a", "--b"}, SplitFlags("--a\n--b"))
+	assert.Empty(t, SplitFlags(""))
+	// Empty lines (leading/trailing/interior blanks) are dropped.
+	assert.Equal(t, []string{"--a", "--b"}, SplitFlags("\n--a\n\n--b\n"))
 }
 
 // MockExecutorWithFeedback is a test mock for tmux.TmuxExecutor
