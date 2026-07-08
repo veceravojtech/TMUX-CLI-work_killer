@@ -3,7 +3,26 @@
       <rule critical="true">One goal per event listener — never batch multiple listeners into one goal.</rule>
       <rule critical="true">Integration tests only — no Playwright E2E tests for event handlers (spec lines 329-332). Action E2E tests assert HTTP response + direct DB state; event side effects are tested here via integration tests.</rule>
       <rule critical="true">All inputs read from docs/architecture/* files on disk (G-16), never from conversation context.</rule>
-      <!-- ROADMAP-ONLY (two-tier, design §5): this shard emits one roadmap SKELETON per event listener. The concrete fields it used to author — EV-01..EV-13 acceptance (incl. is_cross_bc/async conditionals), the validate commands, the 2-3 investigators, the deliverables, not-in-scope — are now authored at dispatch by /tmux:elaborate against the real tree (design §6; the ACL adapter / Published Language DTO existence and the cross-BC wiring are read there, not predicted). This shard keeps ONLY enumeration: which listeners exist (EVENT_LISTENER_LIST — drives N_event_listeners, incl. the skip-when-0 gate), each goal's phase=event_listener, its depends_on wiring (intra- vs cross-BC), and a coarse deliverable_area. -->
+      <!-- ROADMAP-ONLY (two-tier, design §5): this shard emits one roadmap SKELETON per event listener. The concrete fields it used to author — EV-01..EV-13 acceptance (incl. is_cross_bc/async conditionals), the validate commands, the 2-3 investigators, the deliverables, not-in-scope — are now authored at dispatch by /tmux:elaborate against the real tree (design §6; the ACL adapter / Published Language DTO existence and the cross-BC wiring are read there, not predicted). This shard keeps ONLY enumeration: which listeners exist (EVENT_LISTENER_LIST — drives N_event_listeners, incl. the skip-when-0 gate), each goal's phase=event_listener, its depends_on wiring (intra- vs cross-BC), and a coarse deliverable_area. The ONE concrete field this shard also carries is the EV-* emission-check criterion below (catalog of record) — enumeration for goal-create params stays skeleton-only, but /tmux:elaborate step 3c reads this criterion at dispatch to author the concrete emission-check investigator against the real tree. -->
+
+      <criteria phase-prefix="EV">
+        <!-- Catalog of record read by elaborate.xml step 3c at dispatch (elaborate.xml:99).
+             Roadmap enumeration below still emits skeletons; this criterion is what
+             /tmux:elaborate CONSULTS to author the concrete EV-* emission-check investigator
+             against the real tree. NOT authored into goal-create params (see substep 3.20.3). -->
+        <item id="EV-14" trigger="the event-listener goal authors an emission-check investigator (producer side)">
+          EMISSION-CHECK TOPOLOGY BINDING. Derive the emission-check investigator's `paths` / grep
+          target from the event PRODUCER's FQCN — map ProductivityTool\&lt;Ctx&gt;\Domain\Event\... to
+          contexts/&lt;ctx-lowercased&gt;/src/ (lowercase the &lt;Ctx&gt; namespace segment to its bounded-context
+          directory; sources live under contexts/&lt;bc&gt;/src per task-plan-generate.xml topology-binding).
+          NEVER emit a hardcoded Symfony-conventional src/Bundle/Application/.
+          ON-DISK FALLBACK: the authored path MUST exist on disk. If the initial producer-FQCN
+          derivation does not resolve to an existing directory, fall back to the producer-context-derived
+          contexts/&lt;ctx-lowercased&gt;/src/, and failing that the nearest existing ancestor under
+          contexts/&lt;bc&gt;/src. NEVER author an emission-check over a nonexistent directory — grep exits 2
+          there (neither the documented pass=0 nor fail=1), so the investigator can never pass.
+        </item>
+      </criteria>
 
       <substep n="3.20.1" title="Read event inventory from discovery output">
         <action>Read docs/architecture/domain-model.md. For each BC, collect EVENTS_PER_AGGREGATE — the domain events listed under each aggregate's events section (written by discover.xml Step 3).</action>
