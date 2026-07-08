@@ -78,6 +78,30 @@ func TestTaskPlanGenerateXml_IncrementalProductCompleteMarker(t *testing.T) {
 		"an already-present marker must be a no-op (product was already complete)")
 }
 
+// TestTaskPlanGenerateXml_IncrementalProductCompleteFrontend: the step-0a
+// incremental product-complete predicate is gated on frontend coverage, not
+// backend-only. When a frontend is in scope (has_frontend) the marker
+// .tmux-cli/taskvisor-product-complete is NOT written until frontend goals are
+// authored AND validated; while uncovered the branch authors ONE frontend goal
+// instead (HARD ONE-GOAL CAP preserved) — parallel to the author-one-goal arm.
+func TestTaskPlanGenerateXml_IncrementalProductCompleteFrontend(t *testing.T) {
+	branch := incrementalBranch(t)
+
+	assert.Contains(t, branch, "has_frontend",
+		"the incremental product-complete predicate must reference the frontend-in-scope signal (has_frontend)")
+	assert.Contains(t, branch, "FRONTEND COVERAGE GATE",
+		"the incremental branch must carry the FRONTEND COVERAGE GATE arm (a completion gate inside step-0a, not roadmap text)")
+	assert.Contains(t, branch, "authored AND validated",
+		"the marker must be gated on frontend goals being both authored AND validated, not backend-only")
+	assert.Contains(t, branch, "author ONE frontend goal",
+		"the frontend arm must preserve the HARD ONE-GOAL CAP (author ONE frontend goal, never the whole frontend)")
+	// The frontend gate must govern the SAME product-complete marker write —
+	// proving it is a completion gate on the product-complete predicate, not a
+	// stray mention elsewhere.
+	assert.Contains(t, branch, ".tmux-cli/taskvisor-product-complete",
+		"the frontend gate must co-locate with the exact product-complete marker path the daemon polls")
+}
+
 // TestTaskPlanGenerateXml_IncrementalReviewAndGrounding: each incremental
 // invocation reviews ground truth first — the current repo tree, the
 // goals.yaml ledger, and the last finished goal against the product spec —
