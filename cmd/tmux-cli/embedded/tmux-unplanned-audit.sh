@@ -81,6 +81,18 @@ if [[ "$UNFINISHED" -gt 0 ]]; then
     exit 0
 fi
 
+# --- Yield to a queued supervisor restart (per-Stop serialization) ---
+# The cycle hook touches this sentinel before it queues a /tmux:supervisor
+# relaunch. If it is present, a restart is already being sent into this pane on
+# the same Stop event, so consume the sentinel and exit WITHOUT injecting — the
+# audit re-arms naturally on the next Stop of the relaunched supervisor. This
+# prevents the audit prompt from gluing onto the queued /tmux:supervisor args.
+QUEUED_FILE="${PROJECT_DIR}/.tmux-cli/cycle-restart-queued"
+if [[ -f "$QUEUED_FILE" ]]; then
+    rm -f "$QUEUED_FILE"
+    exit 0
+fi
+
 # --- Guard file: prevent infinite audit loop ---
 
 GUARD_FILE="${PROJECT_DIR}/.tmux-cli/audit-done"

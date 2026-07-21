@@ -162,7 +162,12 @@ rm -f "$CANCEL_FILE"
 
 if [[ "$CYCLE_DELAY" -le 0 ]]; then
     # No countdown — restart immediately
-    rm -f "${PROJECT_DIR}/.tmux-cli/audit-done"
+    # Serialize with the unplanned-audit Stop hook: write the per-Stop sentinel
+    # so the audit hook yields (consumes it and exits) instead of gluing its
+    # prompt onto the queued /tmux:supervisor arguments. The audit-done re-arm
+    # now lives in the relaunched supervisor's step-0 clean slate, so this path
+    # no longer deletes the audit-done guard (that raced the audit hook's touch).
+    touch "${PROJECT_DIR}/.tmux-cli/cycle-restart-queued"
     tmux send-keys -t "$PANE_TARGET" "/clear" Enter
     sleep 2
     tmux send-keys -t "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml" Enter
@@ -193,7 +198,10 @@ fi
 
 # --- Send restart commands to the supervisor pane ---
 
-rm -f "${PROJECT_DIR}/.tmux-cli/audit-done"
+# Serialize with the unplanned-audit Stop hook (see the immediate-restart path
+# above): write the per-Stop sentinel so the audit hook yields, and let the
+# relaunched supervisor's step-0 clean slate own the audit-done re-arm.
+touch "${PROJECT_DIR}/.tmux-cli/cycle-restart-queued"
 tmux send-keys -t "$PANE_TARGET" "/clear" Enter
 sleep 2
 tmux send-keys -t "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml" Enter
