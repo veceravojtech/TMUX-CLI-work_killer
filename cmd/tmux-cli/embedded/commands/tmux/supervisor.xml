@@ -33,7 +33,7 @@
     <term name="autonomy">Supervisor operates without user confirmation after initial invocation; see &lt;autonomy-policy&gt;.</term>
     <term name="pushback catalogue">The G1–G5 taxonomy in step 6 used to gate DONE acceptance.</term>
     <term name="PRE_PLANNED">Internal flag set when tasks.yaml was created by /tmux:plan (detected in step 1c). Causes steps 3 and 3b to skip fan-out planning.</term>
-    <term name="SELF_WAVE">Counter (starts at 0 per invocation) of self-generated waves: a wave whose tasks originate from the supervisor's OWN synthesis/step-8a output rather than from requirements traceable to the original $ARGUMENTS input. Each such wave increments SELF_WAVE; the cap is 2 per invocation (see &lt;stop-conditions&gt;). Waves whose tasks map to the original input's requirements do NOT increment SELF_WAVE and are never capped.</term>
+    <term name="SELF_WAVE">Counter of self-generated waves: a wave whose tasks originate from the supervisor's OWN synthesis/step-8a output rather than from requirements traceable to the original $ARGUMENTS input. Each such wave increments SELF_WAVE; the cap is 2 per CHAIN (see &lt;stop-conditions&gt;). Waves whose tasks map to the original input's requirements do NOT increment SELF_WAVE and are never capped. STARTING VALUE: 0 for a fresh human-authorized invocation — but NOT unconditionally. When $ARGUMENTS is a .md plan file whose frontmatter carries `self_wave` (a fresh-context handoff written by step 9b), step 0c ADOPTS that value as the starting counter. A "chain" is the whole sequence of contexts linked by fresh-handoff restarts, so the cap survives every /clear; zeroing SELF_WAVE at the top of an adopted invocation would launder the cap and is the one thing this counter exists to prevent.</term>
     <term name="lane / solo-lane">Per-goal execution lane, decided UPSTREAM (at /tmux:task-list consume or /tmux:plan step 3d) and only READ by this supervisor. Resolution order: tasks-path top-level `lane` key → goal.md `## Lane` section → full. Exactly the value `solo` (the solo-lane) routes a single-pending-task goal through step 3c's inline execution; `full`, an absent lane, or any malformed/unknown value resolves to full (the worker path). The supervisor NEVER writes, decides, or infers the lane.</term>
   </glossary>
 
@@ -99,6 +99,7 @@ escalation_count: &lt;N&gt;
       <action>Remove .tmux-cli/audit-done guard file if it exists (allows the unplanned-audit hook to fire at the end of this cycle).</action>
       <action>Remove .tmux-cli/cycle-restart-queued sentinel if it exists (per-Stop serialization marker owned by the Stop hooks; the cycle hook touches it before queuing this relaunch and the unplanned-audit hook consumes it to yield — clearing it here re-arms the next cycle's unplanned-audit).</action>
       <action>Remove .tmux-cli/auto-execute-guard if it exists (consumed by the Stop hook to prevent double-invocation after plan auto-execute).</action>
+      <action>Remove a STALE .tmux-cli/fresh-handoff marker if it exists, and LOG it: "Stale fresh-handoff marker removed (plan=&lt;its plan: value&gt;) — the Stop hook never consumed it." The marker is one-shot and is consumed (rm) by the tmux-supervisor-cycle.sh Stop hook BEFORE it sends anything, so a marker that survives to a fresh supervisor boot means the hook never fired (missing/failed hook). Deleting it here prevents it ambushing a later, unrelated Stop with a restart onto a stale plan. Do this BEFORE step 0c reads $ARGUMENTS frontmatter — the marker is never the counter source; the plan file is.</action>
       <action>Resolve the fan-out file path the same way step 0b will (GOAL_MODE → .tmux-cli/goals/{GOAL_ID}/tasks.yaml with GOAL_ID derived window-name-first per step 0b — supervisor-{ns} → goal-{ns}; the .tmux-cli/taskvisor-current-goal marker only for the bare `supervisor` window — else .tmux-cli/tasks.yaml) — this is tasks-path. If tasks-path exists and is NOT a continuation cycle, set its top-level status field to "planning" — EXCEPTION: when $ARGUMENTS leads with a goal-{ns} token (daemon dispatchRetry or /tmux:plan auto-execute handoff), do NOT flip the status. The per-goal tasks-path was finalized (status: ready) by the planner or reset by the daemon's resetTaskStatuses precisely so step 1c consumes it as PRE_PLANNED — flipping it to "planning" would mask the handoff and re-plan an already-planned goal. If it doesn't exist yet, the status will be set when tasks-path is first created in step 3.</action>
     </step>
 
@@ -120,6 +121,19 @@ escalation_count: &lt;N&gt;
       </branch>
       <rule>Every later reference to research-root AND tasks-path in this flow uses the values resolved here. tasks-path is the fan-out file — goal-scoped in GOAL_MODE, top-level otherwise — and is DISTINCT from plan.xml's top-level planning-queue (which is never moved).</rule>
       <rule>PRE_PLANNED tasks already carry resolved context: paths written by /tmux:plan — step 0b does NOT override those. It governs only the paths the supervisor itself creates: its own fan-out context files (step 3) and worker report save paths (steps 5/task-message).</rule>
+      <rule>Step 0b resolves PATHS only. When $ARGUMENTS is a .md plan file handed over by a fresh-context restart, its frontmatter ALSO carries the SELF_WAVE/cycle counters — those are adopted in step 0c, not here.</rule>
+    </step>
+
+    <step n="0c" title="Adopt handoff counters from a plan-file frontmatter">
+      <action>Determine whether $ARGUMENTS (after any leading goal-{ns} token consumed by step 0b) names a single existing .md plan file. If it does not (inline free-form text, a tasks.yaml path, or a missing file), SKIP this step: SELF_WAVE starts at 0 and the cycle counter comes from tasks-path as usual.</action>
+      <action>Read the plan file's leading YAML frontmatter block (the `---` fenced block at the very top of the file, if present) and look for the keys `self_wave` and `cycle`.</action>
+      <check condition="frontmatter carries self_wave and/or cycle">
+        <action>ADOPT them as this invocation's STARTING counters instead of 0: set SELF_WAVE = the frontmatter `self_wave` value (when present), and seed the cycle counter from the frontmatter `cycle` value (when present) so step 9b's increment and the max_cycles comparison count from the right place. Log: "Adopted handoff counters from &lt;plan-file&gt;: SELF_WAVE=&lt;n&gt;, cycle=&lt;m&gt;."</action>
+        <rule critical="true">This is the cap-integrity half of the fresh-handoff contract. A self-generated wave handed off via /tmux:supervisor:fresh restarts this window with a CLEARED context, so without adoption every /clear would reset SELF_WAVE to 0 and turn the handoff into a cap-laundering loop. Adoption makes the &lt;stop-conditions&gt; cap of 2 self-generated waves hold across the whole chain, not merely per-context.</rule>
+      </check>
+      <check condition="no frontmatter, or neither key present">
+        <action>Start both counters as usual (SELF_WAVE = 0; cycle from tasks-path). A hand-typed `/tmux:supervisor plan.md` — and a manual `/tmux:supervisor:fresh plan.md`, which deliberately omits the counters — is a NEW human authorization, so caps legitimately reset.</action>
+      </check>
     </step>
 
     <step n="1" title="MCP precondition">
@@ -450,7 +464,33 @@ If a "## Research Files" section already exists in goal.md (re-run / next cycle)
         <action>If GOAL_MODE is true, REUSE the GOAL_ID already resolved in step 0b — do NOT re-read the global current-goal marker at write time (the daemon rewrites it on every dispatch; under concurrent dispatch it is last-writer-wins and may name ANOTHER goal, misrouting this signal into the wrong goal's folder and corrupting daemon goal-completion state). Write .tmux-cli/goals/{GOAL_ID}/signal.json with {"source":"supervisor","status":"stopped","reason":"max_cycles_reached"}.</action>
         <action>STOP.</action>
       </check>
-      <check condition="no pending tasks remain">
+      <check condition="no pending tasks remain in tasks-path BUT the §8a/§9 replan produced a NEXT WAVE that is executable (SELF_WAVE rules applied exactly as in step 9) and that wave exists as a PLAN DOCUMENT rather than as pending tasks-path entries" order="evaluated BEFORE the no-pending-tasks normal stop below">
+        <action>Write the next wave out as a plan document at {research-root}/next-wave-&lt;W&gt;.md, where &lt;W&gt; is this wave's FILENAME index: the SMALLEST positive integer for which {research-root}/next-wave-&lt;W&gt;.md does NOT already exist. Never overwrite an existing next-wave file. (Do NOT use SELF_WAVE as the index: a wave traceable to the original $ARGUMENTS does not increment it, so two consecutive non-self-generated waves would collide on one filename and the second write would destroy the first's still-unconsumed plan.) &lt;W&gt; is an identifier only — it is never a counter and never what the fresh instance adopts; the frontmatter below is the SOLE counter source. Lead the file with a YAML frontmatter block carrying the counters the fresh instance must resume:
+
+---
+self_wave: &lt;post-increment SELF_WAVE&gt;
+cycle: &lt;current cycle counter&gt;
+---
+
+Below the frontmatter, write the wave as normal free-form plan prose the supervisor can self-spec and fan out from (§3). Step 0c of the fresh instance reads exactly this frontmatter to adopt the counters.</action>
+        <rule critical="true">The SELF_WAVE cap and max_cycles are enforced HERE, before anything is written: if the wave is self-generated and the post-increment SELF_WAVE would exceed 2, or max_cycles is reached (cycle &gt;= max_cycles AND max_cycles &gt; 0), do NOT write the plan file and do NOT arm a handoff — fall through to the normal stop and list the wave in the synthesis as RECOMMENDED NEXT WORK per &lt;stop-conditions&gt;. A /clear must never launder a cap.</rule>
+        <branch condition="GOAL_MODE is false (STANDALONE)">
+          <action>Follow the /tmux:supervisor:fresh procedure: write the one-shot handoff marker .tmux-cli/fresh-handoff ATOMICALLY (write a temp file, then rename over the target) as the LAST action before ending the turn, with these fields:
+
+plan: {research-root}/next-wave-&lt;W&gt;.md
+self_wave: &lt;post-increment SELF_WAVE&gt;
+cycle: &lt;current cycle counter&gt;
+requested_by: supervisor
+created: &lt;current UTC timestamp, RFC3339&gt;</action>
+          <action>Print EXACTLY one line, byte-identical in shape to the /tmux:supervisor:fresh confirmation (fresh.xml step 5) so one grep matches both surfaces: "FRESH HANDOFF armed → {research-root}/next-wave-&lt;W&gt;.md (self_wave=&lt;N&gt;, cycle=&lt;M&gt;)" — where &lt;N&gt; is the post-increment SELF_WAVE and &lt;M&gt; the cycle counter just written to the marker. The arrow is a literal U+2192 (→), never an HTML entity.</action>
+          <action critical="true">STOP — end the turn here. Do NOT windows-send /clear and do NOT windows-send /tmux:supervisor for this branch. The tmux-supervisor-cycle.sh Stop hook fires at turn end, consumes the marker, and performs the /clear + /tmux:supervisor {plan} relaunch deterministically from OUTSIDE this dying context. Sending them yourself would double-fire the restart.</action>
+        </branch>
+        <branch condition="GOAL_MODE is true">
+          <action>Keep the existing windows-send dance — the marker path is NOT available here: the Stop hook defers whenever .tmux-cli/taskvisor-active exists (the daemon is the sole dispatcher in goal mode), so a marker written in GOAL_MODE would never be consumed and would dead-end. Send /clear to SUPERVISOR_WID via windows-send, then send /tmux:supervisor {research-root}/next-wave-&lt;W&gt;.md to SUPERVISOR_WID via windows-send.</action>
+          <action>STOP — a fresh supervisor instance takes over with the next-wave plan file as input.</action>
+        </branch>
+      </check>
+      <check condition="no pending tasks remain AND the next-wave plan-file branch above did NOT fire (no executable next wave, or it was capped)">
         <action>Normal stop — all work is complete.</action>
         <action>If GOAL_MODE is true, REUSE the GOAL_ID already resolved in step 0b — same rule as the max_cycles branch above: never re-read the global current-goal marker for a signal write (last-writer-wins under concurrent dispatch). Write .tmux-cli/goals/{GOAL_ID}/signal.json with {"source":"supervisor","status":"done"}.</action>
       </check>
@@ -497,7 +537,7 @@ RESPONSE PROTOCOL (MANDATORY):
     <rule>windows-kill: only on accepted DONE or terminal FAILED; never on SUPERVISOR_WID; pass window NAME</rule>
     <rule>Always Read the file cited in a DONE before applying the gap catalogue; never rely on the (absent) inline body</rule>
     <rule>If a worker sends DONE without file=, REMIND once; do not accept an inline-body DONE as a shortcut</rule>
-    <rule>windows-send: used ONLY for self-directed cycle-restart commands to SUPERVISOR_WID in step 9b (/clear, /tmux:supervisor)</rule>
+    <rule>windows-send: used ONLY for self-directed cycle-restart commands to SUPERVISOR_WID in step 9b (/clear, /tmux:supervisor). Two step-9b restart paths, kept distinct: (a) the NEXT-WAVE PLAN-FILE restart uses windows-send in GOAL_MODE only; standalone cycle/wave restarts go through the fresh-handoff marker (.tmux-cli/fresh-handoff, consumed by the tmux-supervisor-cycle.sh Stop hook) — the supervisor writes the marker and STOPs, it does NOT send. (b) the TASKS-PATH continuation (pending tasks remain) still uses windows-send in BOTH modes today — migrating it onto the marker is a listed fast-follow, so do not remove those sends.</rule>
     <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (red validate cycle, supervisor pushback, NEED_INPUT, unwritten-code test red) or daemon-owned goal-failures.</error-reporting>
   </execution-rules>
 
@@ -508,7 +548,7 @@ RESPONSE PROTOCOL (MANDATORY):
       - Headline finding requiring user-only authorization (credentials, out-of-band intent, scope change beyond project).
       - Token/time budget exhausted (if user set one).
       - Cycle limit reached (supervisor.max_cycles in .tmux-cli/setting.yaml; step 9b).
-      - SELF_WAVE cap reached (2 self-generated waves per invocation; see glossary): the next wave's tasks originate solely from the supervisor's own synthesis/§8a output and SELF_WAVE is already 2 — list the remaining self-generated follow-ups in the synthesis as RECOMMENDED NEXT WORK (not executed) and stop. Waves traceable to the original $ARGUMENTS requirements are NOT capped.
+      - SELF_WAVE cap reached (2 self-generated waves per CHAIN — across every fresh-handoff /clear, not merely per context; see glossary): the next wave's tasks originate solely from the supervisor's own synthesis/§8a output and SELF_WAVE is already 2 — list the remaining self-generated follow-ups in the synthesis as RECOMMENDED NEXT WORK (not executed) and stop. Waves traceable to the original $ARGUMENTS requirements are NOT capped.
       - STOP GATE triggered (step 1c) — unfinished tasks from a previous run.
       - Explicit user interrupt.</rule>
     <not-stop>These are NOT stop conditions — resolve autonomously per &lt;autonomy-policy&gt;:

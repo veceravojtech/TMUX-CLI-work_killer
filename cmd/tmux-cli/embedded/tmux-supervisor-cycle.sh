@@ -84,6 +84,107 @@ if [[ -f "$GUARD_FILE" ]]; then
     exit 0
 fi
 
+# --- Fresh-context handoff marker (design §5b) ---
+#
+# An armed .tmux-cli/fresh-handoff is an explicit instruction and takes precedence
+# over leftover unfinished tasks.yaml work — the fresh instance decides what to do
+# about those from its plan file. One-shot by construction: the marker is consumed
+# before anything is sent, so a crashed send cannot re-fire on the next Stop.
+
+FRESH_MARKER="${PROJECT_DIR}/.tmux-cli/fresh-handoff"
+
+if [[ -f "$FRESH_MARKER" ]]; then
+    LOG_DIR="${PROJECT_DIR}/.tmux-cli/logs"
+    mkdir -p "$LOG_DIR"
+
+    # yaml reads stay grep/sed based (no jq on the host), same as this script's other reads
+    FRESH_PLAN=$(grep -E '^\s*plan:' "$FRESH_MARKER" 2>/dev/null | head -n 1 | sed -e 's/^\s*plan:\s*//' -e 's/\s*$//' -e 's/^"//' -e 's/"$//' || echo "")
+    FRESH_SELF_WAVE=$(grep -E '^\s*self_wave:' "$FRESH_MARKER" 2>/dev/null | head -n 1 | sed 's/.*self_wave:\s*//' | tr -d ' ' || echo "")
+    FRESH_CYCLE=$(grep -E '^\s*cycle:' "$FRESH_MARKER" 2>/dev/null | head -n 1 | sed 's/.*cycle:\s*//' | tr -d ' ' || echo "")
+    [[ "$FRESH_SELF_WAVE" =~ ^[0-9]+$ ]] || FRESH_SELF_WAVE=0
+    [[ "$FRESH_CYCLE" =~ ^[0-9]+$ ]] || FRESH_CYCLE=0
+
+    # Never restart onto nothing: a missing/unparseable plan consumes the marker and logs
+    FRESH_PLAN_ABS="$FRESH_PLAN"
+    if [[ -n "$FRESH_PLAN" && "$FRESH_PLAN" != /* ]]; then
+        FRESH_PLAN_ABS="${PROJECT_DIR}/${FRESH_PLAN}"
+    fi
+
+    if [[ -z "$FRESH_PLAN" || ! -f "$FRESH_PLAN_ABS" ]]; then
+        rm -f "$FRESH_MARKER"
+        echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor fresh handoff aborted (plan file missing: '${FRESH_PLAN}'), marker consumed" >> "$LOG_DIR/notifications.log"
+        exit 0
+    fi
+
+    # --- Read max_cycles / cycle_delay from setting.yaml (default 0 = unlimited) ---
+
+    FRESH_SETTINGS_FILE="${PROJECT_DIR}/.tmux-cli/setting.yaml"
+    FRESH_MAX_CYCLES=0
+    FRESH_CYCLE_DELAY=5
+
+    if [[ -f "$FRESH_SETTINGS_FILE" ]]; then
+        FRESH_MAX_CYCLES=$(grep -E '^\s*max_cycles:' "$FRESH_SETTINGS_FILE" 2>/dev/null | sed 's/.*max_cycles:\s*//' | tr -d ' ' || echo "0")
+        [[ "$FRESH_MAX_CYCLES" =~ ^[0-9]+$ ]] || FRESH_MAX_CYCLES=0
+        FRESH_CYCLE_DELAY=$(grep -E '^\s*cycle_delay:' "$FRESH_SETTINGS_FILE" 2>/dev/null | sed 's/.*cycle_delay:\s*//' | tr -d ' ' || echo "5")
+        [[ "$FRESH_CYCLE_DELAY" =~ ^[0-9]+$ ]] || FRESH_CYCLE_DELAY=5
+    fi
+
+    # Same cap rule as the tasks.yaml branch, enforced against the marker's cycle.
+    # A capped marker is still consumed — leaving it armed would ambush a later Stop.
+    if [[ "$FRESH_MAX_CYCLES" -gt 0 && "$FRESH_CYCLE" -ge "$FRESH_MAX_CYCLES" ]]; then
+        rm -f "$FRESH_MARKER"
+        echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor fresh handoff cycle limit reached (${FRESH_CYCLE}/${FRESH_MAX_CYCLES}), NOT restarting" >> "$LOG_DIR/notifications.log"
+        exit 0
+    fi
+
+    # --- Consume the marker BEFORE any send — one-shot ---
+
+    rm -f "$FRESH_MARKER"
+
+    FRESH_PANE_TARGET="${SESSION_ID}:${TMUX_WINDOW_ID}"
+    CANCEL_FILE="${PROJECT_DIR}/.tmux-cli/cancel-cycle"
+
+    FRESH_WAVE_MSG=""
+    if [[ "$FRESH_SELF_WAVE" -gt 0 ]]; then
+        FRESH_WAVE_MSG=", self_wave ${FRESH_SELF_WAVE}"
+    fi
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor fresh handoff restart -> ${FRESH_PLAN} (cycle ${FRESH_CYCLE}${FRESH_WAVE_MSG})" >> "$LOG_DIR/notifications.log"
+
+    # --- Cancellable countdown (cancel leaves the marker consumed — no re-arm) ---
+
+    rm -f "$CANCEL_FILE"
+
+    if [[ "$FRESH_CYCLE_DELAY" -gt 0 ]]; then
+        for i in $(seq "$FRESH_CYCLE_DELAY" -1 1); do
+            if [[ -f "$CANCEL_FILE" ]]; then
+                rm -f "$CANCEL_FILE"
+                tmux display-message -t "$FRESH_PANE_TARGET" "Supervisor fresh restart cancelled."
+                echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor fresh handoff cancelled by user (marker consumed, restart skipped)" >> "$LOG_DIR/notifications.log"
+                exit 0
+            fi
+            tmux display-message -t "$FRESH_PANE_TARGET" "Supervisor fresh restart in ${i}s... (touch .tmux-cli/cancel-cycle to abort)"
+            sleep 1
+        done
+
+        # Final cancel check after the last sleep
+        if [[ -f "$CANCEL_FILE" ]]; then
+            rm -f "$CANCEL_FILE"
+            tmux display-message -t "$FRESH_PANE_TARGET" "Supervisor fresh restart cancelled."
+            echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor fresh handoff cancelled by user (marker consumed, restart skipped)" >> "$LOG_DIR/notifications.log"
+            exit 0
+        fi
+    fi
+
+    # --- Send restart commands to the supervisor pane (same pattern as the tasks branch) ---
+
+    rm -f "${PROJECT_DIR}/.tmux-cli/audit-done"
+    tmux send-keys -t "$FRESH_PANE_TARGET" "/clear" Enter
+    sleep 2
+    tmux send-keys -t "$FRESH_PANE_TARGET" "/tmux:supervisor ${FRESH_PLAN}" Enter
+
+    exit 0
+fi
+
 # --- Check tasks.yaml for unfinished tasks ---
 
 TASKS_FILE="${PROJECT_DIR}/.tmux-cli/tasks.yaml"

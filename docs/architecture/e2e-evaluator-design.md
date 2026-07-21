@@ -148,6 +148,12 @@ Only a genuine **tmux-cli defect** earns a `task-report`. Three failure classes:
   4. **the app is actually up** — `docker compose up`, then: `GET /login` → 200; dashboard route unauthenticated → 302/401; authenticated request → 200. This is the deliverable-pinning principle from the two-tier design applied to the *whole build* (a green daemon with a dead app is a false pass).
 - **Single-command mode (secondary):** derive the intended end-state from the **command-under-test's own skill/XML description** (the `description`/contract), then assert the artifacts that command claims to produce.
 
+**Registered single-command scenarios:**
+
+| Slug | Command under test | Definition |
+|---|---|---|
+| `supervisor-fresh-handoff` | `/tmux:supervisor:fresh` + the step-9b standalone handoff | [`supervisor-fresh-design.md` §8.1](supervisor-fresh-design.md) — two-wave plan document through a standalone supervisor; asserts marker armed/consumed/gone, `/clear`-before-relaunch ordering, step-0c counter adoption, and that the SELF_WAVE cap holds across `/clear` (no Docker, no `goals.yaml`) |
+
 ---
 
 ## 9. Timing metrics & tuning (decision #3, second half)

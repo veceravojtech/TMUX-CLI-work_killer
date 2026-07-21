@@ -1,0 +1,101 @@
+<task id="supervisor-fresh" name="Fresh-context wave handoff">
+  <objective>Arm a one-shot handoff so the NEXT supervisor wave runs in a clean context: validate the plan file, refuse when another dispatcher owns the window, write `.tmux-cli/fresh-handoff` atomically, print one confirmation line, and STOP. The `tmux-supervisor-cycle.sh` Stop hook consumes the marker after the turn ends and performs `/clear` + `/tmux:supervisor &lt;plan-file&gt;` from outside this context. This command NEVER restarts anything itself.</objective>
+
+  <input>
+    <arg name="$ARGUMENTS">Exactly ONE path to the plan file the fresh instance must run (e.g. `.tmux-cli/research/2026-07-21-14/next-wave-2.md`). Any argument `/tmux:supervisor` accepts is valid; a lone plan `.md` is the primary case. Passed through to the marker VERBATIM — never rewritten, absolutised, or normalised.</arg>
+  </input>
+
+  <output>
+    <primary>`.tmux-cli/fresh-handoff` — the one-shot YAML marker (fields: `plan`, optional `self_wave`, optional `cycle`, `requested_by`, `created`) written atomically as the LAST action of the turn.</primary>
+    <secondary>One stdout line: `FRESH HANDOFF armed → &lt;plan-file&gt; (self_wave=N, cycle=M)`.</secondary>
+  </output>
+
+  <requirements critical="true">
+    <note>Filesystem + Bash only. No tmux-cli MCP tools: this command spawns nothing, sends nothing, and kills nothing. Writing the marker is its entire effect.</note>
+  </requirements>
+
+  <llm critical="true">
+    <mandate critical="true">NEVER send `/clear`, `/tmux:supervisor`, or any other key sequence — not via `windows-send`, not via `tmux send-keys`. The Stop hook owns delivery. Sending from here reintroduces the blind queued-input dance this command exists to replace, and would race the hook's own send.</mandate>
+    <mandate critical="true">NEVER write the marker before the plan file is verified to exist and be non-empty. The hook CONSUMES the marker before sending (one-shot by construction), so a marker pointing at nothing burns a real restart and logs a dead end. Validate first, arm last.</mandate>
+    <mandate critical="true">The marker path and field names are a CROSS-COMPONENT CONTRACT — `.tmux-cli/fresh-handoff` with keys `plan:`, `self_wave:`, `cycle:`, `requested_by:`, `created:`. The Stop hook greps these exact byte sequences. Do not rename, re-case, re-nest, or add fields.</mandate>
+    <mandate critical="true">Write ATOMICALLY (temp file in the SAME directory, then `mv` rename). A partially-written marker is parseable by a hook that fires mid-write; a rename is not.</mandate>
+    <mandate>Carry `self_wave`/`cycle` ONLY when you actually know them (a supervisor step-9b handoff). A manual user invocation omits both — a human restart is a fresh authorization and the caps reset, symmetrical with typing `/tmux:supervisor plan.md` by hand. Never invent, guess, or default these to 0.</mandate>
+    <mandate>End the turn immediately after printing. Do not summarise, do not plan the next wave, do not read the plan file's contents — the fresh instance does that with the context you are conserving.</mandate>
+  </llm>
+
+  <flow>
+    <step n="1" title="Validate $ARGUMENTS">
+      <action>Bind PLAN = `$ARGUMENTS` trimmed of surrounding whitespace.</action>
+      <check condition="PLAN is empty OR contains more than one whitespace-separated token">
+        <action>Print exactly: `USAGE: /tmux:supervisor:fresh &lt;plan-file&gt; — exactly one existing, non-empty path required.`</action>
+        <action>STOP. Write NO marker.</action>
+      </check>
+      <action>Verify the file with `test -s "$PLAN"` (exists AND non-empty in one check).</action>
+      <check condition="test -s fails">
+        <action>Print exactly: `USAGE: /tmux:supervisor:fresh &lt;plan-file&gt; — '&lt;PLAN&gt;' does not exist or is empty; refusing to arm a handoff pointing at nothing.`</action>
+        <action>STOP. Write NO marker.</action>
+      </check>
+    </step>
+
+    <step n="2" title="Guards — refuse when another dispatcher owns this window">
+      <action>Check for the daemon and recurring-driver markers relative to the project root.</action>
+      <check condition="`.tmux-cli/taskvisor-active` exists">
+        <action>Print exactly: `REFUSED: taskvisor-active — the daemon is the sole dispatcher; use the goal flow instead of a fresh handoff.`</action>
+        <action>STOP. Write NO marker.</action>
+        <rule>The Stop hook exits early on this same marker, so an armed handoff here would never fire and would ambush a later, unrelated Stop.</rule>
+      </check>
+      <check condition="`.tmux-cli/recurring-active` exists">
+        <action>Print exactly: `REFUSED: recurring-active — the recurring driver owns supervisor dispatch; not arming a fresh handoff.`</action>
+        <action>STOP. Write NO marker.</action>
+      </check>
+      <action>Resolve THIS window's name the same way the hook does, so the two agree by construction: read `$TMUX_WINDOW_UUID` from the environment, find the session whose `TMUX_CLI_PROJECT_PATH` equals the project dir, then match `@window-uuid` across `tmux list-windows -F '#{window_id}|#{window_name}'` to get the window name.</action>
+      <check condition="$TMUX_WINDOW_UUID is unset OR the resolved window name is not exactly `supervisor`">
+        <action>Print exactly: `REFUSED: not the 'supervisor' window (resolved: &lt;name-or-unknown&gt;) — the Stop hook only acts there; a marker written here would be stranded.`</action>
+        <action>STOP. Write NO marker.</action>
+        <rule>The hook's window match is exactly `supervisor` (bare, window 0). A goal-namespaced `supervisor-&lt;ns&gt;` window is daemon-owned and is correctly refused here.</rule>
+      </check>
+    </step>
+
+    <step n="3" title="Counter carryover">
+      <action>If you are a running supervisor performing a step-9b handoff and you KNOW your counters, bind SELF_WAVE and CYCLE to their current values (SELF_WAVE post-incremented per the supervisor's own SELF_WAVE rules). Otherwise — a manual `/tmux:supervisor:fresh` typed by a human — leave BOTH unbound.</action>
+      <rule>Unbound means the field is OMITTED from the marker entirely — never emitted as an empty value, `null`, or `0`. The fresh instance starts its counters at 0 when a field is absent, which is the intended cap reset for a human-authorized restart.</rule>
+      <rule>When bound, these are the cap-integrity half of the contract: they make `/clear` non-laundering, so the 2-self-generated-wave cap and `max_cycles` hold across any number of fresh handoffs.</rule>
+    </step>
+
+    <step n="4" title="Write the marker atomically">
+      <action>Ensure `.tmux-cli/` exists, then write to a temp file in THAT SAME directory and rename it over the target — the rename is what makes it atomic, and a same-directory temp guarantees a same-filesystem rename:</action>
+      <command>
+TMP=".tmux-cli/.fresh-handoff.$$.tmp"
+{
+  printf 'plan: %s\n' "$PLAN"
+  [ -n "${SELF_WAVE:-}" ] &amp;&amp; printf 'self_wave: %s\n' "$SELF_WAVE"
+  [ -n "${CYCLE:-}" ] &amp;&amp; printf 'cycle: %s\n' "$CYCLE"
+  printf 'requested_by: %s\n' "$REQUESTED_BY"
+  printf 'created: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} &gt; "$TMP" &amp;&amp; mv -f "$TMP" ".tmux-cli/fresh-handoff"
+      </command>
+      <rule>REQUESTED_BY is `supervisor` for a step-9b handoff, `user` for a manual invocation. It is diagnostic only — the hook restarts identically either way — but it is what makes a stale marker in the log attributable.</rule>
+      <rule>`plan:` carries the path EXACTLY as the user/supervisor passed it. The hook resolves it relative to the project dir, the same way the supervisor would have.</rule>
+      <check condition="the write or rename fails">
+        <action>Print `ERROR: could not arm fresh handoff: &lt;error&gt;` and STOP. Do NOT leave a temp file behind (`rm -f "$TMP"`).</action>
+      </check>
+    </step>
+
+    <step n="5" title="Confirm and STOP">
+      <action>Print EXACTLY one line, substituting `-` for any counter that was intentionally omitted in step 3:</action>
+      <template>FRESH HANDOFF armed → &lt;PLAN&gt; (self_wave=&lt;N or -&gt;, cycle=&lt;M or -&gt;)</template>
+      <action>STOP — end the turn immediately. No summary, no follow-up tool calls, no further output.</action>
+      <rule>Ending the turn is what FIRES the mechanism: the Stop hook runs on turn end, consumes the marker, and sends `/clear` then `/tmux:supervisor &lt;plan&gt;` after its cancellable countdown. Continuing to work here only delays the handoff and burns the context this command exists to conserve.</rule>
+      <rule>To abort an armed restart during the countdown, the operator touches `.tmux-cli/cancel-cycle` — the existing cancel mechanism applies to this branch unchanged.</rule>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <rule>The marker is the ONLY side effect — no sends, no spawns, no kills, no edits to any other file.</rule>
+    <rule>Validate before arming, always: `test -s` on the plan file gates every marker write.</rule>
+    <rule>Guards are refusals, not warnings — `taskvisor-active`, `recurring-active`, and a non-`supervisor` window each abort with no marker written.</rule>
+    <rule>Counters are carried only when genuinely known; omission is the correct encoding of a human-authorized cap reset.</rule>
+    <rule>One marker per turn, written last, atomically, then STOP.</rule>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified goal spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (a missing/empty plan file, a guard refusal, an operator-cancelled countdown) or daemon-owned goal-failures.</error-reporting>
+  </execution-rules>
+</task>
