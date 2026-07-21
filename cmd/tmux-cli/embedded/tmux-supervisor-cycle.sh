@@ -70,7 +70,11 @@ fi
 
 # --- Check that no execute-* worker windows are still running ---
 
-OPEN_WORKERS=$(tmux list-windows -t "$SESSION_ID" -F '#{window_name}' 2>/dev/null | grep -c '^execute-' || echo "0")
+# `grep -c` prints its count AND exits 1 on no match, so `|| echo "0"` would append a
+# SECOND line ("0\n0") and trip an arithmetic error below. `|| true` keeps the count and
+# absorbs the exit under `set -e`; the shape guard covers a tmux/grep failure.
+OPEN_WORKERS=$(tmux list-windows -t "$SESSION_ID" -F '#{window_name}' 2>/dev/null | grep -c '^execute-' || true)
+[[ "$OPEN_WORKERS" =~ ^[0-9]+$ ]] || OPEN_WORKERS=0
 
 if [[ "$OPEN_WORKERS" -gt 0 ]]; then
     exit 0
@@ -213,22 +217,19 @@ MAX_CYCLES=0
 CYCLE_DELAY=5
 
 if [[ -f "$SETTINGS_FILE" ]]; then
+    # Shape-guard, not just -z: a corrupted non-numeric value would otherwise reach
+    # `[[ -ge ]]` / `seq` and, under `set -u`, abort the hook outright (same guards as
+    # FRESH_MAX_CYCLES / FRESH_CYCLE_DELAY in the marker branch above).
     MAX_CYCLES=$(grep -E '^\s*max_cycles:' "$SETTINGS_FILE" 2>/dev/null | sed 's/.*max_cycles:\s*//' | tr -d ' ' || echo "0")
-    if [[ -z "$MAX_CYCLES" ]]; then
-        MAX_CYCLES=0
-    fi
+    [[ "$MAX_CYCLES" =~ ^[0-9]+$ ]] || MAX_CYCLES=0
     CYCLE_DELAY=$(grep -E '^\s*cycle_delay:' "$SETTINGS_FILE" 2>/dev/null | sed 's/.*cycle_delay:\s*//' | tr -d ' ' || echo "5")
-    if [[ -z "$CYCLE_DELAY" ]]; then
-        CYCLE_DELAY=5
-    fi
+    [[ "$CYCLE_DELAY" =~ ^[0-9]+$ ]] || CYCLE_DELAY=5
 fi
 
 # --- Read current cycle from tasks.yaml ---
 
 CURRENT_CYCLE=$(grep -E '^cycle:' "$TASKS_FILE" 2>/dev/null | sed 's/^cycle:\s*//' | tr -d ' ' || echo "0")
-if [[ -z "$CURRENT_CYCLE" ]]; then
-    CURRENT_CYCLE=0
-fi
+[[ "$CURRENT_CYCLE" =~ ^[0-9]+$ ]] || CURRENT_CYCLE=0
 
 # --- Check cycle limit ---
 
