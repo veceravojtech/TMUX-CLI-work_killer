@@ -70,10 +70,17 @@ fi
 
 # --- Check that no execute-* worker windows are still running ---
 
-# `grep -c` prints its count AND exits 1 on no match, so `|| echo "0"` would append a
-# SECOND line ("0\n0") and trip an arithmetic error below. `|| true` keeps the count and
-# absorbs the exit under `set -e`; the shape guard covers a tmux/grep failure.
-OPEN_WORKERS=$(tmux list-windows -t "$SESSION_ID" -F '#{window_name}' 2>/dev/null | grep -c '^execute-' || true)
+# Fail-safe read: tmux's exit status is captured SEPARATELY from the count, because
+# piping straight into grep makes a FAILED list-windows indistinguishable from a
+# successful read of zero workers. A failed read leaves worker liveness unverifiable,
+# and unverifiable must never mean "nobody is running" — the hook exits and restarts
+# nothing (mirrors supervisor.xml step 1c: windows-list failure -> reset nothing).
+# On success the count is exact: `grep -c` prints its count AND exits 1 on no match,
+# so `|| true` keeps the count and absorbs that exit under `set -e` (zero matches is
+# NOT a failure), while `|| echo "0"` would append a SECOND line ("0\n0") and trip an
+# arithmetic error below. The shape guard is the last defence on a malformed count.
+WINDOW_LIST=$(tmux list-windows -t "$SESSION_ID" -F '#{window_name}' 2>/dev/null) || exit 0
+OPEN_WORKERS=$(grep -c '^execute-' <<< "$WINDOW_LIST" || true)
 [[ "$OPEN_WORKERS" =~ ^[0-9]+$ ]] || OPEN_WORKERS=0
 
 if [[ "$OPEN_WORKERS" -gt 0 ]]; then

@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,6 +24,10 @@ import (
 //     non-numeric value reached `[[ -ge ]]` / `-gt` / `$(( ))` / `seq`; under the
 //     script's `set -u` a bare word like `abc` is an unbound-variable *fatal*, so
 //     one bad byte in tasks.yaml killed the hook and silently stopped cycling.
+//  3. OPEN_WORKERS piped tmux straight into `grep -c`, discarding tmux's exit
+//     status: a FAILED `list-windows` was indistinguishable from a successful read
+//     of zero workers, so an unverifiable liveness check licensed a restart on top
+//     of workers that may well still be alive.
 //
 // The harness mirrors the fake-tmux + no-op-sleep shim pattern from
 // supervisor_fresh_hook_test.go, but is self-contained here: these tests need a
@@ -36,12 +41,33 @@ type cycleHookEnv struct {
 	tmuxLog    string
 }
 
+// cycleHookOpts parameterises the fake tmux.
+//
+// failListWindowsCall, when > 0, makes the shim exit non-zero on the Nth
+// `list-windows` invocation (1-based) and only that one. The count matters: call 1
+// is the window-uuid discovery walk, which MUST succeed for the script to reach the
+// supervisor-window guard and then the OPEN_WORKERS read at call 2. Failing every
+// list-windows would strand the script at the identity guard and the test would
+// pass without ever exercising the read under test.
+type cycleHookOpts struct {
+	windowNames         []string
+	failListWindowsCall int
+}
+
 // newCycleHookEnv materialises the embedded hook plus a fake `tmux` (and a no-op
 // `sleep`) on PATH, so the tasks.yaml branch runs with no tmux server present.
 // windowNames is what the fake `tmux list-windows -F '#{window_name}'` reports —
 // i.e. the input to the OPEN_WORKERS guard.
 func newCycleHookEnv(t *testing.T, windowNames ...string) *cycleHookEnv {
 	t.Helper()
+	return newCycleHookEnvOpts(t, cycleHookOpts{windowNames: windowNames})
+}
+
+// newCycleHookEnvOpts is newCycleHookEnv with the failure-injection knobs exposed.
+func newCycleHookEnvOpts(t *testing.T, opts cycleHookOpts) *cycleHookEnv {
+	t.Helper()
+
+	windowNames := opts.windowNames
 
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
@@ -67,9 +93,23 @@ func newCycleHookEnv(t *testing.T, windowNames ...string) *cycleHookEnv {
 		nameEchoes.WriteString(`            echo "` + n + `"` + "\n")
 	}
 
+	// Injected only when asked, so the healthy-path shim stays byte-identical.
+	failBlock := ""
+	if opts.failListWindowsCall > 0 {
+		counter := filepath.Join(root, "list-windows-calls")
+		failBlock = `if [[ "$1" == "list-windows" ]]; then
+    n=$(( $(cat "` + counter + `" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "` + counter + `"
+    if [[ "$n" -eq ` + strconv.Itoa(opts.failListWindowsCall) + ` ]]; then
+        exit 1
+    fi
+fi
+`
+	}
+
 	tmuxShim := `#!/usr/bin/env bash
 printf '%s\n' "$*" >> "` + tmuxLog + `"
-case "$1" in
+` + failBlock + `case "$1" in
     list-sessions)   echo "sess" ;;
     show-environment) echo "TMUX_CLI_PROJECT_PATH=` + projectDir + `" ;;
     show-options)    echo "uuid-supervisor" ;;
@@ -182,6 +222,9 @@ func TestSupervisorCycleHook_Bash_NoOpenWorkersEmitsNoStderrNoise(t *testing.T) 
 			"yielded a two-line \"0\\n0\" and tripped a bash arithmetic-syntax error")
 	assert.Contains(t, env.tmuxCalls(t), "/tmux:supervisor .tmux-cli/tasks.yaml",
 		"silencing the noise must not cost the restart — no workers means cycle on")
+	assert.Contains(t, env.tasksYAML(t), "cycle: 1",
+		"a healthy read of zero workers is the success path: it must still burn a cycle "+
+			"(regression guard for the fail-safe read — see the tmux-failure test below)")
 }
 
 func TestSupervisorCycleHook_Bash_OpenWorkerStillBlocksRestart(t *testing.T) {
@@ -197,6 +240,61 @@ func TestSupervisorCycleHook_Bash_OpenWorkerStillBlocksRestart(t *testing.T) {
 		"a live execute-* worker must still suppress the cycle restart")
 	assert.Contains(t, env.tasksYAML(t), "cycle: 0",
 		"a suppressed cycle must not burn a cycle count")
+}
+
+// --- defect 3: OPEN_WORKERS must be fail-safe on a tmux failure -------------
+
+// A failed `list-windows` means worker liveness is UNVERIFIABLE. Reading that as
+// "zero workers" lets the hook /clear the supervisor pane and restart on top of
+// workers that may still be alive. The convention this restores is supervisor.xml
+// step 1c: a windows-list failure resets nothing.
+//
+// Pairs with the two tests above, which pin the healthy paths this must not break:
+// zero workers still restarts (and burns a cycle), one execute-1 still suppresses.
+func TestSupervisorCycleHook_Bash_TmuxFailureOnWorkerReadRestartsNothing(t *testing.T) {
+	env := newCycleHookEnvOpts(t, cycleHookOpts{
+		windowNames: []string{"supervisor"},
+		// Call 1 is the uuid discovery walk and must succeed; call 2 is the read.
+		failListWindowsCall: 2,
+	})
+	env.writeSettings(t, "0", "0")
+	env.writeTasks(t, pendingTasks)
+
+	stderr, code := env.run(t)
+
+	calls := env.tmuxCalls(t)
+
+	// Non-vacuity: prove the run actually reached the OPEN_WORKERS read rather
+	// than exiting earlier at the supervisor-window identity guard.
+	assert.Contains(t, calls, "#{window_name}",
+		"the test must exercise the OPEN_WORKERS read itself, not fail before it")
+
+	assert.Equal(t, 0, code, "an unverifiable liveness check must exit cleanly, not error out")
+	assert.Empty(t, stderr)
+	assert.NotContains(t, calls, "send-keys",
+		"tmux failed, so open workers are UNKNOWN — a hook that cannot see the workers "+
+			"must restart nothing (mirrors supervisor.xml step 1c)")
+	assert.Contains(t, env.tasksYAML(t), "cycle: 0",
+		"a hook that took no action must not burn a cycle")
+	assert.NotContains(t, env.notifications(t), "auto-cycle restart",
+		"no restart happened, so none may be logged")
+}
+
+func TestSupervisorCycleHook_OpenWorkersReadIsFailSafe(t *testing.T) {
+	require.Contains(t, hookSupervisorCycle,
+		`WINDOW_LIST=$(tmux list-windows -t "$SESSION_ID" -F '#{window_name}' 2>/dev/null) || exit 0`,
+		"tmux's exit status must be captured SEPARATELY from the count, and a failed "+
+			"read must exit the hook instead of falling through as zero workers")
+
+	idx := strings.Index(hookSupervisorCycle, `grep -c '^execute-'`)
+	require.GreaterOrEqual(t, idx, 0, "the open-worker guard must still exist")
+	line := hookSupervisorCycle[idx:]
+	if nl := strings.Index(line, "\n"); nl >= 0 {
+		line = line[:nl]
+	}
+	assert.NotContains(t, line, "tmux",
+		"the count must read the captured list, never a pipe straight from tmux — "+
+			"a pipe discards the exit status this guard depends on")
 }
 
 // --- defect 2: non-numeric guards ------------------------------------------
