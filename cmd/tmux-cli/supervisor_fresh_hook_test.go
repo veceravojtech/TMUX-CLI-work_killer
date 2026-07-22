@@ -358,3 +358,32 @@ func TestSupervisorCycleHook_FreshBranchSerializesWithAuditHook(t *testing.T) {
 		"the fresh branch must NOT rm the audit-done guard — that raced the audit hook's touch; "+
 			"the re-arm lives in the relaunched supervisor's step-0 clean slate")
 }
+
+func TestSupervisorCycleHook_Bash_ArmedMarkerSurvivesAllGoalsDone(t *testing.T) {
+	e := newFreshHookEnv(t, "0")
+	e.writePlan(t, ".tmux-cli/research/e2e/plan.md")
+	e.writeMarker(t, "plan: .tmux-cli/research/e2e/plan.md\nrequested_by: user\n")
+	require.NoError(t, os.WriteFile(filepath.Join(e.projectDir, ".tmux-cli/goals.yaml"),
+		[]byte("goals:\n  - id: goal-001\n    status: done\n  - id: goal-002\n    status: done\n"), 0o644))
+
+	e.run(t)
+
+	calls := e.tmuxCalls(t)
+	assert.Contains(t, calls, "/clear",
+		"an ARMED fresh-handoff is an explicit restart instruction — a finished goal "+
+			"history (all goals terminal) must not shadow it into a stranded marker")
+	assert.Contains(t, calls, "/tmux:supervisor .tmux-cli/research/e2e/plan.md")
+	assert.NoFileExists(t, filepath.Join(e.projectDir, ".tmux-cli/fresh-handoff"),
+		"marker must be consumed by the restart")
+}
+
+func TestSupervisorCycleHook_Bash_AllGoalsDoneNoMarkerStillExitsEarly(t *testing.T) {
+	e := newFreshHookEnv(t, "0")
+	require.NoError(t, os.WriteFile(filepath.Join(e.projectDir, ".tmux-cli/goals.yaml"),
+		[]byte("goals:\n  - id: goal-001\n    status: done\n"), 0o644))
+
+	e.run(t)
+
+	assert.NotContains(t, e.tmuxCalls(t), "send-keys",
+		"without an armed marker the goals-all-terminal early exit must be preserved unchanged")
+}

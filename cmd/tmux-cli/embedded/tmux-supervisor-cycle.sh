@@ -29,8 +29,12 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 [[ -f "$PROJECT_DIR/.tmux-cli/recurring-active" ]] && exit 0
 
 # --- All goals terminal? No work to restart ---
+# EXCEPT when a fresh-handoff marker is armed: the marker is an EXPLICIT restart
+# instruction and must not be shadowed by finished goal history (observed: a
+# project with 9 done goals stranded an armed marker forever — this guard exited
+# on every Stop before the marker branch below could ever run).
 GOALS_FILE="${PROJECT_DIR}/.tmux-cli/goals.yaml"
-if [[ -f "$GOALS_FILE" ]]; then
+if [[ -f "$GOALS_FILE" && ! -f "${PROJECT_DIR}/.tmux-cli/fresh-handoff" ]]; then
     TOTAL_GOALS=$(grep -cE '^\s*status:\s' "$GOALS_FILE" 2>/dev/null) || TOTAL_GOALS=0
     NON_TERMINAL=$(grep -cE '^\s*status:\s*(pending|running)' "$GOALS_FILE" 2>/dev/null) || NON_TERMINAL=0
     if [[ "$TOTAL_GOALS" -gt 0 && "$NON_TERMINAL" -eq 0 ]]; then
