@@ -340,3 +340,21 @@ func TestSupervisorCycleHook_Bash_NoMarkerLeavesTasksBranchIntact(t *testing.T) 
 	assert.Contains(t, calls, "/tmux:supervisor .tmux-cli/tasks.yaml",
 		"the untouched tasks.yaml branch must still restart on unfinished tasks")
 }
+
+func TestSupervisorCycleHook_FreshBranchSerializesWithAuditHook(t *testing.T) {
+	branch := freshBranch(t)
+
+	sentinel := strings.Index(branch, "cycle-restart-queued")
+	require.GreaterOrEqual(t, sentinel, 0,
+		"the fresh branch must touch the per-Stop serialization sentinel (backend task 533) — "+
+			"without it the unplanned-audit hook glues its prompt onto the queued relaunch args")
+
+	clear := strings.Index(branch, `"/clear"`)
+	require.GreaterOrEqual(t, clear, 0)
+	assert.Less(t, sentinel, clear,
+		"the sentinel must be written BEFORE any send-keys so the audit hook yields on this Stop")
+
+	assert.NotContains(t, branch, `rm -f "${PROJECT_DIR}/.tmux-cli/audit-done"`,
+		"the fresh branch must NOT rm the audit-done guard — that raced the audit hook's touch; "+
+			"the re-arm lives in the relaunched supervisor's step-0 clean slate")
+}

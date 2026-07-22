@@ -188,7 +188,12 @@ if [[ -f "$FRESH_MARKER" ]]; then
 
     # --- Send restart commands to the supervisor pane (same pattern as the tasks branch) ---
 
-    rm -f "${PROJECT_DIR}/.tmux-cli/audit-done"
+    # Serialize with the unplanned-audit Stop hook (same per-Stop sentinel as the
+    # tasks branch, backend task 533): the audit hook consumes this and yields
+    # instead of gluing its prompt onto the queued /tmux:supervisor arguments.
+    # The audit-done re-arm lives in the relaunched supervisor's step-0 clean
+    # slate — this path must NOT rm audit-done (that raced the audit's touch).
+    touch "${PROJECT_DIR}/.tmux-cli/cycle-restart-queued"
     tmux send-keys -t "$FRESH_PANE_TARGET" "/clear" Enter
     sleep 2
     tmux send-keys -t "$FRESH_PANE_TARGET" "/tmux:supervisor ${FRESH_PLAN}" Enter
