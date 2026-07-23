@@ -537,6 +537,37 @@ var goalCycleSuffixRe = regexp.MustCompile(`-c(\d+)$`)
 var namespacedSupRe = regexp.MustCompile(`^(?:supervisor|validator)-(\d+)$`)
 var namespacedWorkerRe = regexp.MustCompile(`^(?:execute|investigator)-(\d+)-\d+`)
 
+// subsupPrefix is the window-name prefix for sub-supervisor windows spawned by
+// windows-spawn-supervisor (depth-1 delegation: supervisor → supervisor-task-N
+// → execute-task-N-M). The "task-" segment is what keeps these names DISJOINT
+// from every goal-namespaced form above: namespacedSupRe requires a digits-only
+// namespace, so a sub-supervisor never parses as a goal binding, while
+// WindowsSpawnWorker's role-prefix derivation still namespaces its workers
+// (TrimPrefix "supervisor-" → ns "task-N" → prefix "execute-task-N-").
+const subsupPrefix = "supervisor-task-"
+
+// subsupWinRe / subsupWorkerRe recover the sub-supervisor state id from the
+// windows a /tmux:supervisor:new delegation creates: the supervisor-task-<n>
+// child itself and its execute-task-<n>-<m> worker pool. Deliberately disjoint
+// from namespacedSupRe / namespacedWorkerRe (both digits-only after the role
+// prefix), so goal routing and subsup routing can never claim the same window.
+var subsupWinRe = regexp.MustCompile(`^supervisor-task-(\d+)$`)
+var subsupWorkerRe = regexp.MustCompile(`^execute-task-(\d+)-\d+$`)
+
+// parseSubsupBinding derives the sub-supervisor state id ("task-N", the folder
+// name under .tmux-cli/subsup/) from a caller window name — either the
+// sub-supervisor window itself or one of its namespaced workers. Pure function,
+// mirror of parseGoalBinding for the delegation tier.
+func parseSubsupBinding(windowName string) (subsupID string, ok bool) {
+	if m := subsupWinRe.FindStringSubmatch(windowName); m != nil {
+		return "task-" + m[1], true
+	}
+	if m := subsupWorkerRe.FindStringSubmatch(windowName); m != nil {
+		return "task-" + m[1], true
+	}
+	return "", false
+}
+
 // parseGoalBinding derives a worker→goal binding from a caller window name. It is a
 // pure function: no filesystem access, never panics. Resolution order: (1) an
 // explicit goal-<N> token anywhere in the name (e.g. "sup-goal-020-c3"); (2) the
@@ -593,6 +624,13 @@ func (s *Server) resolveResearchRoot(callerWid string) string {
 			return filepath.Join(".tmux-cli", "goals", id, "research", fmt.Sprintf("cycle-%d", n))
 		}
 		return filepath.Join(".tmux-cli", "goals", id, "research")
+	}
+	// Sub-supervisor binding (supervisor-task-N and its execute-task-N-M workers):
+	// route reports to the delegation's own state root, BEFORE the global
+	// current-goal marker fallback — a stale marker must never pull a standalone
+	// sub-supervisor's reports into some goal's folder.
+	if id, ok := parseSubsupBinding(callerWid); ok {
+		return filepath.Join(".tmux-cli", "subsup", id, "research")
 	}
 	goalPath := filepath.Join(s.workingDir, ".tmux-cli", "taskvisor-current-goal")
 	if data, err := os.ReadFile(goalPath); err == nil {
@@ -853,6 +891,177 @@ func spawnKind(workerName string) string {
 	}
 }
 
+// buildSubsupTaskMessage renders the subtree message a freshly-spawned
+// sub-supervisor receives after /tmux:supervisor:new. It is the delegation-tier
+// mirror of buildTaskMessage: the same SCOPE/CONTEXT/DELIVERABLE/RESPONSE
+// PROTOCOL shape, but the reply tags are SUBSUP:* (so the parent's routing can
+// tell a child supervisor from a plain worker) and the deliverable is a
+// SYNTHESIS across the child's own worker fan-out, not a single worker report.
+func buildSubsupTaskMessage(parentWid, childName, subsupID, subtask, contextFile, scope, context, researchRoot, deliverable string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "PARENT_WID=%s\n", parentWid)
+	fmt.Fprintf(&b, "SELF_WID=%s\n", childName)
+	fmt.Fprintf(&b, "SUBSUP_ID=%s\n", subsupID)
+	fmt.Fprintf(&b, "SUBTREE: %s\n", subtask)
+	b.WriteString("\nSCOPE:\n")
+	fmt.Fprintf(&b, "Full spec is in %s — read it and follow it.\n\n", contextFile)
+	b.WriteString(scope)
+	b.WriteString("\n")
+	b.WriteString("\nCONTEXT:\n")
+	if context != "" {
+		b.WriteString(context)
+	} else {
+		b.WriteString("(none)")
+	}
+	b.WriteString("\n")
+	b.WriteString("\nDELIVERABLE (write these sections INSIDE the synthesis .md; do NOT paste them into tmux):\n")
+	if deliverable != "" {
+		b.WriteString(deliverable)
+		b.WriteString("\n")
+	} else {
+		b.WriteString("- SYNTHESIS: merged findings across all accepted worker reports, overlaps and conflicts stated explicitly\n")
+		b.WriteString("- QUEUE LOG: the fan-out shape chosen + every queue change (added/killed/rewritten) with the finding that drove it\n")
+		b.WriteString("- RISKS: bullets OR the literal word \"none\"\n")
+		b.WriteString("- RECOMMENDATION: 1-3 sentences, must contain a verb of decision (use|avoid|rewrite|keep|split|merge)\n")
+		b.WriteString("- FILES: absolute paths of every accepted worker report and every file touched, one per line\n")
+	}
+	b.WriteString("\nRESPONSE PROTOCOL (MANDATORY):\n")
+	fmt.Fprintf(&b, "1. You are a SUB-supervisor: fan out to your OWN execute workers per /tmux:supervisor:new (state root .tmux-cli/subsup/%s/).\n", subsupID)
+	fmt.Fprintf(&b, "2. Save the synthesis to %s/synthesis-<slug>.md (kebab-case slug, <=40 chars).\n", researchRoot)
+	fmt.Fprintf(&b, "3. Reply via windows-message to %s with ONLY:\n", parentWid)
+	fmt.Fprintf(&b, "   [SUBSUP:DONE wid=%s sup=%s file=<abs-path-to-synthesis-md>]\n", childName, parentWid)
+	b.WriteString("   Do NOT inline synthesis content in the tmux message. The file IS the report.\n")
+	fmt.Fprintf(&b, "4. [SUBSUP:NEED_INPUT wid=%s sup=%s ...], [SUBSUP:FAILED wid=%s sup=%s reason=...] and [SUBSUP:ESCALATE wid=%s sup=%s need=...] may carry a short (<200 char) inline reason.\n", childName, parentWid, childName, parentWid, childName, parentWid)
+	fmt.Fprintf(&b, "5. If the parent sends [SUBSUP:PUSHBACK n=<N> gap=<G1..G5>], fix the cited gap in the SAME .md and re-tag [SUBSUP:DONE wid=%s sup=%s file=<same-path>].\n", childName, parentWid)
+	b.WriteString("6. NEVER spawn another sub-supervisor (one level only). NEVER windows-kill your parent. Your own workers reply to YOU with [EXECUTE:*] tags as usual.\n")
+
+	return b.String()
+}
+
+// WindowsSpawnSupervisor atomically spawns a SUB-supervisor: creates the next
+// supervisor-task-N window, sends /tmux:supervisor:new, and sends the
+// structured subtree message with the SUBSUP response protocol. The child then
+// runs its own supervisor flow (fan-out, spawn, pushback, synthesis) against
+// the delegated subtree and reports the synthesis file upward.
+//
+// Delegation is bounded by design:
+//   - depth 1: a supervisor-task-* caller is refused — a sub-supervisor may not
+//     spawn another sub-supervisor (mirrors the prereq-* "one level only" rule);
+//   - standalone only (for now): a goal-namespaced supervisor-<ns> caller is
+//     refused — the daemon's goal state machine owns that window, and
+//     goal-sized delegation goes through the escalation.md relay instead;
+//   - capped: supervisor.max_workers bounds concurrent supervisor-task-*
+//     windows (per-prefix count, same mechanic as the worker cap).
+func (s *Server) WindowsSpawnSupervisor(supervisorWid, subtask, contextFile, scope, context, deliverable, workingDirectory string) (*WindowInfo, string, string, error) {
+	if supervisorWid == "" {
+		return nil, "", "", fmt.Errorf("%w: supervisorWid cannot be empty", ErrInvalidInput)
+	}
+	if subtask == "" {
+		return nil, "", "", fmt.Errorf("%w: subtask cannot be empty", ErrInvalidInput)
+	}
+	if contextFile == "" {
+		return nil, "", "", fmt.Errorf("%w: contextFile cannot be empty", ErrInvalidInput)
+	}
+	if scope == "" {
+		return nil, "", "", fmt.Errorf("%w: scope cannot be empty", ErrInvalidInput)
+	}
+
+	sessionID, err := s.discoverSession()
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	// Authoritative caller identity — same override as WindowsSpawnWorker: the
+	// caller LLM cannot always name its own window, and a wrong parent name would
+	// misroute every [SUBSUP:DONE] reply.
+	if os.Getenv("TMUX_WINDOW_UUID") != "" {
+		if full, lerr := s.executor.ListWindows(sessionID); lerr == nil {
+			if self := s.resolveSelfWindowName(sessionID, full); self != "" {
+				supervisorWid = self
+			}
+		}
+	}
+
+	// Delegation bounds, checked on the resolved (or, without the env, the
+	// caller-supplied) name. Best-effort when identity cannot be resolved.
+	if strings.HasPrefix(supervisorWid, subsupPrefix) {
+		return nil, "", "", fmt.Errorf("%w: depth cap — %s is itself a sub-supervisor and may not spawn another (one level only: use your own execute workers, or bubble [SUBSUP:ESCALATE] to your parent)", ErrInvalidInput, supervisorWid)
+	}
+	if namespacedSupRe.MatchString(supervisorWid) {
+		return nil, "", "", fmt.Errorf("%w: %s is a daemon-dispatched goal supervisor — sub-supervisor delegation is standalone-only; route goal-sized prerequisites through the escalation.md relay instead", ErrInvalidInput, supervisorWid)
+	}
+
+	windows, err := s.WindowsList()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to list windows: %w", err)
+	}
+
+	settings, _ := setup.LoadSettings(s.workingDir)
+	if settings != nil && settings.Supervisor.MaxWorkers > 0 {
+		var count int
+		for _, w := range windows {
+			if strings.HasPrefix(w.Name, subsupPrefix) {
+				count++
+			}
+		}
+		if count >= settings.Supervisor.MaxWorkers {
+			return nil, "", "", fmt.Errorf("%w: %d sub-supervisors already running (limit: %d, shares the supervisor.max_workers value as a per-prefix cap) — wait for one to finish or increase supervisor.max_workers in setting.yaml",
+				ErrMaxWorkersExceeded, count, settings.Supervisor.MaxWorkers)
+		}
+	}
+
+	childName := s.allocateWorkerName(windows, subsupPrefix)
+	subsupID, _ := parseSubsupBinding(childName)
+
+	window, err := s.WindowsCreate(childName, "", workingDirectory)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to create sub-supervisor window %s: %w", childName, err)
+	}
+
+	logDir := filepath.Join(s.workingDir, ".tmux-cli", "logs", "panes")
+	_ = os.MkdirAll(logDir, 0o755)
+	logPath := filepath.Join(logDir, childName+".log")
+	var ppErr error
+	if captureCmd := transcript.CapturePipeCommand(s.workingDir, sessionID, childName, logPath); captureCmd != "" {
+		ppErr = s.executor.PipePaneCommand(sessionID, window.TmuxWindowID, captureCmd)
+	} else {
+		ppErr = s.executor.PipePane(sessionID, window.TmuxWindowID, logPath)
+	}
+	if ppErr != nil {
+		log.Printf("WARNING: pipe-pane for %s failed (best-effort): %v", childName, ppErr)
+	}
+
+	err = s.executor.SendMessage(sessionID, window.TmuxWindowID, "/tmux:supervisor:new")
+	if err != nil {
+		_ = s.executor.ClosePipePane(sessionID, window.TmuxWindowID)
+		_ = s.executor.KillWindow(sessionID, window.TmuxWindowID)
+		return nil, "", "", fmt.Errorf("%w: failed to send /tmux:supervisor:new to %s: %w",
+			ErrTmuxCommandFailed, childName, err)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	researchRoot := filepath.Join(".tmux-cli", "subsup", subsupID, "research")
+	_ = os.MkdirAll(filepath.Join(s.workingDir, researchRoot), 0o755)
+	taskMessage := buildSubsupTaskMessage(supervisorWid, childName, subsupID, subtask, contextFile, scope, context, researchRoot, deliverable)
+
+	err = s.executor.SendMessageWithDelay(sessionID, window.TmuxWindowID, taskMessage)
+	if err != nil {
+		_ = s.executor.ClosePipePane(sessionID, window.TmuxWindowID)
+		_ = s.executor.KillWindow(sessionID, window.TmuxWindowID)
+		return nil, "", "", fmt.Errorf("%w: failed to send subtree message to %s: %w",
+			ErrTmuxCommandFailed, childName, err)
+	}
+
+	telemetry.Emit(telemetry.EventWindowSpawn, childName, map[string]any{
+		"wid":     childName,
+		"kind":    "subsupervisor",
+		"subtask": subtask,
+	})
+
+	return window, childName, taskMessage, nil
+}
+
 func (s *Server) SpecValidate(file string) (*SpecValidateOutput, error) {
 	result, err := tasks.ValidateSpecFile(file)
 	if err != nil {
@@ -892,13 +1101,27 @@ func (s *Server) SpecValidate(file string) (*SpecValidateOutput, error) {
 	return output, nil
 }
 
+// subsupIDRe validates the tasks-validate subsup_id input ("task-N" — the state
+// folder name under .tmux-cli/subsup/, derived from the supervisor-task-N window).
+var subsupIDRe = regexp.MustCompile(`^task-\d+$`)
+
 func (s *Server) TasksValidate(in TasksValidateInput) (*TasksValidateOutput, error) {
 	// Empty GoalID validates the top-level planning-queue (standalone /tmux:plan
 	// flow, unchanged). A set GoalID validates the per-goal fan-out file so the
-	// goal-mode step-3b gate checks the isolated path.
+	// goal-mode step-3b gate checks the isolated path. A set SubsupID validates a
+	// sub-supervisor's isolated fan-out file (/tmux:supervisor:new step-3b gate).
+	if in.GoalID != "" && in.SubsupID != "" {
+		return nil, fmt.Errorf("%w: goal_id and subsup_id are mutually exclusive", ErrInvalidInput)
+	}
 	path := tasks.TasksFilePath(s.workingDir)
 	if in.GoalID != "" {
 		path = tasks.GoalTasksFilePath(s.workingDir, in.GoalID)
+	}
+	if in.SubsupID != "" {
+		if !subsupIDRe.MatchString(in.SubsupID) {
+			return nil, fmt.Errorf("%w: invalid subsup_id %q (must be task-N)", ErrInvalidInput, in.SubsupID)
+		}
+		path = tasks.SubsupTasksFilePath(s.workingDir, in.SubsupID)
 	}
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("no tasks.yaml found at %s", path)

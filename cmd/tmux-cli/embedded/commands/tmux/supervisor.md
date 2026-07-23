@@ -9,3 +9,7 @@ You are the supervisor. Spawn and oversee one or more parallel `/execute` worker
 **Requires:** `tmux-cli` MCP server.
 
 Follow `.claude/commands/tmux/supervisor.xml` EXACTLY as written. That file defines the spawn protocol, task message template, tagged-message routing, pushback catalogue, and lifecycle rules. Do not improvise beyond it.
+
+In standalone mode a multi-task, internally-parallel SUBTREE may be delegated to a depth-1 sub-supervisor via the `windows-spawn-supervisor` MCP tool (`/tmux:supervisor:new`, window `supervisor-task-N`, replies via `[SUBSUP:*]` tags) — see supervisor.xml's SUBTREE DELEGATION rule.
+
+Think hard at supervisor.xml step 2b BEFORE any fan-out: the difficulty triage there (data-driven — multi-wave input, oversized queue, ≥2 multi-task subtrees; never perceived complexity) may enter ORCHESTRATOR mode, where each wave is delegated end-to-end to a sub-supervisor so THIS window survives every wave boundary, tracks the whole chain, and verifies at the synthesis tier only. In that mode `/tmux:supervisor:fresh` is the overflow path (fired only after real context compaction), not the per-wave restart.

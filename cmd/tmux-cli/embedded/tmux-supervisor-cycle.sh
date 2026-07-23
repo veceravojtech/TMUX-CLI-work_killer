@@ -105,7 +105,7 @@ if [[ "$WINDOW_NAME" != "supervisor" ]]; then
     exit 0
 fi
 
-# --- Check that no execute-* worker windows are still running ---
+# --- Check that no worker windows are still running ---
 
 # Fail-safe read: tmux's exit status is captured SEPARATELY from the count, because
 # piping straight into grep makes a FAILED list-windows indistinguishable from a
@@ -116,8 +116,13 @@ fi
 # so `|| true` keeps the count and absorbs that exit under `set -e` (zero matches is
 # NOT a failure), while `|| echo "0"` would append a SECOND line ("0\n0") and trip an
 # arithmetic error below. The shape guard is the last defence on a malformed count.
+#
+# supervisor-task-* counts as an open worker too: a delegated sub-supervisor's OWN
+# execute-task-N-M workers may not exist yet (the child is still planning), and
+# that gap must not read as "no workers" — restarting the cycle over a live
+# delegation would clobber the waiting parent.
 WINDOW_LIST=$(tmux list-windows -t "$SESSION_ID" -F '#{window_name}' 2>/dev/null) || exit 0
-OPEN_WORKERS=$(grep -c '^execute-' <<< "$WINDOW_LIST" || true)
+OPEN_WORKERS=$(grep -c -e '^execute-' -e '^supervisor-task-' <<< "$WINDOW_LIST" || true)
 [[ "$OPEN_WORKERS" =~ ^[0-9]+$ ]] || OPEN_WORKERS=0
 
 if [[ "$OPEN_WORKERS" -gt 0 ]]; then

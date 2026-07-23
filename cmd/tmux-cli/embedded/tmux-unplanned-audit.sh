@@ -52,9 +52,18 @@ if [[ "$WINDOW_NAME" != "supervisor" ]]; then
     exit 0
 fi
 
-# --- Check that no execute-* worker windows are still running ---
+# --- Check that no worker windows are still running ---
 
-OPEN_WORKERS=$(tmux list-windows -t "$SESSION_ID" -F '#{window_name}' 2>/dev/null | grep -c '^execute-' || echo "0")
+# Fail-safe read mirroring tmux-supervisor-cycle.sh: capture the list separately
+# (a failed tmux read must never count as zero workers — exit instead), and use
+# `|| true`, NOT `|| echo "0"` — grep -c already prints "0" on no match while
+# exiting 1, so the echo form appended a SECOND line ("0\n0") and tripped the
+# -gt test below with an arithmetic error. supervisor-task-* counts as an open
+# worker too: a delegated sub-supervisor may not have spawned its own
+# execute-task-N-M workers yet, and that gap must not read as "no workers".
+WINDOW_LIST=$(tmux list-windows -t "$SESSION_ID" -F '#{window_name}' 2>/dev/null) || exit 0
+OPEN_WORKERS=$(grep -c -e '^execute-' -e '^supervisor-task-' <<< "$WINDOW_LIST" || true)
+[[ "$OPEN_WORKERS" =~ ^[0-9]+$ ]] || OPEN_WORKERS=0
 
 if [[ "$OPEN_WORKERS" -gt 0 ]]; then
     exit 0

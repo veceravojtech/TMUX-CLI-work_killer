@@ -1,0 +1,97 @@
+<task id="supervisor-new" name="Sub-supervisor delegation (spawn or serve a delegated subtree)">
+  <objective>Dual-mode command for depth-1 supervisor delegation (supervisor ↔ supervisor-task-N ↔ execute-task-N-M). DELEGATOR mode ($ARGUMENTS carries a task description): spawn a sub-supervisor for that subtree via the windows-spawn-supervisor MCP tool and route its SUBSUP replies. CHILD mode (no $ARGUMENTS — this window was spawned by that tool): run the full supervisor fan-out over your OWN workers against the delegated subtree, then report ONE synthesis file upward with [SUBSUP:DONE]. The child NEVER talks to the user; the parent owns its lifecycle.</objective>
+
+  <input>
+    <arg name="$ARGUMENTS" optional="true">Non-empty → DELEGATOR mode: a one-line-or-longer task description (or a path to a context .md) naming the subtree to delegate. Empty → CHILD mode: idle for the subtree message the spawning tool sends as a second windows-send.</arg>
+  </input>
+
+  <output>
+    <primary>DELEGATOR: a running supervisor-task-N window plus the delegation registered for step-5 SUBSUP routing. CHILD: {state-root}/research/synthesis-&lt;slug&gt;.md reported upward via [SUBSUP:DONE].</primary>
+  </output>
+
+  <requirements critical="true">
+    <mcp>tmux-cli MCP server REQUIRED</mcp>
+    <state-root>CHILD mode only: .tmux-cli/subsup/{SUBSUP_ID}/ (SUBSUP_ID = "task-N" from the SUBSUP_ID= field of the subtree message). tasks-path = .tmux-cli/subsup/{SUBSUP_ID}/tasks.yaml; research-root = .tmux-cli/subsup/{SUBSUP_ID}/research/. NEVER the top-level .tmux-cli/tasks.yaml and NEVER any .tmux-cli/goals/ path — the delegation's state is fully isolated from the parent's queue and from every goal.</state-root>
+  </requirements>
+
+  <glossary>
+    <term name="PARENT_WID">The delegating supervisor's window name, from the subtree message (e.g. "supervisor"). Receiver of every upward windows-message.</term>
+    <term name="SELF_WID">This sub-supervisor's window name (supervisor-task-N), from the subtree message — authoritative, stamped by the spawn tool.</term>
+    <term name="SUBSUP_ID">The state folder name "task-N" under .tmux-cli/subsup/, from the subtree message.</term>
+    <term name="SUBTREE">The one-line label of the delegated work, from the subtree message.</term>
+  </glossary>
+
+  <message-tags>
+    <note>Upward tags (child → parent) mirror the EXECUTE:* worker protocol one tier up; downward tags are the parent's existing SUPERVISOR/PUSHBACK vocabulary. The child's OWN workers keep speaking plain [EXECUTE:*] to the child.</note>
+    <tag name="[SUBSUP:DONE wid=... sup=... file=&lt;abs-path&gt;]" from="child">Subtree complete. file= IS the synthesis; no inline findings.</tag>
+    <tag name="[SUBSUP:NEED_INPUT wid=... sup=... &lt;short reason&gt;]" from="child">Child cannot proceed without a fact no file-reading can supply. ≤200 chars inline.</tag>
+    <tag name="[SUBSUP:FAILED wid=... sup=... reason=&lt;short&gt;]" from="child">Terminal failure of the subtree. ≤200 chars inline.</tag>
+    <tag name="[SUBSUP:ESCALATE wid=... sup=... need=&lt;one-line buildable prerequisite&gt;]" from="child">The subtree is blocked by an out-of-scope prerequisite. The child NEVER writes escalation.md and NEVER resolves it itself — the parent decides (its own prereq machinery or a user escalation).</tag>
+    <tag name="[SUBSUP:PUSHBACK n=&lt;1|2|3&gt; gap=&lt;G1..G5&gt;]" from="parent">Fix the cited gap in the SAME synthesis .md and re-tag [SUBSUP:DONE].</tag>
+    <tag name="[SUPERVISOR:AMEND &lt;new scope&gt;] / [SUPERVISOR:AMEND-PROTOCOL &lt;rule&gt;] / [SUPERVISOR:KILL] / [SUPERVISOR:NARROW-SCOPE &lt;reduced problem&gt;]" from="parent">Same semantics as in supervisor.xml, applied to the child: amend the subtree queue mid-run, change protocol, exit cleanly (kill your remaining workers first, then ACK), or accept a reduced problem in place of a NEED_INPUT/ESCALATE.</tag>
+  </message-tags>
+
+  <llm critical="true">
+    <mandate>ONE LEVEL ONLY: NEVER call windows-spawn-supervisor from CHILD mode — a sub-supervisor may not spawn another (the tool refuses it too). Delegate further only via your own execute workers.</mandate>
+    <mandate>CHILD mode NEVER addresses the user: every escalation, question, and result goes to PARENT_WID via windows-message with a [SUBSUP:*] header.</mandate>
+    <mandate>CHILD mode NEVER writes escalation.md, signal.json, or the fresh-handoff marker, NEVER sends /clear or /tmux:supervisor anywhere, and has NO self-generated waves and NO continuation cycles — the subtree scope is fixed; the parent owns replanning.</mandate>
+    <mandate>NEVER kill SELF_WID and NEVER kill PARENT_WID. The parent kills this window after accepting DONE.</mandate>
+    <mandate>NEVER spawn a worker before tasks-path is written AND tasks-validate (subsup_id={SUBSUP_ID}) returns valid=true — the supervisor.xml step-3b gate applies verbatim.</mandate>
+    <mandate>NEVER use sleep — idle is the trigger for incoming windows-message (both directions).</mandate>
+    <mandate>Reuse supervisor.xml's shared semantics wherever this file says so: fan-out rules (step 3), spawn protocol + WID RECONCILE + window-id ledger (step 4), idle/route branches (step 5), effectivity check (5a), pushback catalogue G1–G5 (step 6), findings-driven replan (8a). Deltas here OVERRIDE it; everything else applies unchanged with tasks-path/research-root pointing at the subsup state root.</mandate>
+  </llm>
+
+  <flow>
+    <step n="1" title="MCP precondition + mode select">
+      <action>Call windows-list. If tmux-cli is unavailable, print exactly: ERROR: tmux-cli MCP required but not available — enable it and retry. STOP.</action>
+      <branch condition="$ARGUMENTS is non-empty">
+        <action>DELEGATOR mode → step D1.</action>
+      </branch>
+      <branch condition="$ARGUMENTS is empty">
+        <action>CHILD mode → step C1.</action>
+      </branch>
+    </step>
+
+    <step n="D1" title="DELEGATOR: build the subtree context">
+      <action>If $ARGUMENTS is a path to an existing .md file, use it as the context file verbatim. Otherwise write a context .md capturing the subtree: goal, in-scope files/directories, constraints, non-goals, and acceptance shape. Save it under your CURRENT flow's research-root if you are a running supervisor (step 0b binding), else under .tmux-cli/research/{y-m-d-hh}/subsup-&lt;slug&gt;.md.</action>
+      <rule>Delegate a SUBTREE, not a task: the right unit is multi-task and internally parallel (the child will fan out again). A single linear task takes a plain execute worker via windows-spawn-worker — do not wrap it in a sub-supervisor.</rule>
+    </step>
+
+    <step n="D2" title="DELEGATOR: spawn and register">
+      <action>Call windows-spawn-supervisor with: supervisorWid = your own window name (the tool self-resolves the authoritative name anyway), subtask = one-line subtree label, contextFile = the context .md from D1, scope/context derived from it. The tool atomically creates supervisor-task-N, sends /tmux:supervisor:new, and sends the subtree message with the SUBSUP response protocol.</action>
+      <action>Record the returned subsupName + window id. If you are a running supervisor with a tasks-path, register the delegation there as ONE task entry: name = subtree label, wid = the returned supervisor-task-N, status = in_progress, context = the context .md path — and append a worker-windows.yaml ledger row per supervisor.xml step 4.</action>
+      <action>Then idle per supervisor.xml step 5, with the additional SUBSUP routing: [SUBSUP:DONE] → Read the synthesis file, verify against the G1–G5 catalogue (≤3 [SUBSUP:PUSHBACK]s), on acceptance mark the task done and windows-kill supervisor-task-N by NAME; [SUBSUP:NEED_INPUT] → answer from files/prior reports or [SUPERVISOR:NARROW-SCOPE]; [SUBSUP:FAILED] → narrowed respawn once, then escalate; [SUBSUP:ESCALATE] → handle exactly like a worker [EXECUTE:ESCALATE] in your own flow (your prereq machinery / user escalation — the child never self-resolves it).</action>
+      <action>If you are NOT a running supervisor (a user typed this in a plain window): after spawning, idle for the SUBSUP replies and relay the accepted synthesis to the user inline, then windows-kill the child.</action>
+    </step>
+
+    <step n="C1" title="CHILD: await and parse the subtree message">
+      <rule critical="true">Your first real input after /tmux:supervisor:new is a windows-send from the spawn tool carrying the subtree message — it may arrive in the SAME turn or a moment later. If the scrollback has no subtree message yet, IDLE. "No message yet" is NOT a failure; never emit [SUBSUP:FAILED] for an absent message.</rule>
+      <action>Extract: PARENT_WID, SELF_WID, SUBSUP_ID (all required), SUBTREE, SCOPE, CONTEXT, DELIVERABLE. Read the context file named in SCOPE.</action>
+      <check condition="a message arrived but a required field is missing">
+        <action>Reply [SUBSUP:FAILED wid=&lt;self&gt; sup=&lt;best-known parent&gt; reason=malformed subtree message: missing &lt;field&gt;] and idle.</action>
+      </check>
+      <action>Bind state: tasks-path = .tmux-cli/subsup/{SUBSUP_ID}/tasks.yaml, research-root = .tmux-cli/subsup/{SUBSUP_ID}/research/ (create if absent). Read AGENTS.md / CLAUDE.md per supervisor.xml step 1b.</action>
+    </step>
+
+    <step n="C2" title="CHILD: fan out, execute, verify — the supervisor loop, subtree-scoped">
+      <action>Fan-out decision per supervisor.xml step 3 (maximum parallelism, exhaustive coverage, ranking) over the SUBTREE ONLY. Write tasks-path with wids in the execute-task-N-M form the spawn tool will return, context .md per task under research-root. Gate: tasks-validate with subsup_id={SUBSUP_ID} must return valid=true, then set status: ready.</action>
+      <action>Spawn per supervisor.xml step 4 via windows-spawn-worker with supervisorWid = SELF_WID — the tool namespaces your workers (execute-task-N-M) and routes their reports into your research-root automatically. WID RECONCILE and the worker-windows.yaml ledger apply verbatim (ledger lives in YOUR research-root).</action>
+      <action>Idle and route per supervisor.xml step 5 (+5a effectivity, +8a replan within the subtree), verify each DONE per step 6 (G1–G5, ≤3 pushbacks), kill accepted workers per step 7. DELTA — worker [EXECUTE:ESCALATE]: validate need= is concrete (REMIND otherwise), then bubble it upward as [SUBSUP:ESCALATE wid=&lt;self&gt; sup=&lt;parent&gt; need=&lt;need&gt;] and idle; apply the parent's answer ([SUPERVISOR:NARROW-SCOPE] / a fact / [SUPERVISOR:KILL]) to the blocked worker. DELTA — worker NEED_INPUT you cannot answer from files: bubble as [SUBSUP:NEED_INPUT], never to the user.</action>
+    </step>
+
+    <step n="C3" title="CHILD: synthesize and report upward">
+      <condition>All subtree workers accepted and killed</condition>
+      <action>Write {research-root}/synthesis-&lt;slug&gt;.md with the DELIVERABLE sections from the subtree message (default: ## SYNTHESIS / ## QUEUE LOG / ## RISKS / ## RECOMMENDATION / ## FILES). Self-check ONCE against G1–G5 before sending.</action>
+      <action>Mark all tasks done in tasks-path. Reply via windows-message to PARENT_WID with ONLY: [SUBSUP:DONE wid=&lt;self&gt; sup=&lt;parent&gt; file=&lt;abs-path-to-synthesis&gt;].</action>
+      <action>Idle for the parent: [SUBSUP:PUSHBACK n gap] → fix the cited gap in the SAME file, re-tag DONE; [SUPERVISOR:KILL] → kill any remaining workers by name, ACK, idle for teardown. No further self-directed work — the subtree is done when the parent accepts.</action>
+    </step>
+  </flow>
+
+  <execution-rules>
+    <error-reporting>On a genuine harness/infra/spec defect (an MCP tool or `tmux-cli` command that errored after its own retries, a contradictory/under-specified subtree spec, or a validator-error-class condition), follow the shared `error-reporting` procedure in `tmux/task-report.xml` — compose + submit autonomously, honoring api.enabled / DEDUP / RECURSION-guard. NEVER on expected work failures (worker pushback, NEED_INPUT, unwritten-code test red) — and in CHILD mode still report the subtree outcome to the parent afterwards; a filed defect never replaces the [SUBSUP:*] reply.</error-reporting>
+  </execution-rules>
+
+  <stop-conditions>
+    <rule>CHILD mode ends only by: parent acceptance (then the parent kills this window), [SUPERVISOR:KILL], or a terminal [SUBSUP:FAILED] after 2 consecutive same-class worker failures post-narrowing. There is NO user-facing exit, NO cycle restart, NO next wave.</rule>
+  </stop-conditions>
+</task>

@@ -134,7 +134,8 @@ func (s *Server) SpecValidateHandler(ctx context.Context, req *sdkmcp.CallToolRe
 
 // TasksValidateInput defines the input schema for tasks-validate tool.
 type TasksValidateInput struct {
-	GoalID string `json:"goal_id,omitempty" jsonschema:"Optional goal id; validates .tmux-cli/goals/<id>/tasks.yaml instead of the top-level planning-queue"`
+	GoalID   string `json:"goal_id,omitempty" jsonschema:"Optional goal id; validates .tmux-cli/goals/<id>/tasks.yaml instead of the top-level planning-queue"`
+	SubsupID string `json:"subsup_id,omitempty" jsonschema:"Optional sub-supervisor id (e.g. 'task-1'); validates .tmux-cli/subsup/<id>/tasks.yaml. Mutually exclusive with goal_id."`
 }
 
 // TasksValidateOutput defines the output schema for tasks-validate tool
@@ -224,6 +225,24 @@ type WindowsSpawnWorkerOutput struct {
 	Window      *WindowInfo `json:"window" jsonschema:"Details of the created worker window"`
 	WorkerName  string      `json:"workerName" jsonschema:"The execute-N name assigned to this worker"`
 	TaskMessage string      `json:"taskMessage" jsonschema:"The exact task message sent to the worker"`
+}
+
+// WindowsSpawnSupervisorInput defines the input schema for windows-spawn-supervisor tool
+type WindowsSpawnSupervisorInput struct {
+	SupervisorWid    string `json:"supervisorWid" jsonschema:"Parent supervisor's tmux window name (e.g. 'supervisor'). Used in the subtree message and SUBSUP response protocol."`
+	Subtask          string `json:"subtask" jsonschema:"One-line label for the delegated subtree (e.g. 'build the auth module end-to-end'). Appears as SUBTREE in the message."`
+	ContextFile      string `json:"contextFile" jsonschema:"Path to the context .md file the sub-supervisor should read for the full subtree spec."`
+	Scope            string `json:"scope" jsonschema:"Multi-line scope summary of the subtree — files, directories, what to implement or investigate."`
+	Context          string `json:"context,omitempty" jsonschema:"Multi-line supporting context — prior findings, constraints, non-goals. Optional."`
+	Deliverable      string `json:"deliverable,omitempty" jsonschema:"Custom deliverable format replacing the default SYNTHESIS/QUEUE LOG/RISKS/RECOMMENDATION/FILES sections. When empty, the standard synthesis deliverable is used."`
+	WorkingDirectory string `json:"workingDirectory,omitempty" jsonschema:"Optional working directory the sub-supervisor's shell starts in (tmux -c). When empty, the session default cwd is used."`
+}
+
+// WindowsSpawnSupervisorOutput defines the output schema for windows-spawn-supervisor tool
+type WindowsSpawnSupervisorOutput struct {
+	Window      *WindowInfo `json:"window" jsonschema:"Details of the created sub-supervisor window"`
+	SubsupName  string      `json:"subsupName" jsonschema:"The supervisor-task-N name assigned to this sub-supervisor"`
+	TaskMessage string      `json:"taskMessage" jsonschema:"The exact subtree message sent to the sub-supervisor"`
 }
 
 // WindowsRecoverWorkersInput defines the input schema for windows-recover-workers tool
@@ -801,6 +820,26 @@ func (s *Server) WindowsSpawnWorkerHandler(ctx context.Context, req *sdkmcp.Call
 	return result, out, nil
 }
 
+// WindowsSpawnSupervisorHandler is the MCP tool handler for windows-spawn-supervisor.
+func (s *Server) WindowsSpawnSupervisorHandler(ctx context.Context, req *sdkmcp.CallToolRequest, input WindowsSpawnSupervisorInput) (
+	*sdkmcp.CallToolResult,
+	WindowsSpawnSupervisorOutput,
+	error,
+) {
+	window, subsupName, taskMessage, err := s.WindowsSpawnSupervisor(
+		input.SupervisorWid, input.Subtask, input.ContextFile, input.Scope, input.Context, input.Deliverable, input.WorkingDirectory,
+	)
+	if err != nil {
+		return nil, WindowsSpawnSupervisorOutput{}, err
+	}
+	result, out := prependStaleWarning(WindowsSpawnSupervisorOutput{
+		Window:      window,
+		SubsupName:  subsupName,
+		TaskMessage: taskMessage,
+	})
+	return result, out, nil
+}
+
 func prependStaleWarning[Out any](output Out) (*sdkmcp.CallToolResult, Out) {
 	stale, detail := setup.BinaryStale()
 	if !stale {
@@ -892,6 +931,15 @@ func (s *Server) RegisterTools(sdkServer *sdkmcp.Server) error {
 			IdempotentHint: false,
 		},
 	}, s.WindowsSpawnWorkerHandler)
+
+	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
+		Name:        "windows-spawn-supervisor",
+		Description: "Atomic SUB-supervisor spawn: creates supervisor-task-N window, sends /tmux:supervisor:new skill, then sends the structured subtree message with SYNTHESIS deliverable and SUBSUP response protocol. Use to delegate a multi-task, internally-parallel subtree to a child supervisor that runs its own worker fan-out. Depth 1 only (a sub-supervisor may not spawn another); standalone supervisors only (goal supervisors are refused).",
+		Annotations: &sdkmcp.ToolAnnotations{
+			ReadOnlyHint:   false,
+			IdempotentHint: false,
+		},
+	}, s.WindowsSpawnSupervisorHandler)
 
 	sdkmcp.AddTool(sdkServer, &sdkmcp.Tool{
 		Name:        "spec-validate",

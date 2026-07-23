@@ -48,6 +48,15 @@ func GoalTasksFilePath(projectRoot, goalID string) string {
 	return filepath.Join(projectRoot, ".tmux-cli", "goals", goalID, "tasks.yaml")
 }
 
+// SubsupTasksFilePath is the per-sub-supervisor fan-out path used by a
+// /tmux:supervisor:new child (window supervisor-task-N → subsupID "task-N").
+// It isolates each delegated subtree's fan-out from both the parent's
+// planning-queue and any goal's tasks.yaml, so a parent supervisor and its
+// sub-supervisors never clobber each other's task state.
+func SubsupTasksFilePath(projectRoot, subsupID string) string {
+	return filepath.Join(projectRoot, ".tmux-cli", "subsup", subsupID, "tasks.yaml")
+}
+
 func ArchiveTasks(projectRoot string) error {
 	src := TasksFilePath(projectRoot)
 	if _, err := os.Stat(src); err != nil {
@@ -81,7 +90,13 @@ var allowedTaskKeys = map[string]bool{
 	"depends_on": true,
 }
 
-var widPattern = regexp.MustCompile(`^execute-\d+(?:-\d+)?$`)
+// widPattern accepts, in order of alternation: the bare/goal-namespaced worker
+// forms (execute-N / execute-<ns>-N), a sub-supervisor's namespaced workers
+// (execute-task-N-M — the prefix WindowsSpawnWorker derives for a
+// supervisor-task-N caller), and a parent-side delegated-subtree entry
+// (supervisor-task-N — how a parent supervisor tracks a whole sub-supervisor
+// in its own tasks.yaml).
+var widPattern = regexp.MustCompile(`^(?:execute-\d+(?:-\d+)?|execute-task-\d+-\d+|supervisor-task-\d+)$`)
 
 var validTaskStatuses = map[string]bool{
 	StatusPending:    true,
@@ -167,7 +182,7 @@ func ValidateTasksFile(path string) []string {
 			errs = append(errs, fmt.Sprintf("task %q: invalid status %q (must be pending, in_progress, or done)", id, status))
 		}
 		if !widPattern.MatchString(wid) {
-			errs = append(errs, fmt.Sprintf("task %q: invalid wid format %q (must be execute-N or execute-<ns>-N)", id, wid))
+			errs = append(errs, fmt.Sprintf("task %q: invalid wid format %q (must be execute-N, execute-<ns>-N, execute-task-N-M, or supervisor-task-N)", id, wid))
 		}
 		for _, dep := range dependsOn {
 			if !wids[dep] {

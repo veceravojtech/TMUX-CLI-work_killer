@@ -57,8 +57,11 @@ case "$sub" in
     done
     if [[ "$fmt" == *window_id* ]]; then
       echo "@1|supervisor"
+      i=2
+      for w in ${FAKE_TMUX_EXTRA_WINDOWS:-}; do echo "@${i}|${w}"; i=$((i+1)); done
     else
       echo "supervisor"
+      for w in ${FAKE_TMUX_EXTRA_WINDOWS:-}; do echo "$w"; done
     fi
     ;;
   show-options)
@@ -194,6 +197,24 @@ func TestBothHooksOneStop_SingleSendStream(t *testing.T) {
 	auditLog := runHook(t, "tmux-unplanned-audit.sh", projectDir, fakeBin)
 	require.NotContains(t, auditLog, "Unplanned work audit",
 		"audit must not inject in the same Stop as a cycle restart (UNFINISHED>0 gate)")
+}
+
+// Case 6: an open supervisor-task-* delegation window defers BOTH hooks even
+// with zero execute-* windows — the child sub-supervisor may still be planning
+// its own fan-out, and that gap must not read as "no workers running".
+func TestHooksDefer_WhileDelegationOpen(t *testing.T) {
+	t.Setenv("FAKE_TMUX_EXTRA_WINDOWS", "supervisor-task-1")
+	fakeBin := newFakeBinDir(t)
+
+	cycleDir := seedProject(t, "ready", pendingTasks)
+	cycleLog := runHook(t, "tmux-supervisor-cycle.sh", cycleDir, fakeBin)
+	require.NotContains(t, cycleLog, "/clear", "cycle hook must defer while a delegation window is open")
+	require.False(t, fileExists(sentinelPath(cycleDir)), "no restart may be queued over a live delegation")
+
+	auditDir := seedProject(t, "ready", doneTasks)
+	auditLog := runHook(t, "tmux-unplanned-audit.sh", auditDir, fakeBin)
+	require.NotContains(t, auditLog, "Unplanned work audit", "audit must defer while a delegation window is open")
+	require.False(t, fileExists(auditDonePath(auditDir)), "audit must not burn its one-shot guard while deferring")
 }
 
 // Case 5: baseline — with no sentinel and no guard, the audit injects normally
