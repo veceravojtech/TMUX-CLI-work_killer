@@ -94,6 +94,14 @@ type SupervisorSettings struct {
 	CycleDelay      int  `yaml:"cycle_delay"`
 	UnplannedAudit  bool `yaml:"unplanned_audit"`
 	MaxStuckRetries int  `yaml:"max_stuck_retries"`
+	// OrchWavesPerContext is the ORCH_MODE per-context wave budget: how many
+	// delegated waves one orchestrator context runs before it PROACTIVELY hands
+	// off to a fresh context at a wave boundary (supervisor.xml step 9b). The
+	// design goal is that an orchestrator context NEVER reaches auto-compaction —
+	// the budget paces the handoff ahead of context pressure instead of reacting
+	// to it. Absent or <=0 (legacy setting.yaml) is coerced to 4 at read time;
+	// there is deliberately no "unlimited" value.
+	OrchWavesPerContext int `yaml:"orch_waves_per_context"`
 }
 
 type PlanSettings struct {
@@ -373,12 +381,13 @@ func DefaultSettings() *Settings {
 			Transcripts: &telemetryTranscripts,
 		},
 		Supervisor: SupervisorSettings{
-			MaxCycles:       0,
-			MaxWorkers:      4,
-			MaxGoals:        1,
-			CycleDelay:      5,
-			UnplannedAudit:  true,
-			MaxStuckRetries: 3,
+			MaxCycles:           0,
+			MaxWorkers:          4,
+			MaxGoals:            1,
+			CycleDelay:          5,
+			UnplannedAudit:      true,
+			MaxStuckRetries:     3,
+			OrchWavesPerContext: 4,
 		},
 		Plan: PlanSettings{
 			AutoApprove: true,

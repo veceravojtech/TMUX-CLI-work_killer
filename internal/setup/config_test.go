@@ -267,6 +267,11 @@ func TestDefaultSettings_MaxWorkers(t *testing.T) {
 	assert.Equal(t, 4, s.Supervisor.MaxWorkers, "default max_workers should be 4")
 }
 
+func TestDefaultSettings_OrchWavesPerContext(t *testing.T) {
+	s := DefaultSettings()
+	assert.Equal(t, 4, s.Supervisor.OrchWavesPerContext, "default orch_waves_per_context should be 4")
+}
+
 func TestDefaultSettings_MaxGoals(t *testing.T) {
 	s := DefaultSettings()
 	assert.Equal(t, 1, s.Supervisor.MaxGoals, "default max_goals should be 1 (single-goal, bare window names)")
