@@ -13,6 +13,9 @@ import (
 
 func setupTestProject(t *testing.T) string {
 	t.Helper()
+	// Redirect HOME so Run's user-scope side effects (bypass seeding, global
+	// command-shadow purge) never touch the real ~/.claude.
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755))
 	return dir
@@ -168,6 +171,7 @@ func TestRun_EmptyHookScripts(t *testing.T) {
 }
 
 func TestRun_NoGitDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir() // no .git/info/ created
 	cfg := testConfig()
 	cfg.ProjectRoot = dir
@@ -181,6 +185,55 @@ func TestRun_NoGitDir(t *testing.T) {
 
 	// .git/info/exclude should NOT exist
 	assert.NoFileExists(t, filepath.Join(dir, ".git", "info", "exclude"))
+}
+
+func TestRun_PurgesUserCommandShadow(t *testing.T) {
+	dir := setupTestProject(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	shadowDir := filepath.Join(home, ".claude", "commands", "tmux")
+	require.NoError(t, os.MkdirAll(shadowDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(shadowDir, "stale.md"), []byte("stale"), 0o644))
+
+	cfg := testConfig()
+	cfg.ProjectRoot = dir
+
+	require.NoError(t, Run(cfg))
+
+	// project-local copy written, global shadow purged
+	for name := range cfg.CommandTemplates {
+		assert.FileExists(t, filepath.Join(dir, ".claude", "commands", "tmux", name))
+	}
+	assert.NoDirExists(t, shadowDir)
+}
+
+func TestRun_CommandsDisabled_LeavesUserShadow(t *testing.T) {
+	dir := setupTestProject(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	shadowDir := filepath.Join(home, ".claude", "commands", "tmux")
+	require.NoError(t, os.MkdirAll(shadowDir, 0o755))
+	staleFile := filepath.Join(shadowDir, "stale.md")
+	require.NoError(t, os.WriteFile(staleFile, []byte("stale"), 0o644))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli"), 0o755))
+	settingsData, err := yaml.Marshal(&Settings{
+		Commands: CommandsSettings{Enabled: false},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, ".tmux-cli", "setting.yaml"),
+		settingsData, 0o644,
+	))
+
+	cfg := testConfig()
+	cfg.ProjectRoot = dir
+
+	require.NoError(t, Run(cfg))
+
+	// neither the local copy written nor the global shadow removed
+	assert.NoDirExists(t, filepath.Join(dir, ".claude", "commands", "tmux"))
+	assert.FileExists(t, staleFile)
 }
 
 func TestRun_TaskPlanSkillsDiscoverable(t *testing.T) {

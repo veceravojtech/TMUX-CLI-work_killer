@@ -89,6 +89,47 @@ func TestWriteCommands_EmptyMap(t *testing.T) {
 	assert.Empty(t, entries)
 }
 
+func TestPurgeUserCommandShadow_RemovesSeededTree(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shadowDir := filepath.Join(home, ".claude", "commands", "tmux")
+	require.NoError(t, os.MkdirAll(filepath.Join(shadowDir, "worker"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(shadowDir, "stale.md"), []byte("stale"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(shadowDir, "worker", "deep.xml"), []byte("<task/>"), 0644))
+
+	err := PurgeUserCommandShadow()
+	require.NoError(t, err)
+
+	assert.NoDirExists(t, shadowDir)
+}
+
+func TestPurgeUserCommandShadow_NoOpWhenAbsent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	err := PurgeUserCommandShadow()
+	require.NoError(t, err)
+
+	assert.NoDirExists(t, filepath.Join(home, ".claude", "commands", "tmux"))
+}
+
+func TestPurgeUserCommandShadowAt_PreservesSiblingCommands(t *testing.T) {
+	home := t.TempDir()
+	commandsDir := filepath.Join(home, ".claude", "commands")
+	require.NoError(t, os.MkdirAll(filepath.Join(commandsDir, "tmux"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(commandsDir, "tmux", "stale.md"), []byte("stale"), 0644))
+	otherFile := filepath.Join(commandsDir, "mycommand.md")
+	require.NoError(t, os.WriteFile(otherFile, []byte("my custom command"), 0644))
+
+	err := purgeUserCommandShadowAt(home)
+	require.NoError(t, err)
+
+	assert.NoDirExists(t, filepath.Join(commandsDir, "tmux"))
+	content, err := os.ReadFile(otherFile)
+	require.NoError(t, err)
+	assert.Equal(t, "my custom command", string(content))
+}
+
 func TestWriteCommands_CorrectContent(t *testing.T) {
 	root := t.TempDir()
 	expected := "# Header\n\nParagraph with special chars: <>&\"\nLine 2"

@@ -1,6 +1,9 @@
 package setup
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 type SetupConfig struct {
 	ProjectRoot      string
@@ -27,6 +30,11 @@ func Run(cfg *SetupConfig) error {
 	if settings.Commands.Enabled && len(cfg.CommandTemplates) > 0 {
 		if err := WriteCommands(cfg.ProjectRoot, cfg.CommandTemplates); err != nil {
 			return fmt.Errorf("write commands: %w", err)
+		}
+		// Best-effort: the fresh project-local copy above is now authoritative,
+		// so a purge failure must never block a session start.
+		if err := PurgeUserCommandShadow(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: purge global command shadow: %v\n", err)
 		}
 	}
 

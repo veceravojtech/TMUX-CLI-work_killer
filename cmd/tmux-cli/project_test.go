@@ -13,6 +13,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// isolateHome redirects HOME to a per-test temp dir so runAutoSetup's
+// user-level side effects (PurgeUserCommandShadow, SeedClaudeBypass) never
+// touch the developer's real ~/.claude.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 func setupNewSessionMock(t *testing.T, mockExec *testutil.MockTmuxExecutor) {
 	t.Helper()
 	mockExec.On("FindSessionByEnvironment", "TMUX_CLI_PROJECT_PATH", mock.AnythingOfType("string")).Return("", nil)
@@ -61,6 +69,7 @@ func TestProjectInitCmd_HasNoAttachFlag(t *testing.T) {
 }
 
 func TestRunProjectInit_ScaffoldsNewProject(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "myproject")
 
@@ -82,6 +91,7 @@ func TestRunProjectInit_ScaffoldsNewProject(t *testing.T) {
 }
 
 func TestRunProjectInit_IdempotentScaffold(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".tmux-cli", "goals"), 0o755))
@@ -106,6 +116,7 @@ func TestRunProjectInit_IdempotentScaffold(t *testing.T) {
 }
 
 func TestRunProjectInit_SkipsGitInitIfExists(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o755))
 
@@ -119,6 +130,7 @@ func TestRunProjectInit_SkipsGitInitIfExists(t *testing.T) {
 }
 
 func TestRunProjectInit_ReusesExistingSession(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755))
 
@@ -144,6 +156,7 @@ func TestRunProjectInit_ReusesExistingSession(t *testing.T) {
 }
 
 func TestRunProjectInit_CreatesNewSession(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755))
 
@@ -160,6 +173,7 @@ func TestRunProjectInit_CreatesNewSession(t *testing.T) {
 }
 
 func TestRunProjectInit_PrintsSessionToStdout(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755))
 
@@ -179,6 +193,7 @@ func TestRunProjectInit_PrintsSessionToStdout(t *testing.T) {
 }
 
 func TestRunProjectInit_SymlinkResolution(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	realDir := filepath.Join(dir, "real")
 	require.NoError(t, os.MkdirAll(realDir, 0o755))

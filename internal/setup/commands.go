@@ -32,3 +32,22 @@ func WriteCommands(projectRoot string, templates map[string]string) error {
 
 	return nil
 }
+
+// PurgeUserCommandShadow resolves the user's home directory and removes the
+// unmanaged global command copy at ~/.claude/commands/tmux, so a stale global
+// shadow can never serve in place of the fresh project-local copy. A failure
+// to resolve HOME is returned to the caller.
+func PurgeUserCommandShadow() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	return purgeUserCommandShadowAt(home)
+}
+
+// purgeUserCommandShadowAt removes <home>/.claude/commands/tmux. Sibling
+// commands outside tmux/ are untouched. Idempotent: RemoveAll returns nil
+// when the tree is absent.
+func purgeUserCommandShadowAt(home string) error {
+	return os.RemoveAll(filepath.Join(home, ".claude", "commands", "tmux"))
+}
