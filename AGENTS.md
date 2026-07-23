@@ -148,7 +148,7 @@ internal/
   the daemon's auto-filed tasks are predominantly noise. Manual task-report stays fully
   functional, gated only on api.enabled — auto_report NEVER disables the manual channel))
 - `.tmux-cli/tasks.yaml` — can be pre-created to queue planned work for the supervisor
-- TUI settings editor exposes 33 items — must mirror all `Settings` struct fields EXCEPT the deliberately-unsurfaced `api:` reporting block (internal-only telemetry, force-corrected at load — see the TUI-invariant exception below)
+- TUI settings editor exposes 35 items — must mirror all `Settings` struct fields EXCEPT the deliberately-unsurfaced `api:` reporting block (internal-only telemetry, force-corrected at load — see the TUI-invariant exception below)
 
 ## Testing conventions
 

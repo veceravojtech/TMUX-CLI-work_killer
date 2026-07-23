@@ -34,6 +34,43 @@ type CommandsSettings struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+// TelemetrySettings gates the P2 structured-telemetry pipeline (design §4/§8).
+// When on (the default), Go/hook emitters spool structured events under
+// .tmux-cli/logs/spool/ and — additionally, only when the machine is logged in —
+// the detached `tmux-cli logs ship` shipper batches them to the backend ingest.
+// When off, BOTH emit AND ship are disabled entirely (contract "Gating (CLI)").
+//
+// Enabled is a *bool (not plain bool) so a legacy setting.yaml predating the key
+// (nil) is distinguishable from an explicit `enabled: false` opt-out: nil is
+// backfilled to true by LoadSettings (mirroring the AutoCommit idiom), so a
+// missing telemetry block never silently reads as "disabled". Read via
+// IsEnabled(), never the field directly. Unlike the api: block this is a
+// customer-surfaced field: it IS mirrored in the TUI (AGENTS.md TUI invariant).
+type TelemetrySettings struct {
+	Enabled *bool `yaml:"enabled"`
+	// Transcripts gates the P3 pane-content capture (design §6): OPT-IN per
+	// project, default FALSE — the inverse polarity of Enabled, because pane
+	// content is privacy-sensitive where flow events are not. Same *bool
+	// backfill idiom (nil is backfilled to false by LoadSettings so the key
+	// always persists explicitly); read via AreTranscriptsEnabled(), never the
+	// field directly. Capture additionally requires Enabled AND a logged-in
+	// auth store (internal/transcript.Armed).
+	Transcripts *bool `yaml:"transcripts"`
+}
+
+// IsEnabled reports whether structured telemetry is on. Nil (a hand-constructed
+// Settings{} or a pre-backfill legacy decode) defaults ON; only an explicit
+// false opts out.
+func (t TelemetrySettings) IsEnabled() bool {
+	return t.Enabled == nil || *t.Enabled
+}
+
+// AreTranscriptsEnabled reports whether P3 pane-content capture is opted in.
+// Nil defaults OFF (opt-in) — the inverse of IsEnabled's default-ON.
+func (t TelemetrySettings) AreTranscriptsEnabled() bool {
+	return t.Transcripts != nil && *t.Transcripts
+}
+
 // APISettings configures the producer task-reporting side channel. It is read
 // here so the api: block PERSISTS across the lossy SaveSettings round-trip
 // (without a typed field, LoadSettings re-marshals and silently drops it). The
@@ -286,6 +323,7 @@ type Settings struct {
 	Hooks      HooksSettings      `yaml:"hooks"`
 	Commands   CommandsSettings   `yaml:"commands"`
 	API        APISettings        `yaml:"api"`
+	Telemetry  TelemetrySettings  `yaml:"telemetry"`
 	Supervisor SupervisorSettings `yaml:"supervisor"`
 	Plan       PlanSettings       `yaml:"plan"`
 	Sudo       SudoSettings       `yaml:"sudo"`
@@ -308,6 +346,11 @@ func DefaultSettings() *Settings {
 	gitFreshness := true
 	validation := true
 	planAudit := true
+	// Telemetry is ON by default (contract "telemetry: {enabled: true}"); shipping
+	// still additionally requires a logged-in auth store at start time.
+	telemetryEnabled := true
+	// Pane-content transcripts are OPT-IN (contract "transcripts: false").
+	telemetryTranscripts := false
 	// INVERTED default: auto-reporting is OFF for new projects (see AutoReport doc).
 	autoReport := false
 	return &Settings{
@@ -324,6 +367,10 @@ func DefaultSettings() *Settings {
 		API: APISettings{
 			Enabled: true,
 			URL:     "https://tmux.vojta.ai",
+		},
+		Telemetry: TelemetrySettings{
+			Enabled:     &telemetryEnabled,
+			Transcripts: &telemetryTranscripts,
 		},
 		Supervisor: SupervisorSettings{
 			MaxCycles:       0,
@@ -434,6 +481,22 @@ func LoadSettings(projectRoot string) (*Settings, error) {
 	if s.Plan.Audit == nil {
 		planAudit := true
 		s.Plan.Audit = &planAudit
+	}
+	// Backfill telemetry.enabled for a legacy setting.yaml predating the key: nil
+	// means pre-feature (default ON), while an explicit false survives untouched.
+	// Without this a missing telemetry block would decode to the bool zero (false)
+	// and silently disable emit+ship on every pre-P2 project.
+	if s.Telemetry.Enabled == nil {
+		telemetryEnabled := true
+		s.Telemetry.Enabled = &telemetryEnabled
+	}
+	// Backfill telemetry.transcripts for a setting.yaml predating the key: the
+	// default is FALSE (pane content is opt-in — inverse of enabled's ON), and
+	// the backfill makes the key persist explicitly so the opt-in surface is
+	// visible in the file.
+	if s.Telemetry.Transcripts == nil {
+		telemetryTranscripts := false
+		s.Telemetry.Transcripts = &telemetryTranscripts
 	}
 	// The api: reporting block is internal-only telemetry — never customer-configurable.
 	// Force it enabled and pointed at the canonical backend so a hand-edited setting.yaml

@@ -14,6 +14,39 @@ HOOK_INPUT=$(cat)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# --- P2 telemetry emit (fire-and-forget) ---
+# Records supervisor-cycle events to the structured spool. It MUST NEVER change
+# this Stop hook's exit status: `tmux-cli telemetry emit` already exits 0 even
+# when telemetry is disabled/unwritable, and the redirect + `|| true` guard the
+# case where the subcommand is absent (older binary) or errors. Payloads carry
+# ids/enums/short labels only (contract §Event schema).
+emit_telemetry() {
+    local event="$1" payload="$2"
+    command -v tmux-cli >/dev/null 2>&1 || return 0
+    tmux-cli telemetry emit --event "$event" --window supervisor \
+        --payload-json "$payload" >/dev/null 2>&1 || true
+}
+
+# --- Reliable slash-command submission to a Claude Code pane ---
+# Root cause of the intermittent "command typed but not sent" bug: sending the
+# command text and Enter in ONE `send-keys` call lets the trailing CR arrive as
+# part of the same input chunk that Claude Code's multi-line prompt records as a
+# literal newline (soft break) instead of a discrete submit keypress — so the
+# text is left sitting in the box, unsent. Fix mirrors the Go SendMessageWithDelay
+# convention: type the text, pause for the prompt to settle, then send Enter as a
+# SEPARATE keypress. The second Enter after a short pause is an idempotent backstop
+# — once the first Enter submits, the prompt is empty so the extra Enter is a
+# harmless no-op; if the first Enter was ever dropped, the second submits the
+# pending text. This makes the /clear + /tmux:supervisor relaunch land every time.
+submit_to_pane() {
+    local target="$1" cmd="$2"
+    tmux send-keys -t "$target" "$cmd"
+    sleep 0.7
+    tmux send-keys -t "$target" Enter
+    sleep 0.4
+    tmux send-keys -t "$target" Enter
+}
+
 # --- Session discovery (same pattern as tmux-session-notify.sh) ---
 
 WINDOW_UUID="${TMUX_WINDOW_UUID:-}"
@@ -149,6 +182,7 @@ if [[ -f "$FRESH_MARKER" ]]; then
     if [[ "$FRESH_MAX_CYCLES" -gt 0 && "$FRESH_CYCLE" -ge "$FRESH_MAX_CYCLES" ]]; then
         rm -f "$FRESH_MARKER"
         echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor fresh handoff cycle limit reached (${FRESH_CYCLE}/${FRESH_MAX_CYCLES}), NOT restarting" >> "$LOG_DIR/notifications.log"
+        emit_telemetry supervisor.cycle "{\"cycle\":${FRESH_CYCLE:-0},\"action\":\"exhausted\"}"
         exit 0
     fi
 
@@ -198,9 +232,13 @@ if [[ -f "$FRESH_MARKER" ]]; then
     # The audit-done re-arm lives in the relaunched supervisor's step-0 clean
     # slate — this path must NOT rm audit-done (that raced the audit's touch).
     touch "${PROJECT_DIR}/.tmux-cli/cycle-restart-queued"
-    tmux send-keys -t "$FRESH_PANE_TARGET" "/clear" Enter
+    # P2 telemetry: the one-shot fresh-handoff marker was consumed and is now
+    # driving a restart onto FRESH_PLAN.
+    emit_telemetry marker.consumed "{\"plan\":\"${FRESH_PLAN}\",\"cycle\":${FRESH_CYCLE:-0}}"
+    emit_telemetry supervisor.cycle "{\"cycle\":${FRESH_CYCLE:-0},\"action\":\"restart\"}"
+    submit_to_pane "$FRESH_PANE_TARGET" "/clear"
     sleep 2
-    tmux send-keys -t "$FRESH_PANE_TARGET" "/tmux:supervisor ${FRESH_PLAN}" Enter
+    submit_to_pane "$FRESH_PANE_TARGET" "/tmux:supervisor ${FRESH_PLAN}"
 
     exit 0
 fi
@@ -253,6 +291,7 @@ if [[ "$MAX_CYCLES" -gt 0 && "$CURRENT_CYCLE" -ge "$MAX_CYCLES" ]]; then
     LOG_DIR="${PROJECT_DIR}/.tmux-cli/logs"
     mkdir -p "$LOG_DIR"
     echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor cycle limit reached (${CURRENT_CYCLE}/${MAX_CYCLES}), NOT restarting" >> "$LOG_DIR/notifications.log"
+    emit_telemetry supervisor.cycle "{\"cycle\":${CURRENT_CYCLE:-0},\"action\":\"exhausted\"}"
     exit 0
 fi
 
@@ -286,9 +325,10 @@ if [[ "$CYCLE_DELAY" -le 0 ]]; then
     # now lives in the relaunched supervisor's step-0 clean slate, so this path
     # no longer deletes the audit-done guard (that raced the audit hook's touch).
     touch "${PROJECT_DIR}/.tmux-cli/cycle-restart-queued"
-    tmux send-keys -t "$PANE_TARGET" "/clear" Enter
+    emit_telemetry supervisor.cycle "{\"cycle\":${NEW_CYCLE:-0},\"action\":\"restart\"}"
+    submit_to_pane "$PANE_TARGET" "/clear"
     sleep 2
-    tmux send-keys -t "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml" Enter
+    submit_to_pane "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml"
     exit 0
 fi
 
@@ -297,6 +337,7 @@ for i in $(seq "$CYCLE_DELAY" -1 1); do
         rm -f "$CANCEL_FILE"
         tmux display-message -t "$PANE_TARGET" "Supervisor cycle cancelled."
         echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor cycle cancelled by user" >> "$LOG_DIR/notifications.log"
+        emit_telemetry supervisor.cycle "{\"cycle\":${CURRENT_CYCLE:-0},\"action\":\"stop\"}"
         # Undo the cycle increment since we're not restarting
         sed -i "s/^cycle:.*/cycle: ${CURRENT_CYCLE}/" "$TASKS_FILE"
         exit 0
@@ -310,6 +351,7 @@ if [[ -f "$CANCEL_FILE" ]]; then
     rm -f "$CANCEL_FILE"
     tmux display-message -t "$PANE_TARGET" "Supervisor cycle cancelled."
     echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") - Supervisor cycle cancelled by user" >> "$LOG_DIR/notifications.log"
+    emit_telemetry supervisor.cycle "{\"cycle\":${CURRENT_CYCLE:-0},\"action\":\"stop\"}"
     sed -i "s/^cycle:.*/cycle: ${CURRENT_CYCLE}/" "$TASKS_FILE"
     exit 0
 fi
@@ -320,8 +362,9 @@ fi
 # above): write the per-Stop sentinel so the audit hook yields, and let the
 # relaunched supervisor's step-0 clean slate own the audit-done re-arm.
 touch "${PROJECT_DIR}/.tmux-cli/cycle-restart-queued"
-tmux send-keys -t "$PANE_TARGET" "/clear" Enter
+emit_telemetry supervisor.cycle "{\"cycle\":${NEW_CYCLE:-0},\"action\":\"restart\"}"
+submit_to_pane "$PANE_TARGET" "/clear"
 sleep 2
-tmux send-keys -t "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml" Enter
+submit_to_pane "$PANE_TARGET" "/tmux:supervisor .tmux-cli/tasks.yaml"
 
 exit 0

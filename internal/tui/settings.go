@@ -80,6 +80,8 @@ func NewModel(projectRoot string, settings *setup.Settings) Model {
 			{key: "taskvisor.validation", label: "Taskvisor Validation", kind: "bool", value: settings.Taskvisor.ValidationEnabled()},
 			{key: "taskvisor.planning_mode", label: "Taskvisor Planning Mode", kind: "enum", strVal: settings.Taskvisor.PlanningMode, options: []string{setup.PlanningModeRoadmap, setup.PlanningModeIncremental}},
 			{key: "taskvisor.auto_report", label: "Taskvisor Auto-Report", kind: "bool", value: settings.Taskvisor.AutoReportEnabled()},
+			{key: "telemetry.enabled", label: "Telemetry Enabled", kind: "bool", value: settings.Telemetry.IsEnabled()},
+			{key: "telemetry.transcripts", label: "Telemetry Transcripts", kind: "bool", value: settings.Telemetry.AreTranscriptsEnabled()},
 		},
 	}
 }
@@ -285,6 +287,12 @@ func (m Model) ToSettings() *setup.Settings {
 		case "taskvisor.auto_report":
 			v := item.value
 			s.Taskvisor.AutoReport = &v
+		case "telemetry.enabled":
+			v := item.value
+			s.Telemetry.Enabled = &v
+		case "telemetry.transcripts":
+			v := item.value
+			s.Telemetry.Transcripts = &v
 		}
 	}
 	return &s

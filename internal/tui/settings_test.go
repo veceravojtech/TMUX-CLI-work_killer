@@ -31,7 +31,13 @@ commands:
 
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 33)
+	assert.Len(t, m.items, 35)
+	assert.Equal(t, "telemetry.enabled", m.items[33].key)
+	assert.Equal(t, "bool", m.items[33].kind)
+	assert.True(t, m.items[33].value, "telemetry.enabled surfaces ON by default")
+	assert.Equal(t, "telemetry.transcripts", m.items[34].key)
+	assert.Equal(t, "bool", m.items[34].kind)
+	assert.False(t, m.items[34].value, "telemetry.transcripts surfaces OFF by default (opt-in)")
 	assert.Equal(t, "hooks.session_notify", m.items[0].key)
 	assert.True(t, m.items[0].value)
 	assert.Equal(t, "hooks.block_interactive", m.items[1].key)
@@ -179,28 +185,72 @@ func TestModel_Navigation(t *testing.T) {
 	m = updated.(Model)
 	assert.Equal(t, 23, m.cursor)
 
-	// Step down through the remaining items to the last one (33 items → max index 32)
-	for want := 24; want <= 32; want++ {
+	// Step down through the remaining items to the last one (35 items → max index 34)
+	for want := 24; want <= 34; want++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 		assert.Equal(t, want, m.cursor)
 	}
 
-	// Can't go past last item (33 items → max index 32)
+	// Can't go past last item (35 items → max index 34)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
-	assert.Equal(t, 32, m.cursor)
+	assert.Equal(t, 34, m.cursor)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(Model)
-	assert.Equal(t, 31, m.cursor)
+	assert.Equal(t, 33, m.cursor)
 
 	// Can't go above first item
-	for i := 0; i < 33; i++ {
+	for i := 0; i < 35; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
 	}
 	assert.Equal(t, 0, m.cursor)
+}
+
+func TestModel_ToSettings_MirrorsTelemetryEnabled(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings() // telemetry ON
+	m := NewModel(dir, settings)
+
+	// Locate and toggle the telemetry.enabled item OFF.
+	idx := -1
+	for i, it := range m.items {
+		if it.key == "telemetry.enabled" {
+			idx = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, idx, 0, "telemetry.enabled must be a surfaced TUI item (AGENTS.md TUI invariant)")
+	require.True(t, m.items[idx].value, "seeded ON from DefaultSettings")
+	m.items[idx].value = false
+
+	result := m.ToSettings()
+	require.NotNil(t, result.Telemetry.Enabled)
+	assert.False(t, *result.Telemetry.Enabled, "toggling the item OFF must write telemetry.enabled=false through ToSettings")
+}
+
+func TestModel_ToSettings_MirrorsTelemetryTranscripts(t *testing.T) {
+	dir := t.TempDir()
+	settings := setup.DefaultSettings() // transcripts OFF
+	m := NewModel(dir, settings)
+
+	// Locate and toggle the telemetry.transcripts item ON.
+	idx := -1
+	for i, it := range m.items {
+		if it.key == "telemetry.transcripts" {
+			idx = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, idx, 0, "telemetry.transcripts must be a surfaced TUI item (AGENTS.md TUI invariant)")
+	require.False(t, m.items[idx].value, "seeded OFF from DefaultSettings (opt-in)")
+	m.items[idx].value = true
+
+	result := m.ToSettings()
+	require.NotNil(t, result.Telemetry.Transcripts)
+	assert.True(t, *result.Telemetry.Transcripts, "toggling the item ON must write telemetry.transcripts=true through ToSettings")
 }
 
 func TestModel_ToSettings_PreservesSupervisorFields(t *testing.T) {
@@ -978,7 +1028,7 @@ func TestNewModel_IncludesTaskvisorItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 33)
+	assert.Len(t, m.items, 35)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {
@@ -1028,7 +1078,7 @@ func TestNewModel_IncludesTransientRetryItems(t *testing.T) {
 	settings := setup.DefaultSettings()
 	m := NewModel(dir, settings)
 
-	assert.Len(t, m.items, 33)
+	assert.Len(t, m.items, 35)
 
 	keys := make([]string, len(m.items))
 	for i, item := range m.items {

@@ -15,7 +15,9 @@ import (
 	"github.com/console/tmux-cli/internal/setup"
 	"github.com/console/tmux-cli/internal/tasks"
 	"github.com/console/tmux-cli/internal/taskvisor"
+	"github.com/console/tmux-cli/internal/telemetry"
 	"github.com/console/tmux-cli/internal/tmux"
+	"github.com/console/tmux-cli/internal/transcript"
 )
 
 // WindowListItem represents a simplified window entry with only the name.
@@ -338,6 +340,10 @@ func (s *Server) WindowsKill(windowIdentifier string) (bool, error) {
 		return false, fmt.Errorf("%w: session=%s window=%q (ID=%s): %w",
 			ErrTmuxCommandFailed, sessionID, windowIdentifier, windowID, err)
 	}
+
+	// Telemetry (fire-and-forget; no-op unless the process opted in via
+	// telemetry.InstallDefault — i.e. never in unit tests).
+	telemetry.Emit(telemetry.EventWindowKill, windowIdentifier, map[string]any{"wid": windowIdentifier})
 
 	return true, nil
 }
@@ -788,7 +794,16 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 	logDir := filepath.Join(s.workingDir, ".tmux-cli", "logs", "panes")
 	_ = os.MkdirAll(logDir, 0o755)
 	logPath := filepath.Join(logDir, workerName+".log")
-	if ppErr := s.executor.PipePane(sessionID, window.TmuxWindowID, logPath); ppErr != nil {
+	// P3 transcripts: when the privacy gate is armed, the single allowed pipe
+	// per pane tees the pane log AND feeds the transcript capture process;
+	// unarmed keeps the plain pane-log pipe byte-identical to before.
+	var ppErr error
+	if captureCmd := transcript.CapturePipeCommand(s.workingDir, sessionID, workerName, logPath); captureCmd != "" {
+		ppErr = s.executor.PipePaneCommand(sessionID, window.TmuxWindowID, captureCmd)
+	} else {
+		ppErr = s.executor.PipePane(sessionID, window.TmuxWindowID, logPath)
+	}
+	if ppErr != nil {
 		log.Printf("WARNING: pipe-pane for %s failed (best-effort): %v", workerName, ppErr)
 	}
 
@@ -814,7 +829,28 @@ func (s *Server) WindowsSpawnWorker(supervisorWid, subtask, contextFile, scope, 
 			ErrTmuxCommandFailed, workerName, err)
 	}
 
+	// Telemetry (fire-and-forget; no-op unless the process opted in). kind is
+	// derived from the worker-window prefix per the contract's {worker|prereq|other}.
+	telemetry.Emit(telemetry.EventWindowSpawn, workerName, map[string]any{
+		"wid":     workerName,
+		"kind":    spawnKind(workerName),
+		"subtask": subtask,
+	})
+
 	return window, workerName, taskMessage, nil
+}
+
+// spawnKind classifies a spawned worker window into the contract's closed
+// {worker|prereq|other} set from its name prefix.
+func spawnKind(workerName string) string {
+	switch {
+	case strings.HasPrefix(workerName, "prereq"):
+		return "prereq"
+	case strings.HasPrefix(workerName, "execute"), strings.HasPrefix(workerName, "investigator"), strings.HasPrefix(workerName, "inv-"):
+		return "worker"
+	default:
+		return "other"
+	}
 }
 
 func (s *Server) SpecValidate(file string) (*SpecValidateOutput, error) {

@@ -231,6 +231,10 @@ func (m *MockExecutorWithFeedback) PipePane(sessionID, windowID, logPath string)
 	return nil
 }
 
+func (m *MockExecutorWithFeedback) PipePaneCommand(sessionID, windowID, command string) error {
+	return nil
+}
+
 func (m *MockExecutorWithFeedback) ClosePipePane(sessionID, windowID string) error {
 	return nil
 }

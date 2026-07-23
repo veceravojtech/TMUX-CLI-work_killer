@@ -59,6 +59,18 @@ if [[ -z "$WINDOW_NAME" || "$WINDOW_NAME" == "supervisor" ]]; then
     exit 0
 fi
 
+# --- P2 telemetry: record this hook firing (fire-and-forget) ---
+# MUST NEVER change this hook's exit status: `tmux-cli telemetry emit` exits 0
+# even when telemetry is disabled/unwritable, and the redirect + `|| true` guard
+# an older binary lacking the subcommand. Payload carries the hook name, the
+# lifecycle action, and the worker window name only (short labels — contract
+# §Event schema forbids file contents / long free text).
+if command -v tmux-cli &> /dev/null; then
+    tmux-cli telemetry emit --event hook.fired --window "$WINDOW_NAME" \
+        --payload-json "{\"hook\":\"session-notify\",\"action\":\"${EVENT_TYPE}\",\"detail\":\"${WINDOW_NAME}\"}" \
+        > /dev/null 2>&1 || true
+fi
+
 # Capture terminal output directly from the pane
 FULL_CONTENT=""
 LAST_CONTENT=""

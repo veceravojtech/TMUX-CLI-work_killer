@@ -9,8 +9,12 @@
 // HTTP failures are returned (and logged to stderr) — never panicked, never
 // blocking beyond the 10s client timeout.
 //
-// Dependency direction is producer -> identity only; the leaf identity package
-// is reused verbatim and never imported in reverse.
+// When the machine is logged in (internal/auth's auth.json exists and yields a
+// valid/refreshable token) each request instead carries an Authorization: Bearer
+// header, with transparent single-flight refresh; the Ed25519 path is the
+// logged-out fallback for this migration release (design §3). Dependency direction
+// is producer -> {identity, auth}; both leaf packages are reused verbatim and
+// never import producer in reverse.
 package producer
 
 import (
@@ -30,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/console/tmux-cli/internal/auth"
 	"github.com/console/tmux-cli/internal/identity"
 )
 
@@ -67,6 +72,11 @@ type Client struct {
 	// scary "producer: request failed" line onto an otherwise-fine render. Default
 	// false: every command-driven caller keeps surfacing transport errors.
 	quiet bool
+	// auth, when non-nil, enables Bearer mode: every request-batch consults the
+	// user-global auth store and, if logged in, authenticates with a Bearer token
+	// (transparently refreshed, single-flight) instead of the Ed25519 signature.
+	// nil (or a logged-out store) keeps the signing path byte-identical to today.
+	auth *bearerAuth
 }
 
 // Quiet marks the client as best-effort: transport-error stderr prints in
@@ -94,8 +104,28 @@ func New(cfg Config) *Client {
 		fmt.Fprintln(os.Stderr, "producer: reporting disabled, could not load signing key:", err)
 		return nil
 	}
-	c := newClient(resolveBaseURL(cfg.APIURL), key, &http.Client{Timeout: 10 * time.Second})
+	base := resolveBaseURL(cfg.APIURL)
+	c := newClient(base, key, &http.Client{Timeout: 10 * time.Second})
 	c.project = cfg.Project
+	// Enable Bearer mode against the same backend base URL. The store is consulted
+	// per request-batch, so a login/logout mid-process flips the mode transparently
+	// and a logged-out machine keeps the byte-identical Ed25519 path. A store-path
+	// resolution failure (no HOME/XDG) simply leaves Bearer off — signing still works.
+	if store, serr := auth.NewStore(); serr == nil {
+		c.withAuth(store, auth.NewClient(base))
+	}
+	return c
+}
+
+// withAuth enables Bearer mode on the client, backed by store (the auth.json token
+// store) and ac (the device-flow/refresh HTTP client). It is the seam New and the
+// Bearer tests share; a nil receiver stays a nil no-op. Returns the receiver for
+// chaining.
+func (c *Client) withAuth(store *auth.Store, ac *auth.Client) *Client {
+	if c == nil {
+		return nil
+	}
+	c.auth = &bearerAuth{store: store, client: ac}
 	return c
 }
 
@@ -148,20 +178,24 @@ func (c *Client) SubmitTask(ctx context.Context, req TaskRequest) (*TaskResponse
 		return nil, err
 	}
 
-	ts := time.Now().Unix()
-	sig := c.sign(ts, body)
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/tasks", bytes.NewReader(body))
+	// build recreates the request (and its one-shot body reader) so authorizeAndDo
+	// can re-issue it for a single Bearer refresh-retry. Auth headers (Bearer or the
+	// Ed25519 signature over body) are stamped by authorizeAndDo.
+	build := func() (*http.Request, error) {
+		hr, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/tasks", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		hr.Header.Set("Content-Type", "application/json")
+		return hr, nil
+	}
+	httpReq, err := build()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "producer: failed to build request:", err)
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Signature", sig)
-	httpReq.Header.Set("X-Timestamp", fmt.Sprintf("%d", ts))
-	httpReq.Header.Set("X-Fingerprint", c.fingerprint)
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.authorizeAndDo(ctx, httpReq, build, body)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "producer: task submission failed:", err)
 		return nil, err

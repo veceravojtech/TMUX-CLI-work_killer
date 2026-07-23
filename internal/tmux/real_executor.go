@@ -547,6 +547,22 @@ func (e *RealTmuxExecutor) PipePane(sessionID, windowID, logPath string) error {
 	return nil
 }
 
+// PipePaneCommand starts streaming pane output through an arbitrary shell
+// command. Command: tmux pipe-pane -o -t <session>:<window> '<command>'
+func (e *RealTmuxExecutor) PipePaneCommand(sessionID, windowID, command string) error {
+	target := sessionID + ":" + windowID
+	cmd := exec.Command("tmux", "pipe-pane", "-o", "-t", target, command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if cmd.Err == exec.ErrNotFound {
+			return ErrTmuxNotFound
+		}
+		return fmt.Errorf("tmux pipe-pane failed (target: %s): %w: %s",
+			target, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 // ClosePipePane closes any active pipe-pane on the window (idempotent).
 // Command: tmux pipe-pane -t <session>:<window>  (no command = close)
 func (e *RealTmuxExecutor) ClosePipePane(sessionID, windowID string) error {

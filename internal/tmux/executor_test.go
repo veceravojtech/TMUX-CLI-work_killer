@@ -104,6 +104,10 @@ func (m *mockExecutor) PipePane(sessionID, windowID, logPath string) error {
 	return nil
 }
 
+func (m *mockExecutor) PipePaneCommand(sessionID, windowID, command string) error {
+	return nil
+}
+
 func (m *mockExecutor) ClosePipePane(sessionID, windowID string) error {
 	return nil
 }

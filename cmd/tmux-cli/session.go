@@ -566,6 +566,7 @@ func startOrReuseSession(executor tmux.TmuxExecutor, projectPath, model string, 
 	}
 
 	fmt.Fprintf(out, "Created session '%s' for %s\n", sessionID, projectPath)
+	emitSessionStart(sessionID, projectPath)
 	return sessionID, true, nil
 }
 
@@ -655,6 +656,12 @@ func runSessionStart(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("sudo setup failed: %w", err)
 		}
 	}
+	// P2 telemetry: launch the detached shipper when gating passes, else print the
+	// one spool-only notice line. Best-effort — never fails/blocks start.
+	maybeStartShipper(projectPath, sessionID, progressOut)
+	// P3 transcripts: arm capture pipes on the managed windows when the privacy
+	// gate passes. Best-effort — never fails/blocks start.
+	maybeArmTranscripts(projectPath, sessionID, executor)
 	if printJSON {
 		fmt.Fprintln(cmd.OutOrStdout(), startSessionJSON(sessionID, created))
 	}
@@ -704,6 +711,12 @@ func runStartAttach(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("send resume kickoff: %w", err)
 		}
 	}
+	// P2 telemetry: launch the detached shipper (or print the spool-only notice)
+	// before attaching. Best-effort — never fails/blocks start.
+	maybeStartShipper(projectPath, sessionID, os.Stdout)
+	// P3 transcripts: arm capture pipes on the managed windows when the privacy
+	// gate passes. Best-effort — never fails/blocks start.
+	maybeArmTranscripts(projectPath, sessionID, executor)
 	fmt.Printf("Attaching to session '%s'...\n", sessionID)
 	return executor.AttachSession(sessionID)
 }
@@ -823,6 +836,7 @@ func runProjectInitWithExecutor(executor tmux.TmuxExecutor, projectDir string, n
 		if err := mgr.CreateSession(sessionID, canonicalPath); err != nil {
 			return fmt.Errorf("create session: %w", err)
 		}
+		emitSessionStart(sessionID, canonicalPath)
 	}
 
 	mgr := session.NewSessionManager(executor)
@@ -843,6 +857,7 @@ func runSessionKill(cmd *cobra.Command, args []string) error {
 	sessionID := args[0]
 
 	executor := tmux.NewTmuxExecutor()
+	emitSessionEnd(sessionID)
 	_ = executor.KillSession(sessionID)
 
 	fmt.Printf("Session %s killed\n", sessionID)

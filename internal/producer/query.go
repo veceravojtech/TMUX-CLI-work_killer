@@ -12,7 +12,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Read-path sentinel errors so callers (the MCP query tools) can map an HTTP
@@ -538,29 +537,37 @@ func (c *Client) doSignedRaw(ctx context.Context, method, path string, query url
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
+	// build recreates the request (and its one-shot body reader) plus its
+	// content-type and extra headers, so authorizeAndDo can re-issue it for a single
+	// Bearer refresh-retry. Auth headers (Bearer, or the Ed25519 signature over
+	// signBody) are stamped by authorizeAndDo — decoupling signBody from the wire
+	// body preserves the multipart digest-signing path unchanged.
+	build := func() (*http.Request, error) {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, u, reader)
+		if err != nil {
+			return nil, err
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", contentType)
+		}
+		for k, v := range extraHeaders {
+			req.Header.Set(k, v)
+		}
+		return req, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, reader)
+	req, err := build()
 	if err != nil {
 		if !c.quiet {
 			fmt.Fprintln(os.Stderr, "producer: failed to build request:", err)
 		}
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", contentType)
-	}
-	ts := time.Now().Unix()
-	req.Header.Set("X-Signature", c.sign(ts, signBody))
-	req.Header.Set("X-Timestamp", strconv.FormatInt(ts, 10))
-	req.Header.Set("X-Fingerprint", c.fingerprint)
-	for k, v := range extraHeaders {
-		req.Header.Set(k, v)
-	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.authorizeAndDo(ctx, req, build, signBody)
 	if err != nil {
 		if !c.quiet {
 			fmt.Fprintln(os.Stderr, "producer: request failed:", err)

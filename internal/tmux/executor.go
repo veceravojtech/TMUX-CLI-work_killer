@@ -106,6 +106,11 @@ type TmuxExecutor interface {
 	// PipePane starts streaming pane output to a log file in append mode
 	PipePane(sessionID, windowID, logPath string) error
 
+	// PipePaneCommand starts streaming pane output through an arbitrary shell
+	// command (e.g. a tee into the transcript capture process). tmux allows one
+	// pipe per pane; -o semantics keep an existing pipe in place.
+	PipePaneCommand(sessionID, windowID, command string) error
+
 	// ClosePipePane closes any active pipe-pane on the window (idempotent)
 	ClosePipePane(sessionID, windowID string) error
 }

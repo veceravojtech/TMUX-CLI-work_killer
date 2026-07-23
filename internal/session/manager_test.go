@@ -132,6 +132,11 @@ func (m *MockTmuxExecutor) PipePane(sessionID, windowID, logPath string) error {
 	return args.Error(0)
 }
 
+func (m *MockTmuxExecutor) PipePaneCommand(sessionID, windowID, command string) error {
+	args := m.Called(sessionID, windowID, command)
+	return args.Error(0)
+}
+
 func (m *MockTmuxExecutor) ClosePipePane(sessionID, windowID string) error {
 	args := m.Called(sessionID, windowID)
 	return args.Error(0)

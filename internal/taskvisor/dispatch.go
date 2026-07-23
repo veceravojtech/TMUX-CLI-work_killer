@@ -348,7 +348,9 @@ func (d *Daemon) dispatch(goal *Goal, goals *GoalsFile) error {
 	rt.bootConfirmedAt = d.now()
 	oldPhase := rt.phase
 	rt.phase = phaseSupervising
+	rt.phaseStartedAt = d.now()
 	log.Printf("%s: phase %s -> supervising", goal.ID, phaseName(oldPhase))
+	emitGoalPhase(goal.ID, phaseSupervising, "start", 0)
 
 	dispatchPath := filepath.Join(d.workDir, ".tmux-cli", "goals", goal.ID, "dispatch.md")
 	// Phase decides the first-dispatch command (dispatchcmd.go matrix): most
@@ -590,7 +592,9 @@ func (d *Daemon) dispatchRetry(goal *Goal, goals *GoalsFile) error {
 	rt.bootConfirmedAt = d.now()
 	oldPhase := rt.phase
 	rt.phase = phaseSupervising
+	rt.phaseStartedAt = d.now()
 	log.Printf("%s: phase %s -> supervising (retry, skip plan)", goal.ID, phaseName(oldPhase))
+	emitGoalPhase(goal.ID, phaseSupervising, "start", 0)
 
 	// Ship the goal id as a leading token. The daemon writes the GLOBAL
 	// .tmux-cli/taskvisor-current-goal marker on every dispatch (last-writer-wins),

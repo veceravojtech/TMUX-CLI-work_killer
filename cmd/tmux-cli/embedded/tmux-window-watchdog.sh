@@ -341,7 +341,17 @@ scan_once() {
                     if [[ "$DRY_RUN" -eq 1 ]]; then
                         log "DRY-RUN would nudge ${sid} ${wname} (${pane}) reason=${reason} idle=${idle}s count=$((count + 1))"
                     else
-                        tmux send-keys -t "$pane" "$nudge_text" Enter
+                        # Decouple the text from Enter (see submit_to_pane in
+                        # tmux-supervisor-cycle.sh): a CR glued to the typed text
+                        # can land as a literal newline in Claude Code's prompt
+                        # rather than a submit, leaving the nudge unsent. Type,
+                        # pause, then send Enter separately — twice as a no-op
+                        # backstop so the nudge submits every time.
+                        tmux send-keys -t "$pane" "$nudge_text"
+                        sleep 0.4
+                        tmux send-keys -t "$pane" Enter
+                        sleep 0.3
+                        tmux send-keys -t "$pane" Enter
                         log "nudged ${sid} ${wname} (${pane}) reason=${reason} idle=${idle}s count=$((count + 1)) sent='${nudge_text}'"
                     fi
                     new_count=$((count + 1))

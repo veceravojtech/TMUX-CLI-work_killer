@@ -312,6 +312,107 @@ func TestSaveSettings_MaxWallClockSecRoundTrip(t *testing.T) {
 	assert.Equal(t, 7200, loaded.Taskvisor.MaxWallClockSec, "max_wall_clock_sec survives a save/load round-trip")
 }
 
+func TestDefaultSettings_TelemetryEnabled(t *testing.T) {
+	s := DefaultSettings()
+	require.NotNil(t, s.Telemetry.Enabled)
+	assert.True(t, *s.Telemetry.Enabled, "telemetry defaults ON (contract: telemetry.enabled=true)")
+	assert.True(t, s.Telemetry.IsEnabled())
+}
+
+func TestTelemetrySettings_IsEnabled(t *testing.T) {
+	// Nil (hand-constructed / pre-backfill legacy decode) defaults ON.
+	assert.True(t, TelemetrySettings{}.IsEnabled())
+	tru := true
+	fls := false
+	assert.True(t, TelemetrySettings{Enabled: &tru}.IsEnabled())
+	assert.False(t, TelemetrySettings{Enabled: &fls}.IsEnabled(), "an explicit false opts out")
+}
+
+func TestLoadSettings_TelemetryBackfilledOnLegacyFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	// A legacy setting.yaml predating the telemetry key — no telemetry block.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"),
+		[]byte("commands:\n    enabled: true\n"), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Telemetry.Enabled)
+	assert.True(t, *s.Telemetry.Enabled, "missing telemetry block must backfill to ON, not the bool zero (false)")
+}
+
+func TestLoadSettings_TelemetryExplicitFalsePreserved(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"),
+		[]byte("telemetry:\n    enabled: false\n"), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Telemetry.Enabled)
+	assert.False(t, *s.Telemetry.Enabled, "an explicit telemetry.enabled:false must survive the load round-trip")
+}
+
+func TestSaveSettings_TelemetryRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	original := DefaultSettings()
+	fls := false
+	original.Telemetry.Enabled = &fls
+	require.NoError(t, SaveSettings(root, original))
+
+	loaded, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, loaded.Telemetry.Enabled)
+	assert.False(t, *loaded.Telemetry.Enabled, "telemetry.enabled survives a save/load round-trip")
+}
+
+func TestDefaultSettings_TranscriptsOff(t *testing.T) {
+	s := DefaultSettings()
+	require.NotNil(t, s.Telemetry.Transcripts)
+	assert.False(t, *s.Telemetry.Transcripts, "transcripts are OPT-IN per project (contract: transcripts=false)")
+	assert.False(t, s.Telemetry.AreTranscriptsEnabled())
+}
+
+func TestTelemetrySettings_AreTranscriptsEnabled(t *testing.T) {
+	// Nil (hand-constructed / pre-backfill legacy decode) defaults OFF —
+	// INVERTED vs IsEnabled's default-ON, because pane content is opt-in.
+	assert.False(t, TelemetrySettings{}.AreTranscriptsEnabled())
+	tru := true
+	fls := false
+	assert.True(t, TelemetrySettings{Transcripts: &tru}.AreTranscriptsEnabled())
+	assert.False(t, TelemetrySettings{Transcripts: &fls}.AreTranscriptsEnabled())
+}
+
+func TestLoadSettings_TranscriptsBackfilledFalseOnLegacyFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	// A legacy setting.yaml predating the transcripts key — enabled only.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"),
+		[]byte("telemetry:\n    enabled: true\n"), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Telemetry.Transcripts, "missing transcripts key must backfill to an explicit false")
+	assert.False(t, *s.Telemetry.Transcripts)
+}
+
+func TestLoadSettings_TranscriptsExplicitTruePreserved(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".tmux-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setting.yaml"),
+		[]byte("telemetry:\n    enabled: true\n    transcripts: true\n"), 0o644))
+
+	s, err := LoadSettings(root)
+	require.NoError(t, err)
+	require.NotNil(t, s.Telemetry.Transcripts)
+	assert.True(t, *s.Telemetry.Transcripts, "an explicit transcripts:true opt-in must survive the load round-trip")
+	assert.True(t, s.Telemetry.AreTranscriptsEnabled())
+}
+
 func TestDefaultSettings_IntegrationCmdEmpty(t *testing.T) {
 	s := DefaultSettings()
 	assert.Equal(t, "", s.Taskvisor.IntegrationCmd,

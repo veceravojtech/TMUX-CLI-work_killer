@@ -189,9 +189,9 @@ func TestFreshHandoffContract_ConsumeBeforeSend(t *testing.T) {
 	branch := freshBranch(t)
 
 	rmIdx := strings.Index(branch, `rm -f "$FRESH_MARKER"`)
-	sendIdx := strings.Index(branch, "send-keys")
+	sendIdx := strings.Index(branch, "submit_to_pane")
 	require.NotEqual(t, -1, rmIdx, "the hook must consume the marker with rm -f")
-	require.NotEqual(t, -1, sendIdx, "the hook must send the restart keys")
+	require.NotEqual(t, -1, sendIdx, "the hook must send the restart keys (via submit_to_pane)")
 	assert.Less(t, rmIdx, sendIdx,
 		"the marker must be CONSUMED before anything is sent (§4 one-shot) — "+
 			"otherwise a crashed send re-fires the restart on the next Stop")

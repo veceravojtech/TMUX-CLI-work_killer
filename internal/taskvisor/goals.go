@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/console/tmux-cli/internal/telemetry"
 	"gopkg.in/yaml.v3"
 )
 
@@ -692,7 +693,15 @@ func (gf *GoalsFile) FinalGateBlockedByFailed() (blocker string, n int) {
 func (gf *GoalsFile) SetStatus(id, status string) bool {
 	for i := range gf.Goals {
 		if gf.Goals[i].ID == id {
+			from := gf.Goals[i].Status
 			gf.Goals[i].Status = status
+			// Fire-and-forget telemetry; no-op unless the daemon process opted in
+			// via telemetry.InstallDefault (never under unit test).
+			telemetry.Emit(telemetry.EventGoalStatus, "", map[string]any{
+				"goal_id": id,
+				"from":    from,
+				"to":      status,
+			})
 			return true
 		}
 	}

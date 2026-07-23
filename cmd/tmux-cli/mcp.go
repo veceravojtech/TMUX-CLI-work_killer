@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/console/tmux-cli/internal/mcp"
+	"github.com/console/tmux-cli/internal/telemetry"
 )
 
 // mcpCmd represents the mcp command that starts the MCP protocol server
@@ -45,6 +46,11 @@ func runMCPServer(cmd *cobra.Command, args []string) error {
 	// is injected so task-report can send a non-blank SystemInfo.cliVersion (the
 	// backend NotBlank-validates it).
 	mcpServer := mcp.NewServerWithVersion(workingDir, versionString())
+
+	// Opt this (real binary) process into structured telemetry: the in-process Go
+	// emitters (window.spawn/window.kill) become live. Unit tests never call this,
+	// so instrumented paths stay silent no-ops under test. Gated on telemetry.enabled.
+	telemetry.InstallDefault(workingDir)
 
 	// Configure MCP SDK server
 	impl := &sdkmcp.Implementation{

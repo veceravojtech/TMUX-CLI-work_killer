@@ -47,7 +47,7 @@ func TestSupervisorCycleHook_FreshMarkerBranchPresent(t *testing.T) {
 	assert.Contains(t, branch, "self_wave:", "branch must parse the optional self_wave field")
 	assert.Contains(t, branch, "cycle:", "branch must parse the optional cycle field")
 	assert.Contains(t, branch, freshRestartTarget, "branch must relaunch onto the marker's plan path")
-	assert.Contains(t, branch, `"/clear" Enter`, "branch must clear context before relaunching")
+	assert.Contains(t, branch, `submit_to_pane "$FRESH_PANE_TARGET" "/clear"`, "branch must clear context before relaunching (via submit_to_pane — decoupled text+Enter)")
 }
 
 func TestSupervisorCycleHook_FreshBranchOrderedBeforeTasksBranch(t *testing.T) {
@@ -86,7 +86,7 @@ func TestSupervisorCycleHook_ConsumesMarkerBeforeSend(t *testing.T) {
 	consume := strings.Index(branch, freshConsumeToken)
 	require.GreaterOrEqual(t, consume, 0, "branch must rm the marker")
 
-	send := strings.Index(branch, "send-keys")
+	send := strings.Index(branch, "submit_to_pane")
 	require.GreaterOrEqual(t, send, 0, "branch must send the restart keys")
 
 	assert.Less(t, consume, send,
@@ -102,7 +102,7 @@ func TestSupervisorCycleHook_FreshBranchPlanMissingPath(t *testing.T) {
 		"the plan-missing log line must be greppable")
 	// The abort path consumes the marker before the guarded send path is reached.
 	abort := strings.Index(branch, "fresh handoff aborted")
-	send := strings.Index(branch, "send-keys")
+	send := strings.Index(branch, "submit_to_pane")
 	require.GreaterOrEqual(t, send, 0)
 	assert.Less(t, abort, send, "plan-missing abort must precede any send")
 }
@@ -267,8 +267,14 @@ func TestSupervisorCycleHook_Bash_ArmedMarkerRestartsOntoPlan(t *testing.T) {
 	env.run(t)
 
 	calls := env.tmuxCalls(t)
-	assert.Contains(t, calls, `send-keys -t sess:@1 /clear Enter`)
-	assert.Contains(t, calls, `send-keys -t sess:@1 /tmux:supervisor `+env.planPath+` Enter`)
+	// Decoupled submit (submit_to_pane): the command text and Enter are SEPARATE
+	// send-keys calls — asserting text-then-Enter-on-the-next-line proves the CR
+	// is never glued onto the typed text (the "typed but not sent" bug). A revert
+	// to the old `send-keys ... /clear Enter` glued form would break these.
+	assert.Contains(t, calls, "send-keys -t sess:@1 /clear\nsend-keys -t sess:@1 Enter",
+		"/clear must be typed then submitted with a SEPARATE Enter, not glued")
+	assert.Contains(t, calls, "send-keys -t sess:@1 /tmux:supervisor "+env.planPath+"\nsend-keys -t sess:@1 Enter",
+		"the relaunch command must be typed then submitted with a SEPARATE Enter, not glued")
 	assert.False(t, env.markerExists(), "marker must be consumed (one-shot)")
 
 	clearIdx := strings.Index(calls, "/clear")
